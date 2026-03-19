@@ -1,0 +1,47 @@
+{
+  "$schema": "./project-schema.json",
+  "project": {
+    "name": "My Project",
+    "description": "Project description",
+    "type": "saas",
+    "repository": ""
+  },
+  "phase": {
+    "current": 1,
+    "name": "MVP",
+    "target": "TBD"
+  },
+  "features": [
+    {
+      "id": "F-1.1",
+      "name": "Core Feature 1",
+      "status": "unblocked",
+      "path": "src/features/feature1/**"
+    },
+    {
+      "id": "F-1.2",
+      "name": "Core Feature 2",
+      "status": "unblocked",
+      "path": "src/features/feature2/**"
+    }
+  ],
+  "governance": {
+    "stubMaxDays": 14,
+    "requireExecutiveReview": false,
+    "protectedPaths": [
+      "docs/governance/",
+      ".claude/rules/"
+    ]
+  },
+  "ralph": {
+    "callsPerHour": 50,
+    "timeoutMinutes": 45,
+    "sanityCheckInterval": 1800
+  },
+  "commands": {
+    "build": "npm run build",
+    "test": "npm test",
+    "lint": "npm run lint",
+    "typecheck": "npm run typecheck"
+  }
+}

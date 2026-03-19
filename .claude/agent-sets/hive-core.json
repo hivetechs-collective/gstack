@@ -1,0 +1,24 @@
+{
+  "name": "hive-core",
+  "description": "Hive Consensus development (Electron + Rust + Release pipeline)",
+  "agents": [
+    "orchestrator",
+    "rust-backend-specialist",
+    "release-orchestrator",
+    "macos-signing-expert",
+    "homebrew-publisher",
+    "nodejs-specialist",
+    "database-expert",
+    "git-expert",
+    "security-expert",
+    "api-expert",
+    "documentation-expert"
+  ],
+  "estimatedTokens": 8000,
+  "categories": {
+    "coordination": ["orchestrator", "release-orchestrator"],
+    "implementation": ["rust-backend-specialist", "nodejs-specialist"],
+    "research-planning": ["macos-signing-expert", "homebrew-publisher", "database-expert", "git-expert", "security-expert", "api-expert", "documentation-expert"]
+  },
+  "notes": "Complete set for Hive Consensus desktop app development, including Electron frontend, Rust backend, and macOS release pipeline"
+}

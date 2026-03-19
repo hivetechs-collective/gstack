@@ -1,0 +1,16 @@
+{
+  "name": "database",
+  "description": "Database design, optimization, and administration",
+  "agents": [
+    "database-expert",
+    "mongodb-specialist",
+    "redis-specialist",
+    "vector-database-specialist",
+    "elasticsearch-specialist"
+  ],
+  "estimatedTokens": 3000,
+  "categories": {
+    "research-planning": ["database-expert", "mongodb-specialist", "redis-specialist", "vector-database-specialist", "elasticsearch-specialist"]
+  },
+  "notes": "For database schema design, query optimization, data modeling, caching strategies"
+}

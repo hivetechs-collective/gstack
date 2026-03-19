@@ -1,0 +1,17 @@
+{
+  "name": "cloud",
+  "description": "Cloud infrastructure and DevOps",
+  "agents": [
+    "aws-specialist",
+    "gcp-specialist",
+    "azure-specialist",
+    "cloudflare-expert",
+    "terraform-specialist",
+    "kubernetes-specialist"
+  ],
+  "estimatedTokens": 4000,
+  "categories": {
+    "research-planning": ["aws-specialist", "gcp-specialist", "azure-specialist", "cloudflare-expert", "terraform-specialist", "kubernetes-specialist"]
+  },
+  "notes": "For Infrastructure as Code, cloud deployments, containerization, serverless"
+}

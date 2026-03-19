@@ -1,0 +1,53 @@
+# Step 8: Retro (Optional but Recommended)
+
+Quantitative retrospective on the shipped work. Run automatically for features that took >2 hours of builder time, or on demand with `--retro`.
+
+## 8a. Gather Metrics
+
+```bash
+# Run these in parallel:
+git log --oneline --since="<feature-start>" --until="now"
+git diff --stat origin/<base>...HEAD
+git log --format="%H %aI" --since="<feature-start>"
+```
+
+## 8b. Compute and Report
+
+| Metric                  | How                                                                      |
+| ----------------------- | ------------------------------------------------------------------------ |
+| Commit count            | Count commits in feature range                                           |
+| Lines added/removed/net | From diff stat                                                           |
+| File churn              | Most-changed files (hotspot analysis)                                    |
+| Commit type breakdown   | Count feat/fix/refactor/test/docs prefixes                               |
+| Work session detection  | 45-minute gap between commits = new session boundary                     |
+| Session classification  | Deep (50+ min), Medium (20-50), Micro (<20)                              |
+| AI-assisted ratio       | Count commits with `Co-Authored-By` trailers vs total                    |
+| Fix ratio               | fixes / total commits. Flag if >50% ("ship fast, fix fast" anti-pattern) |
+
+## 8c. Quality Signals
+
+| Signal                               | Threshold | Meaning                            |
+| ------------------------------------ | --------- | ---------------------------------- |
+| Fix ratio >50%                       | Warning   | Review process may have gaps       |
+| WTF-likelihood hit >20% during build | Note      | Builder struggled, investigate why |
+| >3 reverts during build              | Warning   | Spec may have been unclear         |
+| Hotspot with >10 changes             | Note      | Consider refactoring this file     |
+
+## 8d. Streak Tracking
+
+Track across features (persists in task metadata). Read `shared/artifact-storage.md` for streak data format.
+
+- Consecutive features shipped without P0 bugs
+- Longest focus session (Deep work)
+- Features shipped this week/month
+
+## 8e. Self-Assessment
+
+Rate the overall `/plan-w-team` experience for this feature 0-10. If below 10, note what friction points occurred — this feeds back into improving the workflow itself:
+
+- Where did the spec miss something?
+- Where did builders struggle?
+- Where did review catch real issues vs generate noise?
+- What would you do differently next time?
+
+Store self-assessment at the path defined in `shared/artifact-storage.md`.

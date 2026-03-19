@@ -1,0 +1,55 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/mcp-config.json",
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "env": {
+        "MEMORY_FILE_PATH": "${HOME}/.claude/memory/knowledge-graph.json"
+      },
+      "description": "Persistent knowledge graph memory across Claude sessions"
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/Users/veronelazio/Developer/Private"
+      ],
+      "description": "Secure file operations scoped to Developer/Private directory"
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "description": "Dynamic problem-solving through structured thought sequences"
+    },
+    "git": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-git",
+        "--repository",
+        "."
+      ],
+      "description": "Git repository operations with structured output"
+    },
+    "ref": {
+      "command": "npx",
+      "args": ["-y", "ref-tools-mcp@latest"],
+      "env": {
+        "REF_API_KEY": "${REF_API_KEY}"
+      },
+      "description": "Smart documentation lookups with 60-95% token reduction",
+      "notes": [
+        "Requires REF_API_KEY environment variable in .env file",
+        "Get API key from https://ref.tools/",
+        "Copy .env.example to .env and add your key"
+      ]
+    }
+  },
+  "notes": {
+    "setup": "See .claude/docs/MCP_USAGE_GUIDE.md for configuration instructions",
+    "performance": "Recommended maximum: 5-6 active servers for optimal performance",
+    "security": "Filesystem server scoped to Developer/Private directory for safety"
+  }
+}

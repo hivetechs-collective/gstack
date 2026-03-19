@@ -1,0 +1,44 @@
+{
+  "name": "hivetechs-website",
+  "description": "HiveTechs.io website - Next.js 14 + Cloudflare Workers + D1 + Paddle",
+  "agents": [
+    "nextjs-expert",
+    "react-typescript-specialist",
+    "cloudflare-expert",
+    "database-expert",
+    "paddle-expert",
+    "api-expert",
+    "smtpgo-expert",
+    "security-expert",
+    "git-expert",
+    "style-theme-expert",
+    "code-review-expert",
+    "documentation-expert"
+  ],
+  "estimatedTokens": 9000,
+  "categories": {
+    "coordination": [],
+    "implementation": ["react-typescript-specialist"],
+    "research-planning": [
+      "nextjs-expert",
+      "cloudflare-expert",
+      "database-expert",
+      "paddle-expert",
+      "api-expert",
+      "smtpgo-expert",
+      "security-expert",
+      "git-expert",
+      "style-theme-expert",
+      "code-review-expert",
+      "documentation-expert"
+    ]
+  },
+  "notes": "Complete set for HiveTechs website development including Next.js App Router, Cloudflare Workers edge deployment, D1 database, Paddle payment integration, SMTP2GO email service, and cross-platform compatibility validation (Node.js dev vs Workers production)",
+  "keyPatterns": {
+    "deployment": "Always verify Node.js vs Cloudflare Workers compatibility before deploying",
+    "email": "SMTP2GO primary, Resend fallback",
+    "payments": "Paddle checkout integration",
+    "auth": "JWT + Magic Links + License Keys",
+    "database": "Cloudflare D1 (SQLite-compatible)"
+  }
+}

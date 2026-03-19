@@ -1,0 +1,350 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(git *)",
+      "Bash(turbo *)",
+      "Bash(cargo *)",
+      "Bash(rustfmt *)",
+      "Bash(prettier *)",
+      "Bash(tsx *)",
+      "Bash(tsc *)",
+      "Bash(eslint *)",
+      "Bash(gh *)",
+      "Bash(uv run *)",
+      "Bash(bun *)",
+      "Agent(*)",
+      "TeamCreate",
+      "TeamDelete",
+      "TaskCreate",
+      "TaskList",
+      "TaskGet",
+      "TaskUpdate",
+      "TaskStop",
+      "SendMessage"
+    ]
+  },
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "respectGitignore": true,
+  "statusLine": {
+    "type": "command",
+    "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/statusline.sh",
+    "padding": 0
+  },
+  "hooks": {
+    "Setup": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/setup.sh"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "once": true,
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "matcher": "Bash(git status*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\": \"allow\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(git diff*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\": \"allow\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(git log*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\": \"allow\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Read(*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\": \"allow\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Glob(*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\": \"allow\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Grep(*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\": \"allow\"}'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/damage-control/damage-control.sh"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/damage-control/damage-control.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-protected-paths.sh"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/damage-control/damage-control.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-protected-paths.sh"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/damage-control/damage-control.sh"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-edit-format.sh",
+            "statusMessage": "Formatting..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/validators/json-validate.sh",
+            "statusMessage": "Validating JSON..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/validators/typescript-check.sh",
+            "statusMessage": "Type checking..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/validators/rust-check.sh",
+            "statusMessage": "Cargo check..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/validators/eslint-check.sh",
+            "statusMessage": "Linting..."
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-edit-format.sh",
+            "statusMessage": "Formatting..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/validators/json-validate.sh",
+            "statusMessage": "Validating JSON..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/validators/typescript-check.sh",
+            "statusMessage": "Type checking..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/validators/rust-check.sh",
+            "statusMessage": "Cargo check..."
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/validators/eslint-check.sh",
+            "statusMessage": "Linting..."
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(git push*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-git-push.sh"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end.sh"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-compact.sh"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/check-blocked-request.sh"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-summary.sh"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-track.sh start"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/subagent-track.sh stop"
+          },
+          {
+            "type": "command",
+            "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}

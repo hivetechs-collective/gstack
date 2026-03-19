@@ -1,0 +1,17 @@
+{
+  "name": "release-pipeline",
+  "description": "Automated build, signing, and distribution for macOS apps",
+  "agents": [
+    "release-orchestrator",
+    "macos-signing-expert",
+    "homebrew-publisher",
+    "git-expert",
+    "documentation-expert"
+  ],
+  "estimatedTokens": 3500,
+  "categories": {
+    "coordination": ["release-orchestrator"],
+    "research-planning": ["macos-signing-expert", "homebrew-publisher", "git-expert", "documentation-expert"]
+  },
+  "notes": "For setting up CI/CD, Apple code signing/notarization, Homebrew distribution"
+}

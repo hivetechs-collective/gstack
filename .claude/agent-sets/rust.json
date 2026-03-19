@@ -1,0 +1,18 @@
+{
+  "name": "rust",
+  "description": "Rust backend development and systems programming",
+  "agents": [
+    "rust-backend-specialist",
+    "system-architect",
+    "performance-testing-specialist",
+    "database-expert",
+    "security-expert",
+    "code-review-expert"
+  ],
+  "estimatedTokens": 4000,
+  "categories": {
+    "implementation": ["rust-backend-specialist"],
+    "research-planning": ["system-architect", "performance-testing-specialist", "database-expert", "security-expert", "code-review-expert"]
+  },
+  "notes": "For Rust APIs, WebSocket servers, async Tokio patterns, performance-critical code"
+}

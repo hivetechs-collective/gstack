@@ -1,0 +1,20 @@
+{
+  "name": "electron",
+  "description": "Electron desktop application development",
+  "agents": [
+    "electron-specialist",
+    "nodejs-specialist",
+    "react-typescript-specialist",
+    "database-expert",
+    "security-expert",
+    "api-expert",
+    "documentation-expert",
+    "git-expert"
+  ],
+  "estimatedTokens": 5000,
+  "categories": {
+    "implementation": ["electron-specialist", "nodejs-specialist", "react-typescript-specialist"],
+    "research-planning": ["database-expert", "security-expert", "api-expert", "documentation-expert", "git-expert"]
+  },
+  "notes": "For Electron apps with Node.js backend and React/TypeScript frontend"
+}

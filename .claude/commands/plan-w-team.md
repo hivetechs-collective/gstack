@@ -1,0 +1,187 @@
+# Plan With Team Command
+
+Full-lifecycle planning and execution workflow: scope challenge, specification, parallel implementation, fix-first review, ship pipeline, post-ship documentation, and quantitative retrospective. A single command that takes a feature from idea to shipped, reviewed, documented code.
+
+Based on IndyDevDan's claude-code-hooks-mastery pattern, extended with gstack-inspired lifecycle stages (scope challenge, fix-first review, ship pipeline, retro), self-regulation heuristics, cognitive frameworks, and artifact handoffs between stages.
+
+## Usage
+
+```
+/plan-w-team [feature description]
+/plan-w-team --resume        # Resume incomplete work from task list
+/plan-w-team --ship-only     # Skip to Step 5+ (review/ship/docs/retro)
+/plan-w-team --retro         # Run retro only on recent shipped work
+```
+
+For simple parallel changes across files (same pattern, no spec needed), use `/batch` instead. `/plan-w-team` is for spec-first features with dependencies between tasks.
+
+## Intent Detection
+
+The user does NOT need to remember flags. Infer intent from natural language and route accordingly:
+
+| User says something like...                           | Route to                |
+| ----------------------------------------------------- | ----------------------- |
+| "Add alerting system with email notifications"        | Full lifecycle (0-8)    |
+| "Review the auth module I just finished"              | Steps 5-8 (review+ship) |
+| "Deep review of my changes, don't ship yet"           | Step 5 only (review)    |
+| "Ship what's on this branch"                          | Steps 5-8 (review+ship) |
+| "How did that feature go? What are the metrics?"      | Step 8 only (retro)     |
+| "Pick up where we left off on the alerting work"      | Resume (3-4 then 5-8)   |
+| "Just update the docs and changelog for this release" | Steps 7-8 (post-ship)   |
+
+When ambiguous, ask. When clear, just start the right step — no flag needed.
+
+Explicit flags (`--ship-only`, `--retro`, `--resume`) still work as shortcuts.
+
+## Scope Mode
+
+Before starting, select a scope mode that controls planning intensity:
+
+| Mode                 | When to Use                            | Behavior                                                       |
+| -------------------- | -------------------------------------- | -------------------------------------------------------------- |
+| **EXPAND**           | Greenfield, exploring possibilities    | Dream big, propose expansions, opt-in ceremony per addition    |
+| **SELECTIVE EXPAND** | Have a plan, open to cherry-picking    | Hold core scope + present expansion options individually       |
+| **HOLD** (default)   | Clear requirements, execute with rigor | Maximum scrutiny on current plan, no scope additions           |
+| **REDUCE**           | Tight deadline, MVP focus              | Strip to essentials, flag everything non-critical for deferral |
+
+If the user does not specify, default to **HOLD**. Ask only if the feature description is ambiguous.
+
+## Process
+
+Each step is defined in a separate stage file. **Read the stage file when you reach that step** — do not load all stages upfront.
+
+### Step 0: Scope Challenge
+
+Read `.claude/commands/plan-w-team/00-scope-challenge.md` and execute it.
+Challenge the premise before writing any spec. Can kill bad ideas early.
+
+### Step 1: Generate Specification
+
+Read `.claude/commands/plan-w-team/01-specification.md` and execute it.
+Create a persistent spec at `docs/specs/<feature-name>.md` with requirements, technical design, error maps, shadow paths, and test plan.
+
+### Step 2: Create Task Breakdown
+
+Read `.claude/commands/plan-w-team/02-task-breakdown.md` and execute it.
+Decompose by feature into tasks with metadata, dependencies, scope tags, and bisectable ordering.
+
+### Step 3-4: Choose Strategy & Execute
+
+Read `.claude/commands/plan-w-team/03-execute.md` and execute it.
+Select execution strategy, spawn parallel builders with worktree isolation, monitor progress, merge in bisectable order.
+
+### Step 5: Fix-First Review
+
+Read `.claude/commands/plan-w-team/04-fix-first-review.md` and execute it.
+Two-pass review (CRITICAL blockers + INFORMATIONAL items). Auto-fix mechanical issues, batch ASK items for user.
+
+### Step 6: Ship
+
+Read `.claude/commands/plan-w-team/05-ship.md` and execute it.
+Test suite, coverage audit, version bump, CHANGELOG, bisectable commits, push/PR.
+
+### Step 7: Post-Ship Documentation
+
+Read `.claude/commands/plan-w-team/06-post-ship.md` and execute it.
+Documentation audit, cross-doc consistency, TODOS cleanup, deferred items check.
+
+### Step 8: Retro
+
+Read `.claude/commands/plan-w-team/07-retro.md` and execute it.
+Quantitative retrospective with metrics, quality signals, streak tracking, self-assessment.
+
+## Flag Routing
+
+| Flag          | Steps Executed                              | Notes                                  |
+| ------------- | ------------------------------------------- | -------------------------------------- |
+| (none)        | 0 -> 1 -> 2 -> 3-4 -> 5 -> 6 -> 7 -> 8      | Full lifecycle                         |
+| `--resume`    | 3-4 (with resume logic) -> 5 -> 6 -> 7 -> 8 | Read 03-execute.md, use Resume section |
+| `--ship-only` | 5 -> 6 -> 7 -> 8                            | Assumes code is already implemented    |
+| `--retro`     | 8 only                                      | Retro on recent shipped work           |
+
+## Worktree Isolation
+
+Each builder runs in its own git worktree, providing a complete isolated copy of the repository:
+
+- **No file conflicts**: Builders can modify any file without coordinating exclusive ownership
+- **Full repo access**: Every builder sees the complete codebase
+- **Branch-per-builder**: Each worktree has its own branch for commits
+- **Merge at end**: When builders complete, their worktree branches are merged to main via standard git merge in bisectable order
+- **Conflict resolution**: Git handles most merges automatically. The lead resolves any git merge conflicts after all builders finish.
+
+This replaces the old file assignment protocol. There is no need for `assigned_files` metadata or exclusive file ownership.
+
+## Session Awareness
+
+When 3+ concurrent `/plan-w-team` sessions are detected (check for multiple active teams via TaskList), enable **re-grounding mode**: every question to the user includes:
+
+- Project name and branch
+- Which step we are in
+- What was just completed
+- What decision is needed
+
+This prevents context confusion when running parallel planning sessions.
+
+## Shared Resources
+
+Stage files reference these shared components on-demand (only loaded when needed by the stage):
+
+| Shared File                      | Used By                    | Content                           |
+| -------------------------------- | -------------------------- | --------------------------------- |
+| `shared/self-regulation.md`      | 03-execute                 | WTF-likelihood, fix caps, commits |
+| `shared/cognitive-frameworks.md` | 00-scope, 01-spec, 05-ship | Named frameworks reference        |
+| `shared/artifact-storage.md`     | 05-ship, 07-retro          | SLUG, paths, formats              |
+| `shared/browser-qa.md`           | 04-review, 05-ship         | Browse binary integration         |
+
+All shared files are at `.claude/commands/plan-w-team/shared/`.
+
+## Example
+
+```
+/plan-w-team Add alerting system with email and in-app notifications
+
+> Step 0: Scope Challenge
+>   Premise: passes "regret in 10 years" test. Leverage existing notification_service.ts.
+>   Dream state: CURRENT (in-app only) -> THIS PLAN (email + in-app) -> IDEAL (multi-channel)
+>   Complexity: 6 files, 1 new service — passes smell check
+>   Door labels: DB schema = one-way door. Taste calibration: auth_service.ts (good), legacy_mailer.ts (bad)
+>   -> PROCEED with HOLD scope mode
+>
+> Step 1: Spec -> docs/specs/alerting-system.md (Error Map, Shadow Paths, State Matrix, Diagrams, Test Plan)
+>
+> Step 2: Tasks (5 total, unassigned, with metadata, bisectable ordering)
+>   1. Alert rule engine (BACKEND, high, two-way) | human ~4h, AI ~20min
+>   2. notification_preferences schema (DATABASE, one-way, blockedBy: [1])
+>   3. Email channel (BACKEND, medium, blockedBy: [1])
+>   4. In-app channel (FRONTEND, medium, blockedBy: [1])
+>   5. Integration (high, blockedBy: [2,3,4])
+>
+> Step 3-4: Parallel builders, auto mode, worktree isolation
+>   Pre-flight: clean tree, base fetched. TeamCreate -> 2 builders -> self-claim loop -> merge
+>
+> Step 5: Fix-First Review
+>   Pass 1 CRITICAL: 0 issues. Pass 2: 3 auto-fixed (unused imports, stale comment)
+>   Design Review Lite (task 4 FRONTEND): clean, no AI slop
+>
+> Step 6: Ship
+>   47/47 tests passing. Coverage: 82% lines. Version: 1.3.0 -> 1.4.0 (MINOR)
+>   CHANGELOG: "You can now receive alerts via email in addition to in-app notifications"
+>
+> Step 7: Post-Ship Docs (README updated, ARCHITECTURE diagram updated, 1 stale TODO flagged)
+>
+> Step 8: Retro (18 commits, 847 lines, fix ratio 11%, streak: 4 features, self-assessment: 9/10)
+```
+
+## Notes
+
+- Specs are saved for future reference and can be used across sessions
+- The validator is optional — use for security-critical or compliance tasks
+- Builder must address all validator findings before proceeding
+- Task metadata persists at `~/.claude/tasks/` for cross-session resumption
+- Use `/btw` during execution for side-channel queries that don't interrupt the current task flow
+- Use `/loop` or CronCreate for automated progress monitoring instead of manually polling TaskList
+- For simple parallel changes (same pattern across files), prefer `/batch` over `/plan-w-team`
+- Steps 6-8 can be run independently with `--ship-only` or `--retro` flags
+- The self-assessment in Step 8 is a feedback loop — patterns that score below 8 should be investigated and the workflow updated
+- All artifacts are stored under `~/.claude/plan-w-team/projects/<SLUG>/` for cross-session persistence
+- Browser QA requires gstack's browse binary — install once, benefits all projects

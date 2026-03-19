@@ -1,0 +1,22 @@
+{
+  "name": "web-fullstack",
+  "description": "Next.js/React full-stack web application development",
+  "agents": [
+    "nextjs-expert",
+    "react-typescript-specialist",
+    "nodejs-specialist",
+    "database-expert",
+    "api-expert",
+    "shadcn-expert",
+    "docker-advanced-specialist",
+    "observability-specialist",
+    "security-expert",
+    "git-expert"
+  ],
+  "estimatedTokens": 6000,
+  "categories": {
+    "implementation": ["react-typescript-specialist", "nodejs-specialist"],
+    "research-planning": ["nextjs-expert", "database-expert", "api-expert", "shadcn-expert", "docker-advanced-specialist", "observability-specialist", "security-expert", "git-expert"]
+  },
+  "notes": "For building modern web apps with Next.js, React, TypeScript, and shadcn/ui"
+}

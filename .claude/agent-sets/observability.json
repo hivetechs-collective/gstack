@@ -1,0 +1,15 @@
+{
+  "name": "observability",
+  "description": "Monitoring, logging, and distributed tracing",
+  "agents": [
+    "observability-specialist",
+    "elasticsearch-specialist",
+    "kafka-specialist",
+    "docker-advanced-specialist"
+  ],
+  "estimatedTokens": 3000,
+  "categories": {
+    "research-planning": ["observability-specialist", "elasticsearch-specialist", "kafka-specialist", "docker-advanced-specialist"]
+  },
+  "notes": "For setting up monitoring stacks, log aggregation, metrics, distributed tracing"
+}

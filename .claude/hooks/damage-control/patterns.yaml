@@ -1,0 +1,254 @@
+# Claude Code Damage Control - Security Patterns
+# Adapted from disler/claude-code-damage-control
+# Three-tier protection: zeroAccess > readOnly > noDelete
+
+# =============================================================================
+# DANGEROUS BASH COMMANDS - Block or Ask
+# =============================================================================
+bashPatterns:
+  # --- FILE DESTRUCTION ---
+  - pattern: "rm\\s+(-[^\\s]*)?-[rf]"
+    description: "rm with recursive or force flags"
+    action: block
+
+  - pattern: "rmdir\\s+--ignore-fail-on-non-empty"
+    description: "rmdir ignoring non-empty"
+    action: block
+
+  # --- PERMISSIONS ---
+  - pattern: "chmod\\s+777"
+    description: "chmod 777 (world-writable)"
+    action: block
+
+  - pattern: "chown\\s+(-R|--recursive)\\s+root"
+    description: "recursive chown to root"
+    action: block
+
+  # --- GIT DESTRUCTIVE ---
+  - pattern: "git\\s+reset\\s+--hard"
+    description: "git reset --hard (loses uncommitted changes)"
+    action: block
+
+  - pattern: "git\\s+clean\\s+-[fd]"
+    description: "git clean (removes untracked files)"
+    action: block
+
+  - pattern: "git\\s+push.*--force(?!-with-lease)"
+    description: "git push --force (use --force-with-lease instead)"
+    action: block
+
+  - pattern: "git\\s+push.*-f(?!orce-with-lease)"
+    description: "git push -f (use --force-with-lease instead)"
+    action: block
+
+  - pattern: "git\\s+stash\\s+clear"
+    description: "git stash clear (loses all stashes)"
+    action: block
+
+  # --- GIT RISKY (ASK) ---
+  - pattern: "git\\s+branch\\s+-[dD]"
+    description: "delete git branch"
+    action: ask
+
+  - pattern: "git\\s+stash\\s+drop"
+    description: "drop a git stash"
+    action: ask
+
+  - pattern: "git\\s+push.*origin"
+    description: "push to remote origin"
+    action: ask
+
+  # --- CLOUD INFRASTRUCTURE ---
+  - pattern: "aws\\s+ec2\\s+terminate-instances"
+    description: "AWS EC2 terminate"
+    action: block
+
+  - pattern: "aws\\s+rds\\s+delete-db"
+    description: "AWS RDS delete"
+    action: block
+
+  - pattern: "aws\\s+s3\\s+rb.*--force"
+    description: "AWS S3 bucket force delete"
+    action: block
+
+  - pattern: "gcloud.*delete"
+    description: "GCP delete operation"
+    action: ask
+
+  - pattern: "az\\s+.*\\s+delete"
+    description: "Azure delete operation"
+    action: ask
+
+  # --- INFRASTRUCTURE AS CODE ---
+  - pattern: "terraform\\s+destroy"
+    description: "terraform destroy"
+    action: block
+
+  - pattern: "pulumi\\s+destroy"
+    description: "pulumi destroy"
+    action: block
+
+  # --- KUBERNETES ---
+  - pattern: "kubectl\\s+delete\\s+namespace"
+    description: "kubectl delete namespace"
+    action: block
+
+  - pattern: "kubectl\\s+delete.*--all"
+    description: "kubectl delete all resources"
+    action: block
+
+  # --- DOCKER ---
+  - pattern: "docker\\s+system\\s+prune\\s+-a"
+    description: "docker system prune all"
+    action: ask
+
+  - pattern: "docker\\s+rm\\s+-f.*\\$\\(docker\\s+ps"
+    description: "docker remove all containers"
+    action: block
+
+  # --- DATABASES ---
+  - pattern: "DROP\\s+DATABASE"
+    description: "DROP DATABASE"
+    action: block
+    caseSensitive: false
+
+  - pattern: "DROP\\s+TABLE"
+    description: "DROP TABLE"
+    action: ask
+    caseSensitive: false
+
+  - pattern: "TRUNCATE\\s+TABLE"
+    description: "TRUNCATE TABLE"
+    action: ask
+    caseSensitive: false
+
+  - pattern: "DELETE\\s+FROM\\s+\\w+\\s*;?$"
+    description: "DELETE without WHERE clause"
+    action: block
+    caseSensitive: false
+
+  - pattern: "DELETE\\s+FROM.*WHERE"
+    description: "DELETE with WHERE clause"
+    action: ask
+    caseSensitive: false
+
+  # --- REDIS ---
+  - pattern: "redis-cli.*FLUSHALL"
+    description: "Redis FLUSHALL"
+    action: block
+
+  - pattern: "redis-cli.*FLUSHDB"
+    description: "Redis FLUSHDB"
+    action: ask
+
+  # --- PACKAGE MANAGERS ---
+  - pattern: "npm\\s+unpublish"
+    description: "npm unpublish"
+    action: block
+
+  - pattern: "cargo\\s+yank"
+    description: "cargo yank"
+    action: ask
+
+# =============================================================================
+# ZERO ACCESS PATHS - Block ALL operations (read/write/edit/delete)
+# These contain secrets/credentials
+# =============================================================================
+zeroAccessPaths:
+  # Environment files
+  - ".env"
+  - ".env.*"
+  - "*.env"
+
+  # SSH keys
+  - "~/.ssh/"
+  - ".ssh/"
+  - "*.pem"
+  - "*.key"
+  - "id_rsa*"
+  - "id_ed25519*"
+
+  # GPG
+  - "~/.gnupg/"
+  - ".gnupg/"
+
+  # Cloud credentials
+  - "~/.aws/"
+  - ".aws/"
+  - "~/.config/gcloud/"
+  - "~/.azure/"
+  - "~/.kube/config"
+
+  # Terraform state (contains secrets)
+  - "*.tfstate"
+  - "*.tfstate.*"
+
+  # Platform tokens
+  - ".npmrc"
+  - ".pypirc"
+  - ".docker/config.json"
+  - ".netrc"
+
+  # Certificates
+  - "*.p12"
+  - "*.pfx"
+  - "*.cer"
+  - "*secret*.json"
+  - "*credential*.json"
+  - "*token*.json"
+
+# =============================================================================
+# READ-ONLY PATHS - Allow read, block modifications
+# System and configuration files
+# =============================================================================
+readOnlyPaths:
+  # System directories
+  - "/etc/"
+  - "/usr/"
+  - "/System/"
+
+  # Shell config (read for reference, don't modify)
+  - "~/.bash_history"
+  - "~/.zsh_history"
+
+  # Lock files
+  - "package-lock.json"
+  - "yarn.lock"
+  - "pnpm-lock.yaml"
+  - "Cargo.lock"
+  - "poetry.lock"
+  - "Gemfile.lock"
+
+  # Build artifacts
+  - "node_modules/"
+  - "target/"
+  - "dist/"
+  - ".next/"
+  - "__pycache__/"
+
+# =============================================================================
+# NO-DELETE PATHS - Allow read/write/edit, block deletion
+# Critical project files
+# =============================================================================
+noDeletePaths:
+  # Documentation
+  - "README.md"
+  - "LICENSE"
+  - "CHANGELOG.md"
+
+  # Git
+  - ".git/"
+  - ".gitignore"
+  - ".gitattributes"
+
+  # Configuration
+  - "Dockerfile"
+  - "docker-compose.yml"
+  - "Makefile"
+  - "Cargo.toml"
+  - "package.json"
+  - "tsconfig.json"
+
+  # Claude Code
+  - ".claude/"
+  - "CLAUDE.md"

@@ -1,0 +1,19 @@
+{
+  "name": "core",
+  "description": "Essential agents for any project",
+  "agents": [
+    "orchestrator",
+    "system-architect",
+    "security-expert",
+    "code-review-expert",
+    "documentation-expert",
+    "git-expert",
+    "mcp-expert"
+  ],
+  "estimatedTokens": 4000,
+  "categories": {
+    "coordination": ["orchestrator"],
+    "research-planning": ["system-architect", "security-expert", "code-review-expert", "documentation-expert", "git-expert", "mcp-expert"]
+  },
+  "notes": "Minimal essential set for any software project. Start here and add specialists as needed."
+}
