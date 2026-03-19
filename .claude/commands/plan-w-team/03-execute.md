@@ -27,6 +27,19 @@ Use `/fork` before committing to a strategy if unsure about the decomposition.
   If fast-forward fails (local has diverged), stop and ask the user to resolve before spawning builders. This prevents the stale-base bug where worktrees fork from an old commit.
 - Record the base commit SHA: `BASE_SHA=$(git rev-parse HEAD)`. All worktrees must branch from this exact commit. Log it in the team context so post-merge can verify ancestry.
 
+### Edit Atomicity & PostToolUse Hook Behavior
+
+The TypeScript PostToolUse hook runs `tsc --noEmit` after every Edit/Write call. Builders should understand the error triage:
+
+| Error Code | Severity | Hook Behavior             | Builder Action                                                                                                         |
+| ---------- | -------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| TS6133     | Warning  | **Allowed** — not blocked | None needed. Transient during multi-edit workflows (e.g., adding an import before its usage site). Resolves naturally. |
+| All others | Error    | **Blocked** — must fix    | Fix immediately before continuing.                                                                                     |
+
+This means builders can safely use multiple Edit calls for multi-location changes (e.g., add import → edit usage site) without being blocked by intermediate unused-import warnings. However, real type errors (wrong types, missing properties, bad signatures) still block immediately.
+
+**Recommended edit ordering**: When making changes that span multiple locations in a file, prefer adding the usage site first, then the import/declaration — this avoids even the TS6133 warning. But either order works.
+
 ### Execution
 
 1. TeamCreate with descriptive team name
@@ -38,8 +51,8 @@ Use `/fork` before committing to a strategy if unsure about the decomposition.
      prompt: "You are rules-builder. Claim tasks from the pool and implement them.
 
      Read `.claude/commands/plan-w-team/shared/self-regulation.md` for WTF-likelihood
-     tracking, regression attribution, commit discipline, and TYPE PRESERVATION rules.
-     Follow them exactly.
+     tracking, regression attribution, commit discipline, EDIT ATOMICITY, and TYPE
+     PRESERVATION rules. Follow them exactly.
 
      TYPE PRESERVATION (critical — prevents merge conflicts):
      - NEVER create simplified versions of existing interfaces/types. Import and use

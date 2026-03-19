@@ -32,6 +32,20 @@ Each fix must include a regression test with attribution comment:
 - Every commit must compile and pass tests independently (bisectable)
 - Order: infrastructure first, then models, then controllers, then tests
 
+## Edit Atomicity Discipline
+
+The PostToolUse TypeScript hook allows TS6133 (unused imports/variables) as warnings
+but blocks on all other type errors. This means:
+
+- **Multi-edit is safe**: You can add an import in one Edit call and use it in a second
+  Edit call. The intermediate TS6133 warning will not block you.
+- **Prefer usage-first ordering**: When possible, add the usage site first, then the
+  import/declaration. This avoids even the warning.
+- **Never combine unrelated changes** into a single Edit just to avoid warnings. Keep
+  edits logically coherent — the hook is designed to tolerate intermediate states.
+- **Real type errors still block immediately**: If you see a non-TS6133 error after an
+  edit, fix it before continuing.
+
 ## Type Preservation Discipline
 
 Builders MUST preserve the codebase's canonical type system. Creating simplified or

@@ -41,13 +41,26 @@ Track across features (persists in task metadata). Read `shared/artifact-storage
 - Longest focus session (Deep work)
 - Features shipped this week/month
 
-## 8e. Self-Assessment
+## 8e. Hook Friction Log
+
+Track PostToolUse hook interactions that caused workflow friction:
+
+| Metric          | How to Measure                                                                          |
+| --------------- | --------------------------------------------------------------------------------------- |
+| TS6133 warnings | Count TS6133 "allowed" messages in hook output                                          |
+| False blocks    | Edits blocked by hook that required workarounds (combined edits, Write instead of Edit) |
+| Real catches    | Type errors the hook caught that would have been bugs                                   |
+
+A high false-block count signals the hook needs tuning. A high real-catch count validates the hook's value. Track both to calibrate.
+
+## 8f. Self-Assessment
 
 Rate the overall `/plan-w-team` experience for this feature 0-10. If below 10, note what friction points occurred — this feeds back into improving the workflow itself:
 
 - Where did the spec miss something?
 - Where did builders struggle?
 - Where did review catch real issues vs generate noise?
+- Where did hooks help vs create friction?
 - What would you do differently next time?
 
 Store self-assessment at the path defined in `shared/artifact-storage.md`.
