@@ -32,6 +32,21 @@ Each fix must include a regression test with attribution comment:
 - Every commit must compile and pass tests independently (bisectable)
 - Order: infrastructure first, then models, then controllers, then tests
 
+## Type Preservation Discipline
+
+Builders MUST preserve the codebase's canonical type system. Creating simplified or
+duplicate interfaces is the #1 cause of post-merge type conflicts.
+
+| Rule                                                            | Rationale                                                |
+| --------------------------------------------------------------- | -------------------------------------------------------- |
+| Search for existing types before defining new ones              | Prevents duplicates that conflict at merge               |
+| Use `Pick<T, ...>` / `Omit<T, ...>` to narrow existing types    | Maintains single source of truth                         |
+| Use `extends` or `&` to add fields to existing types            | Keeps type hierarchy intact                              |
+| Never redefine an interface that already exists in the codebase | Direct cause of the "6 rounds of TS fixing" anti-pattern |
+| Import types from their canonical location, not from re-exports | Prevents circular dependency issues                      |
+
+**WTF impact**: Creating a duplicate/simplified interface that conflicts with an existing canonical type adds **+15%** to WTF-likelihood (same as a revert — it causes equivalent rework).
+
 ## Browser QA Self-Regulation (when browse binary is available)
 
 - CSS-only fixes contribute +0% to WTF-likelihood (safe, presentation-only)

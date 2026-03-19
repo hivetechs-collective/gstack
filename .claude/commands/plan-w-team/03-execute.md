@@ -19,7 +19,13 @@ Use `/fork` before committing to a strategy if unsure about the decomposition.
 ### Pre-flight Checks
 
 - Require clean working tree (`git status` must show no uncommitted changes). This ensures builder changes can be cleanly attributed. If dirty, ask user to commit or stash first.
-- Run `git fetch origin <base> --quiet` to ensure local base branch is current. This prevents phantom diffs from stale local state.
+- Sync local base branch to remote:
+  ```bash
+  git fetch origin <base> --quiet
+  git merge --ff-only origin/<base>   # advance local branch to match remote
+  ```
+  If fast-forward fails (local has diverged), stop and ask the user to resolve before spawning builders. This prevents the stale-base bug where worktrees fork from an old commit.
+- Record the base commit SHA: `BASE_SHA=$(git rev-parse HEAD)`. All worktrees must branch from this exact commit. Log it in the team context so post-merge can verify ancestry.
 
 ### Execution
 
@@ -32,7 +38,18 @@ Use `/fork` before committing to a strategy if unsure about the decomposition.
      prompt: "You are rules-builder. Claim tasks from the pool and implement them.
 
      Read `.claude/commands/plan-w-team/shared/self-regulation.md` for WTF-likelihood
-     tracking, regression attribution, and commit discipline rules. Follow them exactly.
+     tracking, regression attribution, commit discipline, and TYPE PRESERVATION rules.
+     Follow them exactly.
+
+     TYPE PRESERVATION (critical — prevents merge conflicts):
+     - NEVER create simplified versions of existing interfaces/types. Import and use
+       the canonical types from the codebase.
+     - Before defining any new type, search the codebase for existing types that cover
+       your needs: Grep pattern='interface|type.*=' glob='**/*.ts'
+     - If a canonical type has fields you don't need, use Pick<T, 'field1' | 'field2'>
+       or Omit<T, 'field3'> — do NOT create a new interface with fewer fields.
+     - When your task requires extending a type, use `extends` or intersection (`&`)
+       with the existing type rather than redefining it.
 
      TASK CLAIMING:
      - Use TaskList to find unassigned, unblocked tasks
@@ -53,8 +70,13 @@ Use `/fork` before committing to a strategy if unsure about the decomposition.
 8. Builder checks TaskList for next task (self-claiming loop)
 9. Lead monitors progress — use `/loop 2m check TaskList and report status` or CronCreate for automated monitoring instead of manual checks
 10. When all tasks complete: SendMessage(shutdown_request) to all builders
-11. When all builders complete, merge worktree branches to main in bisectable order. Git handles most merges automatically; lead resolves any git merge conflicts.
-12. TeamDelete to clean up
+11. When all builders complete, merge worktree branches to main in bisectable order:
+    - Merge in dependency order (infrastructure first, then models, then controllers, then tests)
+    - After EACH merge, run `npx tsc --noEmit` (or project equivalent) to catch type conflicts immediately
+    - If type errors appear, fix them BEFORE merging the next branch — this prevents error cascading
+    - Git handles most merges automatically; lead resolves any git merge conflicts
+12. Verify the final merged state: run full test suite + type check before proceeding to Step 5
+13. TeamDelete to clean up
 
 ## Resume Incomplete Work
 
