@@ -48,6 +48,20 @@ This means builders can safely use multiple Edit calls for multi-location change
 
 **Recommended edit ordering**: When making changes that span multiple locations in a file, prefer adding the usage site first, then the import/declaration — this avoids even the TS6133 warning. But either order works.
 
+### PreToolUse Blocking Hooks
+
+Several PreToolUse hooks will block operations. Builders must understand these to avoid confusion:
+
+| Hook                         | Trigger                                     | What It Blocks                                                                                                                                           | Builder Action                                                                                                                                          |
+| ---------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **config-protection**        | Edit/Write to linter/formatter configs      | `.eslintrc*`, `prettier.config.*`, `biome.json`, `.ruff.toml`, `.stylelintrc*`, `.markdownlint*`                                                         | Fix the source code to satisfy lint rules — do NOT weaken the config. Override: `CLAUDE_DISABLED_HOOKS=pre:edit:config-protection`                      |
+| **pre-commit-quality**       | `git commit` via Bash                       | Commits containing `debugger` statements, AWS/GitHub/OpenAI keys, `api_key` assignments in staged files                                                  | Remove the offending code before committing. Warns (but allows) `console.log` and non-conventional commit messages.                                     |
+| **auto-tmux-dev**            | Bash commands matching dev server patterns  | `npm run dev`, `pnpm dev`, `yarn dev`, `next dev`, `vite`, `cargo run`, `uvicorn`, `flask run`, `python manage.py runserver`                             | The command is NOT failing — it was redirected to a tmux session running in the background. Check with `tmux attach -t dev-*`. Requires tmux installed. |
+| **damage-control (secrets)** | Edit/Write content matching secret patterns | AWS access keys (`AKIA...`), GitHub tokens (`ghp_...`), OpenAI keys (`sk-...`), private key blocks, generic `secret=`/`password=`/`api_key=` assignments | Use placeholder values (`YOUR_KEY_HERE`) or environment variable references instead of hardcoded secrets.                                               |
+| **suggest-compact**          | Edit/Write (every call)                     | Nothing — informational only                                                                                                                             | At 50 tool calls, suggests `/compact`. Reminds every 25 calls after. No blocking.                                                                       |
+
+**Hook profiles**: All hooks respect `CLAUDE_HOOK_PROFILE` (default: `standard`). Set to `minimal` to disable most hooks, or `strict` for all hooks including governance audit. Individual hooks can be disabled via `CLAUDE_DISABLED_HOOKS=hook_id1,hook_id2`.
+
 ### Execution
 
 1. TeamCreate with descriptive team name
