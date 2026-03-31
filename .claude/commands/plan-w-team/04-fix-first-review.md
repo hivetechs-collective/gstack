@@ -41,6 +41,15 @@ git diff origin/<base>...HEAD
 
 Auto-fix all AUTO-FIX items. Batch remaining ASK items and present them together.
 
+### Spawning Fix Agents
+
+When spawning parallel agents to fix review findings:
+
+1. **Re-record BASE_SHA**: `BASE_SHA=$(git rev-parse HEAD)` — the main branch has moved since the original build phase. Fix agents MUST branch from the current HEAD, not the original base.
+2. **Prune old worktrees first**: `git worktree prune` to remove any leftover build-phase worktrees.
+3. **Assign shared files to ONE fix agent**: If multiple fixes touch the same file, group them into one agent. Do NOT split fixes for the same file across multiple agents — this was the #1 source of merge coordination pain in the factory-orchestrator retro.
+4. **Prefer fixing on main directly** for small fixes (1-3 lines): spawning a worktree for a one-line fix adds overhead. Only use worktree isolation when the fix is substantial enough to benefit from parallel execution.
+
 ## 5e. Review Suppressions — Do NOT Flag These
 
 1. Redundancy that aids readability (e.g., explicit type annotations TypeScript could infer)

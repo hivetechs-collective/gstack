@@ -41,7 +41,24 @@ Track across features (persists in task metadata). Read `shared/artifact-storage
 - Longest focus session (Deep work)
 - Features shipped this week/month
 
-## 8e. Hook Friction Log
+## 8e. Parallel Execution Health
+
+Track worktree and agent coordination metrics:
+
+| Metric                           | How to Measure                            | Warning Threshold |
+| -------------------------------- | ----------------------------------------- | ----------------- |
+| Stale worktree incidents         | Agents that operated on outdated code     | Any > 0           |
+| Shared file merge conflicts      | Manual merge coordination needed          | Any > 0           |
+| Context compactions during build | `/compact` or auto-compact triggers       | > 1 per run       |
+| Worktrees alive at peak          | Max concurrent worktrees during execution | > 6               |
+| Fix agents that duplicated work  | Agents whose changes were superseded      | Any > 0           |
+| Expired worktree builders        | Builders lost to context/session expiry   | Any > 0           |
+| Sessions to complete             | `--resume` count + 1                      | > 2               |
+| Formatter re-read cycles         | "File modified since read" errors         | Any > 0           |
+
+A stale-worktree incident or shared-file conflict means Step 2's conflict detection was incomplete. Expired worktree builders mean the feature was too large for worktree strategy — should have used "lead implements directly" per Step 3. Formatter re-reads mean the pre-edit format sync was skipped.
+
+## 8f. Hook Friction Log
 
 Track PostToolUse hook interactions that caused workflow friction:
 

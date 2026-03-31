@@ -22,6 +22,25 @@ Tasks are created **unassigned**. Use TaskUpdate(addBlockedBy) for dependency ch
 
 Decompose by **feature** (not by file) — each task owns all files for its feature area.
 
+## Shared File Conflict Detection (MANDATORY)
+
+After task breakdown, run a file-touch analysis before proceeding to execution:
+
+1. **List files each task will modify** — include in task description as `files_touched: [...]`
+2. **Detect overlaps** — any file appearing in 2+ tasks is a **shared file**
+3. **Resolve overlaps** using one of these strategies:
+
+| Overlap Type                                                 | Strategy                                                                                                                                                              | Example                                                                       |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| Barrel/entrypoint file (`index.ts`, `mod.rs`, `__init__.py`) | Designate ONE task as the "barrel owner" — only that task edits the barrel. Other tasks add their exports to task description; barrel owner consolidates all exports. | 3 tasks add services → T1 owns `index.ts`, T2/T3 note "T1 will add my export" |
+| Shared config/types file                                     | Consolidate into a single task or assign exclusive ownership                                                                                                          | Two tasks need new types → create T0 "shared types" task, block T1/T2 on T0   |
+| Same feature file from different angles                      | Merge into one task                                                                                                                                                   | Two tasks both modify `auth.ts` → combine into single auth task               |
+
+**Why this matters**: In the factory-orchestrator retro (2026-03), multiple agents editing `index.ts` required manual merge coordination and one agent operated on a stale version. This step prevents that class of problems entirely.
+
+4. **Record shared file owners** in task metadata: `shared_file_owner: true` for the owning task
+5. **Add dependency edges** — tasks that need the barrel owner's changes should `addBlockedBy` the owner task, or be scheduled to merge after it
+
 ## Task Metadata Fields
 
 | Field          | Required | Values                  | Purpose                                   |

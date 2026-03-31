@@ -88,6 +88,52 @@ if [ "$ACTIONS_NEEDED" -eq 0 ]; then
     echo "   ✅ No immediate actions needed"
 fi
 
+# === Surface High-Confidence Instincts ===
+# After surfacing traditional learnings, show instincts with confidence >= 0.6
+INSTINCT_MANAGER="$(dirname "$0")/instinct-manager.sh"
+
+if [ -x "$INSTINCT_MANAGER" ]; then
+    # Collect high-confidence instincts across all domains
+    INSTINCT_OUTPUT=""
+    INSTINCT_COUNT=0
+
+    for domain in code-style testing git workflow security; do
+        # Get instincts for this domain, filtered by confidence >= 0.5 via surface
+        DOMAIN_INSTINCTS=$("$INSTINCT_MANAGER" surface "$domain" 2>/dev/null || echo "")
+
+        if [ -n "$DOMAIN_INSTINCTS" ]; then
+            # Filter to only >= 0.6 confidence (surface returns >= 0.5)
+            while IFS= read -r line; do
+                # Extract confidence from [instinct:X.Y] format
+                conf=$(echo "$line" | sed -n 's/\[instinct:\([0-9.]*\)\].*/\1/p')
+                if [ -n "$conf" ]; then
+                    # Check if >= 0.6
+                    local_meets=0
+                    if command -v bc &> /dev/null; then
+                        local_meets=$(echo "$conf >= 0.6" | bc)
+                    else
+                        local_tenths=$(echo "$conf" | sed 's/0\.//')
+                        if [ "$local_tenths" -ge 6 ] 2>/dev/null; then
+                            local_meets=1
+                        fi
+                    fi
+
+                    if [ "$local_meets" = "1" ] && [ "$INSTINCT_COUNT" -lt 5 ]; then
+                        INSTINCT_OUTPUT="${INSTINCT_OUTPUT}   ${line}\n"
+                        INSTINCT_COUNT=$((INSTINCT_COUNT + 1))
+                    fi
+                fi
+            done <<< "$DOMAIN_INSTINCTS"
+        fi
+    done
+
+    if [ "$INSTINCT_COUNT" -gt 0 ]; then
+        echo ""
+        echo "🧠 Active Instincts ($INSTINCT_COUNT high-confidence):"
+        printf "$INSTINCT_OUTPUT"
+    fi
+fi
+
 echo ""
 
 exit 0

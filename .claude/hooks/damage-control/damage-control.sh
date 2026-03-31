@@ -83,6 +83,31 @@ get_command() {
 check_bash_command() {
     local cmd="$1"
 
+    # Safe targets for rm -rf — build caches and generated artifacts
+    # These are always safe to delete and should never be blocked
+    local safe_rm_targets=(
+        '\.next'
+        'node_modules'
+        'dist'
+        'target'
+        'build'
+        '__pycache__'
+        '\.turbo'
+        '\.parcel-cache'
+        '\.cache'
+        '\.tsbuildinfo'
+    )
+
+    # If this is an rm -rf command, check if it targets a safe directory
+    if echo "$cmd" | grep -qE 'rm\s+(-[^\s]*)?-[rf]'; then
+        for safe in "${safe_rm_targets[@]}"; do
+            if echo "$cmd" | grep -qE "rm\s+(-[^\s]*)?-[rf]+\s+.*${safe}"; then
+                # Safe build cache cleanup — allow without blocking
+                return 0
+            fi
+        done
+    fi
+
     # Dangerous patterns that should be blocked
     local block_patterns=(
         'rm\s+(-[^\s]*)?(-(rf|fr)|[^\s]*rf|[^\s]*fr)'
@@ -116,7 +141,7 @@ check_bash_command() {
     local ask_patterns=(
         'git\s+branch\s+-[dD]'
         'git\s+stash\s+drop'
-        'git\s+push.*origin'
+        'git\s+push.*origin\s+(main|master)\b'
         'gcloud.*delete'
         'az\s+.*\s+delete'
         'docker\s+system\s+prune'

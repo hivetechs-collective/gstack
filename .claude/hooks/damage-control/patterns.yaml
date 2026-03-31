@@ -7,8 +7,11 @@
 # =============================================================================
 bashPatterns:
   # --- FILE DESTRUCTION ---
+  # NOTE: rm -rf targeting build caches (.next, node_modules, dist, target, build,
+  # __pycache__, .turbo, .parcel-cache, .cache, .tsbuildinfo) is always ALLOWED.
+  # The safe-target allowlist in damage-control.sh short-circuits before this pattern.
   - pattern: "rm\\s+(-[^\\s]*)?-[rf]"
-    description: "rm with recursive or force flags"
+    description: "rm with recursive or force flags (except build caches)"
     action: block
 
   - pattern: "rmdir\\s+--ignore-fail-on-non-empty"
@@ -54,8 +57,8 @@ bashPatterns:
     description: "drop a git stash"
     action: ask
 
-  - pattern: "git\\s+push.*origin"
-    description: "push to remote origin"
+  - pattern: "git\\s+push.*origin\\s+(main|master)\\b"
+    description: "push directly to main/master branch"
     action: ask
 
   # --- CLOUD INFRASTRUCTURE ---
@@ -252,3 +255,63 @@ noDeletePaths:
   # Claude Code
   - ".claude/"
   - "CLAUDE.md"
+
+# =============================================================================
+# SECRET DETECTION - Block/warn when secrets appear in content
+# Applied to tool_input content during PreToolUse
+# =============================================================================
+secretDetection:
+  - name: "AWS Access Key"
+    pattern: "AKIA[A-Z0-9]{16}"
+    action: block
+    message: "Potential AWS access key detected in content"
+
+  - name: "GitHub Token"
+    pattern: "gh[pousr]_[A-Za-z0-9_]{36,}"
+    action: block
+    message: "Potential GitHub token detected in content"
+
+  - name: "OpenAI API Key"
+    pattern: "sk-[a-zA-Z0-9]{20,}"
+    action: block
+    message: "Potential OpenAI API key detected in content"
+
+  - name: "JWT Token"
+    pattern: "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}"
+    action: warn
+    message: "Potential JWT detected in content"
+
+  - name: "Private Key"
+    pattern: "-----BEGIN.*PRIVATE KEY-----"
+    action: block
+    message: "Private key content detected"
+
+  - name: "Generic Secret"
+    pattern: "(secret|password|api_key)\\s*[:=]\\s*[\"'][^\"']{8,}"
+    action: warn
+    message: "Potential hardcoded secret detected"
+
+# =============================================================================
+# SENSITIVE PATHS - Additional path-based restrictions
+# Complements zeroAccessPaths with content-aware warnings
+# =============================================================================
+sensitivePaths:
+  - pattern: "\\.env($|\\.)"
+    action: block
+    message: "Modifying .env files is restricted"
+
+  - pattern: "credentials"
+    action: warn
+    message: "Modifying credential files requires caution"
+
+  - pattern: "\\.pem$"
+    action: block
+    message: "Modifying PEM certificate files is restricted"
+
+  - pattern: "\\.key$"
+    action: block
+    message: "Modifying key files is restricted"
+
+  - pattern: "id_rsa"
+    action: block
+    message: "Modifying SSH key files is restricted"

@@ -32,6 +32,17 @@ Each fix must include a regression test with attribution comment:
 - Every commit must compile and pass tests independently (bisectable)
 - Order: infrastructure first, then models, then controllers, then tests
 
+## Formatter Sync Discipline
+
+If the project uses an auto-formatter (Biome, Prettier, ESLint --fix), run it on target files **before** your first Edit to prevent "file has been modified since read" errors. Auto-formatters rewrite files after Write/Edit, causing the next Edit's `old_string` to mismatch.
+
+```bash
+# Run once at start of task, before any edits
+pnpm format:fix  # or: npx prettier --write <files>, npx biome check --write <files>
+```
+
+After formatting, re-Read any files you plan to edit. This ensures your `old_string` matches the on-disk content.
+
 ## Edit Atomicity Discipline
 
 The PostToolUse TypeScript hook allows TS6133 (unused imports/variables) as warnings
@@ -60,6 +71,17 @@ duplicate interfaces is the #1 cause of post-merge type conflicts.
 | Import types from their canonical location, not from re-exports | Prevents circular dependency issues                      |
 
 **WTF impact**: Creating a duplicate/simplified interface that conflicts with an existing canonical type adds **+15%** to WTF-likelihood (same as a revert — it causes equivalent rework).
+
+## Shared File Discipline
+
+Builders MUST respect the shared file ownership established in Step 2:
+
+- **Check your task's `files_touched` list** — only modify files assigned to your task
+- **Never edit a file owned by another task** unless your task explicitly depends on it and the owner has completed
+- **Barrel/entrypoint files** (`index.ts`, `mod.rs`, `__init__.py`): only the designated barrel owner edits these. If you need an export added, note it in your task completion metadata and let the barrel owner handle it
+- **If you discover you need to modify an unplanned file**: STOP, report to lead via task metadata, and wait for reassignment rather than editing a file that may be owned by another builder
+
+**WTF impact**: Editing a file owned by another builder adds **+25%** to WTF-likelihood (worse than a revert — it creates merge conflicts that cascade).
 
 ## Browser QA Self-Regulation (when browse binary is available)
 

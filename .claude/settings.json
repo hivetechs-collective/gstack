@@ -127,6 +127,14 @@
           },
           {
             "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-commit-quality.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/auto-tmux-dev.sh"
+          },
+          {
+            "type": "command",
             "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
           }
         ]
@@ -144,6 +152,14 @@
           },
           {
             "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/config-protection.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/suggest-compact.sh"
+          },
+          {
+            "type": "command",
             "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
           }
         ]
@@ -158,6 +174,14 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-protected-paths.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/config-protection.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/suggest-compact.sh"
           },
           {
             "type": "command",
@@ -210,6 +234,10 @@
           },
           {
             "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/governance-audit.sh"
+          },
+          {
+            "type": "command",
             "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
           }
         ]
@@ -244,6 +272,10 @@
           },
           {
             "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/governance-audit.sh"
+          },
+          {
+            "type": "command",
             "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
           }
         ]
@@ -258,6 +290,16 @@
           {
             "type": "command",
             "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/mcp-health-check.sh"
           }
         ]
       }
@@ -310,6 +352,14 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-summary.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/cost-tracker.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/desktop-notify.sh"
           },
           {
             "type": "command",

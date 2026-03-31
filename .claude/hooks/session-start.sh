@@ -12,10 +12,27 @@ HOOKS_DIR="$PROJECT_ROOT/.claude/hooks"
 UTILS_DIR="$PROJECT_ROOT/.claude/hooks/utils"
 
 # =================================================================
-# CMUX: Auto-rename workspace tab to repo name (like tmux)
+# CMUX: Auto-rename workspace tab to repo name (like tmux rename-window)
+#
+# CMUX is the Claude-pattern workspace manager. When a Claude Code
+# session starts inside a CMUX-managed environment, $CMUX_SOCKET is
+# set by the cmux daemon — its presence confirms we are inside a
+# managed workspace pane.
+#
+# This block makes each Claude workspace tab display the repository
+# name, giving the same "named tab" UX you get with tmux rename-window.
+#
+# Graceful-failure design:
+#   - `command -v cmux` guards against machines that don't have cmux installed
+#   - All git/cmux calls redirect stderr to /dev/null so hook never blocks
+#     the session if the workspace manager or git is unavailable
 # =================================================================
 if [ -n "$CMUX_SOCKET" ] && command -v cmux &>/dev/null; then
+    # Resolve the top-level git directory name (e.g. "claude-pattern")
+    # Works from any subdirectory or worktree inside the repo
     REPO_NAME=$(basename "$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null)
+
+    # Only rename if we successfully resolved a repo name
     if [ -n "$REPO_NAME" ]; then
         cmux rename-workspace "$REPO_NAME" 2>/dev/null
     fi

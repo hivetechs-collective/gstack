@@ -2,13 +2,14 @@
 
 ## Step 3: Choose Execution Strategy
 
-| Scenario              | Strategy                                       | Mode   | Plan Approval? |
-| --------------------- | ---------------------------------------------- | ------ | -------------- |
-| 3+ tasks, new feature | Parallel builders, self-claiming pool          | `auto` | Optional       |
-| 1-2 simple tasks      | Single builder, direct assignment              | `auto` | No             |
-| Security-critical     | Parallel builders + validator for final review | `plan` | Yes            |
-| Bug fix               | Single builder, direct                         | `auto` | No             |
-| One-way door tasks    | Any strategy + extra review in Step 5          | `auto` | Recommended    |
+| Scenario                                  | Strategy                                       | Mode   | Plan Approval? |
+| ----------------------------------------- | ---------------------------------------------- | ------ | -------------- |
+| 3+ tasks, new feature                     | Parallel builders, self-claiming pool          | `auto` | Optional       |
+| 1-2 simple tasks                          | Single builder, direct assignment              | `auto` | No             |
+| Security-critical                         | Parallel builders + validator for final review | `plan` | Yes            |
+| Bug fix                                   | Single builder, direct                         | `auto` | No             |
+| One-way door tasks                        | Any strategy + extra review in Step 5          | `auto` | Recommended    |
+| Large feature (>5 tasks or multi-session) | Lead implements directly, no worktrees         | `auto` | No             |
 
 **Default mode is `auto`** — builders execute without permission prompts for uninterrupted implementation. Use `mode: "plan"` only for security-critical work where each builder must submit an implementation plan via ExitPlanMode before coding starts.
 
@@ -19,6 +20,12 @@ Use `/fork` before committing to a strategy if unsure about the decomposition.
 ### Pre-flight Checks
 
 - Require clean working tree (`git status` must show no uncommitted changes). This ensures builder changes can be cleanly attributed. If dirty, ask user to commit or stash first.
+- **Prune stale worktrees**: Run `git worktree list` and remove any orphaned worktrees from previous runs before spawning new agents. Stale worktrees cause agents to operate on old code.
+  ```bash
+  git worktree list                    # identify orphans
+  git worktree remove <path> --force   # remove stale ones
+  git worktree prune                   # clean up references
+  ```
 - Sync local base branch to remote:
   ```bash
   git fetch origin <base> --quiet
@@ -26,6 +33,7 @@ Use `/fork` before committing to a strategy if unsure about the decomposition.
   ```
   If fast-forward fails (local has diverged), stop and ask the user to resolve before spawning builders. This prevents the stale-base bug where worktrees fork from an old commit.
 - Record the base commit SHA: `BASE_SHA=$(git rev-parse HEAD)`. All worktrees must branch from this exact commit. Log it in the team context so post-merge can verify ancestry.
+- **Verify shared file analysis**: Confirm Step 2's shared file conflict detection was completed. If any task lacks `files_touched` metadata, fill it in now before spawning builders.
 
 ### Edit Atomicity & PostToolUse Hook Behavior
 
@@ -85,11 +93,57 @@ This means builders can safely use multiple Edit calls for multi-location change
 10. When all tasks complete: SendMessage(shutdown_request) to all builders
 11. When all builders complete, merge worktree branches to main in bisectable order:
     - Merge in dependency order (infrastructure first, then models, then controllers, then tests)
+    - **Shared file owners merge first** — tasks with `shared_file_owner: true` go before tasks that depend on them
     - After EACH merge, run `npx tsc --noEmit` (or project equivalent) to catch type conflicts immediately
     - If type errors appear, fix them BEFORE merging the next branch — this prevents error cascading
     - Git handles most merges automatically; lead resolves any git merge conflicts
-12. Verify the final merged state: run full test suite + type check before proceeding to Step 5
-13. TeamDelete to clean up
+12. **Clean up worktrees immediately after merge**: `git worktree remove <path>` for each merged branch. Do NOT leave worktrees around for later — they consume disk and cause stale-base bugs if re-used.
+13. Verify the final merged state: run full test suite + type check before proceeding to Step 5
+14. TeamDelete to clean up
+
+### Worktree Lifecycle Rules
+
+| Phase                   | Action                                           | Why                                                             |
+| ----------------------- | ------------------------------------------------ | --------------------------------------------------------------- |
+| Pre-flight              | Prune all stale worktrees                        | Prevents agents from inheriting old code                        |
+| Builder spawn           | Each builder gets fresh worktree from `BASE_SHA` | Ensures consistent starting point                               |
+| After each merge        | Remove merged worktree immediately               | Prevents accumulation and stale-base bugs                       |
+| Before fix-first agents | Re-record `BASE_SHA=$(git rev-parse HEAD)`       | Fix agents must branch from post-merge state, not original base |
+| End of pipeline         | `git worktree prune` to catch any stragglers     | Clean slate for next run                                        |
+
+### Context Budget Awareness
+
+Large parallel builds consume lead context fast. Mitigate:
+
+- **Use line ranges** when reading builder outputs — don't read entire files to check status
+- **Delegate status checks** to a haiku `@build-runner` agent instead of reading worktree diffs yourself
+- **Clean up worktrees after merge** — fewer branches = less state to track
+- **If compaction approaches (>60%)**: finish merging current batch, prune worktrees, then `/compact` before spawning new agents
+- **Limit concurrent builders**: 4-6 is the sweet spot. More than 6 risks context exhaustion from tracking them all
+
+### Multi-Session Feature Detection
+
+If Step 2 produced >5 tasks or the total estimated AI effort exceeds 45 minutes, the feature will likely span multiple context windows. Worktree builders expire when the lead's context compacts or the session ends — spawning them for multi-session work wastes allocation overhead.
+
+**For multi-session features, use the "lead implements directly" strategy:**
+
+1. Lead works on main (no worktrees, no builder agents)
+2. Commit after each task completes (preserves progress across sessions)
+3. Use `--resume` to pick up where the previous session left off
+4. TaskList persists across sessions — task metadata survives compaction
+
+This avoids the worktree expiration problem entirely. Reserve parallel worktree builders for features that fit within a single session.
+
+### Pre-Edit Formatter Sync
+
+If the project uses an auto-formatter (Biome, Prettier, ESLint --fix), run it **before** editing files to prevent "file has been modified since read" errors:
+
+```bash
+# Before editing, ensure files are format-stable
+pnpm format:fix  # or: npx prettier --write src/, npx biome check --write src/
+```
+
+This prevents the cycle: Read file -> Edit file -> formatter rewrites file -> next Edit fails because content changed. Run the formatter once up front so all subsequent reads match the on-disk state.
 
 ## Resume Incomplete Work
 

@@ -82,4 +82,48 @@ EOF
     fi
 fi
 
+# === Instinct Extraction ===
+# After capturing session summary, extract instincts from commit patterns
+INSTINCT_MANAGER="$(dirname "$0")/instinct-manager.sh"
+PROJECT_NAME=$(basename "$PROJECT_ROOT")
+
+if [ -x "$INSTINCT_MANAGER" ]; then
+    # For each commit type detected, create or strengthen a project-scoped instinct
+    if [ "$FEAT_COUNT" -gt 0 ]; then
+        TRIGGER="when adding new features in $LEARNING_TYPE context"
+        EXISTING_ID=$("$INSTINCT_MANAGER" find-by-trigger "$TRIGGER" 2>/dev/null || echo "")
+        if [ -n "$EXISTING_ID" ]; then
+            "$INSTINCT_MANAGER" strengthen "$EXISTING_ID" 2>/dev/null || true
+        else
+            "$INSTINCT_MANAGER" create "$TRIGGER" \
+                "Follow established feature patterns: commit with feat: prefix, include tests" \
+                "0.5" "workflow" "project" "$PROJECT_NAME" 2>/dev/null || true
+        fi
+    fi
+
+    if [ "$FIX_COUNT" -gt 0 ]; then
+        TRIGGER="when fixing bugs in $LEARNING_TYPE context"
+        EXISTING_ID=$("$INSTINCT_MANAGER" find-by-trigger "$TRIGGER" 2>/dev/null || echo "")
+        if [ -n "$EXISTING_ID" ]; then
+            "$INSTINCT_MANAGER" strengthen "$EXISTING_ID" 2>/dev/null || true
+        else
+            "$INSTINCT_MANAGER" create "$TRIGGER" \
+                "Follow fix workflow: diagnose root cause, commit with fix: prefix, verify resolution" \
+                "0.5" "workflow" "project" "$PROJECT_NAME" 2>/dev/null || true
+        fi
+    fi
+
+    if [ "$REFACTOR_COUNT" -gt 0 ]; then
+        TRIGGER="when refactoring in $LEARNING_TYPE context"
+        EXISTING_ID=$("$INSTINCT_MANAGER" find-by-trigger "$TRIGGER" 2>/dev/null || echo "")
+        if [ -n "$EXISTING_ID" ]; then
+            "$INSTINCT_MANAGER" strengthen "$EXISTING_ID" 2>/dev/null || true
+        else
+            "$INSTINCT_MANAGER" create "$TRIGGER" \
+                "Follow refactor discipline: commit with refactor: prefix, no behavior changes" \
+                "0.5" "code-style" "project" "$PROJECT_NAME" 2>/dev/null || true
+        fi
+    fi
+fi
+
 exit 0

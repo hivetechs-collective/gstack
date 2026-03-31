@@ -35,6 +35,21 @@ If the feature description implies:
 - Introducing >2 new abstractions (classes, services, modules) -> challenge necessity
 - Both -> strongly recommend scope reduction or phased delivery
 
+### Context Budget Gate (MANDATORY)
+
+Estimate the feature's context cost before proceeding:
+
+| Signal                                        | Threshold  | Action                                                 |
+| --------------------------------------------- | ---------- | ------------------------------------------------------ |
+| Files to change                               | >12        | **MUST split** into separate /plan-w-team runs         |
+| New files to create                           | >4         | **MUST split** unless they follow an identical pattern |
+| Estimated tasks                               | >5         | **MUST split** — will exhaust context in one session   |
+| Repetitive implementations (e.g., 5 monitors) | >3 similar | Split into batches of 2-3 per run                      |
+
+**Why**: The multi-source monitor retro (2026-03) proved that 5 similar implementations + full doc rewrite = 3 compactions and 3 sessions. Splitting "add monitors A+B" then "add monitors C+D+E" would have completed in 2 clean single-session runs instead of 1 painful multi-session run.
+
+When splitting, each phase should be a **self-contained /plan-w-team run** that ships independently — not just a task breakdown within one run. Each phase gets its own spec, its own review, its own ship step.
+
 ## 0d. One-Way vs Two-Way Door Labeling
 
 Tag each major design decision in the feature as:
