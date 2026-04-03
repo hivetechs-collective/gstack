@@ -60,6 +60,11 @@ generate_features_section() {
     fi
 }
 
+# Detect active plan-w-team artifacts
+SPEC_FILES=$(find "$STATE_DIR" -name "spec-*.md" -o -name "plan-*.md" 2>/dev/null | head -5)
+ACTIVE_WORKTREES=$(git -C "$PROJECT_ROOT" worktree list 2>/dev/null | grep -v "(bare)" | grep -v "$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null)" || true)
+WORKTREE_COUNT=$(echo "$ACTIVE_WORKTREES" | grep -c . 2>/dev/null || echo "0")
+
 # Write session state
 cat > "$STATE_FILE" << EOF
 # $PROJECT_NAME Session State
@@ -84,6 +89,36 @@ cat > "$STATE_FILE" << EOF
 $(generate_features_section)
 ---
 
+## Pipeline Recovery
+
+**CRITICAL**: Run \`TaskList\` immediately after compaction to recover task state.
+
+EOF
+
+# Append pipeline artifacts dynamically (outside the heredoc to use shell variables)
+if [ -n "$SPEC_FILES" ]; then
+    echo "### Active Spec Files" >> "$STATE_FILE"
+    echo "" >> "$STATE_FILE"
+    for f in $SPEC_FILES; do
+        echo "- \`$(basename "$f")\` — $(head -1 "$f" | sed 's/^#* *//')" >> "$STATE_FILE"
+    done
+    echo "" >> "$STATE_FILE"
+fi
+
+if [ "$WORKTREE_COUNT" -gt 0 ]; then
+    echo "### Active Worktrees ($WORKTREE_COUNT)" >> "$STATE_FILE"
+    echo "" >> "$STATE_FILE"
+    echo '```' >> "$STATE_FILE"
+    echo "$ACTIVE_WORKTREES" >> "$STATE_FILE"
+    echo '```' >> "$STATE_FILE"
+    echo "" >> "$STATE_FILE"
+    echo "⚠️ Worktrees indicate an active parallel build. Check TaskList for builder status." >> "$STATE_FILE"
+    echo "" >> "$STATE_FILE"
+fi
+
+cat >> "$STATE_FILE" << 'EOF'
+---
+
 ## Build Everything Philosophy
 
 - **No phase restrictions**: ALL features are actionable NOW
@@ -103,13 +138,22 @@ All hooks remain active after compaction:
 
 ---
 
+## Task Pipeline State
+
+If running a /plan-w-team workflow, check these after compaction:
+1. **TaskList** — persistent tasks survive compaction. Run TaskList immediately.
+2. **Spec file** — check .claude/state/ for any spec-*.md or plan-*.md artifacts
+3. **Worktrees** — run \`git worktree list\` to find any active builder worktrees
+
 ## Post-Compaction Instructions
 
 After compaction, the agent should:
 1. Read this file (.claude/state/session-state.md)
-2. Check .claude/project.json for feature status
-3. Check git status for any uncommitted work
-4. Continue with the task at hand
+2. **Run TaskList** to recover persistent task state (tasks survive compaction)
+3. Check .claude/project.json for feature status
+4. Check git status for any uncommitted work
+5. If mid-pipeline: identify which /plan-w-team step was active from task metadata
+6. Continue with the task at hand
 
 ---
 

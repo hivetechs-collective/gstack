@@ -45,17 +45,45 @@ After formatting, re-Read any files you plan to edit. This ensures your `old_str
 
 ## Edit Atomicity Discipline
 
-The PostToolUse TypeScript hook allows TS6133 (unused imports/variables) as warnings
-but blocks on all other type errors. This means:
+Both PostToolUse validators (TypeScript and ESLint) tolerate transient unused-variable
+errors during multi-edit workflows:
+
+| Validator  | Transient (allowed)                                                       | Real (blocks)         |
+| ---------- | ------------------------------------------------------------------------- | --------------------- |
+| TypeScript | TS6133 (unused imports/variables)                                         | All other type errors |
+| ESLint     | `no-unused-vars`, `@typescript-eslint/no-unused-vars`, `unused-imports/*` | All other lint errors |
+
+This means:
 
 - **Multi-edit is safe**: You can add an import in one Edit call and use it in a second
-  Edit call. The intermediate TS6133 warning will not block you.
+  Edit call. The intermediate unused-variable warning will not block you.
 - **Prefer usage-first ordering**: When possible, add the usage site first, then the
   import/declaration. This avoids even the warning.
 - **Never combine unrelated changes** into a single Edit just to avoid warnings. Keep
-  edits logically coherent — the hook is designed to tolerate intermediate states.
-- **Real type errors still block immediately**: If you see a non-TS6133 error after an
-  edit, fix it before continuing.
+  edits logically coherent — the hooks are designed to tolerate intermediate states.
+- **Real errors still block immediately**: Non-transient type errors or lint errors
+  must be fixed before continuing.
+- **For large coordinated refactors** (6+ edits to one file): if every intermediate
+  state triggers real (non-transient) errors, use Write to apply the complete file
+  atomically instead of sequential Edits.
+
+## File Operation Discipline
+
+Builders must use the correct tool for each file operation to avoid accidental rewrites:
+
+| files_touched annotation | File exists? | Tool          | Action                                        |
+| ------------------------ | ------------ | ------------- | --------------------------------------------- |
+| `(create)`               | No           | Write         | Create new file                               |
+| `(create)`               | Yes          | Edit          | File already exists — modify, don't overwrite |
+| `(modify)`               | Yes          | Edit          | Read first, then targeted edits               |
+| `(modify)`               | No           | Write         | File was deleted — recreate                   |
+| No annotation            | Unknown      | Read → decide | Check if file exists, then Edit or Write      |
+
+**Rule**: NEVER use Write on an existing file unless you intend to replace its entire content. For adding/changing/removing specific sections, always use Edit.
+
+**Why**: A builder that uses Write on an existing file destroys all content not included in the Write call. This happened when a builder rewrote `campaign-topic-loader.ts` from scratch instead of modifying the existing implementation, losing existing logic and requiring post-merge fixes.
+
+**WTF impact**: Using Write to rewrite an existing file that should have been edited adds **+10%** to WTF-likelihood.
 
 ## Type Preservation Discipline
 

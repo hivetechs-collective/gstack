@@ -37,16 +37,18 @@ Use `/fork` before committing to a strategy if unsure about the decomposition.
 
 ### Edit Atomicity & PostToolUse Hook Behavior
 
-The TypeScript PostToolUse hook runs `tsc --noEmit` after every Edit/Write call. Builders should understand the error triage:
+Both PostToolUse validators (TypeScript and ESLint) run after every Edit/Write call. They tolerate transient unused-variable errors during multi-edit workflows:
 
-| Error Code | Severity | Hook Behavior             | Builder Action                                                                                                         |
-| ---------- | -------- | ------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| TS6133     | Warning  | **Allowed** — not blocked | None needed. Transient during multi-edit workflows (e.g., adding an import before its usage site). Resolves naturally. |
-| All others | Error    | **Blocked** — must fix    | Fix immediately before continuing.                                                                                     |
+| Validator  | Transient (allowed)                                                       | Blocking (must fix)        |
+| ---------- | ------------------------------------------------------------------------- | -------------------------- |
+| TypeScript | TS6133 (unused imports/variables)                                         | All other type errors      |
+| ESLint     | `no-unused-vars`, `@typescript-eslint/no-unused-vars`, `unused-imports/*` | All other lint rule errors |
 
-This means builders can safely use multiple Edit calls for multi-location changes (e.g., add import → edit usage site) without being blocked by intermediate unused-import warnings. However, real type errors (wrong types, missing properties, bad signatures) still block immediately.
+This means builders can safely use multiple Edit calls for multi-location changes (e.g., add import → edit usage site) without being blocked by intermediate unused-variable warnings. Real type errors and real lint errors still block immediately.
 
-**Recommended edit ordering**: When making changes that span multiple locations in a file, prefer adding the usage site first, then the import/declaration — this avoids even the TS6133 warning. But either order works.
+**Recommended edit ordering**: When making changes that span multiple locations in a file, prefer adding the usage site first, then the import/declaration — this avoids even the transient warning. But either order works.
+
+**Large coordinated refactors**: If a fix requires 6+ edits to one file where every intermediate state triggers real (non-transient) errors, use Write to apply the complete file atomically instead of sequential Edits. This avoids the hook-per-edit friction entirely.
 
 ### PreToolUse Blocking Hooks
 
@@ -85,6 +87,17 @@ Several PreToolUse hooks will block operations. Builders must understand these t
        or Omit<T, 'field3'> — do NOT create a new interface with fewer fields.
      - When your task requires extending a type, use `extends` or intersection (`&`)
        with the existing type rather than redefining it.
+     - If your task description includes `creates_types`, create those types EXACTLY as
+       specified. Another builder may create identical types — this is intentional for
+       merge deduplication.
+
+     FILE OPERATION DISCIPLINE (critical — prevents accidental rewrites):
+     - Check your task's `files_touched` annotations: `(create)` = new file, `(modify)` = existing
+     - For `(modify)` files: ALWAYS Read the file first, then use Edit to make targeted
+       changes. NEVER use Write to replace an existing file from scratch.
+     - For `(create)` files: use Write. Verify the path doesn't already exist first.
+     - If `files_touched` has no annotations, default to: Read first. If file exists, Edit.
+       If file doesn't exist, Write.
 
      TASK CLAIMING:
      - Use TaskList to find unassigned, unblocked tasks
@@ -134,6 +147,16 @@ Large parallel builds consume lead context fast. Mitigate:
 - **Clean up worktrees after merge** — fewer branches = less state to track
 - **If compaction approaches (>60%)**: finish merging current batch, prune worktrees, then `/compact` before spawning new agents
 - **Limit concurrent builders**: 4-6 is the sweet spot. More than 6 risks context exhaustion from tracking them all
+
+### Compaction Resilience
+
+Context compaction can hit during any phase (build, review, merge). To survive it:
+
+1. **Use Task tools, not TodoWrite**: Tasks persist across compaction. TodoWrite items do not.
+2. **Tag tasks with pipeline step**: Include `pipeline_step: "build"` or `pipeline_step: "review"` in task metadata so post-compaction recovery knows where to resume.
+3. **Pre-compact hook saves state**: The hook now detects active spec files, worktrees, and writes recovery instructions to `.claude/state/session-state.md`.
+4. **Post-compaction**: Run `TaskList` immediately. The task metadata tells you which step was active, which tasks are done, and which need work.
+5. **If compaction is imminent (>60%)**: Finish the current task, commit, update task metadata, then `/compact` cleanly. Don't start a new task at 70% context.
 
 ### Multi-Session Feature Detection
 

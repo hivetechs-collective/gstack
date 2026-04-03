@@ -41,6 +41,28 @@ After task breakdown, run a file-touch analysis before proceeding to execution:
 4. **Record shared file owners** in task metadata: `shared_file_owner: true` for the owning task
 5. **Add dependency edges** — tasks that need the barrel owner's changes should `addBlockedBy` the owner task, or be scheduled to merge after it
 
+### New Type Dependency Detection (MANDATORY)
+
+After file-touch analysis, check for **new types/interfaces** that one task creates and another task needs. This is the #1 source of post-merge type duplication when using worktree isolation (since worktrees fork from the same base commit and can't see each other's new types).
+
+1. **For each task, identify new types it will create** — add to task description as `creates_types: [{name, location}]`
+2. **Cross-reference**: If task T4 needs a type that T1 will create, this is a **new-type dependency**
+3. **Resolve** using one of:
+
+| Pattern          | Strategy                                                                                                                                                                       | When to use                                                             |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Extract T0       | Create a "shared types" task that all dependent tasks block on. T0 creates and commits the types before parallel builders fork.                                                | Multiple tasks depend on the same new types                             |
+| Inline in prompt | Include the exact type definition in dependent builder prompts with: "Create this type at `{location}` — it will be identical to what T1 creates, and merge will deduplicate." | Only 1-2 dependent tasks, types are small and stable                    |
+| Sequentialize    | Make T4 `addBlockedBy` T1                                                                                                                                                      | Type definition is complex or likely to evolve during T1 implementation |
+
+**Default**: Extract T0. It adds one serial step but eliminates an entire class of post-merge fixes.
+
+4. **Annotate in files_touched** — distinguish create vs modify:
+   ```
+   files_touched: ["src/types/critic.ts (create)", "src/services/review.ts (modify)"]
+   ```
+   Builders use this to know: `(create)` → Write new file, `(modify)` → Read first, then Edit
+
 ## Task Metadata Fields
 
 | Field          | Required | Values                  | Purpose                                   |
