@@ -60,6 +60,14 @@ fi
 echo "---" >> "$SESSION_LOG"
 
 # =================================================================
+# CLEANUP: Close any orphaned agent tmux panes
+# =================================================================
+PANE_HOOK="$PROJECT_ROOT/.claude/hooks/agent-tmux-panes.sh"
+if [ -x "$PANE_HOOK" ] && [ -n "$TMUX" ]; then
+    echo "" | "$PANE_HOOK" cleanup 2>/dev/null || true
+fi
+
+# =================================================================
 # COMPOUND: Capture learnings from this session
 # =================================================================
 COMPOUND_DIR="$PROJECT_ROOT/.claude/hooks/compound"

@@ -64,6 +64,18 @@ Several PreToolUse hooks will block operations. Builders must understand these t
 
 **Hook profiles**: All hooks respect `CLAUDE_HOOK_PROFILE` (default: `standard`). Set to `minimal` to disable most hooks, or `strict` for all hooks including governance audit. Individual hooks can be disabled via `CLAUDE_DISABLED_HOOKS=hook_id1,hook_id2`.
 
+### Tmux Visual Orchestration
+
+When running inside tmux, builders get colored status panes automatically via the `agent-tmux-panes` hook:
+
+- **Layout**: main-vertical — orchestrator keeps 60% left, builder panes stack vertically on the right
+- **Colors**: Each builder gets a unique border color from an 8-color palette (RED, GRN, BLU, ORG, PRP, YLW, CYN, MAG)
+- **Live timer**: Each pane shows agent name, task description, and a running clock
+- **Completion**: When a builder finishes, its pane flashes "✓ COMPLETED" then closes after 5 seconds
+- **Cleanup**: Stale panes from crashed sessions are auto-pruned on next run; `session-end` hook cleans up all panes
+
+Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-panes`.
+
 ### Execution
 
 1. TeamCreate with descriptive team name
