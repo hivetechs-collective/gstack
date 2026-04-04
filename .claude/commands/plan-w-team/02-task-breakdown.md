@@ -22,6 +22,28 @@ Tasks are created **unassigned**. Use TaskUpdate(addBlockedBy) for dependency ch
 
 Decompose by **feature** (not by file) — each task owns all files for its feature area.
 
+## Specialist Agent Assignment (MANDATORY)
+
+Before proceeding to execution, assign each task to the best specialist agent:
+
+1. **Read the agent roster**: `Read .claude/commands/plan-w-team/shared/agent-roster.md` — this lists all 85+ specialist agents organized by domain with their `subagent_type` values
+2. **Assign `agent_type`** in each task's metadata matching the roster:
+
+   ```
+   TaskCreate({
+     subject: "Implement WebSocket message handler",
+     metadata: {
+       ...
+       agent_type: "nodejs-specialist"   // ← from agent-roster.md
+     }
+   })
+   ```
+
+3. **Use the most specific match** — prefer `fastapi-specialist` over `builder` for a Python API task, `react-typescript-specialist` over `nodejs-specialist` for React UI work
+4. **Fall back to `builder`** only when no specialist fits the task domain
+
+**Why this matters**: Without `agent_type`, builders spawn as generic `general-purpose` agents. Specialists bring domain expertise AND show their assigned name/color in tmux panes for visual tracking.
+
 ## Shared File Conflict Detection (MANDATORY)
 
 After task breakdown, run a file-touch analysis before proceeding to execution:

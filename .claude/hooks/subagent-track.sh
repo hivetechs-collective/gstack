@@ -13,71 +13,51 @@ mkdir -p "$STATE_DIR"
 # Read JSON input from Claude Code
 INPUT=$(cat 2>/dev/null || echo "{}")
 
-# Parse input fields (compatible with both jq and python)
+# Parse input fields from actual SubagentStart/SubagentStop event schema:
+#   SubagentStart: { session_id, agent_id, agent_type, cwd, hook_event_name }
+#   SubagentStop:  { ...start, agent_transcript_path, last_assistant_message, permission_mode }
 if command -v jq &> /dev/null; then
-    EVENT_TYPE=$(echo "$INPUT" | jq -r '.event_type // "unknown"' 2>/dev/null)
-    AGENT_NAME=$(echo "$INPUT" | jq -r '.agent_name // .name // "unknown"' 2>/dev/null)
-    AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // .id // "unknown"' 2>/dev/null)
-    TASK=$(echo "$INPUT" | jq -r '.task // .prompt // ""' 2>/dev/null | head -c 100)
-    MODEL=$(echo "$INPUT" | jq -r '.model // "inherit"' 2>/dev/null)
-    DURATION=$(echo "$INPUT" | jq -r '.duration_ms // ""' 2>/dev/null)
-    EXIT_CODE=$(echo "$INPUT" | jq -r '.exit_code // ""' 2>/dev/null)
+    EVENT_TYPE=$(echo "$INPUT" | jq -r '.hook_event_name // "unknown"' 2>/dev/null)
+    AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // "unknown"' 2>/dev/null)
+    AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // "unknown"' 2>/dev/null)
+    PERM_MODE=$(echo "$INPUT" | jq -r '.permission_mode // ""' 2>/dev/null)
+    LAST_MSG=$(echo "$INPUT" | jq -r '.last_assistant_message // ""' 2>/dev/null | head -c 100)
 else
-    EVENT_TYPE=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('event_type','unknown'))" 2>/dev/null || echo "unknown")
-    AGENT_NAME=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('agent_name',d.get('name','unknown')))" 2>/dev/null || echo "unknown")
-    AGENT_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('agent_id',d.get('id','unknown')))" 2>/dev/null || echo "unknown")
-    TASK=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('task',d.get('prompt',''))[:100])" 2>/dev/null || echo "")
-    MODEL=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('model','inherit'))" 2>/dev/null || echo "inherit")
-    DURATION=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('duration_ms',''))" 2>/dev/null || echo "")
-    EXIT_CODE=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('exit_code',''))" 2>/dev/null || echo "")
+    EVENT_TYPE=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('hook_event_name','unknown'))" 2>/dev/null || echo "unknown")
+    AGENT_ID=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('agent_id','unknown'))" 2>/dev/null || echo "unknown")
+    AGENT_TYPE=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('agent_type','unknown'))" 2>/dev/null || echo "unknown")
+    PERM_MODE=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('permission_mode',''))" 2>/dev/null || echo "")
+    LAST_MSG=$(echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('last_assistant_message','')[:100])" 2>/dev/null || echo "")
 fi
 
 # Get timestamp
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
-# Determine event type from script name if not in input
-SCRIPT_NAME=$(basename "$0")
-if [ "$EVENT_TYPE" = "unknown" ]; then
-    if [[ "$SCRIPT_NAME" == *"start"* ]] || [[ "$1" == "start" ]]; then
-        EVENT_TYPE="START"
-    elif [[ "$SCRIPT_NAME" == *"stop"* ]] || [[ "$1" == "stop" ]]; then
-        EVENT_TYPE="STOP"
-    fi
+# Determine event from hook_event_name or script arg
+if [ "$EVENT_TYPE" = "SubagentStart" ] || [[ "$1" == "start" ]]; then
+    EVENT_TYPE="START"
+elif [ "$EVENT_TYPE" = "SubagentStop" ] || [[ "$1" == "stop" ]]; then
+    EVENT_TYPE="STOP"
 fi
 
 # Log the event
-if [ "$EVENT_TYPE" = "START" ] || [ "$EVENT_TYPE" = "start" ]; then
+if [ "$EVENT_TYPE" = "START" ]; then
     cat >> "$AGENT_LOG" << EOF
 [$TIMESTAMP] SUBAGENT_START
-  Agent: $AGENT_NAME
   ID: $AGENT_ID
-  Model: $MODEL
-  Task: $TASK
+  Type: $AGENT_TYPE
 EOF
-elif [ "$EVENT_TYPE" = "STOP" ] || [ "$EVENT_TYPE" = "stop" ]; then
-    # Format duration if available
-    DURATION_STR=""
-    if [ -n "$DURATION" ] && [ "$DURATION" != "" ] && [ "$DURATION" != "null" ]; then
-        DURATION_SEC=$((DURATION / 1000))
-        DURATION_STR=" (${DURATION_SEC}s)"
-    fi
-
-    # Format exit status
-    STATUS="completed"
-    if [ -n "$EXIT_CODE" ] && [ "$EXIT_CODE" != "0" ] && [ "$EXIT_CODE" != "" ] && [ "$EXIT_CODE" != "null" ]; then
-        STATUS="failed (exit $EXIT_CODE)"
-    fi
-
+elif [ "$EVENT_TYPE" = "STOP" ]; then
     cat >> "$AGENT_LOG" << EOF
 [$TIMESTAMP] SUBAGENT_STOP
-  Agent: $AGENT_NAME
   ID: $AGENT_ID
-  Status: $STATUS$DURATION_STR
+  Type: $AGENT_TYPE
+  Mode: $PERM_MODE
+  Last: $LAST_MSG
 EOF
 else
     cat >> "$AGENT_LOG" << EOF
 [$TIMESTAMP] SUBAGENT_EVENT
-  Agent: $AGENT_NAME
   ID: $AGENT_ID
   Raw: $INPUT
 EOF

@@ -34,30 +34,84 @@ mkdir -p "$PANE_DIR"
 # Read JSON input from Claude Code
 INPUT=$(cat 2>/dev/null || echo "{}")
 
-# Parse input fields
+# Parse fields from SubagentStart/SubagentStop event schema:
+#   SubagentStart: { session_id, agent_id, agent_type, cwd, hook_event_name }
+#   SubagentStop:  { ...start fields, agent_transcript_path, last_assistant_message, permission_mode }
 if command -v jq &>/dev/null; then
-    AGENT_NAME=$(echo "$INPUT" | jq -r '.agent_name // .name // "agent"' 2>/dev/null)
-    AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // .id // ""' 2>/dev/null)
-    TASK_DESC=$(echo "$INPUT" | jq -r '.description // .task // .prompt // ""' 2>/dev/null | head -c 60)
+    AGENT_ID=$(echo "$INPUT" | jq -r '.agent_id // ""' 2>/dev/null)
+    AGENT_TYPE=$(echo "$INPUT" | jq -r '.agent_type // "agent"' 2>/dev/null)
+    SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""' 2>/dev/null)
+    AGENT_CWD=$(echo "$INPUT" | jq -r '.cwd // ""' 2>/dev/null)
+    TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.agent_transcript_path // ""' 2>/dev/null)
 else
-    AGENT_NAME=$(echo "$INPUT" | python3 -c "
-import sys,json; d=json.load(sys.stdin)
-print(d.get('agent_name',d.get('name','agent')))" 2>/dev/null || echo "agent")
-    AGENT_ID=$(echo "$INPUT" | python3 -c "
-import sys,json; d=json.load(sys.stdin)
-print(d.get('agent_id',d.get('id','')))" 2>/dev/null || echo "")
-    TASK_DESC=$(echo "$INPUT" | python3 -c "
-import sys,json; d=json.load(sys.stdin)
-print(d.get('description',d.get('task',d.get('prompt','')))[:60])" 2>/dev/null || echo "")
+    AGENT_ID=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('agent_id',''))" 2>/dev/null || echo "")
+    AGENT_TYPE=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('agent_type','agent'))" 2>/dev/null || echo "agent")
+    SESSION_ID=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('session_id',''))" 2>/dev/null || echo "")
+    AGENT_CWD=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('cwd',''))" 2>/dev/null || echo "")
+    TRANSCRIPT_PATH=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('agent_transcript_path',''))" 2>/dev/null || echo "")
+fi
+
+# ─── Construct transcript path for live tailing ────────────────────────────
+# Subagent transcripts: ~/.claude/projects/<project-hash>/<session_id>/subagents/agent-<agent_id>.jsonl
+if [ -z "$TRANSCRIPT_PATH" ] && [ -n "$SESSION_ID" ] && [ -n "$AGENT_ID" ] && [ -n "$AGENT_CWD" ]; then
+    PROJECT_HASH=$(echo "$AGENT_CWD" | sed 's|/|-|g')
+    TRANSCRIPT_PATH="$HOME/.claude/projects/${PROJECT_HASH}/${SESSION_ID}/subagents/agent-${AGENT_ID}.jsonl"
 fi
 
 SHORT_ID="${AGENT_ID:0:8}"
 [ -z "$SHORT_ID" ] && SHORT_ID="$(date +%s | tail -c 8)"
 
-# 8-color palette — cycles for each new agent
-# Ordered for max visual distinction between adjacent panes
-BORDER_COLORS=("colour196" "colour46" "colour33" "colour208" "colour129" "colour226" "colour51" "colour201")
-LABELS=(       "RED"       "GRN"      "BLU"      "ORG"       "PRP"       "YLW"       "CYN"      "MAG")
+# ─── Look up agent definition from .claude/agents/ by agent_type ────────────
+# Agent definitions have frontmatter with `name:` and `color:` fields
+AGENTS_DIR="$PROJECT_ROOT/.claude/agents"
+AGENT_DEF=""
+if [ -n "$AGENT_TYPE" ] && [ "$AGENT_TYPE" != "agent" ]; then
+    # Search all subdirs for matching agent definition file
+    AGENT_DEF=$(find "$AGENTS_DIR" -name "${AGENT_TYPE}.md" -type f 2>/dev/null | head -1)
+fi
+
+# Extract name and color from agent definition frontmatter
+AGENT_LABEL=""
+AGENT_COLOR=""
+if [ -n "$AGENT_DEF" ] && [ -f "$AGENT_DEF" ]; then
+    AGENT_LABEL=$(grep '^name:' "$AGENT_DEF" | head -1 | sed 's/^name:[[:space:]]*//')
+    AGENT_COLOR=$(grep '^color:' "$AGENT_DEF" | head -1 | sed 's/^color:[[:space:]]*//' | sed 's/[[:space:]]*#.*//' | tr '[:upper:]' '[:lower:]')
+fi
+
+# Fallback label: agent_type as-is (e.g. "builder", "general-purpose")
+[ -z "$AGENT_LABEL" ] && AGENT_LABEL="$AGENT_TYPE"
+
+# Map color names from agent definitions to tmux colour codes
+# Map agent color name → bright (border) + dark (pane background) tmux codes
+# Returns: "bright_tmux dark_tmux fg_tmux" (space-separated)
+#   bright = border color, dark = pane background, fg = text color on dark bg
+map_color() {
+    case "$1" in
+        red)     echo "colour196 colour52 colour255"  ;;
+        green)   echo "colour46 colour22 colour255"   ;;
+        blue)    echo "colour33 colour17 colour255"   ;;
+        orange)  echo "colour208 colour94 colour255"  ;;
+        purple)  echo "colour129 colour53 colour255"  ;;
+        yellow)  echo "colour226 colour58 colour255"  ;;
+        cyan)    echo "colour51 colour23 colour255"   ;;
+        magenta) echo "colour201 colour90 colour255"  ;;
+        pink)    echo "colour213 colour125 colour255" ;;
+        black)   echo "colour240 colour233 colour250" ;;
+        *)       echo ""                              ;;
+    esac
+}
+
+# Fallback palette: bright + dark + fg triplets
+FALLBACK_TRIPLETS=(
+    "colour196 colour52 colour255"
+    "colour46 colour22 colour255"
+    "colour33 colour17 colour255"
+    "colour208 colour94 colour255"
+    "colour129 colour53 colour255"
+    "colour226 colour58 colour255"
+    "colour51 colour23 colour255"
+    "colour201 colour90 colour255"
+)
 
 EVENT="$1"  # "start", "stop", or "cleanup"
 
@@ -75,74 +129,88 @@ start)
         fi
     done
 
-    # Pick next color from palette
+    # Resolve pane colors: agent definition → fallback palette
     COUNT=$(find "$PANE_DIR" -name "*.pane" 2>/dev/null | wc -l | tr -d ' ')
-    IDX=$((COUNT % ${#BORDER_COLORS[@]}))
-    COLOR="${BORDER_COLORS[$IDX]}"
-    LABEL="${LABELS[$IDX]}"
+    BRIGHT=""   # border color (bright)
+    DARK=""     # pane background (dark tint)
+    FG=""       # text on dark background
+    if [ -n "$AGENT_COLOR" ]; then
+        TRIPLET=$(map_color "$AGENT_COLOR")
+        BRIGHT=$(echo "$TRIPLET" | cut -d' ' -f1)
+        DARK=$(echo "$TRIPLET" | cut -d' ' -f2)
+        FG=$(echo "$TRIPLET" | cut -d' ' -f3)
+    fi
+    if [ -z "$BRIGHT" ]; then
+        IDX=$((COUNT % ${#FALLBACK_TRIPLETS[@]}))
+        BRIGHT=$(echo "${FALLBACK_TRIPLETS[$IDX]}" | cut -d' ' -f1)
+        DARK=$(echo "${FALLBACK_TRIPLETS[$IDX]}" | cut -d' ' -f2)
+        FG=$(echo "${FALLBACK_TRIPLETS[$IDX]}" | cut -d' ' -f3)
+    fi
 
-    # Write per-pane display script (avoids shell escaping in tmux split-window)
-    cat > "$PANE_DIR/${SHORT_ID}.sh" << 'PANESCRIPT'
+    # ANSI code for background color on name banner (extract number from tmux colour)
+    DARK_ANSI=$(echo "$DARK" | sed 's/colour//')
+    BRIGHT_ANSI=$(echo "$BRIGHT" | sed 's/colour//')
+
+    # Pane display: use Python transcript viewer if available, else bash timer
+    PANE_DISPLAY="$SCRIPT_DIR/utils/pane-display.py"
+    TRANSCRIPT_ARG="${TRANSCRIPT_PATH:-}"
+    if [ -x "$PANE_DISPLAY" ] && command -v python3 &>/dev/null; then
+        PANE_CMD="python3 '${PANE_DISPLAY}' '${AGENT_LABEL}' '${DARK_ANSI}' '${BRIGHT_ANSI}' '${TRANSCRIPT_ARG}'"
+    else
+        # Fallback: simple bash timer (no transcript tailing)
+        cat > "$PANE_DIR/${SHORT_ID}.sh" << 'PANESCRIPT'
 #!/bin/bash
-LBL="$1"; NM="$2"; DSC="$3"; T0=$(date +%s)
-tput civis 2>/dev/null  # hide cursor
+NM="$1"; BG="$2"; FG="$3"; T0=$(date +%s)
+tput civis 2>/dev/null
 trap 'tput cnorm 2>/dev/null; exit 0' EXIT TERM INT
 while true; do
     E=$(( $(date +%s) - T0 )); M=$((E/60)); S=$((E%60))
-    printf '\033[H\033[J'  # cursor home + clear screen
-    printf '\n'
-    printf '  \033[1m[%s]\033[0m %s\n' "$LBL" "$NM"
-    [ -n "$DSC" ] && printf '  \033[2m%s\033[0m\n' "$DSC"
-    printf '\n'
-    printf '  \033[32m●\033[0m RUNNING  %02d:%02d\n' "$M" "$S"
-    printf '\n'
+    printf '\033[H\033[J\n'
+    printf '  \033[1;38;5;%s;48;5;%sm %s \033[0m  \033[2m%02d:%02d\033[0m\n\n' "$FG" "$BG" "$NM" "$M" "$S"
+    printf '  \033[38;5;%sm●\033[0m RUNNING\n' "$FG"
     sleep 1
 done
 PANESCRIPT
-    chmod +x "$PANE_DIR/${SHORT_ID}.sh"
-
-    # Create the tmux pane
+        chmod +x "$PANE_DIR/${SHORT_ID}.sh"
+        PANE_CMD="bash '${PANE_DIR}/${SHORT_ID}.sh' '${AGENT_LABEL}' '${DARK_ANSI}' '${BRIGHT_ANSI}'"
+    fi
     if [ "$COUNT" -eq 0 ]; then
-        # First builder: horizontal split — orchestrator keeps 60% left
+        # First agent: horizontal split — orchestrator keeps 60% left
         tmux set-option -w main-pane-width '60%' 2>/dev/null || true
-        NEW_PANE=$(tmux split-window -h -d -P -F '#{pane_id}' \
-            "bash '${PANE_DIR}/${SHORT_ID}.sh' '$LABEL' '$AGENT_NAME' '$TASK_DESC'" 2>/dev/null) || true
+        NEW_PANE=$(tmux split-window -h -d -P -F '#{pane_id}' "$PANE_CMD" 2>/dev/null) || true
     else
-        # Subsequent builders: split last builder's pane vertically (stack on right)
+        # Subsequent agents: split last agent's pane vertically (stack on right)
         LAST_FILE=$(ls -t "$PANE_DIR"/*.pane 2>/dev/null | head -1)
         TARGET=""
         [ -n "$LAST_FILE" ] && [ -f "$LAST_FILE" ] && TARGET=$(head -1 "$LAST_FILE")
         if [ -n "$TARGET" ]; then
-            NEW_PANE=$(tmux split-window -v -t "$TARGET" -d -P -F '#{pane_id}' \
-                "bash '${PANE_DIR}/${SHORT_ID}.sh' '$LABEL' '$AGENT_NAME' '$TASK_DESC'" 2>/dev/null) || \
-            NEW_PANE=$(tmux split-window -v -d -P -F '#{pane_id}' \
-                "bash '${PANE_DIR}/${SHORT_ID}.sh' '$LABEL' '$AGENT_NAME' '$TASK_DESC'" 2>/dev/null) || true
+            NEW_PANE=$(tmux split-window -v -t "$TARGET" -d -P -F '#{pane_id}' "$PANE_CMD" 2>/dev/null) || \
+            NEW_PANE=$(tmux split-window -v -d -P -F '#{pane_id}' "$PANE_CMD" 2>/dev/null) || true
         else
-            NEW_PANE=$(tmux split-window -v -d -P -F '#{pane_id}' \
-                "bash '${PANE_DIR}/${SHORT_ID}.sh' '$LABEL' '$AGENT_NAME' '$TASK_DESC'" 2>/dev/null) || true
+            NEW_PANE=$(tmux split-window -v -d -P -F '#{pane_id}' "$PANE_CMD" 2>/dev/null) || true
         fi
     fi
 
     # If split failed (terminal too small?), exit gracefully
     [ -z "$NEW_PANE" ] && exit 0
 
-    # Style pane border with agent's unique color
-    tmux set-option -p -t "$NEW_PANE" pane-border-style "fg=$COLOR" 2>/dev/null || true
-    tmux set-option -p -t "$NEW_PANE" pane-active-border-style "fg=$COLOR" 2>/dev/null || true
+    # Bright colored border
+    tmux set-option -p -t "$NEW_PANE" pane-border-style "fg=$BRIGHT" 2>/dev/null || true
+    tmux set-option -p -t "$NEW_PANE" pane-active-border-style "fg=$BRIGHT" 2>/dev/null || true
 
-    # Show agent name in pane border header
+    # Agent name in pane border header
     tmux set-option -w pane-border-status top 2>/dev/null || true
     tmux set-option -p -t "$NEW_PANE" pane-border-format \
-        " #[fg=${COLOR},bold][${LABEL}]#[default] ${AGENT_NAME} " 2>/dev/null || true
+        " #[fg=${BRIGHT},bold]${AGENT_LABEL}#[default] " 2>/dev/null || true
 
-    # Rebalance: main-vertical keeps orchestrator wide on left, builders stacked right
+    # Rebalance: main-vertical keeps orchestrator wide on left, agents stacked right
     tmux select-layout main-vertical 2>/dev/null || true
 
     # Return focus to orchestrator pane
     tmux select-pane -t 0 2>/dev/null || true
 
-    # Persist pane state for stop/cleanup
-    printf '%s\n%s\n%s\n%s\n' "$NEW_PANE" "$AGENT_NAME" "$LABEL" "$COLOR" \
+    # Persist pane state: pane_id, agent_label, bright_color, dark_bg, fg_color
+    printf '%s\n%s\n%s\n%s\n%s\n' "$NEW_PANE" "$AGENT_LABEL" "$BRIGHT" "$DARK" "$FG" \
         > "$PANE_DIR/${SHORT_ID}.pane"
     ;;
 
@@ -150,29 +218,31 @@ PANESCRIPT
 stop)
     PANE_FILE="$PANE_DIR/${SHORT_ID}.pane"
 
-    # Fallback: match by agent name if ID lookup missed
+    # Fallback: find pane state by scanning all .pane files for matching agent ID
     if [ ! -f "$PANE_FILE" ]; then
         for pf in "$PANE_DIR"/*.pane; do
             [ -f "$pf" ] || continue
-            if sed -n '2p' "$pf" 2>/dev/null | grep -qF "$AGENT_NAME"; then
-                PANE_FILE="$pf"
-                SHORT_ID=$(basename "$pf" .pane)
-                break
-            fi
+            PANE_FILE="$pf"
+            SHORT_ID=$(basename "$pf" .pane)
+            break
         done
     fi
 
     [ ! -f "$PANE_FILE" ] && exit 0
 
     PANE_ID=$(sed -n '1p' "$PANE_FILE")
-    LABEL=$(sed -n '3p' "$PANE_FILE")
-    COLOR=$(sed -n '4p' "$PANE_FILE")
+    STORED_LABEL=$(sed -n '2p' "$PANE_FILE")
+    BRIGHT=$(sed -n '3p' "$PANE_FILE")
+    DARK=$(sed -n '4p' "$PANE_FILE")
 
-    # Flash completion status in the pane (replaces running timer)
+    # ANSI codes for completion banner
+    DARK_N=$(echo "$DARK" | sed 's/colour//')
+    BRIGHT_N=$(echo "$BRIGHT" | sed 's/colour//')
+
+    # Flash completion with colored banner
     tmux respawn-pane -t "$PANE_ID" -k \
-        "printf '\\n  \\033[1m[${LABEL}]\\033[0m ${AGENT_NAME}\\n\\n  \\033[36m✓\\033[0m COMPLETED\\n'; sleep 5" \
+        "printf '\\n  \\033[1;38;5;${BRIGHT_N};48;5;${DARK_N}m ${STORED_LABEL} \\033[0m\\n\\n  \\033[38;5;${BRIGHT_N}m✓\\033[0m COMPLETED\\n'; sleep 5" \
         2>/dev/null || {
-        # Fallback if respawn-pane not supported: just kill immediately
         tmux kill-pane -t "$PANE_ID" 2>/dev/null || true
         rm -f "$PANE_FILE" "$PANE_DIR/${SHORT_ID}.sh" 2>/dev/null || true
         exit 0
@@ -180,13 +250,13 @@ stop)
 
     # Update border to show completion checkmark
     tmux set-option -p -t "$PANE_ID" pane-border-format \
-        " #[fg=${COLOR},bold][${LABEL}]#[fg=green,bold] ✓#[default] ${AGENT_NAME} " 2>/dev/null || true
+        " #[fg=${BRIGHT},bold]${STORED_LABEL} ✓#[default] " 2>/dev/null || true
 
     # Background: close pane after delay, clean state, rebalance remaining
     (
         sleep 6
         tmux kill-pane -t "$PANE_ID" 2>/dev/null || true
-        rm -f "$PANE_FILE" "$PANE_DIR/${SHORT_ID}.sh" 2>/dev/null || true
+        rm -f "$PANE_FILE" "$PANE_DIR/${SHORT_ID}.sh" "$PANE_DIR/${SHORT_ID}.meta" 2>/dev/null || true
         if find "$PANE_DIR" -name "*.pane" 2>/dev/null | grep -q .; then
             tmux select-layout main-vertical 2>/dev/null || true
         fi
