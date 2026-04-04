@@ -1,5 +1,6 @@
 ---
 name: builder
+color: red
 description: Engineering agent that writes production code with automated validation
 model: opus
 isolation: worktree

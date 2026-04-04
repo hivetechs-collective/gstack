@@ -1,5 +1,6 @@
 ---
 name: validator
+color: green
 description: Read-only code inspector for quality verification
 model: opus
 disallowedTools:

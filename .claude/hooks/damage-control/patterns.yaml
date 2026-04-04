@@ -36,12 +36,20 @@ bashPatterns:
     description: "git clean (removes untracked files)"
     action: block
 
-  - pattern: "git\\s+push.*--force(?!-with-lease)"
+  - pattern: "git\\s+push.*--force([^-]|$)"
     description: "git push --force (use --force-with-lease instead)"
     action: block
 
-  - pattern: "git\\s+push.*-f(?!orce-with-lease)"
+  - pattern: "git\\s+push.*\\s-f([^o]|$)"
     description: "git push -f (use --force-with-lease instead)"
+    action: block
+
+  - pattern: "git\\s+checkout\\s+\\.\\s*$"
+    description: "git checkout . (discards all uncommitted changes)"
+    action: block
+
+  - pattern: "git\\s+restore\\s+\\.\\s*$"
+    description: "git restore . (discards all uncommitted changes)"
     action: block
 
   - pattern: "git\\s+stash\\s+clear"
@@ -285,6 +293,41 @@ secretDetection:
     pattern: "-----BEGIN.*PRIVATE KEY-----"
     action: block
     message: "Private key content detected"
+
+  - name: "Anthropic API Key"
+    pattern: "sk-ant-[a-zA-Z0-9_-]{20,}"
+    action: block
+    message: "Potential Anthropic API key detected in content"
+
+  - name: "Stripe Secret Key"
+    pattern: "sk_live_[a-zA-Z0-9]{20,}"
+    action: block
+    message: "Potential Stripe secret key detected in content"
+
+  - name: "Stripe Publishable Key"
+    pattern: "pk_live_[a-zA-Z0-9]{20,}"
+    action: warn
+    message: "Potential Stripe publishable key detected in content"
+
+  - name: "Slack Token"
+    pattern: "xox[bpras]-[A-Za-z0-9-]{10,}"
+    action: block
+    message: "Potential Slack token detected in content"
+
+  - name: "GCP Service Account"
+    pattern: "\"type\"\\s*:\\s*\"service_account\""
+    action: block
+    message: "Potential GCP service account JSON detected"
+
+  - name: "Azure Connection String"
+    pattern: "DefaultEndpointsProtocol=https?;Account"
+    action: block
+    message: "Potential Azure storage connection string detected"
+
+  - name: "GitLab Token"
+    pattern: "glpat-[A-Za-z0-9_-]{20,}"
+    action: block
+    message: "Potential GitLab personal access token detected"
 
   - name: "Generic Secret"
     pattern: "(secret|password|api_key)\\s*[:=]\\s*[\"'][^\"']{8,}"

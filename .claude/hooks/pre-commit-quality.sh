@@ -57,12 +57,19 @@ fi
 ERRORS=()
 WARNINGS=()
 
-# Secret patterns
+# Secret patterns (2026 comprehensive — AWS, GitHub, OpenAI, Anthropic, Stripe, Slack, GCP, Azure, GitLab)
 SECRET_PATTERNS=(
     'AKIA[A-Z0-9]{16}'
-    'ghp_[a-zA-Z0-9]{36}'
+    'gh[pousr]_[a-zA-Z0-9_]{36,}'
     'sk-[a-zA-Z0-9]{20,}'
+    'sk-ant-[a-zA-Z0-9_-]{20,}'
+    'sk_live_[a-zA-Z0-9]{20,}'
+    'pk_live_[a-zA-Z0-9]{20,}'
+    'xox[bpras]-[A-Za-z0-9-]{10,}'
+    'glpat-[A-Za-z0-9_-]{20,}'
+    'DefaultEndpointsProtocol=https'
     'api_key[[:space:]]*[:=][[:space:]]*['"'"'"][^'"'"'"]+['"'"'"]'
+    '-----BEGIN.*PRIVATE KEY-----'
 )
 
 # Check each staged file
@@ -98,6 +105,26 @@ while IFS= read -r file; do
     fi
 
 done <<< "$STAGED_FILES"
+
+# Count drift detection — warn when CLAUDE.md counts diverge from reality
+# Triggers when staging CLAUDE.md, agents/, or hooks/
+DRIFT_CHECK=false
+while IFS= read -r file; do
+    case "$file" in
+        CLAUDE.md|.claude/agents/*|.claude/hooks/*) DRIFT_CHECK=true; break ;;
+    esac
+done <<< "$STAGED_FILES"
+
+if [ "$DRIFT_CHECK" = "true" ] && [ -f "CLAUDE.md" ]; then
+    ACTUAL_AGENTS=$(find .claude/agents -name "*.md" 2>/dev/null | wc -l | tr -d ' ')
+
+    # Extract claimed agent count from CLAUDE.md (first "Agents: NNN" occurrence)
+    CLAIMED_AGENTS=$(grep -oE 'Agents.*?[0-9]+' CLAUDE.md | head -1 | grep -oE '[0-9]+' | head -1)
+
+    if [ -n "$CLAIMED_AGENTS" ] && [ "$CLAIMED_AGENTS" != "$ACTUAL_AGENTS" ]; then
+        WARNINGS+=("Count drift: CLAUDE.md claims $CLAIMED_AGENTS agents but $ACTUAL_AGENTS exist on disk — update CLAUDE.md")
+    fi
+fi
 
 # Check conventional commit message format if -m flag is present
 COMMIT_MSG=""

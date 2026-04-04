@@ -1,0 +1,118 @@
+{
+  "_comment": "Managed repos — used by sync-all and Mac mini pull scripts",
+  "source": "claude-pattern",
+  "repos": [
+    {
+      "name": "automate",
+      "path": "/Users/veronelazio/Developer/Private/automate",
+      "remote": null,
+      "branch": "master",
+      "host": "local-only"
+    },
+    {
+      "name": "avatar-media",
+      "path": "/Users/veronelazio/Developer/Private/avatar-media",
+      "remote": null,
+      "branch": "main",
+      "host": "local-only"
+    },
+    {
+      "name": "certify",
+      "path": "/Users/veronelazio/Developer/Private/certify",
+      "remote": "git@github.com:hivetechs-collective/certify.git",
+      "branch": "main",
+      "host": "github"
+    },
+    {
+      "name": "cleanscale",
+      "path": "/Users/veronelazio/Developer/Private/cleanscale",
+      "remote": "git@github.com:cleanscale-io/cleanscale.git",
+      "branch": "main",
+      "host": "github"
+    },
+    {
+      "name": "factory-orchestrator",
+      "path": "/Users/veronelazio/Developer/Private/factory-orchestrator",
+      "remote": "git@github.com:hivetechs-collective/factory-orchestrator.git",
+      "branch": "main",
+      "host": "github"
+    },
+    {
+      "name": "factory-product-template",
+      "path": "/Users/veronelazio/Developer/Private/factory-product-template",
+      "remote": "git@github.com:hivetechs-collective/factory-product-template.git",
+      "branch": "main",
+      "host": "github"
+    },
+    {
+      "name": "finance",
+      "path": "/Users/veronelazio/Developer/Private/finance",
+      "remote": "git@github.com:veronelazio/finance.git",
+      "branch": "master",
+      "host": "github"
+    },
+    {
+      "name": "ghost-control",
+      "path": "/Users/veronelazio/Developer/Private/ghost-control",
+      "remote": "git@github.com:hivetechs-collective/ghost-control.git",
+      "branch": "main",
+      "host": "github"
+    },
+    {
+      "name": "gstack",
+      "path": "/Users/veronelazio/Developer/Private/gstack",
+      "remote": "https://github.com/hivetechs-collective/gstack.git",
+      "branch": "master",
+      "host": "github"
+    },
+    {
+      "name": "helm",
+      "path": "/Users/veronelazio/Developer/Private/helm",
+      "remote": "git@github.com:hivetechs-collective/helm.git",
+      "branch": "main",
+      "host": "github"
+    },
+    {
+      "name": "hive",
+      "path": "/Users/veronelazio/Developer/Private/hive",
+      "remote": "git@github.com:hivetechs-collective/Hive.git",
+      "branch": "master",
+      "host": "github"
+    },
+    {
+      "name": "hivetechs-website",
+      "path": "/Users/veronelazio/Developer/Private/hivetechs-website",
+      "remote": "git@github.com:hivetechs-collective/hivetechs-website-private.git",
+      "branch": "main",
+      "host": "github"
+    },
+    {
+      "name": "marketing",
+      "path": "/Users/veronelazio/Developer/Private/marketing",
+      "remote": "git@github.com:hivetechs-collective/marketing.git",
+      "branch": "main",
+      "host": "github"
+    },
+    {
+      "name": "NodeTest",
+      "path": "/Users/veronelazio/Developer/Private/NodeTest",
+      "remote": null,
+      "branch": "main",
+      "host": "local-only"
+    },
+    {
+      "name": "problem-scanner",
+      "path": "/Users/veronelazio/Developer/Private/problem-scanner",
+      "remote": "git@github.com:hivetechs-collective/problem-scanner.git",
+      "branch": "main",
+      "host": "github"
+    },
+    {
+      "name": "tax",
+      "path": "/Users/veronelazio/Developer/Private/tax",
+      "remote": "git@github.com:veronelazio/tax.git",
+      "branch": "main",
+      "host": "github"
+    }
+  ]
+}

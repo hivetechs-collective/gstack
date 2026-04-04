@@ -3,6 +3,7 @@
 # IDENTITY (Required)
 # ============================================================================
 name: orchestrator
+color: blue
 version: 2.1.0
 description: |
   Use this agent when you have complex, multi-faceted goals that require coordination
@@ -65,7 +66,6 @@ hooks: []
 # ============================================================================
 # VISUAL CONFIGURATION
 # ============================================================================
-color: blue
 
 # ============================================================================
 # EXTENDED THINKING (Opus-specific)
