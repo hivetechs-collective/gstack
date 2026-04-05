@@ -1,10 +1,12 @@
-# Sprint Contracts — Acceptance Criteria Template
+# Sprint Contracts — Acceptance Criteria Format
 
-Sprint contracts define testable success criteria BEFORE implementation starts. The evaluator agent tests build output against these criteria in the iteration loop (Step 4b).
+Sprint contracts are the **primary acceptance criteria format** in every spec. They define testable success criteria BEFORE implementation starts. The evaluator agent (Step 4b) tests build output against these criteria in the iteration loop.
+
+This is NOT an optional addon — it IS the acceptance criteria section. Every spec's `## Acceptance Criteria Contract` section uses this format.
 
 Inspired by Anthropic's "Harness design for long-running application development" (March 2026): converting subjective judgments into gradable criteria enables reliable automated evaluation.
 
-## When to Write Contracts
+## Required Depth by Feature Type
 
 | Feature Type        | Contract Depth        | Rationale                                                     |
 | ------------------- | --------------------- | ------------------------------------------------------------- |
@@ -16,7 +18,7 @@ Inspired by Anthropic's "Harness design for long-running application development
 
 ## Template
 
-Add this section to your spec (Step 1) after the Test Plan:
+The `## Acceptance Criteria Contract` section in the spec template (Step 1) uses this format:
 
 ```markdown
 ## Acceptance Criteria Contract

@@ -35,6 +35,11 @@ Use `/fork` before committing to a strategy if unsure about the decomposition.
   If fast-forward fails (local has diverged), stop and ask the user to resolve before spawning builders. This prevents the stale-base bug where worktrees fork from an old commit.
 - Record the base commit SHA: `BASE_SHA=$(git rev-parse HEAD)`. All worktrees must branch from this exact commit. Log it in the team context so post-merge can verify ancestry.
 - **Verify shared file analysis**: Confirm Step 2's shared file conflict detection was completed. If any task lacks `files_touched` metadata, fill it in now before spawning builders.
+- **Verify acceptance criteria exist** (evaluator pre-flight): Scan the spec for evaluable criteria. Detection order:
+  1. Spec has `### Functional Criteria` with real `- [ ] AC` items → evaluator WILL run in Step 4b
+  2. Spec has `- [ ] AC` pattern under any `## Acceptance Criteria` heading → evaluator WILL run (backward compat)
+  3. No criteria found, or only template placeholders (`[Subject] [verb]`) → warn: "⚠️ No acceptance criteria detected — evaluator loop will skip. Add criteria now or proceed without evaluation?"
+     This is a warning, not a blocker. The lead can proceed without criteria (Step 5 review still runs).
 
 ### Edit Atomicity & PostToolUse Hook Behavior
 
@@ -206,12 +211,17 @@ After builders complete and code is merged (step 14), but BEFORE proceeding to S
 
 ### When to Run
 
-| Condition                              | Action                               |
-| -------------------------------------- | ------------------------------------ |
-| Spec has Acceptance Criteria Contract  | Run evaluator loop                   |
-| No acceptance criteria in spec         | Skip to Step 5 (backward compatible) |
-| Context usage > 60%                    | Skip to Step 5 (budget conservation) |
-| Feature is trivial (config, docs-only) | Skip to Step 5                       |
+Detect criteria using pattern matching, not heading-name matching:
+
+| Condition                                                                             | Action                               |
+| ------------------------------------------------------------------------------------- | ------------------------------------ |
+| Spec has `- [ ] AC` items under `### Functional Criteria` or `## Acceptance Criteria` | Run evaluator loop                   |
+| Spec has `### Quality Rubrics` with a populated table (not template placeholders)     | Run evaluator loop (rubrics-only)    |
+| No `- [ ] AC` items and no populated rubrics anywhere in spec                         | Skip to Step 5 (warn in pre-flight)  |
+| Context usage > 60%                                                                   | Skip to Step 5 (budget conservation) |
+| Feature is trivial (config, docs-only)                                                | Skip to Step 5                       |
+
+**Backward compatibility**: Specs written before the contract format (using `## Acceptance Criteria` with `- [ ] AC1:` items) still trigger the evaluator. The evaluator treats flat AC lists as functional criteria.
 
 ### Loop Protocol
 
@@ -224,14 +234,22 @@ while iteration < max_iterations:
     iteration += 1
 
     # 1. Spawn evaluator agent
+    # CONTEXT ISOLATION: paste ONLY criteria + diff. Never include builder
+    # reasoning, lead conversation, or planning context.
     Agent(
       description: "Evaluate build against acceptance criteria",
       subagent_type: "evaluator",      # custom team agent
       prompt: "You are the evaluator. Read your instructions at
         .claude/agents/team/evaluator.md
 
+        CONTEXT ISOLATION: You receive ONLY the acceptance criteria and
+        build output below. No builder reasoning or lead conversation is
+        included. Judge the artifact, not the author's intent.
+
         INPUTS:
-        - Acceptance Criteria: [paste from spec]
+        - Acceptance Criteria: [paste ONLY the criteria from spec —
+          functional criteria and/or quality rubrics. Do NOT paste
+          the spec's technical design, overview, or builder notes]
         - Build diff: git diff <base>...HEAD
         - Iteration: {iteration}/{max_iterations}
         - Previous feedback: {previous_failures or 'First iteration'}
@@ -263,7 +281,30 @@ while iteration < max_iterations:
 
 # 6. Attach evaluator report to task metadata for Step 5
 TaskUpdate(metadata: {evaluator_report: report, eval_iterations: iteration})
+
+# 7. Write evaluator outcome to state file for compound learning
+#    Shell hooks (capture-learnings.sh) can't access TaskList — this file
+#    is the bridge between agent context and hook context.
+#    Format: one JSON line per evaluation, matching learnings.jsonl schema.
+Write(".claude/state/evaluator-outcomes.jsonl", append=true, content={
+  "timestamp": now_iso8601(),
+  "session_id": session_id,
+  "type": "evaluator_outcome",
+  "feature": spec.feature_name,
+  "verdict": verdict,
+  "iterations": iteration,
+  "max_iterations": max_iterations,
+  "functional_pass": count(criteria where verdict==PASS),
+  "functional_fail": count(criteria where verdict==FAIL),
+  "functional_total": len(criteria),
+  "quality_scores": [score for each rubric],
+  "quality_avg": mean(quality_scores) or null,
+  "failure_categories": [category for each FAIL criterion],
+  "project": basename(cwd)
+})
 ```
+
+> **Why a state file?** Shell hooks run in bash, not in Claude's agent context. They cannot call TaskList or TaskGet. The `.claude/state/evaluator-outcomes.jsonl` file bridges this gap — the lead writes it during Step 4b, and `capture-learnings.sh` reads it at session end.
 
 ### Applying Fixes Between Iterations
 

@@ -70,7 +70,22 @@ Track PostToolUse hook interactions that caused workflow friction:
 
 A high false-block count signals the hook needs tuning. A high real-catch count validates the hook's value. Track both to calibrate.
 
-## 8f. Self-Assessment
+## 8g. Evaluator Iteration Health
+
+Track evaluator-driven refinement outcomes from Step 4b:
+
+| Metric                  | How to Measure                                | Warning Threshold         |
+| ----------------------- | --------------------------------------------- | ------------------------- |
+| Verdict                 | PASS / ITERATE (exhausted) / ESCALATE         | ESCALATE = builder stuck  |
+| Iterations used         | Actual vs max_iterations from spec            | Hit max without PASS      |
+| Functional pass rate    | functional_pass / functional_total            | < 100% at final iteration |
+| Quality average         | Mean of quality_scores array                  | < 3 (below adequate)      |
+| Failure categories      | Array of failure themes from evaluator report | Same category 2+ features |
+| No-progress escalations | ESCALATE due to repeated same failures        | Any > 0                   |
+
+An ESCALATE verdict means the evaluator detected the builder couldn't fix the issue alone — review the spec for unclear requirements or missing design guidance. Repeated failure categories across features signal a systemic gap — check if an instinct was created by `capture-learnings.sh` for compound learning.
+
+## 8h. Self-Assessment
 
 Rate the overall `/plan-w-team` experience for this feature 0-10. If below 10, note what friction points occurred — this feeds back into improving the workflow itself:
 

@@ -88,6 +88,44 @@ if [ "$ACTIONS_NEEDED" -eq 0 ]; then
     echo "   ✅ No immediate actions needed"
 fi
 
+# === Evaluator Health Metrics ===
+# Show pass rate, avg iterations, and common failures from evaluator outcomes
+EVAL_ENTRIES=$(grep -c '"type":"evaluator_outcome"' "$LEARNINGS_FILE" 2>/dev/null || echo "0")
+
+if [ "$EVAL_ENTRIES" -gt 0 ]; then
+    echo ""
+    echo "🔍 Evaluator Health ($EVAL_ENTRIES evaluations):"
+
+    if command -v jq &> /dev/null; then
+        EVAL_PASS=$(jq -r 'select(.type == "evaluator_outcome" and .verdict == "PASS") | .verdict' "$LEARNINGS_FILE" 2>/dev/null | wc -l | tr -d ' ')
+        EVAL_ESCALATE=$(jq -r 'select(.type == "evaluator_outcome" and .verdict == "ESCALATE") | .verdict' "$LEARNINGS_FILE" 2>/dev/null | wc -l | tr -d ' ')
+        EVAL_AVG_ITER=$(jq -r 'select(.type == "evaluator_outcome") | .iterations' "$LEARNINGS_FILE" 2>/dev/null | awk '{s+=$1; c++} END {if(c>0) printf "%.1f", s/c; else print "N/A"}')
+        EVAL_TOP_FAILURES=$(jq -r 'select(.type == "evaluator_outcome") | .failure_categories[]?' "$LEARNINGS_FILE" 2>/dev/null | sort | uniq -c | sort -rn | head -3)
+    else
+        # Fallback: grep-based extraction
+        EVAL_PASS=$(grep '"type":"evaluator_outcome"' "$LEARNINGS_FILE" | grep -c '"verdict":"PASS"' || echo "0")
+        EVAL_ESCALATE=$(grep '"type":"evaluator_outcome"' "$LEARNINGS_FILE" | grep -c '"verdict":"ESCALATE"' || echo "0")
+        EVAL_AVG_ITER="N/A"
+        EVAL_TOP_FAILURES=""
+    fi
+
+    PASS_RATE=$((EVAL_PASS * 100 / EVAL_ENTRIES))
+    echo "   Pass rate: ${PASS_RATE}% ($EVAL_PASS/$EVAL_ENTRIES)"
+    echo "   Avg iterations: $EVAL_AVG_ITER"
+
+    if [ "$EVAL_ESCALATE" -gt 0 ]; then
+        echo "   ⚠️  $EVAL_ESCALATE escalations (builder stuck)"
+    fi
+
+    if [ -n "$EVAL_TOP_FAILURES" ]; then
+        echo "   Common failures:"
+        echo "$EVAL_TOP_FAILURES" | while read -r count category; do
+            [ -z "$category" ] && continue
+            echo "      • $category ($count occurrences)"
+        done
+    fi
+fi
+
 # === Surface High-Confidence Instincts ===
 # After surfacing traditional learnings, show instincts with confidence >= 0.6
 INSTINCT_MANAGER="$(dirname "$0")/instinct-manager.sh"

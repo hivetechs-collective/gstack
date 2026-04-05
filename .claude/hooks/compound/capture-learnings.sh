@@ -82,6 +82,42 @@ EOF
     fi
 fi
 
+# === Evaluator Outcome Extraction ===
+# Step 4b writes evaluator outcomes to a state file (shell hooks can't access TaskList).
+# Read that file, append structured entries to learnings.jsonl, then trigger instincts.
+EVAL_OUTCOMES_FILE="$STATE_DIR/evaluator-outcomes.jsonl"
+
+if [ -f "$EVAL_OUTCOMES_FILE" ] && [ -s "$EVAL_OUTCOMES_FILE" ]; then
+    EVAL_LINE_COUNT=$(wc -l < "$EVAL_OUTCOMES_FILE" | tr -d ' ')
+
+    if [ "$EVAL_LINE_COUNT" -gt 0 ]; then
+        # Append each evaluator outcome to learnings.jsonl
+        while IFS= read -r line; do
+            # Validate it's JSON with the expected type field
+            if echo "$line" | grep -q '"type":"evaluator_outcome"'; then
+                echo "$line" >> "$LEARNINGS_FILE"
+            fi
+        done < "$EVAL_OUTCOMES_FILE"
+
+        # Extract failure categories from ALL evaluator outcomes across sessions
+        # (not just this session's outcomes file — cross-session accumulation)
+        EVAL_FAILURES=""
+        if command -v jq &> /dev/null; then
+            EVAL_FAILURES=$(jq -r 'select(.type == "evaluator_outcome" and (.failure_categories | length > 0)) | .failure_categories[]' "$LEARNINGS_FILE" 2>/dev/null | sort | uniq -c | sort -rn || echo "")
+        else
+            # Fallback: grep-based extraction from accumulated learnings
+            EVAL_FAILURES=$(grep '"type":"evaluator_outcome"' "$LEARNINGS_FILE" 2>/dev/null \
+                | grep -o '"failure_categories":\[[^]]*\]' \
+                | sed 's/"failure_categories":\[//;s/\]//;s/"//g' \
+                | tr ',' '\n' | sed 's/^ *//' | grep -v '^$' \
+                | sort | uniq -c | sort -rn || echo "")
+        fi
+
+        # Clear processed outcomes
+        rm -f "$EVAL_OUTCOMES_FILE"
+    fi
+fi
+
 # === Instinct Extraction ===
 # After capturing session summary, extract instincts from commit patterns
 INSTINCT_MANAGER="$(dirname "$0")/instinct-manager.sh"
@@ -123,6 +159,35 @@ if [ -x "$INSTINCT_MANAGER" ]; then
                 "Follow refactor discipline: commit with refactor: prefix, no behavior changes" \
                 "0.5" "code-style" "project" "$PROJECT_NAME" 2>/dev/null || true
         fi
+    fi
+
+    # === Evaluator Failure Instincts ===
+    # Evaluator failures are high-signal evidence — start at 0.6 confidence
+    # (vs 0.5 for commit-pattern instincts) per spec design decision.
+    if [ -n "$EVAL_FAILURES" ]; then
+        echo "$EVAL_FAILURES" | while read -r count category; do
+            [ -z "$category" ] && continue
+            # Map failure category to instinct domain
+            EVAL_DOMAIN="testing"
+            case "$category" in
+                error_handling|error-handling)   EVAL_DOMAIN="code-style" ;;
+                test_coverage|test-coverage)     EVAL_DOMAIN="testing" ;;
+                security|auth*)                  EVAL_DOMAIN="security" ;;
+                backward_compat*|breaking*)      EVAL_DOMAIN="code-style" ;;
+                *)                               EVAL_DOMAIN="workflow" ;;
+            esac
+
+            TRIGGER="evaluator fails on $category in $PROJECT_NAME"
+            ACTION="Add $category quality rubric to acceptance criteria — evaluator has failed on this ${count} times"
+            EXISTING_ID=$("$INSTINCT_MANAGER" find-by-trigger "$TRIGGER" 2>/dev/null || echo "")
+            if [ -n "$EXISTING_ID" ]; then
+                "$INSTINCT_MANAGER" strengthen "$EXISTING_ID" 2>/dev/null || true
+            elif [ "$count" -ge 2 ]; then
+                # Create instinct only when 2+ occurrences of same category
+                "$INSTINCT_MANAGER" create "$TRIGGER" "$ACTION" \
+                    "0.6" "$EVAL_DOMAIN" "project" "$PROJECT_NAME" 2>/dev/null || true
+            fi
+        done
     fi
 fi
 

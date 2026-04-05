@@ -51,6 +51,19 @@ For each data flow node, trace three shadow inputs:
 2. **Empty/zero-length input** — What happens with `[]`, `""`, `0`?
 3. **Upstream error** — What happens when the previous step failed?
 
+### Context Boundary Check
+
+For each data flow that crosses a context boundary, verify the consumer can actually access the data:
+
+| Boundary                        | Example                             | Common Trap                                         |
+| ------------------------------- | ----------------------------------- | --------------------------------------------------- |
+| Agent context → shell hook      | Evaluator report → session-end hook | Shell hooks can't call TaskList/TaskGet             |
+| Shell hook → agent context      | Hook output → Claude conversation   | Hooks communicate via stdout/stderr, not tool calls |
+| Main process → background agent | Lead state → worktree builder       | Worktrees fork from a point-in-time snapshot        |
+| Session N → Session N+1         | Task metadata → resumed session     | Task tools persist; TodoWrite does not              |
+
+If data must cross a boundary, define the **bridge mechanism** (state file, git commit, environment variable) in the Technical Design.
+
 ### Decision Labels
 
 Tag each design decision:
@@ -72,10 +85,35 @@ Every cell must be designed, not just SUCCESS.
 - `path/to/file.ts` - Description of changes
 - `path/to/new-file.ts` - New file purpose
 
-## Acceptance Criteria
+## Acceptance Criteria Contract
 
-- [ ] Criterion 1
-- [ ] Criterion 2
+Testable success criteria the evaluator agent checks in the iteration loop (Step 4b). See `shared/sprint-contracts.md` for the full template, rubric calibration, and examples.
+
+**Required depth by feature type**: New features = Functional + Quality Rubrics. Bug fixes = Functional only ("bug no longer reproduces"). Refactors = Quality Rubrics only. Config/docs-only = skip contract entirely.
+
+### Functional Criteria
+
+Testable assertions the evaluator can verify without subjective judgment. Each must use the `AC` prefix for trigger detection:
+
+- [ ] AC1: [Subject] [verb] [expected outcome]
+- [ ] AC2: [Subject] [verb] [expected outcome]
+
+### Quality Rubrics
+
+Gradable criteria on a 1-5 scale. Include anchor descriptions for consistent scoring:
+
+| Criterion        | 1 (Poor)            | 3 (Adequate)        | 5 (Excellent)       |
+| ---------------- | ------------------- | ------------------- | ------------------- |
+| [Criterion name] | [What 1 looks like] | [What 3 looks like] | [What 5 looks like] |
+
+### Playwright Test Plan
+
+(Skip for non-web projects. See `shared/browser-qa.md` for Playwright MCP usage.)
+
+1. Navigate to [URL]
+2. [Action] -> verify [expected result]
+
+**Scope**: Criteria are feature-level, not task-level. The evaluator checks the holistic feature output after all tasks are merged.
 
 ## Test Plan
 
@@ -103,34 +141,6 @@ Evaluate the plan across implementation phases:
 - **Hours 2-3 (core logic)**: What integration points need to be defined before parallel work begins?
 - **Hours 4-5 (integration)**: What assumptions from earlier phases might break during assembly?
 - **Hour 6+ (polish/tests)**: What was deferred that could become a blocker?
-
-## Acceptance Criteria Contract
-
-Define testable success criteria that the evaluator agent will check in the iteration loop (Step 4b). Read `shared/sprint-contracts.md` for the full template, examples, and guidance.
-
-### Functional Criteria
-
-Testable assertions the evaluator can verify without subjective judgment:
-
-- [ ] AC1: [Subject] [verb] [expected outcome]
-- [ ] AC2: [Subject] [verb] [expected outcome]
-
-### Quality Rubrics
-
-Gradable criteria on a 1-5 scale. Include anchor descriptions for consistent scoring:
-
-| Criterion        | 1 (Poor)            | 3 (Adequate)        | 5 (Excellent)       |
-| ---------------- | ------------------- | ------------------- | ------------------- |
-| [Criterion name] | [What 1 looks like] | [What 3 looks like] | [What 5 looks like] |
-
-### Playwright Test Plan
-
-(Skip for non-web projects. See `shared/browser-qa.md` for Playwright MCP usage.)
-
-1. Navigate to [URL]
-2. [Action] -> verify [expected result]
-
-**Scope**: Criteria are feature-level, not task-level. The evaluator checks the holistic feature output after all tasks are merged. Skip the contract entirely for trivial changes (config, docs-only).
 
 ## Deferred Items
 

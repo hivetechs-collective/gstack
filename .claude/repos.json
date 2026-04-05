@@ -113,6 +113,13 @@
       "remote": "git@github.com:veronelazio/tax.git",
       "branch": "main",
       "host": "github"
+    },
+    {
+      "name": "land",
+      "path": "/Users/veronelazio/Developer/Private/land",
+      "remote": null,
+      "branch": "main",
+      "host": "local-only"
     }
   ]
 }
