@@ -1,6 +1,23 @@
 # Step 5: Fix-First Review
 
-After builders complete and worktrees are merged, run a two-pass review on the full diff.
+After builders complete, worktrees are merged, and the evaluator loop (Step 4b) has run, perform a two-pass review on the full diff.
+
+## 5-pre. Evaluator Report Input (if available)
+
+If the evaluator loop ran in Step 4b, check task metadata for the evaluator report:
+
+```
+TaskGet -> metadata.evaluator_report
+```
+
+| Evaluator Outcome                                                     | Review Adjustment                                                                                                                                             |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **All PASS** (all criteria met)                                       | Lighten review — evaluator already validated functionality. Focus Pass 1 on security/race conditions only. Skip Pass 2 informational items unless suspicious. |
+| **PASS with notes** (criteria met but evaluator flagged observations) | Standard review, but prioritize evaluator's flagged areas in Pass 1.                                                                                          |
+| **ESCALATE** (evaluator couldn't get builder to pass)                 | Intensify review — read evaluator's failure report first. The failures it flagged are likely real issues. Present to user as ASK items.                       |
+| **No report** (evaluator skipped or no contract)                      | Standard review — full Pass 1 + Pass 2 (backward compatible).                                                                                                 |
+
+The evaluator report is an input to the review, not a replacement for it. The review still catches classes of issues the evaluator doesn't check (security, race conditions, one-way door validation).
 
 ## 5a. Fetch Latest Base and Compute Diff
 

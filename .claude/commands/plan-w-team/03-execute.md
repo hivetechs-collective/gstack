@@ -10,6 +10,7 @@
 | Bug fix                                   | Single builder, direct                         | `auto` | No             |
 | One-way door tasks                        | Any strategy + extra review in Step 5          | `auto` | Recommended    |
 | Large feature (>5 tasks or multi-session) | Lead implements directly, no worktrees         | `auto` | No             |
+| Tightly-coupled tasks in same module      | Lead implements directly, sequential           | `auto` | No             |
 
 **Default mode is `auto`** — builders execute without permission prompts for uninterrupted implementation. Use `mode: "plan"` only for security-critical work where each builder must submit an implementation plan via ExitPlanMode before coding starts.
 
@@ -196,6 +197,99 @@ pnpm format:fix  # or: npx prettier --write src/, npx biome check --write src/
 ```
 
 This prevents the cycle: Read file -> Edit file -> formatter rewrites file -> next Edit fails because content changed. Run the formatter once up front so all subsequent reads match the on-disk state.
+
+## Step 4b: Evaluator-Driven Refinement (Iteration Loop)
+
+After builders complete and code is merged (step 14), but BEFORE proceeding to Step 5 review, run the evaluator loop if the spec has an Acceptance Criteria Contract.
+
+> "Agents tend to respond by confidently praising the work — even when, to a human observer, the quality is obviously mediocre." — Anthropic Labs, March 2026. The evaluator is intentionally separate from the builder to avoid this self-evaluation bias.
+
+### When to Run
+
+| Condition                              | Action                               |
+| -------------------------------------- | ------------------------------------ |
+| Spec has Acceptance Criteria Contract  | Run evaluator loop                   |
+| No acceptance criteria in spec         | Skip to Step 5 (backward compatible) |
+| Context usage > 60%                    | Skip to Step 5 (budget conservation) |
+| Feature is trivial (config, docs-only) | Skip to Step 5                       |
+
+### Loop Protocol
+
+```
+iteration = 0
+max_iterations = spec.max_eval_iterations or 3
+previous_failures = []
+
+while iteration < max_iterations:
+    iteration += 1
+
+    # 1. Spawn evaluator agent
+    Agent(
+      description: "Evaluate build against acceptance criteria",
+      subagent_type: "evaluator",      # custom team agent
+      prompt: "You are the evaluator. Read your instructions at
+        .claude/agents/team/evaluator.md
+
+        INPUTS:
+        - Acceptance Criteria: [paste from spec]
+        - Build diff: git diff <base>...HEAD
+        - Iteration: {iteration}/{max_iterations}
+        - Previous feedback: {previous_failures or 'First iteration'}
+        - Dev server URL: {url if web project, else 'N/A'}
+
+        Evaluate and return structured report.",
+      mode: "auto"
+    )
+
+    # 2. Parse evaluator verdict
+    if verdict == PASS:
+        break  # proceed to Step 5
+    elif verdict == ESCALATE:
+        break  # proceed to Step 5 with report attached
+    elif verdict == ITERATE:
+        # 3. No-progress check
+        if current_failures == previous_failures:
+            # Builder is stuck — same failures twice
+            escalate, break
+        previous_failures = current_failures
+
+        # 4. Feed feedback to builder for fixes
+        # For lead-implements-directly: lead reads feedback and fixes
+        # For worktree builders: spawn fix builder with evaluator feedback
+        apply_fixes(evaluator_feedback)
+
+        # 5. Re-verify (tests pass, compiles)
+        run_tests()
+
+# 6. Attach evaluator report to task metadata for Step 5
+TaskUpdate(metadata: {evaluator_report: report, eval_iterations: iteration})
+```
+
+### Applying Fixes Between Iterations
+
+| Strategy            | When                                            | How                                                    |
+| ------------------- | ----------------------------------------------- | ------------------------------------------------------ |
+| Lead fixes directly | Lead-implements-directly strategy, or < 3 fixes | Read evaluator feedback, apply fixes on main, commit   |
+| Spawn fix builder   | Parallel strategy, or fixes are substantial     | Single builder with evaluator feedback as prompt input |
+
+**Do NOT spawn multiple fix builders** — fixes from one evaluator cycle are usually interdependent. One builder, one commit, then re-evaluate.
+
+### Cost Budget
+
+Each iteration costs approximately one evaluator agent spawn + one fix round. For a typical 3-iteration loop:
+
+| Component                       | Estimated Cost |
+| ------------------------------- | -------------- |
+| Evaluator spawn (per iteration) | ~$2-5          |
+| Fix builder (per iteration)     | ~$3-8          |
+| Full 3-iteration loop           | ~$15-40        |
+| Skip (no contract)              | $0             |
+
+If the feature's total cost is < $50, limit to 2 iterations. The evaluator loop should not exceed 30% of total feature cost.
+
+### Interaction with Worktree Lifecycle
+
+The evaluator runs AFTER worktrees are merged and cleaned up (step 13-14). It evaluates the merged state on main. If fixes are needed, they happen directly on main (no new worktrees for fix iterations — the overhead isn't worth it for targeted fixes).
 
 ## Resume Incomplete Work
 

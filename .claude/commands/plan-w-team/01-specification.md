@@ -104,6 +104,34 @@ Evaluate the plan across implementation phases:
 - **Hours 4-5 (integration)**: What assumptions from earlier phases might break during assembly?
 - **Hour 6+ (polish/tests)**: What was deferred that could become a blocker?
 
+## Acceptance Criteria Contract
+
+Define testable success criteria that the evaluator agent will check in the iteration loop (Step 4b). Read `shared/sprint-contracts.md` for the full template, examples, and guidance.
+
+### Functional Criteria
+
+Testable assertions the evaluator can verify without subjective judgment:
+
+- [ ] AC1: [Subject] [verb] [expected outcome]
+- [ ] AC2: [Subject] [verb] [expected outcome]
+
+### Quality Rubrics
+
+Gradable criteria on a 1-5 scale. Include anchor descriptions for consistent scoring:
+
+| Criterion        | 1 (Poor)            | 3 (Adequate)        | 5 (Excellent)       |
+| ---------------- | ------------------- | ------------------- | ------------------- |
+| [Criterion name] | [What 1 looks like] | [What 3 looks like] | [What 5 looks like] |
+
+### Playwright Test Plan
+
+(Skip for non-web projects. See `shared/browser-qa.md` for Playwright MCP usage.)
+
+1. Navigate to [URL]
+2. [Action] -> verify [expected result]
+
+**Scope**: Criteria are feature-level, not task-level. The evaluator checks the holistic feature output after all tasks are merged. Skip the contract entirely for trivial changes (config, docs-only).
+
 ## Deferred Items
 
 Everything deferred MUST be written down with enough context for someone else to pick it up.
