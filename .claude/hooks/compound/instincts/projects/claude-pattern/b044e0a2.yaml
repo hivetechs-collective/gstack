@@ -1,0 +1,15 @@
+---
+id: b044e0a2
+trigger: "when fixing bugs in hook_development context"
+confidence: 0.5
+domain: workflow
+scope: project
+project: claude-pattern
+created: 2026-04-06T13:35:59Z
+last_applied: null
+applications: 0
+evidence:
+  - "First observed in session 1775482559"
+---
+# Action
+Follow fix workflow: diagnose root cause, commit with fix: prefix, verify resolution

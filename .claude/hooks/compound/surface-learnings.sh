@@ -2,7 +2,7 @@
 # Compound: Surface learnings at session start
 # Analyzes accumulated patterns and suggests actions
 
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 STATE_DIR="$PROJECT_ROOT/.claude/state"
 LEARNINGS_FILE="$STATE_DIR/learnings.jsonl"
 PATTERNS_FILE="$STATE_DIR/patterns-detected.md"
@@ -41,9 +41,9 @@ else
 fi
 
 # Check for recurring patterns that need action
-HOOK_SESSIONS=$(grep -c '"type":"hook_development"' "$LEARNINGS_FILE" 2>/dev/null || echo "0")
-AGENT_SESSIONS=$(grep -c '"type":"agent_development"' "$LEARNINGS_FILE" 2>/dev/null || echo "0")
-FIX_SESSIONS=$(grep -c '"type":"bug_fixing"' "$LEARNINGS_FILE" 2>/dev/null || echo "0")
+HOOK_SESSIONS=$(grep -c '"type":"hook_development"' "$LEARNINGS_FILE" 2>/dev/null || true)
+AGENT_SESSIONS=$(grep -c '"type":"agent_development"' "$LEARNINGS_FILE" 2>/dev/null || true)
+FIX_SESSIONS=$(grep -c '"type":"bug_fixing"' "$LEARNINGS_FILE" 2>/dev/null || true)
 
 # Surface actionable recommendations
 ACTIONS_NEEDED=0
@@ -66,7 +66,7 @@ fi
 # Check for recent errors in security log
 SECURITY_LOG="$HOME/.claude/logs/security.jsonl"
 if [ -f "$SECURITY_LOG" ]; then
-    RECENT_BLOCKS=$(tail -50 "$SECURITY_LOG" 2>/dev/null | grep -c '"action":"block"' || echo "0")
+    RECENT_BLOCKS=$(tail -50 "$SECURITY_LOG" 2>/dev/null | grep -c '"action":"block"' || true)
     if [ "$RECENT_BLOCKS" -ge 5 ]; then
         echo "   🔒 $RECENT_BLOCKS operations blocked recently"
         echo "      → Review security patterns or adjust permissions"
@@ -76,7 +76,7 @@ fi
 
 # Check for patterns file
 if [ -f "$PATTERNS_FILE" ] && [ -s "$PATTERNS_FILE" ]; then
-    PATTERN_COUNT=$(grep -c "## Pattern Detected" "$PATTERNS_FILE" 2>/dev/null || echo "0")
+    PATTERN_COUNT=$(grep -c "## Pattern Detected" "$PATTERNS_FILE" 2>/dev/null || true)
     if [ "$PATTERN_COUNT" -gt 0 ]; then
         echo "   📋 $PATTERN_COUNT patterns detected and ready for action"
         echo "      → See: .claude/state/patterns-detected.md"
@@ -90,7 +90,7 @@ fi
 
 # === Evaluator Health Metrics ===
 # Show pass rate, avg iterations, and common failures from evaluator outcomes
-EVAL_ENTRIES=$(grep -c '"type":"evaluator_outcome"' "$LEARNINGS_FILE" 2>/dev/null || echo "0")
+EVAL_ENTRIES=$(grep -c '"type":"evaluator_outcome"' "$LEARNINGS_FILE" 2>/dev/null || true)
 
 if [ "$EVAL_ENTRIES" -gt 0 ]; then
     echo ""
@@ -103,8 +103,8 @@ if [ "$EVAL_ENTRIES" -gt 0 ]; then
         EVAL_TOP_FAILURES=$(jq -r 'select(.type == "evaluator_outcome") | .failure_categories[]?' "$LEARNINGS_FILE" 2>/dev/null | sort | uniq -c | sort -rn | head -3)
     else
         # Fallback: grep-based extraction
-        EVAL_PASS=$(grep '"type":"evaluator_outcome"' "$LEARNINGS_FILE" | grep -c '"verdict":"PASS"' || echo "0")
-        EVAL_ESCALATE=$(grep '"type":"evaluator_outcome"' "$LEARNINGS_FILE" | grep -c '"verdict":"ESCALATE"' || echo "0")
+        EVAL_PASS=$(grep '"type":"evaluator_outcome"' "$LEARNINGS_FILE" | grep -c '"verdict":"PASS"' || true)
+        EVAL_ESCALATE=$(grep '"type":"evaluator_outcome"' "$LEARNINGS_FILE" | grep -c '"verdict":"ESCALATE"' || true)
         EVAL_AVG_ITER="N/A"
         EVAL_TOP_FAILURES=""
     fi

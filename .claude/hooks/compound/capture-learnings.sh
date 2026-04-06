@@ -1,10 +1,11 @@
 #!/bin/bash
 # Compound: Capture learnings at session end
 # Analyzes git commits and extracts patterns automatically
+# Always produces a learnings entry — even sessions with zero commits are valuable data
 
 set -e
 
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 STATE_DIR="$PROJECT_ROOT/.claude/state"
 LEARNINGS_FILE="$STATE_DIR/learnings.jsonl"
 PATTERNS_FILE="$STATE_DIR/patterns-detected.md"
@@ -15,44 +16,54 @@ TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 SESSION_ID="${CLAUDE_SESSION_ID:-$(date +%s)}"
 
 # Get commits from this session (last 2 hours as proxy)
+# If no commits or no git repo, we still capture a session entry
 COMMITS=$(git -C "$PROJECT_ROOT" log --since="2 hours ago" --oneline 2>/dev/null || echo "")
 
-if [ -z "$COMMITS" ]; then
-    exit 0
+COMMIT_COUNT=0
+FEAT_COUNT=0
+FIX_COUNT=0
+REFACTOR_COUNT=0
+TS_FILES=0
+RS_FILES=0
+HOOK_FILES=0
+AGENT_FILES=0
+NEW_COMPONENT_COUNT=0
+
+if [ -n "$COMMITS" ]; then
+    COMMIT_COUNT=$(echo "$COMMITS" | wc -l | tr -d ' ')
+
+    # Analyze commit patterns
+    FEAT_COUNT=$(echo "$COMMITS" | grep -c "^[a-f0-9]* feat" || true)
+    FIX_COUNT=$(echo "$COMMITS" | grep -c "^[a-f0-9]* fix" || true)
+    REFACTOR_COUNT=$(echo "$COMMITS" | grep -c "^[a-f0-9]* refactor" || true)
+
+    # Get files changed
+    FILES_CHANGED=$(git -C "$PROJECT_ROOT" diff --name-only HEAD~${COMMIT_COUNT}..HEAD 2>/dev/null | head -20 || echo "")
+
+    if [ -n "$FILES_CHANGED" ]; then
+        # Detect file type patterns
+        TS_FILES=$(echo "$FILES_CHANGED" | grep -c "\.tsx\?$" || true)
+        RS_FILES=$(echo "$FILES_CHANGED" | grep -c "\.rs$" || true)
+        HOOK_FILES=$(echo "$FILES_CHANGED" | grep -c "hooks/" || true)
+        AGENT_FILES=$(echo "$FILES_CHANGED" | grep -c "agents/" || true)
+
+        # Extract new files
+        NEW_COMPONENTS=$(git -C "$PROJECT_ROOT" diff --name-status HEAD~${COMMIT_COUNT}..HEAD 2>/dev/null | grep "^A" | awk '{print $2}' || echo "")
+        NEW_COMPONENT_COUNT=$(echo "$NEW_COMPONENTS" | grep -v "^$" | wc -l | tr -d ' ')
+    fi
 fi
 
-COMMIT_COUNT=$(echo "$COMMITS" | wc -l | tr -d ' ')
-
-# Analyze commit patterns
-FEAT_COUNT=$(echo "$COMMITS" | grep -c "^[a-f0-9]* feat" || echo "0")
-FIX_COUNT=$(echo "$COMMITS" | grep -c "^[a-f0-9]* fix" || echo "0")
-REFACTOR_COUNT=$(echo "$COMMITS" | grep -c "^[a-f0-9]* refactor" || echo "0")
-
-# Get files changed
-FILES_CHANGED=$(git -C "$PROJECT_ROOT" diff --name-only HEAD~${COMMIT_COUNT}..HEAD 2>/dev/null | head -20 || echo "")
-
-# Detect file type patterns
-TS_FILES=$(echo "$FILES_CHANGED" | grep -c "\.tsx\?$" || echo "0")
-RS_FILES=$(echo "$FILES_CHANGED" | grep -c "\.rs$" || echo "0")
-HOOK_FILES=$(echo "$FILES_CHANGED" | grep -c "hooks/" || echo "0")
-AGENT_FILES=$(echo "$FILES_CHANGED" | grep -c "agents/" || echo "0")
-
-# Extract component patterns (new files in specific directories)
-NEW_COMPONENTS=$(git -C "$PROJECT_ROOT" diff --name-status HEAD~${COMMIT_COUNT}..HEAD 2>/dev/null | grep "^A" | awk '{print $2}' || echo "")
-NEW_COMPONENT_COUNT=$(echo "$NEW_COMPONENTS" | grep -v "^$" | wc -l | tr -d ' ')
-
-# Build learning entry
+# Determine primary work type — always classify, even with 0 commits
 LEARNING_TYPE="session_summary"
 TAGS="[]"
 
-# Determine primary work type
 if [ "$HOOK_FILES" -gt 2 ]; then
     LEARNING_TYPE="hook_development"
     TAGS='["hooks", "automation"]'
 elif [ "$AGENT_FILES" -gt 0 ]; then
     LEARNING_TYPE="agent_development"
     TAGS='["agents", "orchestration"]'
-elif [ "$FIX_COUNT" -gt "$FEAT_COUNT" ]; then
+elif [ "$FIX_COUNT" -gt "$FEAT_COUNT" ] && [ "$FIX_COUNT" -gt 0 ]; then
     LEARNING_TYPE="bug_fixing"
     TAGS='["fixes", "debugging"]'
 elif [ "$FEAT_COUNT" -gt 0 ]; then
@@ -60,14 +71,23 @@ elif [ "$FEAT_COUNT" -gt 0 ]; then
     TAGS='["features", "implementation"]'
 fi
 
-# Create learning entry
-cat >> "$LEARNINGS_FILE" << EOF
-{"timestamp":"$TIMESTAMP","session_id":"$SESSION_ID","type":"$LEARNING_TYPE","commits":$COMMIT_COUNT,"features":$FEAT_COUNT,"fixes":$FIX_COUNT,"refactors":$REFACTOR_COUNT,"new_components":$NEW_COMPONENT_COUNT,"ts_files":$TS_FILES,"rs_files":$RS_FILES,"tags":$TAGS}
-EOF
+# Always create a learning entry — sessions with 0 commits are still data
+# (research, planning, discussion sessions matter for pattern detection)
+ENTRY="{\"timestamp\":\"$TIMESTAMP\",\"session_id\":\"$SESSION_ID\",\"type\":\"$LEARNING_TYPE\",\"commits\":$COMMIT_COUNT,\"features\":$FEAT_COUNT,\"fixes\":$FIX_COUNT,\"refactors\":$REFACTOR_COUNT,\"new_components\":$NEW_COMPONENT_COUNT,\"ts_files\":$TS_FILES,\"rs_files\":$RS_FILES,\"tags\":$TAGS}"
+
+# Validate JSON before writing (if python3 available)
+if echo "$ENTRY" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+    echo "$ENTRY" >> "$LEARNINGS_FILE"
+elif echo "$ENTRY" | python3 -m json.tool >/dev/null 2>&1; then
+    echo "$ENTRY" >> "$LEARNINGS_FILE"
+else
+    # Fallback: write anyway — malformed JSON is better than no data
+    echo "$ENTRY" >> "$LEARNINGS_FILE"
+fi
 
 # Check for actionable patterns (3+ similar entries)
 if [ -f "$LEARNINGS_FILE" ]; then
-    # Count similar learning types in last 7 days
+    # Count similar learning types in recent entries
     SIMILAR_COUNT=$(grep "\"type\":\"$LEARNING_TYPE\"" "$LEARNINGS_FILE" | tail -10 | wc -l | tr -d ' ')
 
     if [ "$SIMILAR_COUNT" -ge 3 ]; then
@@ -86,6 +106,7 @@ fi
 # Step 4b writes evaluator outcomes to a state file (shell hooks can't access TaskList).
 # Read that file, append structured entries to learnings.jsonl, then trigger instincts.
 EVAL_OUTCOMES_FILE="$STATE_DIR/evaluator-outcomes.jsonl"
+EVAL_FAILURES=""
 
 if [ -f "$EVAL_OUTCOMES_FILE" ] && [ -s "$EVAL_OUTCOMES_FILE" ]; then
     EVAL_LINE_COUNT=$(wc -l < "$EVAL_OUTCOMES_FILE" | tr -d ' ')
@@ -101,7 +122,6 @@ if [ -f "$EVAL_OUTCOMES_FILE" ] && [ -s "$EVAL_OUTCOMES_FILE" ]; then
 
         # Extract failure categories from ALL evaluator outcomes across sessions
         # (not just this session's outcomes file — cross-session accumulation)
-        EVAL_FAILURES=""
         if command -v jq &> /dev/null; then
             EVAL_FAILURES=$(jq -r 'select(.type == "evaluator_outcome" and (.failure_categories | length > 0)) | .failure_categories[]' "$LEARNINGS_FILE" 2>/dev/null | sort | uniq -c | sort -rn || echo "")
         else
@@ -119,7 +139,7 @@ if [ -f "$EVAL_OUTCOMES_FILE" ] && [ -s "$EVAL_OUTCOMES_FILE" ]; then
 fi
 
 # === Instinct Extraction ===
-# After capturing session summary, extract instincts from commit patterns
+# Extract instincts from commit patterns AND session patterns
 INSTINCT_MANAGER="$(dirname "$0")/instinct-manager.sh"
 PROJECT_NAME=$(basename "$PROJECT_ROOT")
 

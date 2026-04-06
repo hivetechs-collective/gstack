@@ -2,7 +2,7 @@
 # Compound: Auto-act on mature patterns
 # Creates agents, validators, or commands when patterns reach threshold
 
-PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 STATE_DIR="$PROJECT_ROOT/.claude/state"
 LEARNINGS_FILE="$STATE_DIR/learnings.jsonl"
 PATTERNS_FILE="$STATE_DIR/patterns-detected.md"

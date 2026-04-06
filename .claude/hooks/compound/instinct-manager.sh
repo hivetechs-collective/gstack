@@ -16,7 +16,7 @@ mkdir -p "$GLOBAL_DIR" "$PROJECTS_DIR"
 # Detect project name from git root
 detect_project_name() {
     local project_root
-    project_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+    project_root="$(cd "$SCRIPT_DIR/../../.." && pwd)"
     basename "$project_root"
 }
 
