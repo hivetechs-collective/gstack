@@ -31,6 +31,15 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 PANE_DIR="$PROJECT_ROOT/.claude/state/agent-panes"
 mkdir -p "$PANE_DIR"
 
+# Anchor all tmux operations to the orchestrator's pane/window.
+# $TMUX_PANE is inherited from the Claude Code process — it stays correct
+# even if the user clicks to a different tmux tab before the hook fires.
+ORCHESTRATOR_PANE="${TMUX_PANE:-}"
+ORCHESTRATOR_WINDOW=""
+if [ -n "$ORCHESTRATOR_PANE" ]; then
+    ORCHESTRATOR_WINDOW=$(tmux display-message -t "$ORCHESTRATOR_PANE" -p '#{window_id}' 2>/dev/null || echo "")
+fi
+
 # Read JSON input from Claude Code
 INPUT=$(cat 2>/dev/null || echo "{}")
 
@@ -176,8 +185,11 @@ PANESCRIPT
     fi
     if [ "$COUNT" -eq 0 ]; then
         # First agent: horizontal split — orchestrator keeps 60% left
-        tmux set-option -w main-pane-width '60%' 2>/dev/null || true
-        NEW_PANE=$(tmux split-window -h -d -P -F '#{pane_id}' "$PANE_CMD" 2>/dev/null) || true
+        # Target the orchestrator's pane explicitly so the split happens in the
+        # correct tmux window even if the user has clicked to another tab.
+        SPLIT_TARGET="${ORCHESTRATOR_PANE:+-t $ORCHESTRATOR_PANE}"
+        tmux set-option -w ${ORCHESTRATOR_WINDOW:+-t $ORCHESTRATOR_WINDOW} main-pane-width '60%' 2>/dev/null || true
+        NEW_PANE=$(tmux split-window -h ${SPLIT_TARGET} -d -P -F '#{pane_id}' "$PANE_CMD" 2>/dev/null) || true
     else
         # Subsequent agents: split last agent's pane vertically (stack on right)
         LAST_FILE=$(ls -t "$PANE_DIR"/*.pane 2>/dev/null | head -1)
@@ -198,16 +210,16 @@ PANESCRIPT
     tmux set-option -p -t "$NEW_PANE" pane-border-style "fg=$BRIGHT" 2>/dev/null || true
     tmux set-option -p -t "$NEW_PANE" pane-active-border-style "fg=$BRIGHT" 2>/dev/null || true
 
-    # Agent name in pane border header
-    tmux set-option -w pane-border-status top 2>/dev/null || true
+    # Agent name in pane border header (target orchestrator's window, not focused window)
+    tmux set-option -w ${ORCHESTRATOR_WINDOW:+-t $ORCHESTRATOR_WINDOW} pane-border-status top 2>/dev/null || true
     tmux set-option -p -t "$NEW_PANE" pane-border-format \
         " #[fg=${BRIGHT},bold]${AGENT_LABEL}#[default] " 2>/dev/null || true
 
     # Rebalance: main-vertical keeps orchestrator wide on left, agents stacked right
-    tmux select-layout main-vertical 2>/dev/null || true
+    tmux select-layout ${ORCHESTRATOR_WINDOW:+-t $ORCHESTRATOR_WINDOW} main-vertical 2>/dev/null || true
 
-    # Return focus to orchestrator pane
-    tmux select-pane -t 0 2>/dev/null || true
+    # Return focus to orchestrator pane (use $ORCHESTRATOR_PANE, not hardcoded 0)
+    tmux select-pane ${ORCHESTRATOR_PANE:+-t $ORCHESTRATOR_PANE} 2>/dev/null || true
 
     # Persist pane state: pane_id, agent_label, bright_color, dark_bg, fg_color
     printf '%s\n%s\n%s\n%s\n%s\n' "$NEW_PANE" "$AGENT_LABEL" "$BRIGHT" "$DARK" "$FG" \
@@ -252,13 +264,14 @@ stop)
     tmux set-option -p -t "$PANE_ID" pane-border-format \
         " #[fg=${BRIGHT},bold]${STORED_LABEL} ✓#[default] " 2>/dev/null || true
 
-    # Background: close pane after delay, clean state, rebalance remaining
+    # Background: close pane after delay, clean state, rebalance in orchestrator's window
+    ORCH_WIN="$ORCHESTRATOR_WINDOW"
     (
         sleep 6
         tmux kill-pane -t "$PANE_ID" 2>/dev/null || true
         rm -f "$PANE_FILE" "$PANE_DIR/${SHORT_ID}.sh" "$PANE_DIR/${SHORT_ID}.meta" 2>/dev/null || true
         if find "$PANE_DIR" -name "*.pane" 2>/dev/null | grep -q .; then
-            tmux select-layout main-vertical 2>/dev/null || true
+            tmux select-layout ${ORCH_WIN:+-t $ORCH_WIN} main-vertical 2>/dev/null || true
         fi
     ) &
     disown 2>/dev/null || true
