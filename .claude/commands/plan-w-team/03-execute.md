@@ -187,11 +187,14 @@ If Step 2 produced >5 tasks or the total estimated AI effort exceeds 45 minutes,
 
 1. Lead works on main (no worktrees, no builder agents)
 2. Commit after each task completes (preserves progress across sessions)
-3. Use `--resume` to pick up where the previous session left off
-4. TaskList persists across sessions — task metadata survives compaction
-5. **After all tasks complete: run Step 4b evaluator checkpoint** (same as parallel path — see below). Do NOT skip to Step 5 without checking for acceptance criteria.
+3. **Scope check after each task**: Before starting the next task, verify it is in the spec's Must Have section — not in Deferred or Phase 2. If you've completed all Must Have tasks but feel compelled to keep building, STOP. That impulse is scope creep. Proceed to step 5.
+4. Use `--resume` to pick up where the previous session left off
+5. TaskList persists across sessions — task metadata survives compaction
+6. **After all tasks complete: run Step 4b evaluator checkpoint** (same as parallel path — see below). Do NOT skip to Step 5 without checking for acceptance criteria.
 
 This avoids the worktree expiration problem entirely. Reserve parallel worktree builders for features that fit within a single session.
+
+> **Why scope enforcement matters here**: Parallel builders have natural scope limits — they only work on assigned tasks from the pool. The lead-implements-directly path has no such constraint. Without this check, the lead will finish Must Have items and seamlessly drift into Deferred items without noticing the boundary. This is the most common failure mode for this strategy.
 
 ### Pre-Edit Formatter Sync
 
