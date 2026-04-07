@@ -1,7 +1,7 @@
 #!/bin/bash
 # Compound: Capture learnings at session end
 # Analyzes git commits and extracts patterns automatically
-# Always produces a learnings entry — even sessions with zero commits are valuable data
+# Skips empty sessions (0 commits, session_summary type) to avoid noise
 
 set -e
 
@@ -71,31 +71,42 @@ elif [ "$FEAT_COUNT" -gt 0 ]; then
     TAGS='["features", "implementation"]'
 fi
 
-# Always create a learning entry — sessions with 0 commits are still data
-# (research, planning, discussion sessions matter for pattern detection)
-ENTRY="{\"timestamp\":\"$TIMESTAMP\",\"session_id\":\"$SESSION_ID\",\"type\":\"$LEARNING_TYPE\",\"commits\":$COMMIT_COUNT,\"features\":$FEAT_COUNT,\"fixes\":$FIX_COUNT,\"refactors\":$REFACTOR_COUNT,\"new_components\":$NEW_COMPONENT_COUNT,\"ts_files\":$TS_FILES,\"rs_files\":$RS_FILES,\"tags\":$TAGS}"
-
-# Validate JSON before writing (if python3 available)
-if echo "$ENTRY" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
-    echo "$ENTRY" >> "$LEARNINGS_FILE"
-elif echo "$ENTRY" | python3 -m json.tool >/dev/null 2>&1; then
-    echo "$ENTRY" >> "$LEARNINGS_FILE"
+# Only create a learning entry for sessions with actual work (commits).
+# Empty session_summary entries with 0 commits are noise — 7 of 19 entries
+# in the first 3 months were empty, inflating pattern counts without signal.
+if [ "$COMMIT_COUNT" -eq 0 ] && [ "$LEARNING_TYPE" = "session_summary" ]; then
+    # Skip to evaluator extraction (below) — don't write a learnings entry
+    ENTRY=""
 else
-    # Fallback: write anyway — malformed JSON is better than no data
-    echo "$ENTRY" >> "$LEARNINGS_FILE"
+    ENTRY="{\"timestamp\":\"$TIMESTAMP\",\"session_id\":\"$SESSION_ID\",\"type\":\"$LEARNING_TYPE\",\"commits\":$COMMIT_COUNT,\"features\":$FEAT_COUNT,\"fixes\":$FIX_COUNT,\"refactors\":$REFACTOR_COUNT,\"new_components\":$NEW_COMPONENT_COUNT,\"ts_files\":$TS_FILES,\"rs_files\":$RS_FILES,\"tags\":$TAGS}"
+fi
+
+# Write entry if not empty (empty sessions with 0 commits are skipped above)
+if [ -n "$ENTRY" ]; then
+    # Validate JSON before writing (if python3 available)
+    if echo "$ENTRY" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null; then
+        echo "$ENTRY" >> "$LEARNINGS_FILE"
+    elif echo "$ENTRY" | python3 -m json.tool >/dev/null 2>&1; then
+        echo "$ENTRY" >> "$LEARNINGS_FILE"
+    else
+        # Fallback: write anyway — malformed JSON is better than no data
+        echo "$ENTRY" >> "$LEARNINGS_FILE"
+    fi
 fi
 
 # Check for actionable patterns (3+ similar entries)
-if [ -f "$LEARNINGS_FILE" ]; then
-    # Count similar learning types in recent entries
-    SIMILAR_COUNT=$(grep "\"type\":\"$LEARNING_TYPE\"" "$LEARNINGS_FILE" | tail -10 | wc -l | tr -d ' ')
+# Skip pattern detection for empty sessions — 0-commit session_summary entries
+# are noise that inflates pattern counts without real signal.
+if [ -f "$LEARNINGS_FILE" ] && [ "$COMMIT_COUNT" -gt 0 ]; then
+    # Count similar learning types in recent entries (only entries with commits)
+    SIMILAR_COUNT=$(grep "\"type\":\"$LEARNING_TYPE\"" "$LEARNINGS_FILE" | grep -v '"commits":0' | tail -10 | wc -l | tr -d ' ')
 
     if [ "$SIMILAR_COUNT" -ge 3 ]; then
         # Pattern detected - add to patterns file for session start
         cat >> "$PATTERNS_FILE" << EOF
 
 ## Pattern Detected: $LEARNING_TYPE ($TIMESTAMP)
-- Occurrences: $SIMILAR_COUNT in recent sessions
+- Occurrences: $SIMILAR_COUNT in productive sessions
 - Suggestion: Consider creating a specialized workflow or agent
 - Tags: $TAGS
 EOF

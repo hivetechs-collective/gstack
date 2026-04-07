@@ -1,8 +1,42 @@
 # Browser-Based QA Integration
 
-For projects with a UI, `/plan-w-team` can leverage gstack's browse binary for real browser testing during Steps 5 (Design Review Lite) and 6 (Ship).
+For projects with a UI, `/plan-w-team` can perform real browser testing during Steps 5 (Design Review Lite) and 6 (Ship) using one of two approaches.
 
-## Prerequisites
+## Approach Selection
+
+| Method                          | When Available                                | Best For                                            |
+| ------------------------------- | --------------------------------------------- | --------------------------------------------------- |
+| **Playwright MCP** (preferred)  | When `mcp__playwright__*` tools are available | Evaluator agent (Step 4b), programmatic testing, CI |
+| **Browse binary** (alternative) | When gstack browse is installed               | Interactive exploration, responsive screenshots     |
+
+The evaluator agent (Step 4b) uses **Playwright MCP exclusively** — it calls tools like `browser_navigate`, `browser_snapshot`, `browser_click`, etc. The browse binary is a separate CLI tool for manual/interactive browser inspection.
+
+If neither is available, browser QA falls back to code-only review (read CSS/JSX, no visual verification).
+
+## Option A: Playwright MCP (Primary)
+
+Available when the Playwright MCP server is connected. No installation needed — it comes with Claude Code's MCP configuration.
+
+### Key Tools
+
+| Tool                       | Purpose                                      |
+| -------------------------- | -------------------------------------------- |
+| `browser_navigate`         | Navigate to URL                              |
+| `browser_snapshot`         | Get accessibility tree with interactive refs |
+| `browser_click`            | Click elements                               |
+| `browser_fill_form`        | Fill input fields                            |
+| `browser_console_messages` | Check for JS errors                          |
+| `browser_take_screenshot`  | Visual evidence                              |
+| `browser_wait_for`         | Wait for async operations                    |
+| `browser_network_requests` | Verify API calls                             |
+
+### Usage in Evaluator (Step 4b)
+
+The evaluator agent uses Playwright MCP tools directly per its Playwright Test Plan criteria. No browse binary needed.
+
+## Option B: Browse Binary (Alternative)
+
+### Prerequisites
 
 The browse binary requires Bun and Playwright Chromium. One-time setup:
 
@@ -101,7 +135,32 @@ The snapshot command parses the accessibility tree into interactive refs:
 
 ## Integration Points in /plan-w-team
 
-### Step 5f — Design Review Lite (when FRONTEND scope + browse available)
+### Step 4b — Evaluator (Playwright MCP)
+
+The evaluator agent uses Playwright MCP tools directly. No browse binary needed:
+
+```
+1. browser_navigate -> <dev-server-url>
+2. browser_snapshot -> get interactive element refs
+3. browser_click / browser_fill_form -> test functional criteria
+4. browser_console_messages -> check for JS errors
+5. browser_take_screenshot -> visual evidence of pass/fail
+```
+
+### Step 5f — Design Review Lite (when FRONTEND scope)
+
+**With Playwright MCP** (preferred):
+
+```
+1. browser_navigate -> <dev-server-url>
+2. browser_snapshot -> map all interactive elements
+3. browser_take_screenshot -> full page evidence
+4. browser_console_messages -> check for JS errors
+5. Review screenshots for AI slop patterns
+6. Check interaction states: navigate to empty/error/loading states
+```
+
+**With browse binary** (if installed):
 
 ```
 1. $B goto <dev-server-url>
@@ -109,26 +168,24 @@ The snapshot command parses the accessibility tree into interactive refs:
 3. $B screenshot /tmp/review-full.png # Full page evidence
 4. $B responsive /tmp/responsive     # Check mobile/tablet/desktop
 5. $B console --errors               # Check for JS errors
-6. Review screenshots for AI slop patterns
-7. Check interaction states: navigate to empty/error/loading states
-8. For each fix: screenshot before -> fix code -> screenshot after -> $B snapshot -D to verify
+6. For each fix: screenshot before -> fix code -> screenshot after -> $B snapshot -D to verify
 ```
 
-### Step 6b — Test Suite with Browser Smoke Test (when browse available)
+### Step 6b — Test Suite with Browser Smoke Test
 
 ```
 1. Run unit/integration tests normally
-2. If dev server available: $B goto <url> -> $B snapshot -i -> verify key elements exist
-3. $B console --errors -> fail if uncaught errors
-4. Take final screenshot as ship evidence
+2. If dev server available: browser_navigate -> verify key elements exist
+3. browser_console_messages -> fail if uncaught errors
+4. browser_take_screenshot -> final screenshot as ship evidence
 ```
 
 ## Graceful Degradation
 
-If the browse binary is not installed or Bun is not available:
+| Available                | Behavior                                                |
+| ------------------------ | ------------------------------------------------------- |
+| Playwright MCP connected | Full browser QA via MCP tools (preferred)               |
+| Browse binary installed  | Full browser QA via CLI (alternative)                   |
+| Neither available        | Code-only review (read CSS/JSX, no visual verification) |
 
-- Step 5f Design Review Lite falls back to **code-only review** (read CSS/JSX, no visual verification)
-- Step 6b skips browser smoke test (unit/integration tests still run)
-- No error — just a note: "Browser QA unavailable, using code-only review"
-
-The browse binary is an enhancement, not a requirement. `/plan-w-team` works fully without it.
+Browser QA is an enhancement, not a requirement. `/plan-w-team` works fully without it — just note: "Browser QA unavailable, using code-only review".
