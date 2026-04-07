@@ -189,6 +189,7 @@ If Step 2 produced >5 tasks or the total estimated AI effort exceeds 45 minutes,
 2. Commit after each task completes (preserves progress across sessions)
 3. Use `--resume` to pick up where the previous session left off
 4. TaskList persists across sessions — task metadata survives compaction
+5. **After all tasks complete: run Step 4b evaluator checkpoint** (same as parallel path — see below). Do NOT skip to Step 5 without checking for acceptance criteria.
 
 This avoids the worktree expiration problem entirely. Reserve parallel worktree builders for features that fit within a single session.
 
@@ -205,7 +206,10 @@ This prevents the cycle: Read file -> Edit file -> formatter rewrites file -> ne
 
 ## Step 4b: Evaluator-Driven Refinement (Iteration Loop)
 
-After builders complete and code is merged (step 14), but BEFORE proceeding to Step 5 review, run the evaluator loop if the spec has an Acceptance Criteria Contract.
+**MANDATORY CHECKPOINT — ALL STRATEGIES**: After all implementation tasks are complete (whether via parallel builders + merge, or lead-implements-directly), and BEFORE proceeding to Step 5 review, run the evaluator loop if the spec has an Acceptance Criteria Contract. This applies regardless of execution strategy chosen in Step 3.
+
+For parallel builders: this runs after worktrees are merged and cleaned up (step 14).
+For lead-implements-directly: this runs after the last task is committed on main.
 
 > "Agents tend to respond by confidently praising the work — even when, to a human observer, the quality is obviously mediocre." — Anthropic Labs, March 2026. The evaluator is intentionally separate from the builder to avoid this self-evaluation bias.
 
@@ -328,9 +332,25 @@ Each iteration costs approximately one evaluator agent spawn + one fix round. Fo
 
 If the feature's total cost is < $50, limit to 2 iterations. The evaluator loop should not exceed 30% of total feature cost.
 
-### Interaction with Worktree Lifecycle
+### Interaction with Execution Strategy
 
-The evaluator runs AFTER worktrees are merged and cleaned up (step 13-14). It evaluates the merged state on main. If fixes are needed, they happen directly on main (no new worktrees for fix iterations — the overhead isn't worth it for targeted fixes).
+| Strategy                 | Evaluator runs after...                       | Fixes happen on...           |
+| ------------------------ | --------------------------------------------- | ---------------------------- |
+| Parallel builders        | Worktrees merged and cleaned up (steps 13-14) | Main (no new worktrees)      |
+| Lead implements directly | Last task committed on main                   | Main (lead applies directly) |
+| Single builder           | Builder completes and worktree merged         | Main (no new worktrees)      |
+
+In all cases: the evaluator evaluates the merged state on main. Fixes happen directly on main — the overhead of new worktrees isn't worth it for targeted fixes.
+
+### Step 4 → Step 5 Transition Gate
+
+**Do NOT proceed to Step 5 until this gate is satisfied:**
+
+1. All tasks from Step 2 are marked `completed` in TaskList
+2. If the spec contains `- [ ] AC` items or populated `### Quality Rubrics`: Step 4b evaluator loop has run (or was skipped due to context budget > 60%)
+3. If the evaluator ran: its verdict and iteration count are recorded in task metadata AND written to `.claude/state/evaluator-outcomes.jsonl`
+
+If you find yourself starting Step 5 without having checked for acceptance criteria, STOP and run Step 4b first. The most common way this gate is missed is on the "lead implements directly" path where there is no natural builder→merge→evaluate handoff.
 
 ## Resume Incomplete Work
 
