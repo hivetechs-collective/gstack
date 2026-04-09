@@ -1,0 +1,30 @@
+# Auto-add new issues and PRs to the GitHub Projects v2 board.
+# Reads project URL from .github/board.json so this workflow is portable.
+#
+# Required setup:
+#   1. Create a PAT (classic) with 'project' scope
+#   2. Add it as repository or org secret: BOARD_TOKEN
+#   3. Set repository variable BOARD_PROJECT_URL to the project URL
+#      e.g. https://github.com/users/USERNAME/projects/1
+#      or   https://github.com/orgs/ORG-NAME/projects/1
+
+name: Board Auto-Add
+
+on:
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened]
+
+jobs:
+  add-to-board:
+    name: Add to project board
+    runs-on: ubuntu-latest
+    # Only run if the secret and variable are configured
+    if: vars.BOARD_PROJECT_URL != ''
+    steps:
+      - name: Add to project
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: ${{ vars.BOARD_PROJECT_URL }}
+          github-token: ${{ secrets.BOARD_TOKEN }}

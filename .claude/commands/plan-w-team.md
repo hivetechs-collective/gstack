@@ -50,6 +50,48 @@ If the user does not specify, default to **HOLD**. Ask only if the feature descr
 
 Each step is defined in a separate stage file. **Read the stage file when you reach that step** — do not load all stages upfront.
 
+### Pre-Flight: Board Auto-Setup
+
+Before starting any step, ensure the GitHub Projects board is ready. Run these checks silently — no user interaction needed unless `gh` isn't authenticated.
+
+**1. Ensure `scripts/board.sh` exists:**
+
+```bash
+if [ ! -f scripts/board.sh ]; then
+  cp .claude/scripts/board.sh scripts/board.sh
+  chmod +x scripts/board.sh
+fi
+```
+
+**2. Ensure `.github/board.json` exists (board is initialized):**
+
+```bash
+if [ ! -f .github/board.json ]; then
+  # Detect owner from git remote
+  OWNER=$(gh repo view --json owner -q '.owner.login' 2>/dev/null || echo "")
+  OWNER_TYPE=$(gh repo view --json owner -q '.owner.type' 2>/dev/null || echo "User")
+  REPO_NAME=$(gh repo view --json name -q '.name' 2>/dev/null || basename "$(pwd)")
+
+  # Convert repo name to title: "my-project" -> "My Project Development"
+  BOARD_TITLE=$(echo "$REPO_NAME" | sed 's/-/ /g' | sed 's/\b\(.\)/\u\1/g')" Development"
+
+  # Use @me for user-owned repos, org name for org-owned repos
+  if [ "$OWNER_TYPE" = "Organization" ]; then
+    scripts/board.sh init --owner "$OWNER" --title "$BOARD_TITLE"
+  else
+    scripts/board.sh init --owner "@me" --title "$BOARD_TITLE"
+  fi
+
+  # Commit the board config so other agents/sessions see it
+  git add scripts/board.sh .github/board.json
+  git commit -m "chore: initialize GitHub Projects board for /plan-w-team"
+fi
+```
+
+If `gh auth status` fails, tell the user to run `! gh auth login` before continuing.
+
+This is a one-time setup per repo. Once `.github/board.json` exists, this check is a no-op.
+
 ### Step 0: Scope Challenge
 
 Read `.claude/commands/plan-w-team/00-scope-challenge.md` and execute it.

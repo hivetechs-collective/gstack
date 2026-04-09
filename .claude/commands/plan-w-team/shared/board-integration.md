@@ -5,6 +5,18 @@
 > **Skill:** `/board`
 > **Board:** GitHub Projects v2, Project #1
 
+## Auto-Setup
+
+`/plan-w-team` automatically creates a board if one doesn't exist. This runs as a pre-flight before Step 0:
+
+1. If `scripts/board.sh` is missing → copies from `.claude/scripts/board.sh`
+2. If `.github/board.json` is missing → detects org/user from git remote, runs `board.sh init`
+3. Commits `scripts/board.sh` and `.github/board.json` so the board persists
+
+**No manual setup required.** The first `/plan-w-team` run in any repo creates the board automatically.
+
+Prerequisites: `gh` CLI authenticated (`gh auth status`). If not, the user is prompted to run `! gh auth login`.
+
 ## Overview
 
 Every feature managed by `/plan-w-team` gets a **GitHub Issue** on the project board. This Issue serves as the single source of truth for the feature's lifecycle — from spec to retro. Each pipeline stage adds structured comments that create a permanent timeline, and PRs are auto-linked via GitHub's `Closes #N` keyword.
@@ -136,36 +148,36 @@ Draft items are lightweight but invisible to GitHub's core features. Issues unlo
 
 Each `/plan-w-team` stage file has a **Board Integration** or **Board Update** section near the top. These sections contain the exact `board.sh` commands and comment templates that run automatically during that stage.
 
-| Stage | File | Section | Board Operations |
-|-------|------|---------|-----------------|
-| Step 1: Spec | `01-specification.md:158` | Board Integration (Auto) | `add` → create Issue with body; `move` → Todo; store `<!-- Board: #42 -->` in spec |
-| Step 2: Tasks | `02-task-breakdown.md:129` | Board Integration (Auto) | `comment` → task checklist, strategy, effort estimate, files touched |
-| Steps 3-4: Execute | `03-execute.md:21` | Board Update (Auto) | `move` → In Progress; `comment` → strategy, branch, task count, start time |
-| Step 5: Review | `04-fix-first-review.md:5` | Board Update (Auto) | `move` → Review; `comment` → Pass 1/2 findings, auto-fix count, evaluator verdict |
-| Step 6: Ship | `05-ship.md:5` | Board Update (Auto) | `move` → Done; `comment` → PR link, tests, coverage, commits, version |
-| Step 6: Ship | `05-ship.md:87` | Link PR to Board Issue | `gh pr create` with `Closes #N` in body for auto-close chain |
-| Step 7: Post-Ship | `06-post-ship.md:5` | Board Comment (Auto) | `comment` → docs updated, cross-doc consistency, deferred items |
-| Step 8: Retro | `07-retro.md:5` | Board Comment (Auto) | `comment` → commits, lines, sessions, self-assessment, lessons |
+| Stage              | File                       | Section                  | Board Operations                                                                   |
+| ------------------ | -------------------------- | ------------------------ | ---------------------------------------------------------------------------------- |
+| Step 1: Spec       | `01-specification.md:158`  | Board Integration (Auto) | `add` → create Issue with body; `move` → Todo; store `<!-- Board: #42 -->` in spec |
+| Step 2: Tasks      | `02-task-breakdown.md:129` | Board Integration (Auto) | `comment` → task checklist, strategy, effort estimate, files touched               |
+| Steps 3-4: Execute | `03-execute.md:21`         | Board Update (Auto)      | `move` → In Progress; `comment` → strategy, branch, task count, start time         |
+| Step 5: Review     | `04-fix-first-review.md:5` | Board Update (Auto)      | `move` → Review; `comment` → Pass 1/2 findings, auto-fix count, evaluator verdict  |
+| Step 6: Ship       | `05-ship.md:5`             | Board Update (Auto)      | `move` → Done; `comment` → PR link, tests, coverage, commits, version              |
+| Step 6: Ship       | `05-ship.md:87`            | Link PR to Board Issue   | `gh pr create` with `Closes #N` in body for auto-close chain                       |
+| Step 7: Post-Ship  | `06-post-ship.md:5`        | Board Comment (Auto)     | `comment` → docs updated, cross-doc consistency, deferred items                    |
+| Step 8: Retro      | `07-retro.md:5`            | Board Comment (Auto)     | `comment` → commits, lines, sessions, self-assessment, lessons                     |
 
 ### Supporting Files
 
-| File | Purpose |
-|------|---------|
-| `scripts/board.sh` | CLI tool — all board operations (`add`, `move`, `comment`, `close`, `view`, `list`, `search`) |
-| `.claude/commands/board.md` | `/board` skill definition — argument parsing and usage reference |
-| `.claude/state/board-config.json` | Cached field/option IDs from GitHub Projects (auto-synced) |
+| File                              | Purpose                                                                                       |
+| --------------------------------- | --------------------------------------------------------------------------------------------- |
+| `scripts/board.sh`                | CLI tool — all board operations (`add`, `move`, `comment`, `close`, `view`, `list`, `search`) |
+| `.claude/commands/board.md`       | `/board` skill definition — argument parsing and usage reference                              |
+| `.claude/state/board-config.json` | Cached field/option IDs from GitHub Projects (auto-synced)                                    |
 
 ## Board Commands Reference
 
-| Command | Purpose | Used By |
-|---------|---------|---------|
-| `board.sh add` | Create Issue + add to board | Step 1 (Spec) |
-| `board.sh move` | Change status column | Steps 1, 3, 5, 6 |
-| `board.sh comment` | Add timeline comment | Steps 2, 3, 5, 6, 7, 8 |
-| `board.sh close` | Close issue | Manual only |
-| `board.sh view` | Show full issue with comments | Any time |
-| `board.sh list` | List cards with filters | Any time |
-| `board.sh search` | Find cards by keyword | Any time |
+| Command            | Purpose                       | Used By                |
+| ------------------ | ----------------------------- | ---------------------- |
+| `board.sh add`     | Create Issue + add to board   | Step 1 (Spec)          |
+| `board.sh move`    | Change status column          | Steps 1, 3, 5, 6       |
+| `board.sh comment` | Add timeline comment          | Steps 2, 3, 5, 6, 7, 8 |
+| `board.sh close`   | Close issue                   | Manual only            |
+| `board.sh view`    | Show full issue with comments | Any time               |
+| `board.sh list`    | List cards with filters       | Any time               |
+| `board.sh search`  | Find cards by keyword         | Any time               |
 
 ## Issue Number Propagation
 
@@ -188,9 +200,9 @@ The issue number (`#N`) created in Step 1 must flow through all subsequent stage
 
 Two workflows are enabled on the project board:
 
-| Trigger | Action | Effect |
-|---------|--------|--------|
-| Issue closed | Set Status → Done | Closing an issue moves its card to Done |
+| Trigger             | Action            | Effect                                     |
+| ------------------- | ----------------- | ------------------------------------------ |
+| Issue closed        | Set Status → Done | Closing an issue moves its card to Done    |
 | Pull request merged | Set Status → Done | Merging a PR moves its linked card to Done |
 
 Combined with `Closes #42` in PR descriptions, this creates a fully automatic chain:
@@ -200,20 +212,20 @@ Combined with `Closes #42` in PR descriptions, this creates a fully automatic ch
 
 Every card has these fields set at creation time:
 
-| Field | Values | Set By |
-|-------|--------|--------|
-| Status | Backlog → Todo → In Progress → Blocked → Review → Done → Archived | Pipeline stages |
-| Priority | P0 (critical), P1 (high), P2 (medium), P3 (low) | Step 1 |
-| Area | api, web, admin, website, mobile, db, shared, infra, docs | Step 1 |
-| Type | feature, bug, chore, infra | Step 1 |
-| Size | S (<2h), M (2-8h), L (8-24h), XL (24h+) | Step 1 |
+| Field    | Values                                                            | Set By          |
+| -------- | ----------------------------------------------------------------- | --------------- |
+| Status   | Backlog → Todo → In Progress → Blocked → Review → Done → Archived | Pipeline stages |
+| Priority | P0 (critical), P1 (high), P2 (medium), P3 (low)                   | Step 1          |
+| Area     | api, web, admin, website, mobile, db, shared, infra, docs         | Step 1          |
+| Type     | feature, bug, chore, infra                                        | Step 1          |
+| Size     | S (<2h), M (2-8h), L (8-24h), XL (24h+)                           | Step 1          |
 
 ## Board Views
 
-| View | Purpose | Configuration |
-|------|---------|---------------|
-| Kanban Board | Sprint workflow | Swimlanes by Area, sorted by Priority |
-| Table | Full field overview | All custom fields visible, sortable |
+| View         | Purpose             | Configuration                         |
+| ------------ | ------------------- | ------------------------------------- |
+| Kanban Board | Sprint workflow     | Swimlanes by Area, sorted by Priority |
+| Table        | Full field overview | All custom fields visible, sortable   |
 
 ## Fire-and-Forget Pattern
 
@@ -229,12 +241,14 @@ If the board is down, the pipeline continues. The board is for visibility and hi
 ## What This Gives You
 
 ### As a Solo Founder
+
 - Visual overview of all work in flight (Kanban board)
 - Click any Done card to see the full story from spec to retro
 - See which PRs implemented which features
 - Track velocity across sprints
 
 ### As the Team Grows
+
 - New developers can read Issue timelines to understand past decisions
 - Review comments show what was flagged and fixed
 - Task breakdown comments show how complex features were decomposed
@@ -243,13 +257,13 @@ If the board is down, the pipeline continues. The board is for visibility and hi
 
 ### vs Azure DevOps Boards
 
-| Feature | ADO | GitHub Projects v2 + This Integration |
-|---------|-----|--------------------------------------|
-| Card ↔ PR linking | Built-in (`AB#123`) | `Closes #42` in PR body |
-| Auto "In Progress" on branch | Built-in | `/plan-w-team` Step 3 |
-| Auto "Done" on PR merge | Built-in | GitHub workflow (configured) |
-| Comment timeline | Built-in | `/plan-w-team` Steps 2-8 |
-| Custom fields | Yes | Yes (Priority, Area, Type, Size) |
-| Sprint views | Built-in | Kanban + Table views |
-| Work item hierarchy | Epic → Feature → Task | Flat (use labels/grouping) |
-| Spec linkage | Wiki/attachments | Issue body + spec file reference |
+| Feature                      | ADO                   | GitHub Projects v2 + This Integration |
+| ---------------------------- | --------------------- | ------------------------------------- |
+| Card ↔ PR linking            | Built-in (`AB#123`)   | `Closes #42` in PR body               |
+| Auto "In Progress" on branch | Built-in              | `/plan-w-team` Step 3                 |
+| Auto "Done" on PR merge      | Built-in              | GitHub workflow (configured)          |
+| Comment timeline             | Built-in              | `/plan-w-team` Steps 2-8              |
+| Custom fields                | Yes                   | Yes (Priority, Area, Type, Size)      |
+| Sprint views                 | Built-in              | Kanban + Table views                  |
+| Work item hierarchy          | Epic → Feature → Task | Flat (use labels/grouping)            |
+| Spec linkage                 | Wiki/attachments      | Issue body + spec file reference      |
