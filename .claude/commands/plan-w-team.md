@@ -126,12 +126,13 @@ This prevents context confusion when running parallel planning sessions.
 
 Stage files reference these shared components on-demand (only loaded when needed by the stage):
 
-| Shared File                      | Used By                    | Content                           |
-| -------------------------------- | -------------------------- | --------------------------------- |
-| `shared/self-regulation.md`      | 03-execute                 | WTF-likelihood, fix caps, commits |
-| `shared/cognitive-frameworks.md` | 00-scope, 01-spec, 05-ship | Named frameworks reference        |
-| `shared/artifact-storage.md`     | 05-ship, 07-retro          | SLUG, paths, formats              |
-| `shared/browser-qa.md`           | 04-review, 05-ship         | Browse binary integration         |
+| Shared File                      | Used By                    | Content                                   |
+| -------------------------------- | -------------------------- | ----------------------------------------- |
+| `shared/self-regulation.md`      | 03-execute                 | WTF-likelihood, fix caps, commits         |
+| `shared/cognitive-frameworks.md` | 00-scope, 01-spec, 05-ship | Named frameworks reference                |
+| `shared/artifact-storage.md`     | 05-ship, 07-retro          | SLUG, paths, formats                      |
+| `shared/browser-qa.md`           | 04-review, 05-ship         | Playwright MCP + browse binary QA         |
+| `shared/board-integration.md`    | All stages (01-07)         | GitHub Issues board sync, fire-and-forget |
 
 All shared files are at `.claude/commands/plan-w-team/shared/`.
 

@@ -155,4 +155,42 @@ The spec persists for resumption. A **plan** (implementation approach) is epheme
 
 Use `/fork` before trying a risky decomposition strategy. Fork the session, try one approach, and if it doesn't work, return to the fork point and try another.
 
+## Board Integration (Auto)
+
+After writing the spec, create a GitHub Issue on the project board. Issues (not drafts) enable full PR linking, comment history, and auto-close on merge. Fire-and-forget — failures must NOT block the workflow.
+
+```bash
+# Create Issue with spec summary in body — capture the issue number for later stages
+BOARD_ISSUE=$(scripts/board.sh add "<feature-name>" \
+  --priority P1 \
+  --area <area> \
+  --type feature \
+  --size <S|M|L|XL> \
+  --body "**Spec:** docs/specs/<feature-name>.md
+
+## Overview
+<1-2 sentence summary from spec>
+
+## Acceptance Criteria
+<paste AC list from spec>
+
+## Task Checklist
+_Updated after task breakdown (Step 2)_" || true)
+
+# Move to Todo
+scripts/board.sh move "<feature-name>" "Todo" || true
+```
+
+**Store the issue number** (e.g., `#42`) — subsequent stages use it for comments and PR linking. Add it to the spec file header:
+
+```markdown
+# Feature: <name>
+<!-- Board: #42 -->
+```
+
+Choose `--area` based on the primary app affected (api, web, admin, website, mobile, db, shared, infra, docs).
+Choose `--priority` based on urgency: P0=blocking, P1=current sprint, P2=next sprint, P3=backlog.
+Choose `--size` based on estimated effort: S (<2h), M (2-8h), L (8-24h), XL (24h+).
+If the card already exists (from a previous `/board add` or backlog grooming), skip creation and just verify status.
+
 **Cognitive frameworks used here**: Make the change easy, then make the easy change (Beck), Boring technology (McKinley), Strangler fig pattern (Fowler). Read `shared/cognitive-frameworks.md` for full reference.

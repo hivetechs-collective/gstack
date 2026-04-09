@@ -2,6 +2,34 @@
 
 After builders complete, worktrees are merged, and the evaluator loop (Step 4b) has run, perform a two-pass review on the full diff.
 
+## Board Update (Auto)
+
+Move the feature card to Review and add a review summary comment. Fire-and-forget — failures must NOT block the review.
+
+```bash
+scripts/board.sh move "<feature-name>" "Review" || true
+```
+
+After the review completes (Pass 1 + Pass 2), add findings as a comment:
+
+```bash
+scripts/board.sh comment "<feature-name>" "## Review Complete
+
+### Pass 1 — Critical Findings
+<list of blockers found and fixed, or 'None'>
+
+### Pass 2 — Informational
+<list of non-blocking observations, or 'None'>
+
+### Auto-Fixed
+<count> items auto-fixed (dead code, unused imports, etc.)
+
+### Evaluator Report
+<PASS | PASS with notes | ESCALATE | N/A>
+
+**Reviewed:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+```
+
 ## 5-pre. Evaluator Report Input (if available)
 
 If the evaluator loop ran in Step 4b, check task metadata for the evaluator report:

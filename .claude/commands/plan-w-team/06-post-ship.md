@@ -2,6 +2,22 @@
 
 After shipping, update documentation to reflect what changed.
 
+## Board Comment (Auto)
+
+Add a documentation update comment to the board Issue. Fire-and-forget.
+
+```bash
+scripts/board.sh comment "<feature-name>" "## Post-Ship Documentation
+
+**Docs updated:**
+<list of documentation files updated>
+
+**Cross-doc consistency:** <verified | issues found>
+**Deferred items:** <count remaining, or 'none'>
+
+**Completed:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+```
+
 ## 7a. Per-File Documentation Audit
 
 For each documentation file (README, ARCHITECTURE, CONTRIBUTING, CLAUDE.md, other .md files), check if the shipped changes made any content stale.

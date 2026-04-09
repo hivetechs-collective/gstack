@@ -2,6 +2,28 @@
 
 Quantitative retrospective on the shipped work. Run automatically for features that took >2 hours of builder time, or on demand with `--retro`.
 
+## Board Comment (Auto)
+
+Add a retro summary as the final comment on the board Issue — this closes the feature's story. Fire-and-forget.
+
+```bash
+scripts/board.sh comment "<feature-name>" "## Retrospective
+
+**Commits:** <count> | **Lines:** +<added> / -<removed>
+**Sessions:** <count> (<deep/medium/micro breakdown>)
+**Fix ratio:** <fixes / total> (<healthy | warning>)
+**Test quality:** ★★★/★★/★ across <count> modules
+**Self-assessment:** <0-10>/10
+
+### What went well
+<1-2 bullet points>
+
+### What to improve
+<1-2 bullet points>
+
+**Completed:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+```
+
 ## 8a. Gather Metrics
 
 ```bash

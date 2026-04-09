@@ -18,6 +18,22 @@ Use `/fork` before committing to a strategy if unsure about the decomposition.
 
 ## Step 4: Execute
 
+### Board Update (Auto)
+
+Move the feature card to In Progress and add an execution start comment. Fire-and-forget — failures must NOT block execution.
+
+```bash
+scripts/board.sh move "<feature-name>" "In Progress" || true
+
+# Log execution start with strategy details
+scripts/board.sh comment "<feature-name>" "## Execution Started
+
+**Strategy:** <parallel builders | single builder | lead-implements-directly>
+**Branch:** \`$(git branch --show-current)\`
+**Tasks:** <N> tasks, <N> parallel builders
+**Started:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+```
+
 ### Pre-flight Checks
 
 - Require clean working tree (`git status` must show no uncommitted changes). This ensures builder changes can be cleanly attributed. If dirty, ask user to commit or stash first.

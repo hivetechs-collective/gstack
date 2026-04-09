@@ -2,6 +2,23 @@
 
 After review passes, execute the ship pipeline.
 
+## Board Update (Auto)
+
+After successful ship (tests pass, committed, pushed), move the feature card to Done and add a ship summary. Fire-and-forget — failures must NOT block the ship.
+
+```bash
+scripts/board.sh move "<feature-name>" "Done" || true
+
+# Add ship summary with PR link and test results
+scripts/board.sh comment "<feature-name>" "## Shipped
+
+**PR:** <PR URL or 'committed directly to main'>
+**Tests:** <pass count> passing, coverage ★★★/★★/★
+**Commits:** <count> bisectable commits
+**Version:** <version if bumped>
+**Shipped:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+```
+
 ## 6a. Review Readiness Check
 
 Verify Step 5 review is complete. If not, run it first. Track review completion in task metadata.
@@ -65,7 +82,39 @@ Each commit must compile and pass tests independently.
 
 ```bash
 git push -u origin <branch>
-gh pr create --title "<title>" --body "<structured body>"
 ```
+
+### Link PR to Board Issue
+
+Use `closes #N` in the PR body to automatically link the PR to the board Issue. When the PR merges, GitHub will close the Issue and the board workflow moves it to Done.
+
+```bash
+# Get the issue number from the spec header or board search
+ISSUE_NUM=$(grep -o '#[0-9]*' docs/specs/<feature-name>.md | head -1)
+
+gh pr create --title "<title>" --body "$(cat <<EOF
+## Summary
+<1-3 bullet points describing what changed>
+
+## Test Plan
+- [ ] All unit tests pass
+- [ ] Integration tests pass
+- [ ] Manual QA verified (if frontend)
+
+Closes $ISSUE_NUM
+
+---
+**Spec:** docs/specs/<feature-name>.md
+**Board:** https://github.com/<owner>/<repo>/issues/${ISSUE_NUM#\#}
+
+Generated with [Claude Code](https://claude.com/claude-code)
+EOF
+)"
+```
+
+The `Closes #N` keyword creates a bidirectional link:
+- The PR shows which Issue it resolves
+- The Issue shows which PR implements it
+- Merging the PR auto-closes the Issue and triggers the board Done workflow
 
 Read `shared/artifact-storage.md` for review log and streak tracking formats.

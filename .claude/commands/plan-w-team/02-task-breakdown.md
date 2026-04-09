@@ -126,6 +126,23 @@ For each task, provide two effort estimates:
 
 This shifts cost-benefit analysis toward completeness. When AI effort is 10x lower than human effort, the threshold for "worth doing thoroughly" drops dramatically.
 
+## Board Integration (Auto)
+
+After task breakdown, update the board Issue with the task checklist so the card shows progress at a glance. Fire-and-forget — failures must NOT block the workflow.
+
+```bash
+# Add task checklist as a comment on the Issue
+scripts/board.sh comment "<feature-name>" "## Task Breakdown
+
+$(for task in tasks; do echo "- [ ] $task"; done)
+
+**Execution strategy:** <parallel builders | single builder | lead-implements-directly>
+**Estimated effort:** <AI hours> (human equivalent: <human hours>)
+**Files touched:** <count> files across <areas>" || true
+```
+
+This comment becomes part of the feature's permanent history — future developers can see how the work was decomposed and why.
+
 ## Bisectable Commit Ordering
 
 Order tasks by dependency graph for bisectability:
