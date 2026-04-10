@@ -62,12 +62,23 @@ This script is idempotent — if the board already exists, it exits immediately.
 
 1. Copies `board.sh` to `scripts/` if missing
 2. Detects the repo owner from the git remote
-3. Creates a GitHub Projects v2 board via `board.sh init`
+3. Creates a GitHub Projects v2 board via `board.sh init` (which attempts to **clone from a canonical org template** before falling back to from-scratch creation)
 4. Commits `scripts/board.sh` and `.github/board.json`
 
 If the script fails with an auth error, tell the user to run `! gh auth login` before continuing.
 
 **Do not skip this step. Do not inline the logic. Just run the script.**
+
+#### If the Preflight Fails
+
+The preflight script prints a reference to `docs/operations/BOARD_TEMPLATE_RUNBOOK.md` with a specific failure mode (FM-1 through FM-11) on every error path. When this happens:
+
+1. **Read the matching failure mode** in the runbook. It documents every known failure with a diagnosis command and an exact recovery procedure.
+2. **Apply the recovery** before retrying the preflight. Do not retry blindly — the runbook tells you whether the fix is a token refresh, a `--no-template` override, a stale-cache clear, or a template re-creation.
+3. **If the failure mode is not documented**, read §8 of the runbook (Failure Modes & Recovery) end-to-end, then fall back to §9.6 (Throwaway test procedure) to reproduce the issue on a disposable repo before attempting further recovery on the user's repo.
+4. **Never delete `.github/board.json` as a first recovery step** — it is the only pointer to the board. Use §9.3 (Re-init an existing repo) if a reset is needed.
+
+The runbook is the single source of truth for template-clone behavior, GraphQL constraints, and what `copyProjectV2` does and does not preserve. Read §7 (What Gets Inherited) before telling the user a board is "missing" something — Sprint fields, views, and workflow enabled-state are only inherited from templates, not created from scratch.
 
 ### Step 0: Scope Challenge
 

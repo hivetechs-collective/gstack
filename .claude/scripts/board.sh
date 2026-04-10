@@ -692,25 +692,37 @@ sys.exit(1)
 " <<< "$items_json" 2>/dev/null
 }
 
-# ─── Init: bootstrap a new board with standard schema ────────
+# ─── Init: bootstrap a new board ─────────────────────────────
+# Two paths:
+#   1. Template clone (preferred) — if a template exists on the owner, copy it
+#      via `copyProjectV2` GraphQL mutation. Preserves views, workflows (with
+#      enabled state), status descriptions, Sprint field, and custom fields.
+#   2. From-scratch fallback — creates fields via API. Cannot create views or
+#      enable workflows (GitHub does not expose those mutations). User must
+#      configure those manually in the UI, then promote the board to a template
+#      via `board.sh template-promote <n>` so subsequent boards inherit them.
+#
+# See docs/specs/template-based-board-bootstrap.md for the full rationale.
 
 do_init() {
-  local owner="" title="" owner_type="user"
+  local owner="" title="" owner_type="user" force_scratch=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --owner) owner="$2"; shift 2 ;;
       --title) title="$2"; shift 2 ;;
+      --no-template) force_scratch=1; shift ;;  # Escape hatch: skip template detection
       *) shift ;;
     esac
   done
 
   if [[ -z "$owner" || -z "$title" ]]; then
-    err "Usage: board.sh init --owner <org-name-or-@me> --title \"Project Title\""
+    err "Usage: board.sh init --owner <org-name-or-@me> --title \"Project Title\" [--no-template]"
     err ""
     err "Examples:"
     err "  board.sh init --owner cleanscale-io --title \"CleanRev Development\""
     err "  board.sh init --owner @me --title \"My Projects\""
+    err "  board.sh init --owner @me --title \"Legacy\" --no-template"
     return 1
   fi
 
@@ -725,31 +737,330 @@ do_init() {
     fi
   fi
 
-  # Create project
-  info "Creating project: $title (owner: $owner)..."
+  # ─── Template detection ───────────────────────────────────────
+  # Query for a template project on the target owner. If found, clone it;
+  # this is the only way to get views + workflows in an auto-created board.
+
+  local template_id=""
+  local template_title=""
+  if [[ "$force_scratch" -eq 0 ]]; then
+    info "Checking for template projects on $owner..."
+    if _init_find_template "$owner" "$owner_type"; then
+      template_id="$_FOUND_TEMPLATE_ID"
+      template_title="$_FOUND_TEMPLATE_TITLE"
+      info "  Found template: \"$template_title\" ($template_id)"
+    else
+      info "  No template found (will fall through to from-scratch)"
+    fi
+  else
+    info "--no-template flag set, skipping template detection"
+  fi
+
+  local project_number="" project_id="" created_via=""
+
+  if [[ -n "$template_id" ]]; then
+    # ─── Path 1: Clone from template ──────────────────────────
+    if _init_from_template "$owner" "$owner_type" "$title" "$template_id"; then
+      project_number="$_NEW_PROJECT_NUMBER"
+      project_id="$_NEW_PROJECT_ID"
+      created_via="template"
+    else
+      warn "Template clone failed, falling back to from-scratch"
+    fi
+  fi
+
+  if [[ -z "$project_number" ]]; then
+    # ─── Path 2: From-scratch fallback ────────────────────────
+    if ! _init_from_scratch "$owner" "$title"; then
+      return 1
+    fi
+    project_number="$_NEW_PROJECT_NUMBER"
+    project_id="$_NEW_PROJECT_ID"
+    created_via="from_scratch"
+  fi
+
+  # ─── Shared finalization (both paths) ─────────────────────────
+  _init_write_config "$project_number" "$owner" "$owner_type"
+  info "Wrote .github/board.json"
+
+  PROJECT_NUMBER="$project_number"
+  PROJECT_OWNER="$owner"
+  OWNER_TYPE="$owner_type"
+  do_sync
+
+  info ""
+  info "Board initialized successfully!"
+  info "  Project: #$project_number"
+  info "  Owner:   $owner ($owner_type)"
+  info "  Config:  .github/board.json"
+  info "  Cache:   .claude/state/board-config.json"
+
+  if [[ "$created_via" == "template" ]]; then
+    info "  Source:  cloned from template \"$template_title\""
+    info ""
+    info "Template clone includes: views, workflows (with enabled state),"
+    info "Sprint field, status descriptions, and all custom field options."
+  else
+    info "  Source:  created from scratch (no template available for $owner)"
+    info ""
+    info "⚠ From-scratch boards do NOT have views or workflows."
+    info "  GitHub does not expose mutations for views/workflows — they"
+    info "  must be configured manually in the UI."
+    info ""
+    info "  Manual setup checklist:"
+    info "  1. Go to Project Settings > Workflows"
+    info "  2. Enable: 'Item closed' → Set Status to 'Done'"
+    info "  3. Enable: 'Pull request merged' → Set Status to 'Done'"
+    info "  4. Optionally: Enable 'Auto-archive items' and 'Auto-add sub-issues'"
+    info "  5. Create views: Kanban Board (groupBy: Area, sortBy: Priority)"
+    info "                   Table (sortBy: Priority)"
+    info ""
+    if [[ "$owner_type" == "organization" ]]; then
+      info "  6. Promote as template (org-owned, eligible):"
+      info "       scripts/board.sh template-promote $project_number --owner $owner"
+      info ""
+      info "  After promotion, future boards in this org (and in user accounts of"
+      info "  org members) will inherit this configuration via copyProjectV2."
+    else
+      info "  6. To enable template-clone for future user-owned boards, you must"
+      info "     create a template in an organization (user-owned projects cannot"
+      info "     be marked as templates by GitHub):"
+      info ""
+      info "       a. Create an org project that mirrors this configuration:"
+      info "          gh project create --owner <your-org> --title \"Standard Repo Template\""
+      info "       b. Configure it the same way (steps 1-5 above)"
+      info "       c. Promote it:"
+      info "          scripts/board.sh template-promote <new-number> --owner <your-org>"
+      info ""
+      info "     Then 'board.sh init --owner @me ...' will discover the org template"
+      info "     via your org memberships and clone it cross-owner."
+    fi
+  fi
+
+  info ""
+  info "Commit .github/board.json to the repo."
+}
+
+# ─── Template discovery ──────────────────────────────────────
+# Sets $_FOUND_TEMPLATE_ID and $_FOUND_TEMPLATE_TITLE on success.
+# Returns 0 if a template was found, 1 otherwise (including errors).
+#
+# CRITICAL CONSTRAINT: GitHub only allows ProjectV2 owned by an Organization
+# to be marked as templates. User-owned (@me) projects CANNOT be templates.
+# However, copyProjectV2 supports cross-owner copy: an org template can be
+# cloned into a user account.
+#
+# Discovery strategy:
+#   1. If target is an organization → check that org for templates.
+#   2. If target is a user (@me or named) → check the user's organizations
+#      for templates (since user-owned projects cannot be templates).
+#   3. First template found wins. Multi-template selection is deferred.
+
+_init_find_template() {
+  local owner="$1"
+  local owner_type="$2"
+
+  # Build list of orgs to search.
+  # - Org target: just that org.
+  # - User target: enumerate the user's org memberships via REST.
+  local orgs_to_search=()
+  if [[ "$owner_type" == "organization" ]]; then
+    orgs_to_search+=("$owner")
+  else
+    # User target — query org memberships. For @me use /user/orgs (auth user),
+    # for a named user use /users/<login>/orgs (public membership only).
+    local orgs_json
+    if [[ "$owner" == "@me" ]]; then
+      orgs_json=$(gh api user/orgs 2>/dev/null) || {
+        warn "Could not list user orgs (auth issue?). Skipping template lookup."
+        return 1
+      }
+    else
+      orgs_json=$(gh api "users/$owner/orgs" 2>/dev/null) || {
+        warn "Could not list orgs for $owner. Skipping template lookup."
+        return 1
+      }
+    fi
+
+    # Parse logins
+    local org_list
+    org_list=$(echo "$orgs_json" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+if isinstance(data, list):
+    for o in data:
+        print(o.get("login", ""))
+' 2>/dev/null)
+
+    while IFS= read -r org; do
+      [[ -n "$org" ]] && orgs_to_search+=("$org")
+    done <<< "$org_list"
+
+    if [[ ${#orgs_to_search[@]} -eq 0 ]]; then
+      info "  User '$owner' has no org memberships — no template lookup possible"
+      return 1
+    fi
+  fi
+
+  # Search each org for a template
+  local org
+  for org in "${orgs_to_search[@]}"; do
+    local query='{ organization(login: "'"$org"'") { projectsV2(first: 50) { nodes { id number title template } } } }'
+    local result
+    result=$(gh api graphql -f query="$query" 2>&1) || {
+      warn "Template lookup failed for org $org: $result"
+      continue
+    }
+
+    local found
+    found=$(echo "$result" | python3 -c '
+import json, sys
+data = json.load(sys.stdin).get("data", {})
+org = data.get("organization") if data else None
+if not org:
+    sys.exit(1)
+nodes = org.get("projectsV2", {}).get("nodes", []) or []
+for n in nodes:
+    if n.get("template"):
+        print(n["id"] + "|" + n["title"])
+        sys.exit(0)
+sys.exit(1)
+' 2>/dev/null) && {
+      _FOUND_TEMPLATE_ID="${found%%|*}"
+      _FOUND_TEMPLATE_TITLE="${found#*|} (from org: $org)"
+      return 0
+    }
+  done
+
+  return 1
+}
+
+# ─── Resolve owner ID (GraphQL ID for ownerId arguments) ─────
+
+_init_resolve_owner_id() {
+  local owner="$1"
+  local owner_type="$2"
+
+  local query result
+  if [[ "$owner" == "@me" ]]; then
+    query='{ viewer { id } }'
+  elif [[ "$owner_type" == "organization" ]]; then
+    query='{ organization(login: "'"$owner"'") { id } }'
+  else
+    query='{ user(login: "'"$owner"'") { id } }'
+  fi
+
+  result=$(gh api graphql -f query="$query" 2>&1) || {
+    err "Failed to resolve owner ID: $result"
+    return 1
+  }
+
+  echo "$result" | python3 -c '
+import json, sys
+data = json.load(sys.stdin).get("data", {})
+for key in ("viewer", "user", "organization"):
+    if key in data and data[key]:
+        print(data[key]["id"])
+        sys.exit(0)
+sys.exit(1)
+' 2>/dev/null
+}
+
+# ─── Init Path 1: Clone from template ────────────────────────
+# Sets $_NEW_PROJECT_NUMBER and $_NEW_PROJECT_ID on success.
+
+_init_from_template() {
+  local owner="$1"
+  local owner_type="$2"
+  local title="$3"
+  local template_id="$4"
+
+  info "Cloning template to create \"$title\"..."
+
+  local owner_id
+  owner_id=$(_init_resolve_owner_id "$owner" "$owner_type") || {
+    err "Could not resolve owner ID for $owner"
+    return 1
+  }
+
+  # copyProjectV2 returns the new project (includes all views + workflows)
+  local query='mutation {
+    copyProjectV2(input: {
+      projectId: "'"$template_id"'",
+      ownerId: "'"$owner_id"'",
+      title: "'"$title"'",
+      includeDraftIssues: false
+    }) {
+      projectV2 { id number title }
+    }
+  }'
+
+  local result
+  result=$(gh api graphql -f query="$query" 2>&1) || {
+    err "copyProjectV2 failed: $result"
+    return 1
+  }
+
+  local parsed
+  parsed=$(echo "$result" | python3 -c '
+import json, sys
+data = json.load(sys.stdin).get("data", {})
+p = data.get("copyProjectV2", {}).get("projectV2") if data else None
+if not p:
+    sys.exit(1)
+print(str(p["number"]) + "|" + p["id"])
+' 2>/dev/null) || {
+    err "copyProjectV2 returned unexpected payload: $result"
+    return 1
+  }
+
+  _NEW_PROJECT_NUMBER="${parsed%%|*}"
+  _NEW_PROJECT_ID="${parsed#*|}"
+
+  info "  Cloned as project #$_NEW_PROJECT_NUMBER ($_NEW_PROJECT_ID)"
+  return 0
+}
+
+# ─── Init Path 2: From-scratch creation ──────────────────────
+# Sets $_NEW_PROJECT_NUMBER and $_NEW_PROJECT_ID on success.
+
+_init_from_scratch() {
+  local owner="$1"
+  local title="$2"
+
+  info "Creating project from scratch: $title (owner: $owner)..."
   local project_url
   project_url=$(gh project create --owner "$owner" --title "$title" --format json 2>&1) || {
     err "Failed to create project: $project_url"
     return 1
   }
 
-  local project_number project_id
-  project_number=$(echo "$project_url" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['number'])")
-  project_id=$(echo "$project_url" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['id'])")
-  info "Created project #$project_number (ID: $project_id)"
+  _NEW_PROJECT_NUMBER=$(echo "$project_url" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['number'])")
+  _NEW_PROJECT_ID=$(echo "$project_url" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['id'])")
+  info "  Created project #$_NEW_PROJECT_NUMBER ($_NEW_PROJECT_ID)"
 
   # Create custom fields via GraphQL
-  # Note: TEAL is not a valid color — valid enum values are GRAY, BLUE, GREEN, YELLOW, ORANGE, RED, PINK, PURPLE
-  _init_create_field "$project_id" "Priority" "P0:RED,P1:ORANGE,P2:YELLOW,P3:GREEN"
-  _init_create_field "$project_id" "Area" "api:BLUE,web:PURPLE,admin:PINK,website:GREEN,mobile:ORANGE,db:RED,shared:GRAY,infra:YELLOW,docs:BLUE"
-  _init_create_field "$project_id" "Type" "feature:GREEN,bug:RED,chore:GRAY,infra:YELLOW"
-  _init_create_field "$project_id" "Size" "S:GREEN,M:YELLOW,L:ORANGE,XL:RED"
+  # Valid colors: GRAY, BLUE, GREEN, YELLOW, ORANGE, RED, PINK, PURPLE
+  _init_create_field "$_NEW_PROJECT_ID" "Priority" "P0:RED,P1:ORANGE,P2:YELLOW,P3:GREEN"
+  _init_create_field "$_NEW_PROJECT_ID" "Area" "api:BLUE,web:PURPLE,admin:PINK,website:GREEN,mobile:ORANGE,db:RED,shared:GRAY,infra:YELLOW,docs:BLUE"
+  _init_create_field "$_NEW_PROJECT_ID" "Type" "feature:GREEN,bug:RED,chore:GRAY,infra:YELLOW"
+  _init_create_field "$_NEW_PROJECT_ID" "Size" "S:GREEN,M:YELLOW,L:ORANGE,XL:RED"
+  _init_create_text_field "$_NEW_PROJECT_ID" "Sprint"
 
   # Add missing Status options (default has: Todo, In Progress, Done)
   info "Configuring Status field options..."
-  _init_add_status_options "$project_id"
+  _init_add_status_options "$_NEW_PROJECT_ID"
 
-  # Write .github/board.json
+  return 0
+}
+
+# ─── Shared config writer (both paths) ───────────────────────
+
+_init_write_config() {
+  local project_number="$1"
+  local owner="$2"
+  local owner_type="$3"
+
   mkdir -p "$PROJECT_ROOT/.github"
   python3 -c "
 import json
@@ -763,35 +1074,244 @@ config = {
         'Priority': ['P0', 'P1', 'P2', 'P3'],
         'Area': ['api', 'web', 'admin', 'website', 'mobile', 'db', 'shared', 'infra', 'docs'],
         'Type': ['feature', 'bug', 'chore', 'infra'],
-        'Size': ['S', 'M', 'L', 'XL']
+        'Size': ['S', 'M', 'L', 'XL'],
+        'Sprint': []
     }
 }
 with open('$PROJECT_ROOT/.github/board.json', 'w') as f:
     json.dump(config, f, indent=2)
     f.write('\n')
 "
-  info "Wrote .github/board.json"
+}
 
-  # Sync cache
-  PROJECT_NUMBER="$project_number"
-  PROJECT_OWNER="$owner"
-  OWNER_TYPE="$owner_type"
-  do_sync
+# ─── Create TEXT field (for Sprint in from-scratch path) ─────
 
+_init_create_text_field() {
+  local project_id="$1"
+  local field_name="$2"
+
+  local result
+  result=$(gh api graphql -f query="
+    mutation {
+      createProjectV2Field(input: {
+        projectId: \"$project_id\"
+        dataType: TEXT
+        name: \"$field_name\"
+      }) {
+        projectV2Field {
+          ... on ProjectV2FieldCommon { id name }
+        }
+      }
+    }
+  " 2>&1) || {
+    warn "Failed to create text field '$field_name': $result"
+    return 0
+  }
+
+  info "  Created text field: $field_name"
+}
+
+# ─── Template promote: mark a project as a template ─────────
+# Usage: board.sh template-promote <project-number> [--owner <owner>]
+# Defaults owner to the current repo's board.json owner.
+
+do_template_promote() {
+  local project_number="" owner="" owner_type=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --owner) owner="$2"; shift 2 ;;
+      --unmark) UNMARK_MODE=1; shift ;;
+      [0-9]*) project_number="$1"; shift ;;
+      *) shift ;;
+    esac
+  done
+
+  if [[ -z "$project_number" ]]; then
+    err "Usage: board.sh template-promote <project-number> [--owner <owner>] [--unmark]"
+    err ""
+    err "Examples:"
+    err "  board.sh template-promote 1                  # Promote project #1 (uses current repo's owner)"
+    err "  board.sh template-promote 1 --owner @me      # Promote project #1 on your user account"
+    err "  board.sh template-promote 1 --unmark         # Unmark as template"
+    return 1
+  fi
+
+  # Default owner from current repo's board.json
+  if [[ -z "$owner" ]]; then
+    if [[ -f "$BOARD_CONFIG" ]]; then
+      owner=$(python3 -c "import json; print(json.load(open('$BOARD_CONFIG'))['owner'])" 2>/dev/null)
+      owner_type=$(python3 -c "import json; print(json.load(open('$BOARD_CONFIG')).get('owner_type', 'user'))" 2>/dev/null)
+    fi
+    if [[ -z "$owner" ]]; then
+      err "No --owner specified and no .github/board.json in current repo"
+      err "Provide --owner explicitly: board.sh template-promote $project_number --owner @me"
+      return 1
+    fi
+  fi
+
+  # Detect owner type if not already set
+  if [[ -z "$owner_type" ]]; then
+    if [[ "$owner" == "@me" ]]; then
+      owner_type="user"
+    elif gh api "orgs/$owner" --silent 2>/dev/null; then
+      owner_type="organization"
+    else
+      owner_type="user"
+    fi
+  fi
+
+  info "Looking up project #$project_number on $owner..."
+
+  # Fetch project details (id, template state, views, fields)
+  local node_query
+  if [[ "$owner" == "@me" ]]; then
+    node_query='{ viewer { projectV2(number: '"$project_number"') { id title template views(first: 10) { totalCount nodes { name layout } } fields(first: 30) { nodes { ... on ProjectV2FieldCommon { name dataType } } } workflows(first: 20) { nodes { name enabled } } } } }'
+  elif [[ "$owner_type" == "organization" ]]; then
+    node_query='{ organization(login: "'"$owner"'") { projectV2(number: '"$project_number"') { id title template views(first: 10) { totalCount nodes { name layout } } fields(first: 30) { nodes { ... on ProjectV2FieldCommon { name dataType } } } workflows(first: 20) { nodes { name enabled } } } } }'
+  else
+    node_query='{ user(login: "'"$owner"'") { projectV2(number: '"$project_number"') { id title template views(first: 10) { totalCount nodes { name layout } } fields(first: 30) { nodes { ... on ProjectV2FieldCommon { name dataType } } } workflows(first: 20) { nodes { name enabled } } } } }'
+  fi
+
+  local node_result
+  node_result=$(gh api graphql -f query="$node_query" 2>&1) || {
+    err "Failed to query project: $node_result"
+    return 1
+  }
+
+  # Parse into temp file so Python can access without shell escaping
+  local summary
+  summary=$(echo "$node_result" | python3 -c '
+import json, sys
+data = json.load(sys.stdin).get("data", {})
+p = None
+for key in ("viewer", "user", "organization"):
+    if key in data and data[key]:
+        p = data[key].get("projectV2")
+        if p:
+            break
+if not p:
+    print("NOT_FOUND")
+    sys.exit(0)
+
+views = p.get("views", {}).get("nodes", []) or []
+fields = p.get("fields", {}).get("nodes", []) or []
+workflows = p.get("workflows", {}).get("nodes", []) or []
+field_names = [f.get("name") for f in fields if f.get("name")]
+has_sprint = "Sprint" in field_names
+enabled_workflows = [w["name"] for w in workflows if w.get("enabled")]
+
+print("ID|" + p["id"])
+print("TITLE|" + p["title"])
+print("TEMPLATE|" + ("true" if p.get("template") else "false"))
+print("VIEWS|" + str(len(views)))
+print("VIEW_NAMES|" + ",".join(v.get("name","") for v in views))
+print("HAS_SPRINT|" + ("true" if has_sprint else "false"))
+print("ENABLED_WORKFLOWS|" + ",".join(enabled_workflows))
+' 2>/dev/null)
+
+  if [[ "$summary" == "NOT_FOUND" ]] || [[ -z "$summary" ]]; then
+    err "Project #$project_number not found on $owner"
+    return 1
+  fi
+
+  local project_id project_title is_template views_count view_names has_sprint enabled_wfs
+  project_id=$(echo "$summary" | grep '^ID|' | cut -d'|' -f2-)
+  project_title=$(echo "$summary" | grep '^TITLE|' | cut -d'|' -f2-)
+  is_template=$(echo "$summary" | grep '^TEMPLATE|' | cut -d'|' -f2-)
+  views_count=$(echo "$summary" | grep '^VIEWS|' | cut -d'|' -f2-)
+  view_names=$(echo "$summary" | grep '^VIEW_NAMES|' | cut -d'|' -f2-)
+  has_sprint=$(echo "$summary" | grep '^HAS_SPRINT|' | cut -d'|' -f2-)
+  enabled_wfs=$(echo "$summary" | grep '^ENABLED_WORKFLOWS|' | cut -d'|' -f2-)
+
+  info "  Project: \"$project_title\" ($project_id)"
+  info "  Current template state: $is_template"
+  info "  Views ($views_count): $view_names"
+  info "  Sprint field: $has_sprint"
+  info "  Enabled workflows: ${enabled_wfs:-(none)}"
   info ""
-  info "Board initialized successfully!"
-  info "  Project: #$project_number"
-  info "  Owner:   $owner ($owner_type)"
-  info "  Config:  .github/board.json"
-  info "  Cache:   .claude/state/board-config.json"
+
+  # Unmark mode
+  if [[ "${UNMARK_MODE:-0}" -eq 1 ]]; then
+    if [[ "$is_template" == "false" ]]; then
+      info "Project is not currently marked as a template (no-op)"
+      return 0
+    fi
+    local unmark_result
+    unmark_result=$(gh api graphql -f query="mutation { unmarkProjectV2AsTemplate(input: { projectId: \"$project_id\" }) { projectV2 { id template } } }" 2>&1) || {
+      err "Failed to unmark as template: $unmark_result"
+      return 1
+    }
+    info "✓ Unmarked project #$project_number as template"
+    return 0
+  fi
+
+  # Already a template?
+  if [[ "$is_template" == "true" ]]; then
+    info "✓ Project #$project_number is already marked as a template (idempotent)"
+    return 0
+  fi
+
+  # GitHub constraint: only org-owned projects can be templates.
+  if [[ "$owner_type" != "organization" ]]; then
+    err "Only projects owned by an Organization can be marked as a template."
+    err ""
+    err "  This project is owned by user '$owner'. GitHub does not allow"
+    err "  user-owned projects to become templates."
+    err ""
+    err "Recommended workflow:"
+    err "  1. Create a new project in one of your organizations:"
+    err "       gh project create --owner <org-name> --title \"Standard Repo Development\""
+    err "  2. Configure it (views, workflows, Sprint field) to mirror your canonical board."
+    err "  3. Promote it as a template:"
+    err "       scripts/board.sh template-promote <new-project-number> --owner <org-name>"
+    err ""
+    err "  Then 'board.sh init --owner @me ...' will clone the org template into your"
+    err "  user account (cross-owner copy is supported)."
+    return 1
+  fi
+
+  # Readiness warnings
+  local warnings=0
+  if [[ "$views_count" -lt 2 ]]; then
+    warn "Template has only $views_count view(s). Future boards will inherit just this view."
+    warn "  Recommendation: Create a Kanban Board view (groupBy: Area) AND a Table view."
+    warnings=$((warnings + 1))
+  fi
+  if [[ "$has_sprint" != "true" ]]; then
+    warn "Template has no 'Sprint' TEXT field."
+    warn "  Recommendation: Add a Sprint TEXT field in project settings."
+    warnings=$((warnings + 1))
+  fi
+  if [[ -z "$enabled_wfs" ]]; then
+    warn "Template has no enabled workflows."
+    warn "  Recommendation: Enable 'Item closed' and 'Pull request merged' workflows."
+    warnings=$((warnings + 1))
+  fi
+
+  if [[ "$warnings" -gt 0 ]]; then
+    warn ""
+    warn "Proceeding with $warnings readiness warning(s). Promoted templates propagate to"
+    warn "all future boards — fix these in the UI first if you want a complete template."
+    warn ""
+  fi
+
+  # Mark as template
+  local mark_result
+  mark_result=$(gh api graphql -f query="mutation { markProjectV2AsTemplate(input: { projectId: \"$project_id\" }) { projectV2 { id template } } }" 2>&1) || {
+    err "Failed to mark as template: $mark_result"
+    return 1
+  }
+
+  info "✓ Marked project #$project_number (\"$project_title\") as a template"
   info ""
-  info "Manual steps remaining:"
-  info "  1. Go to Project Settings > Workflows"
-  info "  2. Enable: 'Item closed' → Set Status to 'Done'"
-  info "  3. Enable: 'Pull request merged' → Set Status to 'Done'"
-  info "  4. Optionally: Enable 'Auto-add to project' for this repo"
+  info "Future 'board.sh init' runs will clone this project via copyProjectV2,"
+  info "inheriting its views, workflows, fields, and status descriptions."
   info ""
-  info "Commit .github/board.json to the repo."
+  info "Reachable from:"
+  info "  - board.sh init --owner $owner ...     (org-owned target)"
+  info "  - board.sh init --owner @me ...        (user-owned target, if you're an org member)"
+  info "  - board.sh init --owner <other-user>   (if that user is also a member of $owner)"
 }
 
 _init_create_field() {
@@ -962,9 +1482,10 @@ main() {
   shift || true
 
   case "$cmd" in
-    init)         do_init "$@" ;;
-    clone-schema) do_clone_schema "$@" ;;
-    sync)         do_sync ;;
+    init)             do_init "$@" ;;
+    clone-schema)     do_clone_schema "$@" ;;
+    template-promote) do_template_promote "$@" ;;
+    sync)             do_sync ;;
     add)          do_add "$@" ;;
     move)         do_move "$@" ;;
     comment)      do_comment "$@" ;;
@@ -981,10 +1502,22 @@ GitHub Projects v2 Board Manager (Multi-Repo Portable)
 Usage: board.sh <command> [args]
 
 Setup Commands:
-  init --owner <org-or-@me> --title "Project Title"
-                                        Create a new board with standard schema
+  init --owner <org-or-@me> --title "Project Title" [--no-template]
+                                        Create a new board. If the target owner has a
+                                        project marked as a template (via template-promote),
+                                        clones it via copyProjectV2 — inheriting views,
+                                        workflows, fields, and status descriptions.
+                                        Falls back to from-scratch creation if no template
+                                        exists. Pass --no-template to force from-scratch.
+  template-promote <project-number> [--owner <org-or-@me>] [--unmark]
+                                        Mark an existing project as a template so future
+                                        'board.sh init' runs clone it. Warns if the project
+                                        is missing views, workflows, or Sprint field.
+                                        --unmark reverses the promotion. Idempotent.
   clone-schema --to-owner <org-or-@me> --title "Board Title"
                                         Clone current board's schema to a new board
+                                        (field-level only — does NOT copy views/workflows;
+                                        use template-promote + init for full cloning)
   sync                                  Refresh cached field IDs from GitHub
 
 Board Commands:

@@ -1,6 +1,6 @@
 # Board Integration — GitHub Issues + /plan-w-team Pipeline
 
-> **Last Updated:** 2026-04-09
+> **Last Updated:** 2026-04-10
 > **Script:** `scripts/board.sh`
 > **Skill:** `/board`
 > **Board:** GitHub Projects v2, Project #1
@@ -11,11 +11,23 @@
 
 1. If `scripts/board.sh` is missing → copies from `.claude/scripts/board.sh`
 2. If `.github/board.json` is missing → detects org/user from git remote, runs `board.sh init`
-3. Commits `scripts/board.sh` and `.github/board.json` so the board persists
+3. `board.sh init` attempts to **clone from a canonical org template** (via `copyProjectV2`) before falling back to from-scratch creation. When a template is found, the new board inherits views (Kanban + Table), workflows (with enabled state), custom fields (Priority, Area, Type, Size, Sprint), and status descriptions.
+4. Commits `scripts/board.sh` and `.github/board.json` so the board persists
 
-**No manual setup required.** The first `/plan-w-team` run in any repo creates the board automatically.
+**No manual setup required.** The first `/plan-w-team` run in any repo creates the board automatically. If an org template exists under one of your org memberships, the new board is a full clone — otherwise it's a bare from-scratch board that needs manual view/workflow configuration.
 
 Prerequisites: `gh` CLI authenticated (`gh auth status`). If not, the user is prompted to run `! gh auth login`.
+
+### Template Discovery (Cross-Owner)
+
+`board.sh init` finds templates by walking the user → org chain:
+
+- **Org target** (`--owner my-org`): queries the target org directly for `projectsV2 { template: true }`.
+- **User target** (`--owner @me` or `--owner some-user`): enumerates the user's org memberships via `gh api user/orgs` and queries each org for templates. The first template wins.
+
+Only **org-owned projects** can be marked as templates (GitHub constraint). However, `copyProjectV2` supports **cross-owner copy**, so an org template can be cloned into any user account you control. See `docs/operations/BOARD.md#template-clone-bootstrap` for the full setup procedure.
+
+To skip template discovery on a particular run, pass `--no-template` to `board.sh init`.
 
 ## Overview
 
@@ -196,17 +208,21 @@ The issue number (`#N`) created in Step 1 must flow through all subsequent stage
 2. `PVTI_xxxxx` → direct project item ID
 3. `"feature name"` → title substring search across all project items
 
-## GitHub Workflows (Auto-Configured)
+## GitHub Workflows (Auto-Configured via Template Clone)
 
-Two workflows are enabled on the project board:
+When the board is cloned from an org template, workflow enabled-state is inherited. A typical template has these workflows enabled:
 
-| Trigger             | Action            | Effect                                     |
-| ------------------- | ----------------- | ------------------------------------------ |
-| Issue closed        | Set Status → Done | Closing an issue moves its card to Done    |
-| Pull request merged | Set Status → Done | Merging a PR moves its linked card to Done |
+| Trigger             | Action            | Effect                                       |
+| ------------------- | ----------------- | -------------------------------------------- |
+| Issue closed        | Set Status → Done | Closing an issue moves its card to Done      |
+| Pull request merged | Set Status → Done | Merging a PR moves its linked card to Done   |
+| Auto-add sub-issues | Add to project    | Child issues of project items auto-enroll    |
+| Auto-archive items  | Archive           | Completed items archive after a grace period |
 
 Combined with `Closes #42` in PR descriptions, this creates a fully automatic chain:
 **PR merged → Issue closed → Board card → Done**
+
+**From-scratch fallback:** If no org template is discoverable, the board is created with GitHub's 6 default workflows but **none enabled**. Workflows must be enabled manually in the GitHub UI (Project Settings → Workflows) because there is no GraphQL mutation to enable them programmatically.
 
 ## Custom Fields
 
@@ -267,3 +283,46 @@ If the board is down, the pipeline continues. The board is for visibility and hi
 | Sprint views                 | Built-in              | Kanban + Table views                  |
 | Work item hierarchy          | Epic → Feature → Task | Flat (use labels/grouping)            |
 | Spec linkage                 | Wiki/attachments      | Issue body + spec file reference      |
+
+## Troubleshooting
+
+When `board-preflight.sh` or any `board.sh` command fails, the single source of truth for recovery is:
+
+**`docs/operations/BOARD_TEMPLATE_RUNBOOK.md`**
+
+It documents 11 failure modes (FM-1 through FM-11), each with a diagnosis command and exact recovery steps. The preflight script prints the matching FM reference on every error path — read that section first, then apply the recovery before retrying.
+
+### Quick Failure Mode Index
+
+| Symptom                                              | Section                                 |
+| ---------------------------------------------------- | --------------------------------------- |
+| `gh` says "not authenticated"                        | FM-1 — gh not authenticated             |
+| `copyProjectV2` rejects with "missing project scope" | FM-2 — gh missing `project` scope       |
+| Template discovery returns empty                     | FM-3 — Template lookup returned empty   |
+| "Cannot mark user-owned project as template"         | FM-4 — Template promote rejected        |
+| `copyProjectV2` GraphQL error                        | FM-5 — copyProjectV2 failed             |
+| Clone ok but `.github/board.json` missing            | FM-6 — board.json write failed          |
+| `board.json` points at a deleted project             | FM-7 — Stale pointer to deleted project |
+| `board.json` points at wrong owner                   | FM-8 — Wrong owner                      |
+| Stale cache after editing board in GitHub UI         | FM-9 — Stale board-config.json cache    |
+| "first: must be specified" on verification query     | FM-10 — Pagination error                |
+| Old `board.sh` without template support (consumer)   | FM-11 — Consumer repo out of date       |
+
+### Common Procedures
+
+| Task                                         | Section                               |
+| -------------------------------------------- | ------------------------------------- |
+| Set up a new canonical template from scratch | §9.1 — Create a new org template      |
+| Update the existing template                 | §9.2 — Update the template            |
+| Re-init a repo whose board was deleted       | §9.3 — Re-initialize an existing repo |
+| Initialize a brand-new repo                  | §9.4 — New repo bootstrap             |
+| Unmark a template that shouldn't be one      | §9.5 — Unmark a template              |
+| Reproduce bootstrap bugs on a throwaway repo | §9.6 — Throwaway test procedure       |
+
+### When Investigating "Missing" Features
+
+Before telling the user a feature is "missing" from a cloned board, read **§7 — What Gets Inherited (and What Doesn't)**. `copyProjectV2` preserves views, workflows (with enabled state), custom fields including Sprint/iteration, and status descriptions — but **clears all items** including regular Issues (`includeDraftIssues: false` is a misnomer that affects everything, not just drafts). If the cloned board looks empty of cards, that is expected; if it looks empty of structure, that is a template problem documented in §3.
+
+### Fire-and-Forget Reminder
+
+Board failures must never block the pipeline. If the preflight script fails mid-run, the recovery is still best-effort: retry with `--no-template` or clear `.github/board.json` and re-run. The user can continue `/plan-w-team` work even with a broken board — the pipeline's `|| true` pattern guarantees it.
