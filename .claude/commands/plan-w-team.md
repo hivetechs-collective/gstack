@@ -50,47 +50,24 @@ If the user does not specify, default to **HOLD**. Ask only if the feature descr
 
 Each step is defined in a separate stage file. **Read the stage file when you reach that step** — do not load all stages upfront.
 
-### Pre-Flight: Board Auto-Setup
+### Pre-Flight: Board Auto-Setup (MANDATORY)
 
-Before starting any step, ensure the GitHub Projects board is ready. Run these checks silently — no user interaction needed unless `gh` isn't authenticated.
-
-**1. Ensure `scripts/board.sh` exists:**
+Before starting any step, **run the preflight script**. This is a single command, not optional:
 
 ```bash
-if [ ! -f scripts/board.sh ]; then
-  cp .claude/scripts/board.sh scripts/board.sh
-  chmod +x scripts/board.sh
-fi
+.claude/scripts/board-preflight.sh
 ```
 
-**2. Ensure `.github/board.json` exists (board is initialized):**
+This script is idempotent — if the board already exists, it exits immediately. If not, it:
 
-```bash
-if [ ! -f .github/board.json ]; then
-  # Detect owner from git remote
-  OWNER=$(gh repo view --json owner -q '.owner.login' 2>/dev/null || echo "")
-  OWNER_TYPE=$(gh repo view --json owner -q '.owner.type' 2>/dev/null || echo "User")
-  REPO_NAME=$(gh repo view --json name -q '.name' 2>/dev/null || basename "$(pwd)")
+1. Copies `board.sh` to `scripts/` if missing
+2. Detects the repo owner from the git remote
+3. Creates a GitHub Projects v2 board via `board.sh init`
+4. Commits `scripts/board.sh` and `.github/board.json`
 
-  # Convert repo name to title: "my-project" -> "My Project Development"
-  BOARD_TITLE=$(echo "$REPO_NAME" | sed 's/-/ /g' | sed 's/\b\(.\)/\u\1/g')" Development"
+If the script fails with an auth error, tell the user to run `! gh auth login` before continuing.
 
-  # Use @me for user-owned repos, org name for org-owned repos
-  if [ "$OWNER_TYPE" = "Organization" ]; then
-    scripts/board.sh init --owner "$OWNER" --title "$BOARD_TITLE"
-  else
-    scripts/board.sh init --owner "@me" --title "$BOARD_TITLE"
-  fi
-
-  # Commit the board config so other agents/sessions see it
-  git add scripts/board.sh .github/board.json
-  git commit -m "chore: initialize GitHub Projects board for /plan-w-team"
-fi
-```
-
-If `gh auth status` fails, tell the user to run `! gh auth login` before continuing.
-
-This is a one-time setup per repo. Once `.github/board.json` exists, this check is a no-op.
+**Do not skip this step. Do not inline the logic. Just run the script.**
 
 ### Step 0: Scope Challenge
 

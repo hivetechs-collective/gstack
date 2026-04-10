@@ -739,8 +739,9 @@ do_init() {
   info "Created project #$project_number (ID: $project_id)"
 
   # Create custom fields via GraphQL
+  # Note: TEAL is not a valid color — valid enum values are GRAY, BLUE, GREEN, YELLOW, ORANGE, RED, PINK, PURPLE
   _init_create_field "$project_id" "Priority" "P0:RED,P1:ORANGE,P2:YELLOW,P3:GREEN"
-  _init_create_field "$project_id" "Area" "api:BLUE,web:PURPLE,admin:PINK,website:TEAL,mobile:ORANGE,db:RED,shared:GRAY,infra:YELLOW,docs:GREEN"
+  _init_create_field "$project_id" "Area" "api:BLUE,web:PURPLE,admin:PINK,website:GREEN,mobile:ORANGE,db:RED,shared:GRAY,infra:YELLOW,docs:BLUE"
   _init_create_field "$project_id" "Type" "feature:GREEN,bug:RED,chore:GRAY,infra:YELLOW"
   _init_create_field "$project_id" "Size" "S:GREEN,M:YELLOW,L:ORANGE,XL:RED"
 
@@ -799,13 +800,14 @@ _init_create_field() {
   local options_csv="$3"  # format: "name:COLOR,name:COLOR"
 
   # Build GraphQL options array
+  # Note: description is a required field (String!) in ProjectV2SingleSelectFieldOptionInput
   local options_gql
   options_gql=$(python3 -c "
 parts = '$options_csv'.split(',')
 options = []
 for p in parts:
     name, color = p.split(':')
-    options.append('{name: \"' + name.strip() + '\", color: ' + color.strip() + '}')
+    options.append('{name: \"' + name.strip() + '\", color: ' + color.strip() + ', description: \"\"}')
 print(', '.join(options))
 ")
 
@@ -837,90 +839,65 @@ print(', '.join(options))
 _init_add_status_options() {
   local project_id="$1"
 
-  # Get the Status field ID and existing options
-  local status_info
-  status_info=$(gh api graphql -f query="
+  # Get the Status field ID. On a fresh board, GitHub creates a default Status
+  # field with options: Todo, In Progress, Done. We replace the entire option
+  # list in one call with our full desired schema.
+  #
+  # Note: updateProjectV2Field.singleSelectOptions REPLACES the entire list.
+  # Each option requires: name, color, description (all non-null). There is
+  # no longer an `id` field — option IDs are regenerated on replacement. This
+  # is safe only during init (no items assigned to Status yet).
+  local status_field_id
+  status_field_id=$(gh api graphql -f query="
     query {
       node(id: \"$project_id\") {
         ... on ProjectV2 {
           field(name: \"Status\") {
             ... on ProjectV2SingleSelectField {
               id
-              options {
-                id
-                name
-              }
             }
           }
         }
       }
     }
-  " 2>&1) || {
-    warn "Could not read Status field"
+  " 2>&1 | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['data']['node']['field']['id'])" 2>/dev/null) || {
+    warn "Could not read Status field ID"
     return 0
   }
 
-  local status_field_id existing_options
-  status_field_id=$(echo "$status_info" | python3 -c "import sys,json; print(json.loads(sys.stdin.read())['data']['node']['field']['id'])")
-  existing_options=$(echo "$status_info" | python3 -c "
-import sys, json
-data = json.loads(sys.stdin.read())
-options = data['data']['node']['field']['options']
-print(','.join(o['name'] for o in options))
-")
+  # Build the full desired option list in one mutation.
+  # Valid colors: GRAY, BLUE, GREEN, YELLOW, ORANGE, RED, PINK, PURPLE
+  local options_gql='[
+    {name: "Backlog",     color: GRAY,   description: ""},
+    {name: "Todo",        color: BLUE,   description: ""},
+    {name: "In Progress", color: YELLOW, description: ""},
+    {name: "Blocked",     color: RED,    description: ""},
+    {name: "Review",      color: PURPLE, description: ""},
+    {name: "Done",        color: GREEN,  description: ""},
+    {name: "Archived",    color: GRAY,   description: ""}
+  ]'
 
-  # Add missing options: Backlog, Blocked, Review, Archived
-  local needed=("Backlog:GRAY" "Blocked:RED" "Review:PURPLE" "Archived:GRAY")
-  for entry in "${needed[@]}"; do
-    local name="${entry%%:*}"
-    local color="${entry##*:}"
-    if echo "$existing_options" | grep -q "$name"; then
-      continue
-    fi
-    gh api graphql -f query="
-      mutation {
-        updateProjectV2Field(input: {
-          fieldId: \"$status_field_id\"
-          singleSelectOptions: $(python3 -c "
-import sys, json
-# Get current options and append new one
-info = json.loads('''$status_info''')
-options = info['data']['node']['field']['options']
-result = []
-for o in options:
-    result.append('{id: \"' + o['id'] + '\", name: \"' + o['name'] + '\"}')
-result.append('{name: \"$name\", color: $color}')
-print('[' + ', '.join(result) + ']')
-")
-        }) {
-          projectV2Field {
-            ... on ProjectV2SingleSelectField {
-              id
-            }
+  local result
+  result=$(gh api graphql -f query="
+    mutation {
+      updateProjectV2Field(input: {
+        fieldId: \"$status_field_id\"
+        singleSelectOptions: $options_gql
+      }) {
+        projectV2Field {
+          ... on ProjectV2SingleSelectField {
+            id
+            options { name }
           }
         }
       }
-    " 2>&1 >/dev/null || warn "Failed to add Status option: $name"
-    info "  Added Status option: $name"
-    # Re-fetch after each add since option IDs change
-    status_info=$(gh api graphql -f query="
-      query {
-        node(id: \"$project_id\") {
-          ... on ProjectV2 {
-            field(name: \"Status\") {
-              ... on ProjectV2SingleSelectField {
-                id
-                options {
-                  id
-                  name
-                }
-              }
-            }
-          }
-        }
-      }
-    " 2>&1) || true
-  done
+    }
+  " 2>&1) || {
+    warn "Failed to replace Status options: $result"
+    return 0
+  }
+
+  info "  Configured Status options: Backlog, Todo, In Progress, Blocked, Review, Done, Archived"
 }
 
 # ─── Clone Schema: copy fields from one board to a new one ───
