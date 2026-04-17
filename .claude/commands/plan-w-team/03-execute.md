@@ -137,6 +137,23 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
      - If `files_touched` has no annotations, default to: Read first. If file exists, Edit.
        If file doesn't exist, Write.
 
+     TEST EXECUTION (run before marking any task complete):
+     - Detect test runner once at task start using this priority order:
+       Cargo.toml [workspace] → cargo test --workspace
+       Cargo.toml (no workspace) → cargo test
+       package.json with vitest devDep → npx vitest run
+       package.json with jest devDep → npx jest
+       package.json with test script → npm test
+       pyproject.toml [tool.pytest] or conftest.py → pytest
+       *.bats files → bats <dir>
+       None of the above → skip (not an error, log test_runner: none)
+     - Run detected test command with 60-second timeout before marking
+       each task complete. If tests fail, fix and re-run.
+     - If tests fail on code you didn't write, run the same tests on the
+       base branch to attribute blame — pre-existing failures are not yours.
+     - If no test runner detected, proceed without tests. Many repos
+       (docs, config, shell scripts) legitimately have no test suite.
+
      TASK CLAIMING:
      - Use TaskList to find unassigned, unblocked tasks
      - Use TaskUpdate to claim a task (assign to yourself)

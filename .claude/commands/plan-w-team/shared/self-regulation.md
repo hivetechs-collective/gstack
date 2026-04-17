@@ -117,3 +117,17 @@ Builders MUST respect the shared file ownership established in Step 2:
 - JSX/TSX fixes contribute +5% (can break functionality)
 - Hard cap: 30 browser-related fixes per session (lower than code cap of 50)
 - Before/after screenshots required for every browser fix
+
+## Testing Style Discipline
+
+**Core rule**: Prefer fixtures and fakes over mocks. Only use mocks when verifying side effects (e.g., email was sent) or when the real implementation is unavailable.
+
+| Pattern             | TypeScript                                                  | Rust                                  | Python                           | Shell                          |
+| ------------------- | ----------------------------------------------------------- | ------------------------------------- | -------------------------------- | ------------------------------ |
+| Fixtures over mocks | Factory functions, not `jest.fn()` for deps with real impls | Struct builders, fakes over `mockall` | `@pytest.fixture`, `factory_boy` | `mktemp -d` with known content |
+| HTTP seams          | `msw` (Mock Service Worker)                                 | `wiremock-rs`                         | `respx` or `responses`           | Local `nc -l` or tiny server   |
+| Property-based      | `fast-check`                                                | `proptest`                            | `hypothesis`                     | N/A                            |
+
+- **Property-based tests**: For pure functions with domain > 10 inputs, write at least one property test using the language-appropriate library above.
+- **Tautological test avoidance**: Tests must verify behavior, not implementation. Avoid `expect(fn).toHaveBeenCalled()` on internals — test observable outcomes (return values, state changes, API responses).
+- **WTF impact**: Writing tests that only assert mock calls were made (no behavioral verification) adds **+5%** to WTF-likelihood.
