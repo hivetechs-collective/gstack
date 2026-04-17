@@ -166,8 +166,8 @@ Split model tiers by cognitive demand to conserve daily allowance. Builder agent
 | Fix-First Reviewer | Brain | `claude-opus-4-7` | lead-invoked Pass 1/2 review                   | Security review, one-way door scrutiny         |
 | Validator          | Brain | `claude-opus-4-7` | `.claude/agents/team/validator.md` frontmatter | Security-critical read-only review             |
 | Builder agents     | Hands | `claude-opus-4-6` | `.claude/agents/team/builder.md` frontmatter   | Implementation, file edits, test writing       |
-| Ship pipeline      | Hands | Opus 4.6 (alias)  | lead-invoked mechanical steps                  | Version bump, changelog, push                  |
-| Retro              | Hands | Opus 4.6 (alias)  | lead-invoked metrics phase                     | Metrics collection, streak tracking            |
+| Ship pipeline      | Lead  | lead session      | lead-invoked mechanical steps                  | Version bump, changelog, push (~5% of tokens)  |
+| Retro              | Lead  | lead session      | lead-invoked metrics phase                     | Metrics collection, streak tracking (minor)    |
 
 ### How tier pinning works (IMPORTANT — read before editing Agent calls)
 
@@ -177,7 +177,7 @@ To pin a specific generation (4.7 vs 4.6):
 
 1. **Set the full model ID in the agent-definition frontmatter** (e.g., `model: claude-opus-4-7` in `.claude/agents/team/evaluator.md`).
 2. **Do NOT set `model:` in the Agent tool call** — if you do, the alias will override the frontmatter pin and defeat the tier split.
-3. For mechanical work done directly by the lead (ship, retro), no pinning is needed — the lead's session model is appropriate.
+3. For mechanical work done directly by the lead (ship, retro), no pinning is needed — the lead's session model is used. These phases are short (~5% of total tokens combined), so running them on the lead's Brain-tier model is not a meaningful cost concern. If you want to force Hands-tier for ship/retro, delegate to a `builder`-type subagent for the mechanical steps.
 
 When a new model generation ships:
 
