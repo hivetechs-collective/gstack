@@ -155,22 +155,47 @@ Quantitative retrospective with metrics, quality signals, streak tracking, self-
 | `--ship-only` | 5 -> 6 -> 7 -> 8                            | Assumes code is already implemented    |
 | `--retro`     | 8 only                                      | Retro on recent shipped work           |
 
-## Model Strategy
+## Model Strategy (ACTIVE)
 
 Split model tiers by cognitive demand to conserve daily allowance. Builder agents consume ~80% of total tokens but need execution speed, not deep reasoning. Reserve the newest model generation for roles where reasoning quality directly affects outcomes.
 
-| Role               | Tier  | Model    | Alias             | Rationale                                             |
-| ------------------ | ----- | -------- | ----------------- | ----------------------------------------------------- |
-| Lead (you)         | Brain | Opus 4.7 | `claude-opus-4-7` | Orchestration, judgment calls, scope decisions        |
-| Evaluator          | Brain | Opus 4.7 | `claude-opus-4-7` | Independent quality assessment, acceptance criteria   |
-| Fix-First Reviewer | Brain | Opus 4.7 | `claude-opus-4-7` | Security review, design review, one-way door scrutiny |
-| Builder agents     | Hands | Opus 4.6 | `claude-opus-4-6` | Implementation, file edits, test writing              |
-| Ship pipeline      | Hands | Opus 4.6 | `claude-opus-4-6` | Mechanical: version bump, changelog, push             |
-| Retro              | Hands | Opus 4.6 | `claude-opus-4-6` | Metrics collection, streak tracking                   |
+| Role               | Tier  | Pinned Model      | Agent Definition                               | Rationale                                      |
+| ------------------ | ----- | ----------------- | ---------------------------------------------- | ---------------------------------------------- |
+| Lead (you)         | Brain | Opus 4.7 (alias)  | invoking session default                       | Orchestration, judgment calls, scope decisions |
+| Evaluator          | Brain | `claude-opus-4-7` | `.claude/agents/team/evaluator.md` frontmatter | Independent quality assessment                 |
+| Fix-First Reviewer | Brain | `claude-opus-4-7` | lead-invoked Pass 1/2 review                   | Security review, one-way door scrutiny         |
+| Validator          | Brain | `claude-opus-4-7` | `.claude/agents/team/validator.md` frontmatter | Security-critical read-only review             |
+| Builder agents     | Hands | `claude-opus-4-6` | `.claude/agents/team/builder.md` frontmatter   | Implementation, file edits, test writing       |
+| Ship pipeline      | Hands | Opus 4.6 (alias)  | lead-invoked mechanical steps                  | Version bump, changelog, push                  |
+| Retro              | Hands | Opus 4.6 (alias)  | lead-invoked metrics phase                     | Metrics collection, streak tracking            |
 
-**How to apply**: Use the Agent tool's `model` parameter to set the tier. The `03-execute.md` stage file includes the model parameter in its Agent call examples. When a new model generation ships, update the Brain tier to the new model and demote the previous Brain model to Hands tier.
+### How tier pinning works (IMPORTANT — read before editing Agent calls)
 
-**API note**: The Agent tool's `model` enum accepts aliases (`"opus"`, `"sonnet"`, `"haiku"`). When only one Opus generation is available, both tiers resolve to the same model — the split becomes effective when a newer generation is released and `"opus"` advances. To pin a specific version, use the full model ID in agent definition frontmatter (`.claude/agents/*.md`).
+The Agent tool's `model` parameter **only accepts the aliases `opus` / `sonnet` / `haiku`**. It does NOT accept full model IDs like `claude-opus-4-7`. Passing a full ID will fail the tool's input validation.
+
+To pin a specific generation (4.7 vs 4.6):
+
+1. **Set the full model ID in the agent-definition frontmatter** (e.g., `model: claude-opus-4-7` in `.claude/agents/team/evaluator.md`).
+2. **Do NOT set `model:` in the Agent tool call** — if you do, the alias will override the frontmatter pin and defeat the tier split.
+3. For mechanical work done directly by the lead (ship, retro), no pinning is needed — the lead's session model is appropriate.
+
+When a new model generation ships:
+
+- Update Brain-tier frontmatter pins to the new generation (e.g., `claude-opus-4-7` → `claude-opus-4-8`).
+- Demote the previous Brain model to the Hands tier (e.g., update `builder.md` to `claude-opus-4-7`).
+
+### Boris Cherny's Opus 4.7 Practices
+
+Lead and Brain-tier agents follow the patterns in `shared/opus-4-7-practices.md`:
+
+- **Front-load task specification** — give the full task shape upfront (intent, constraints, AC, files).
+- **Adaptive thinking** — guide intent ("think carefully" / "respond quickly"), don't fix a token budget.
+- **Deliberate subagent spawning** — 4.7 is judicious; state "spawn N parallel builders" explicitly when parallelism is wanted.
+- **Auto mode + completion hooks** — let runs proceed without polling; rely on desktop notifications.
+- **Default effort: high** — drop to medium/low only for narrow cost/latency-sensitive tasks.
+- **Delegate outcomes, not instructions** — Opus 4.7 is a capable engineer, not a line-by-line pair.
+
+Read `shared/opus-4-7-practices.md` at the start of any Brain-tier stage (Step 0/1/5).
 
 ## Worktree Isolation
 
@@ -199,13 +224,14 @@ This prevents context confusion when running parallel planning sessions.
 
 Stage files reference these shared components on-demand (only loaded when needed by the stage):
 
-| Shared File                      | Used By                    | Content                                   |
-| -------------------------------- | -------------------------- | ----------------------------------------- |
-| `shared/self-regulation.md`      | 03-execute                 | WTF-likelihood, fix caps, commits         |
-| `shared/cognitive-frameworks.md` | 00-scope, 01-spec, 05-ship | Named frameworks reference                |
-| `shared/artifact-storage.md`     | 05-ship, 07-retro          | SLUG, paths, formats                      |
-| `shared/browser-qa.md`           | 04-review, 05-ship         | Playwright MCP + browse binary QA         |
-| `shared/board-integration.md`    | All stages (01-07)         | GitHub Issues board sync, fire-and-forget |
+| Shared File                      | Used By                                  | Content                                                                          |
+| -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------- |
+| `shared/self-regulation.md`      | 03-execute                               | WTF-likelihood, fix caps, commits                                                |
+| `shared/cognitive-frameworks.md` | 00-scope, 01-spec, 05-ship               | Named frameworks reference                                                       |
+| `shared/artifact-storage.md`     | 05-ship, 07-retro                        | SLUG, paths, formats                                                             |
+| `shared/browser-qa.md`           | 04-review, 05-ship                       | Playwright MCP + browse binary QA                                                |
+| `shared/board-integration.md`    | All stages (01-07)                       | GitHub Issues board sync, fire-and-forget                                        |
+| `shared/opus-4-7-practices.md`   | 00-scope, 01-spec, 03-execute, 04-review | Cherny's Opus 4.7 patterns — front-load, adaptive thinking, deliberate subagents |
 
 All shared files are at `.claude/commands/plan-w-team/shared/`.
 

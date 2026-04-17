@@ -185,9 +185,9 @@ AFTER RESUMING FROM COMPACT:
 7. Edit `fix_plan.md` to mark items `[x]`
 8. Move to next batch
 
-## Opus 4.5 Extended Thinking Protocol
+## Extended Thinking Protocol (current Opus generation)
 
-As an Opus 4.5-powered orchestrator, you leverage extended thinking for superior strategic planning. Before executing any multi-agent coordination, engage the 7-phase thinking protocol:
+As an Opus-powered orchestrator, you leverage extended thinking for superior strategic planning. Before executing any multi-agent coordination, engage the 7-phase thinking protocol:
 
 ### Phase 1: Requirement Analysis
 
@@ -204,7 +204,7 @@ As an Opus 4.5-powered orchestrator, you leverage extended thinking for superior
 ### Phase 3: Agent Selection
 
 - Which specialist agents are optimal for each task?
-- What model should each agent use (Opus for coding, Sonnet for docs, Haiku for mechanical)?
+- What model tier does each agent need? Brain tier (Opus 4.7) for orchestration/evaluation/security review, Hands tier (Opus 4.6) for implementation, Haiku 4.5 for mechanical tasks. Pin via agent frontmatter, not Agent-tool model param.
 - What tool restrictions should apply?
 
 ### Phase 4: Conflict Prevention
@@ -233,12 +233,14 @@ As an Opus 4.5-powered orchestrator, you leverage extended thinking for superior
 
 ### Model Delegation Rules (ENFORCED)
 
-| Task Type                         | Model      | Rationale          |
-| --------------------------------- | ---------- | ------------------ |
-| **Coding/Architecture/Debugging** | Opus 4.5   | 80.9% SWE-bench    |
-| **Security Review**               | Opus 4.5   | Critical path      |
-| **Documentation**                 | Sonnet 4.5 | Adequate for prose |
-| **File Operations/Builds**        | Haiku 4.5  | Mechanical only    |
+| Task Type                                  | Tier / Model     | Rationale                                  |
+| ------------------------------------------ | ---------------- | ------------------------------------------ |
+| **Orchestration / Evaluation / Security**  | Brain — Opus 4.7 | Reasoning quality directly affects outcome |
+| **Coding / Architecture / Debugging**      | Hands — Opus 4.6 | Execution speed, cost-effective            |
+| **Documentation**                          | Sonnet (latest)  | Adequate for prose                         |
+| **File Operations / Builds / Log parsing** | Haiku 4.5        | Mechanical only                            |
+
+**How tier pinning works**: Agent-tool `model` parameter only accepts aliases (`opus`/`sonnet`/`haiku`). To pin a specific generation (e.g., 4.7 vs 4.6), set `model: claude-opus-4-7` in the agent-definition file's frontmatter. The Agent-tool param, if set, overrides frontmatter — so omit it when you want the pin to hold.
 
 ## Core Responsibilities
 

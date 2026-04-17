@@ -64,3 +64,5 @@ Two-way doors get standard review. One-way doors get extra validation in Step 5.
 Proceed / Proceed with modifications / Recommend against (with reasoning). If proceeding, carry the taste calibration, door labels, and dream state mapping forward into the spec.
 
 **Cognitive frameworks used here**: Inversion reflex (Munger), Essential vs accidental complexity (Brooks), Focus as subtraction (Jobs/Rams), One-way vs two-way doors (Bezos). Read `shared/cognitive-frameworks.md` for full reference.
+
+**Opus 4.7 tip**: Scope challenge is a gate, not a design session — use terse adaptive thinking ("prioritize responding quickly"). See `shared/opus-4-7-practices.md` §2.

@@ -1,5 +1,11 @@
 # Steps 3-4: Choose Strategy & Execute
 
+**Opus 4.7 tips** (read `shared/opus-4-7-practices.md` before spawning):
+
+- §3 **Deliberate subagent spawning**: 4.7 is judicious. When you want parallelism, state "spawn N parallel builders" explicitly — do not assume the lead will fan out.
+- §4 **Auto mode + completion hooks**: default builders to `mode: "auto"` and rely on `desktop-notify.sh` rather than polling.
+- §6 **Delegate outcomes**: give builders the acceptance criteria and files touched, not step-by-step instructions.
+
 ## Step 3: Choose Execution Strategy
 
 | Scenario                                  | Strategy                                       | Mode   | Plan Approval? |
@@ -109,7 +115,10 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
    Agent(
      description: "Implement alert rule engine",
      subagent_type: "nodejs-specialist",   // ← REQUIRED: match to task domain
-     model: "claude-opus-4-6",             // ← Hands tier: cost-effective for implementation
+     // Do NOT set `model:` here. The Agent tool's enum accepts only aliases
+     // (opus/sonnet/haiku) and would override the specialist's frontmatter pin.
+     // Tier selection happens in the agent-definition file (e.g., builder.md
+     // has `model: claude-opus-4-6` for Hands tier). See SKILL.md Model Strategy.
      prompt: "You are rules-builder. Claim tasks from the pool and implement them.
 
      Read `.claude/commands/plan-w-team/shared/self-regulation.md` for WTF-likelihood
@@ -280,7 +289,10 @@ while iteration < max_iterations:
     Agent(
       description: "Evaluate build against acceptance criteria",
       subagent_type: "evaluator",      # custom team agent
-      model: "claude-opus-4-7",        # Brain tier: reasoning quality matters for evaluation
+      # Do NOT set `model:` here. The Agent tool's enum accepts only aliases
+      # (opus/sonnet/haiku) and would override the evaluator's frontmatter pin.
+      # Brain-tier pinning lives in .claude/agents/team/evaluator.md frontmatter
+      # (`model: claude-opus-4-7`). See SKILL.md Model Strategy → API note.
       prompt: "You are the evaluator. Read your instructions at
         .claude/agents/team/evaluator.md
 
