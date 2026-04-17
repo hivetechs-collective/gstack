@@ -109,6 +109,7 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
    Agent(
      description: "Implement alert rule engine",
      subagent_type: "nodejs-specialist",   // ← REQUIRED: match to task domain
+     model: "claude-opus-4-6",             // ← Hands tier: cost-effective for implementation
      prompt: "You are rules-builder. Claim tasks from the pool and implement them.
 
      Read `.claude/commands/plan-w-team/shared/self-regulation.md` for WTF-likelihood
@@ -262,6 +263,7 @@ while iteration < max_iterations:
     Agent(
       description: "Evaluate build against acceptance criteria",
       subagent_type: "evaluator",      # custom team agent
+      model: "claude-opus-4-7",        # Brain tier: reasoning quality matters for evaluation
       prompt: "You are the evaluator. Read your instructions at
         .claude/agents/team/evaluator.md
 

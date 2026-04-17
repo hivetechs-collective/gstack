@@ -107,7 +107,54 @@ Track evaluator-driven refinement outcomes from Step 4b:
 
 An ESCALATE verdict means the evaluator detected the builder couldn't fix the issue alone — review the spec for unclear requirements or missing design guidance. Repeated failure categories across features signal a systemic gap — check if an instinct was created by `capture-learnings.sh` for compound learning.
 
-## 8h. Self-Assessment
+## 8h. Untracked Hygiene
+
+Score how well this run handled untracked files. Read the state file written by the Step 5 ship gate:
+
+```bash
+SLUG="<feature-slug>"
+RETRO_STATE=".claude/state/plan-w-team-retro-$SLUG.json"
+# Read untracked_hygiene.resolved counts and deferrals[] from the file
+```
+
+Report in the retro artifact using this format:
+
+```markdown
+### Untracked Hygiene
+
+- Baseline size: <N>
+- Classification set: <N> new files
+- Resolved: <C> COMMIT / <I> IGNORE / <D> DISCARD / <F> DEFER
+- Deferrals: <list each `{path, reason}` or "none">
+- .gitignore edits: <count of patterns added, or "none">
+- Score: <1-5>
+```
+
+Scoring anchors (full rubric in `shared/untracked-hygiene.md`):
+
+| Score | Anchor                                                                                    |
+| ----- | ----------------------------------------------------------------------------------------- |
+| 1     | Many deferrals without clear reasons; gate skipped without justification                  |
+| 2     | Most classified but several DEFER with vague reasons                                      |
+| 3     | All classified; 1-2 DEFER with documented reasons; some IGNORE patterns too broad         |
+| 4     | All classified; 0-1 DEFER; IGNORE patterns narrow and appropriate                         |
+| 5     | Clean run (0 new untracked) OR all COMMIT/IGNORE/DISCARD with narrow, justified decisions |
+
+A hygiene score <4 should feed into 8i self-assessment as a friction point — the workflow missed a classification opportunity or accumulated deferrals.
+
+### Cleanup
+
+At the end of a successful retro (artifact written, all sections complete), delete the baseline file:
+
+```bash
+rm -f ".claude/state/plan-w-team-untracked-baseline-$SLUG.txt"
+```
+
+Failed runs (retro aborted) leave the baseline intact so `--resume` can read it.
+
+If the Step 5 gate ran in degraded mode (no baseline, e.g. `--ship-only` or `--resume`), report `Score: n/a (hygiene-skipped)` instead of scoring 1 — skipping is not the same as failing.
+
+## 8i. Self-Assessment
 
 Rate the overall `/plan-w-team` experience for this feature 0-10. If below 10, note what friction points occurred — this feeds back into improving the workflow itself:
 
@@ -115,6 +162,7 @@ Rate the overall `/plan-w-team` experience for this feature 0-10. If below 10, n
 - Where did builders struggle?
 - Where did review catch real issues vs generate noise?
 - Where did hooks help vs create friction?
+- Did untracked hygiene (8h) surface real classification work, or was it noise?
 - What would you do differently next time?
 
 Store self-assessment at the path defined in `shared/artifact-storage.md`.

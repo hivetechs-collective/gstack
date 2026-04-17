@@ -80,6 +80,32 @@ The preflight script prints a reference to `docs/operations/BOARD_TEMPLATE_RUNBO
 
 The runbook is the single source of truth for template-clone behavior, GraphQL constraints, and what `copyProjectV2` does and does not preserve. Read §7 (What Gets Inherited) before telling the user a board is "missing" something — Sprint fields, views, and workflow enabled-state are only inherited from templates, not created from scratch.
 
+### Pre-Flight: Untracked Baseline Capture (MANDATORY)
+
+Immediately after board preflight (and before Step 0), snapshot the current untracked file set. This is the anchor the Step 5 ship gate uses to distinguish pre-existing dirt from files the run itself introduces.
+
+```bash
+SLUG="<feature-slug>"  # same slug used for the spec file
+mkdir -p .claude/state
+
+# Ensure baseline/retro patterns are gitignored (idempotent — sync scripts don't touch .gitignore)
+if ! grep -q "plan-w-team-untracked-baseline-" .gitignore 2>/dev/null; then
+  printf '\n.claude/state/plan-w-team-untracked-baseline-*.txt\n.claude/state/plan-w-team-retro-*.json\n' >> .gitignore
+  echo "✓ added /plan-w-team state patterns to .gitignore"
+fi
+
+git ls-files --others --exclude-standard | sort \
+  > .claude/state/plan-w-team-untracked-baseline-"$SLUG".txt
+```
+
+**Why this runs here, not later**: Capturing at preflight is the only point that reliably excludes pre-existing dirt. Any later capture would miss Step 0-4 artifacts as "new" and force unnecessary classification prompts, or (worse) misclassify the feature's own spec file as pre-existing.
+
+**Why this file lives under `.claude/state/`**: The baseline/retro patterns are gitignored (the preflight adds them if missing), the directory survives compaction, and the file is keyed by `<slug>` so parallel `/plan-w-team` runs on different features never collide.
+
+The baseline is consumed by Step 5 (Ship) and deleted by Step 8 (Retro) on successful completion. Failed runs leave it intact so `--resume` can read it.
+
+Full decision matrix, IGNORE pattern guidance, DISCARD value-carrier guard, and worked examples live in `.claude/commands/plan-w-team/shared/untracked-hygiene.md`. Read that file when you reach Step 5 — do not load it here.
+
 ### Step 0: Scope Challenge
 
 Read `.claude/commands/plan-w-team/00-scope-challenge.md` and execute it.
@@ -128,6 +154,23 @@ Quantitative retrospective with metrics, quality signals, streak tracking, self-
 | `--resume`    | 3-4 (with resume logic) -> 5 -> 6 -> 7 -> 8 | Read 03-execute.md, use Resume section |
 | `--ship-only` | 5 -> 6 -> 7 -> 8                            | Assumes code is already implemented    |
 | `--retro`     | 8 only                                      | Retro on recent shipped work           |
+
+## Model Strategy
+
+Split model tiers by cognitive demand to conserve daily allowance. Builder agents consume ~80% of total tokens but need execution speed, not deep reasoning. Reserve the newest model generation for roles where reasoning quality directly affects outcomes.
+
+| Role               | Tier  | Model    | Alias             | Rationale                                             |
+| ------------------ | ----- | -------- | ----------------- | ----------------------------------------------------- |
+| Lead (you)         | Brain | Opus 4.7 | `claude-opus-4-7` | Orchestration, judgment calls, scope decisions        |
+| Evaluator          | Brain | Opus 4.7 | `claude-opus-4-7` | Independent quality assessment, acceptance criteria   |
+| Fix-First Reviewer | Brain | Opus 4.7 | `claude-opus-4-7` | Security review, design review, one-way door scrutiny |
+| Builder agents     | Hands | Opus 4.6 | `claude-opus-4-6` | Implementation, file edits, test writing              |
+| Ship pipeline      | Hands | Opus 4.6 | `claude-opus-4-6` | Mechanical: version bump, changelog, push             |
+| Retro              | Hands | Opus 4.6 | `claude-opus-4-6` | Metrics collection, streak tracking                   |
+
+**How to apply**: Use the Agent tool's `model` parameter to set the tier. The `03-execute.md` stage file includes the model parameter in its Agent call examples. When a new model generation ships, update the Brain tier to the new model and demote the previous Brain model to Hands tier.
+
+**API note**: The Agent tool's `model` enum accepts aliases (`"opus"`, `"sonnet"`, `"haiku"`). When only one Opus generation is available, both tiers resolve to the same model — the split becomes effective when a newer generation is released and `"opus"` advances. To pin a specific version, use the full model ID in agent definition frontmatter (`.claude/agents/*.md`).
 
 ## Worktree Isolation
 
