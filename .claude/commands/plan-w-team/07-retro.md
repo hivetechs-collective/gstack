@@ -166,3 +166,40 @@ Rate the overall `/plan-w-team` experience for this feature 0-10. If below 10, n
 - What would you do differently next time?
 
 Store self-assessment at the path defined in `shared/artifact-storage.md`.
+
+### Trigger: scores below 8 feed back into the workflow
+
+A self-assessment below 8 is not a vent — it is a signal that the workflow itself needs attention. When a score <8 is recorded:
+
+1. **Append the friction point** to `.claude/state/plan-w-team-friction-log.jsonl`. Use `flock` because this file is **global** across features — concurrent `/plan-w-team` retros on different features will race on append otherwise:
+
+   ```bash
+   LOG=".claude/state/plan-w-team-friction-log.jsonl"
+   mkdir -p .claude/state
+   # Build the JSON line with jq to guarantee valid escaping, then append under flock.
+   LINE=$(jq -cn \
+     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+     --arg feature "$SLUG" \
+     --argjson score "$SELF_ASSESSMENT_SCORE" \
+     --arg category "$FRICTION_CATEGORY" \
+     --arg note "$FRICTION_NOTE" \
+     '{timestamp:$ts, feature:$feature, score:$score, category:$category, note:$note}')
+   (
+     flock -x 9
+     printf '%s\n' "$LINE" >> "$LOG"
+   ) 9>> "$LOG.lock"
+   ```
+
+   `$FRICTION_CATEGORY` must be one of: `spec-gap|builder-struggle|review-noise|hook-friction|hygiene|other`. Reject any other value before the append — unknown categories defeat the 3-in-30-days pattern detection.
+
+2. **After 3 entries in the same category** accumulate within 30 days, surface at the next `/plan-w-team` preflight:
+
+   ```
+   ⚠ Friction pattern detected: category=<X> (3+ entries in 30d).
+     Review .claude/state/plan-w-team-friction-log.jsonl and consider updating
+     the relevant stage file before continuing.
+   ```
+
+3. **The user can dismiss with `.claude/state/plan-w-team-friction-ack-<category>`** (touch a file with the category name) if the pattern is intentional or already addressed. Dismissals expire after 30 days — chronic friction resurfaces.
+
+This turns "write-only retro prose" into a lightweight feedback loop that updates the workflow without requiring the user to manually cross-reference old retros.

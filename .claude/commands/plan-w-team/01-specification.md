@@ -197,3 +197,44 @@ Choose `--size` based on estimated effort: S (<2h), M (2-8h), L (8-24h), XL (24h
 If the card already exists (from a previous `/board add` or backlog grooming), skip creation and just verify status.
 
 **Cognitive frameworks used here**: Make the change easy, then make the easy change (Beck), Boring technology (McKinley), Strangler fig pattern (Fowler). Read `shared/cognitive-frameworks.md` for full reference.
+
+## Acceptance Criteria Snapshot (MANDATORY — integrity gate)
+
+At the end of Step 1, snapshot the Acceptance Criteria section of the spec with a SHA256 digest. The evaluator (Step 4b) reads this snapshot — NOT the live spec — so a mid-flight spec edit cannot silently loosen the contract.
+
+```bash
+SLUG="<feature-slug>"   # same slug used for baseline/scope-lock
+SPEC="docs/specs/${SLUG}.md"
+SNAPSHOT=".claude/state/plan-w-team-ac-snapshot-${SLUG}.md"
+
+mkdir -p .claude/state
+
+# Extract the Acceptance Criteria block (from the heading to the next top-level heading)
+awk '/^## Acceptance Criteria/{flag=1; print; next} /^## /{flag=0} flag' "$SPEC" \
+  > "${SNAPSHOT}.body"
+
+# Compute SHA256 of the spec file itself (detects any edit to the file after snapshot)
+SPEC_SHA=$(shasum -a 256 "$SPEC" | awk '{print $1}')
+AC_SHA=$(shasum -a 256 "${SNAPSHOT}.body" | awk '{print $1}')
+
+{
+  echo "---"
+  echo "slug: ${SLUG}"
+  echo "spec_path: ${SPEC}"
+  echo "snapshot_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "spec_sha256: ${SPEC_SHA}"
+  echo "ac_sha256: ${AC_SHA}"
+  echo "---"
+  cat "${SNAPSHOT}.body"
+} > "$SNAPSHOT"
+
+rm -f "${SNAPSHOT}.body"
+```
+
+**What the snapshot enforces**:
+
+- **Evaluator input is frozen**: Step 4b reads `$SNAPSHOT`, not `$SPEC`. A builder cannot edit the spec mid-iteration to make failing criteria "pass".
+- **Tamper detection**: Step 5 review re-computes the spec SHA256 and compares against `spec_sha256` in the snapshot frontmatter. Mismatch = scope drift — flag as ASK item for the user.
+- **Audit trail**: The snapshot is preserved for retro (Step 8). A feature that shipped with `ac_sha256=X` and a post-ship spec with `ac_sha256=Y` means the AC was retroactively rewritten — caught at retro.
+
+If a legitimate mid-flight AC change is needed, re-run Step 1 to refresh the snapshot and note the reason in the spec's "Changelog" section. Do not edit the snapshot file directly — it has no authority if hand-edited.

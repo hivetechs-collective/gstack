@@ -77,9 +77,19 @@ fi
 OWNER=$(gh repo view --json owner -q '.owner.login' 2>/dev/null || echo "")
 OWNER_TYPE=$(gh repo view --json owner -q '.owner.__typename' 2>/dev/null || echo "User")
 REPO_NAME=$(gh repo view --json name -q '.name' 2>/dev/null || basename "$PROJECT_ROOT")
+# Sanitize REPO_NAME: strip anything that isn't alnum / dot / underscore / hyphen.
+# basename on an odd cwd could yield characters that break sed/awk downstream or
+# flow into the board title shell-expanded. Belt-and-suspenders: whitelist only.
+REPO_NAME=$(printf '%s' "$REPO_NAME" | tr -cd 'A-Za-z0-9._-')
 
 if [ -z "$OWNER" ]; then
   echo "PREFLIGHT ERROR: Could not detect repo owner. Is this a GitHub repo?" >&2
+  echo "  See: $RUNBOOK (§9.4 Initialize a brand-new repo) for setup steps." >&2
+  exit 1
+fi
+
+if [ -z "$REPO_NAME" ]; then
+  echo "PREFLIGHT ERROR: Could not derive a usable repo name." >&2
   echo "  See: $RUNBOOK (§9.4 Initialize a brand-new repo) for setup steps." >&2
   exit 1
 fi
@@ -121,12 +131,21 @@ else
   fi
 fi
 
-# Commit so other agents/sessions see it
+# Commit so other agents/sessions see it.
+# Use `git commit -o <pathspec>` to scope the commit strictly to the board files.
+# The -o (--only) flag ignores whatever is currently staged and commits ONLY the
+# listed paths — this prevents sweeping unrelated staged work into the board-
+# bootstrap commit (common hazard when preflight runs mid-session).
 cd "$PROJECT_ROOT"
-git add scripts/board.sh .github/board.json
-git commit -m "chore: initialize GitHub Projects board for /plan-w-team
+git commit -o scripts/board.sh .github/board.json -m "$(cat <<'MSG'
+chore: initialize plan-w-team board
 
-Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"
+Creates GitHub Projects v2 board and checks in scripts/board.sh +
+.github/board.json.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+MSG
+)" || echo "PREFLIGHT WARN: Failed to commit board files (may already be committed)" >&2
 
 echo "PREFLIGHT: Board initialized and committed."
 echo "PREFLIGHT: Verify views/workflows inherited correctly — see $RUNBOOK §7."

@@ -40,12 +40,12 @@ If the evaluator loop ran in Step 4b, check task metadata for the evaluator repo
 TaskGet -> metadata.evaluator_report
 ```
 
-| Evaluator Outcome                                                     | Review Adjustment                                                                                                                                             |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **All PASS** (all criteria met)                                       | Lighten review — evaluator already validated functionality. Focus Pass 1 on security/race conditions only. Skip Pass 2 informational items unless suspicious. |
-| **PASS with notes** (criteria met but evaluator flagged observations) | Standard review, but prioritize evaluator's flagged areas in Pass 1.                                                                                          |
-| **ESCALATE** (evaluator couldn't get builder to pass)                 | Intensify review — read evaluator's failure report first. The failures it flagged are likely real issues. Present to user as ASK items.                       |
-| **No report** (evaluator skipped or no contract)                      | Standard review — full Pass 1 + Pass 2 (backward compatible).                                                                                                 |
+| Evaluator Outcome                                                     | Review Adjustment                                                                                                                                                                                                                                                     |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **All PASS** (all criteria met)                                       | Standard review. The evaluator validated criteria; it does NOT check security, race conditions, LLM trust boundaries, or one-way door safety. Never skip Pass 2 — informational items (dead code, stale comments, magic numbers) flag drift the evaluator cannot see. |
+| **PASS with notes** (criteria met but evaluator flagged observations) | Standard review, but prioritize evaluator's flagged areas in Pass 1.                                                                                                                                                                                                  |
+| **ESCALATE** (evaluator couldn't get builder to pass)                 | Intensify review — read evaluator's failure report first. The failures it flagged are likely real issues. Present to user as ASK items.                                                                                                                               |
+| **No report** (evaluator skipped or no contract)                      | Standard review — full Pass 1 + Pass 2 (backward compatible).                                                                                                                                                                                                         |
 
 The evaluator report is an input to the review, not a replacement for it. The review still catches classes of issues the evaluator doesn't check (security, race conditions, one-way door validation).
 
@@ -81,12 +81,26 @@ git diff origin/<base>...HEAD
 
 ## 5d. Fix-First Heuristic — Classify Each Finding
 
-| Classification | Action                         | Examples                                                                                                             |
-| -------------- | ------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| **AUTO-FIX**   | Fix immediately without asking | Dead code removal, unused imports, stale comments, missing error handling (mechanical), N+1 queries, missing indexes |
-| **ASK**        | Present to user for decision   | Security policy decisions, race condition fixes that change behavior, architectural changes, design pattern changes  |
+| Classification | Action                         | Examples                                                                                                                                                                       |
+| -------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **AUTO-FIX**   | Fix immediately without asking | Unused imports, stale comments, missing indexes (non-schema-changing), trivial N+1 queries that don't alter API shape                                                          |
+| **ASK**        | Present to user for decision   | **Dead code removal** (callers may be dynamic or in other repos), security policy decisions, race condition fixes that change behavior, architectural changes, design patterns |
+
+**Why dead code is ASK, not AUTO-FIX**: The reviewer sees only this repo. A function that looks unreferenced here may be called by a sibling repo, a dynamic dispatch table, a test harness, or a public API. Deleting it is a one-way door. Show the user, let them confirm.
+
+**Missing error handling is ASK-leaning**: Only AUTO-FIX when the fix is mechanically obvious (e.g., wrap an `await` in try/catch with `throw`). Policy changes (logging vs swallowing vs escalating) are ASK.
 
 Auto-fix all AUTO-FIX items. Batch remaining ASK items and present them together.
+
+### Auto-fix must run in a separate Hands-tier subagent
+
+The reviewer (Brain tier) analyzes and classifies. It **does not** perform the auto-fix edits itself. Spawn a Hands-tier subagent (`builder` agent, Opus 4.6) to apply AUTO-FIX items:
+
+1. Reviewer writes the auto-fix list to `.claude/state/plan-w-team-autofix-$SLUG.md` — one heading per file, bulleted change list.
+2. Reviewer spawns a builder subagent with: "Apply the mechanical edits listed in `.claude/state/plan-w-team-autofix-$SLUG.md`. Do not invent fixes. Do not touch files outside the list. Return a diff summary."
+3. Reviewer re-reads the diff after the builder returns and confirms no out-of-scope edits occurred.
+
+**Why**: Brain-tier reviewers should not hand-edit files — they lose their neutral-reviewer frame when they touch code, and their per-token cost is 4-6x a Hands tier subagent's. This also creates a clean audit trail (the autofix-$SLUG.md file) if an AUTO-FIX later causes a regression.
 
 ### Spawning Fix Agents
 

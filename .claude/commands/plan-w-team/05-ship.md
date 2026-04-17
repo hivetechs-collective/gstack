@@ -104,14 +104,49 @@ Verify Step 5 review is complete. If not, run it first. Track review completion 
 
 If the user wants to override a missing review, store the override decision (read `shared/artifact-storage.md` for override persistence format) so re-runs of `/plan-w-team` on the same branch do not re-ask.
 
-## 6b. Run Full Test Suite
+## 6b. Run Full Test Suite (ENFORCING GATE — not a prose request)
+
+Detect the project's test framework and run it. **The exit code is the gate.** If any command fails, refuse to ship.
 
 ```bash
-# Detect and run project's test framework
-npm test / cargo test / pytest / etc.
+# Detect test framework based on manifests (handles monorepos by recursing)
+run_tests() {
+  local rc=0
+  if [ -f package.json ] && grep -q '"test"' package.json; then
+    npm test || rc=$?
+  elif [ -f Cargo.toml ]; then
+    cargo test || rc=$?
+  elif [ -f pyproject.toml ] || [ -f setup.py ] || [ -f pytest.ini ]; then
+    pytest || rc=$?
+  elif [ -f go.mod ]; then
+    go test ./... || rc=$?
+  else
+    # Recurse into workspace subdirs (monorepos)
+    local found=0
+    for manifest in $(find . -maxdepth 3 -name "package.json" -o -name "Cargo.toml" -o -name "pyproject.toml" 2>/dev/null); do
+      local dir
+      dir=$(dirname "$manifest")
+      [ "$dir" = "." ] && continue
+      echo "→ running tests in $dir"
+      ( cd "$dir" && run_tests ) || rc=$?
+      found=1
+    done
+    if [ "$found" = "0" ]; then
+      echo "✗ No test framework detected. Refusing to ship blind."
+      return 1
+    fi
+  fi
+  return $rc
+}
+
+if ! run_tests; then
+  echo "✗ Ship gate 6b: tests failed (exit code non-zero). Refusing to ship."
+  echo "  Fix the failures, then re-run /plan-w-team --ship-only."
+  exit 1
+fi
 ```
 
-If the browse binary is available and any task has `scope: "FRONTEND"`, read `shared/browser-qa.md` for browser smoke test instructions.
+If the browse binary is available and any task has `scope: "FRONTEND"`, read `shared/browser-qa.md` for browser smoke test instructions. **Browser smoke tests are also gates** — a non-zero exit code from the browse binary blocks the ship.
 
 ## 6c. Test Coverage Audit
 
@@ -124,6 +159,22 @@ Rate test quality with stars, not just percentages:
 | ★      | Minimal       | Smoke test or trivial assertions only       |
 
 A module with 90% line coverage but all ★ tests is worse than 60% coverage with ★★★ tests. Flag the distinction.
+
+### Minimum Coverage Gate (ENFORCING)
+
+If the project declares a coverage floor (in `package.json` `jest.coverageThreshold`, `pyproject.toml` `[tool.coverage.report] fail_under`, or `Cargo.toml` metadata `coverage_min`), **run coverage and enforce it**. Do not ship below the declared floor:
+
+```bash
+# Example: npm projects with coverage script
+if [ -f package.json ] && grep -q '"coverage"' package.json; then
+  if ! npm run coverage; then
+    echo "✗ Ship gate 6c: coverage below declared floor. Refusing to ship."
+    exit 1
+  fi
+fi
+```
+
+If no coverage floor is declared, this gate is skipped (the star-rating audit above is the softer check). Declaring a floor is how a project opts in to strict coverage enforcement.
 
 **Cognitive framework**: Error budgets (Google SRE) — read `shared/cognitive-frameworks.md`.
 
@@ -157,10 +208,54 @@ If the working tree has multiple logical changes, split into ordered commits:
 
 Each commit must compile and pass tests independently.
 
-## 6g. Push and Create PR (if on a branch)
+### Use `-o` for path-scoped commits (avoid grabbing staged drift)
+
+A `git add`/`git commit` pair can accidentally include files that another process staged (editor, watcher, parallel session). Use `git commit -o <pathspec>` to commit **only** the listed paths, ignoring everything else in the index:
 
 ```bash
-git push -u origin <branch>
+# Commits ONLY src/api/ and tests/ — even if other files are staged
+git commit -o src/api/ tests/ -m "feat(api): add rate limiting"
+```
+
+This is the pattern Round 4 audit flagged for all stage-file-driven commits. Never rely on `git add .` inside a pipeline. Always name the paths you mean.
+
+## 6g. Push and Create PR (if on a branch)
+
+### Ack gate — confirm before pushing
+
+`git push` is a shared-state action. Require an explicit acknowledgment file or user confirmation before pushing. This guards against spurious `--ship-only` re-runs pushing partial state.
+
+```bash
+ACK_FILE=".claude/state/plan-w-team-ack-$SLUG"
+if [ ! -f "$ACK_FILE" ]; then
+  echo "Ship gate 6g: no push acknowledgment."
+  echo "Create $ACK_FILE (empty) or confirm with the user before pushing."
+  echo "  touch $ACK_FILE    # opt-in once per ship"
+  exit 1
+fi
+```
+
+### flock — prevent concurrent push races
+
+Parallel `/plan-w-team --ship-only` sessions on the same branch can race. Serialize with a per-repo lock:
+
+```bash
+PUSH_LOCK=".claude/state/plan-w-team-push.lock"
+mkdir -p .claude/state
+exec 200>"$PUSH_LOCK"
+if ! flock -n 200; then
+  echo "✗ Another ship is in progress (lock held on $PUSH_LOCK). Aborting."
+  exit 1
+fi
+
+git push -u origin "$BRANCH"
+# Lock released on exec 200>&- or script exit
+```
+
+After push succeeds, delete the ack file so the next ship run requires a fresh opt-in:
+
+```bash
+rm -f "$ACK_FILE"
 ```
 
 ### Link PR to Board Issue
@@ -171,7 +266,13 @@ Use `closes #N` in the PR body to automatically link the PR to the board Issue. 
 # Get the issue number from the spec header or board search
 ISSUE_NUM=$(grep -o '#[0-9]*' docs/specs/<feature-name>.md | head -1)
 
-gh pr create --title "<title>" --body "$(cat <<EOF
+# Write the PR body to a file first — avoids shell expansion of any user-authored
+# fragments (spec links, issue titles, commit messages) and lets gh read directly.
+# See shared/shell-safety.md for why `<<EOF` on LLM-authored content is unsafe.
+PR_BODY_FILE=$(mktemp -t plan-w-team-pr-body.XXXXXX)
+trap 'rm -f "$PR_BODY_FILE"' EXIT
+
+cat > "$PR_BODY_FILE" <<'EOF'
 ## Summary
 <1-3 bullet points describing what changed>
 
@@ -180,15 +281,14 @@ gh pr create --title "<title>" --body "$(cat <<EOF
 - [ ] Integration tests pass
 - [ ] Manual QA verified (if frontend)
 
-Closes $ISSUE_NUM
-
----
-**Spec:** docs/specs/<feature-name>.md
-**Board:** https://github.com/<owner>/<repo>/issues/${ISSUE_NUM#\#}
-
-Generated with [Claude Code](https://claude.com/claude-code)
 EOF
-)"
+
+# Append dynamic fields using printf (no shell expansion of PR content)
+printf 'Closes %s\n\n---\n**Spec:** docs/specs/%s.md\n**Board:** https://github.com/%s/%s/issues/%s\n\nGenerated with [Claude Code](https://claude.com/claude-code)\n' \
+  "$ISSUE_NUM" "$FEATURE_SLUG" "$REPO_OWNER" "$REPO_NAME" "${ISSUE_NUM#\#}" \
+  >> "$PR_BODY_FILE"
+
+gh pr create --title "$PR_TITLE" --body-file "$PR_BODY_FILE"
 ```
 
 The `Closes #N` keyword creates a bidirectional link:

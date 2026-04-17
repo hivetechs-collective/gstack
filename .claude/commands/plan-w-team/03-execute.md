@@ -275,7 +275,7 @@ Detect criteria using pattern matching, not heading-name matching:
 
 ### Loop Protocol
 
-```
+````
 iteration = 0
 max_iterations = spec.max_eval_iterations or 3
 previous_failures = []
@@ -309,11 +309,39 @@ while iteration < max_iterations:
         - Previous feedback: {previous_failures or 'First iteration'}
         - Dev server URL: {url if web project, else 'N/A'}
 
-        Evaluate and return structured report.",
+        Evaluate and return structured report. The report MUST end with
+        a machine-fenced verdict block in this exact format:
+
+        ```verdict
+        {\"verdict\": \"PASS|ITERATE|ESCALATE\", \"iteration\": N,
+         \"functional_pass\": N, \"functional_fail\": N,
+         \"quality_avg\": 0.0}
+        ```
+
+        The orchestrator parses this block with jq. Plain-English
+        'the build passes' without the fenced block is treated as
+        ESCALATE — ambiguity is not a pass.",
       mode: "auto"
     )
 
-    # 2. Parse evaluator verdict
+    # 2. Parse evaluator verdict from machine-fenced block (NOT prose matching)
+    # Extract the block between ```verdict and ``` fences, parse with jq.
+    # Fail closed — unparseable = ESCALATE.
+    VERDICT_JSON=$(awk '/^```verdict$/{flag=1; next} /^```$/{flag=0} flag' \
+      "$EVALUATOR_REPORT_FILE" 2>/dev/null)
+
+    if [ -z "$VERDICT_JSON" ]; then
+      verdict="ESCALATE"
+      echo "⚠ Evaluator did not emit a fenced verdict block. Treating as ESCALATE."
+    else
+      verdict=$(echo "$VERDICT_JSON" | jq -r '.verdict // "ESCALATE"' 2>/dev/null || echo "ESCALATE")
+      # Validate allowed values
+      case "$verdict" in
+        PASS|ITERATE|ESCALATE) ;;
+        *) verdict="ESCALATE" ;;
+      esac
+    fi
+
     if verdict == PASS:
         break  # proceed to Step 5
     elif verdict == ESCALATE:
@@ -356,7 +384,7 @@ Write(".claude/state/evaluator-outcomes.jsonl", append=true, content={
   "failure_categories": [category for each FAIL criterion],
   "project": basename(cwd)
 })
-```
+````
 
 > **Why a state file?** Shell hooks run in bash, not in Claude's agent context. They cannot call TaskList or TaskGet. The `.claude/state/evaluator-outcomes.jsonl` file bridges this gap — the lead writes it during Step 4b, and `capture-learnings.sh` reads it at session end.
 

@@ -154,3 +154,34 @@ Order tasks by dependency graph for bisectability:
 5. Documentation, VERSION, CHANGELOG — last
 
 Every intermediate state after merging completed tasks must compile and pass tests. This ensures `git bisect` always lands on a runnable state.
+
+## Scope Lock Artifact (ENFORCING)
+
+At the end of Step 2, write a scope-lock file. Step 5 (review) and Step 6 (ship) read this file to detect scope creep — any task added after Step 2 that is not in the lock must be flagged.
+
+```bash
+SLUG="<feature-slug>"
+mkdir -p .claude/state
+
+# Write the locked task set. Lock includes task IDs, subjects, and scope tags.
+cat > ".claude/state/plan-w-team-scope-lock-$SLUG.json" <<'EOF'
+{
+  "slug": "<feature-slug>",
+  "locked_at": "<ISO8601 timestamp>",
+  "spec_path": "docs/specs/<feature-name>.md",
+  "task_count": 0,
+  "tasks": [
+    {"id": "1", "subject": "...", "scope": "BACKEND", "door_type": "two-way"}
+  ],
+  "acceptance_criteria_count": 0
+}
+EOF
+```
+
+**What the lock does**:
+
+- Step 5 review compares the git diff against the lock's scoped files. If edits touched files outside the scope (e.g. `FRONTEND` task modified `src/db/schema.ts`), flag as scope drift.
+- Step 6 ship refuses to push if `task_count` in the lock doesn't match the number of completed tasks — new tasks added mid-flight require a user-confirmed `.claude/state/plan-w-team-scope-unlock-$SLUG` file.
+- Step 8 retro reads the lock to compute "scope stability" as a retro metric.
+
+The lock is not a straitjacket — users can expand scope during execution by acknowledging the unlock file — but it forces the expansion to be a conscious decision, not silent accretion.
