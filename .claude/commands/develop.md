@@ -120,6 +120,7 @@ EVERY COMPLETED TASK REQUIRES THIS EDIT:
 ```
 
 **Task Picking Order:**
+
 1. Read fix_plan.md for prioritized task list
 2. Pick FIRST `- [ ]` item (ignore Priority 5: USER ACTION)
 3. Complete the task
@@ -159,13 +160,13 @@ Before implementing ANY task, validate:
 
 **Creative Drift Categories:**
 
-| Category          | Example                         | Action                     |
-| ----------------- | ------------------------------- | -------------------------- |
-| Approved Feature  | Listed in PRD + TODO            | ✅ Implement               |
-| Enhancement       | Improves approved feature       | ⚠️ Validate against SDD    |
-| New Idea          | Not in any source doc           | ❌ Log to IDEAS_BACKLOG    |
-| Pattern Deviation | Different from UNIFIED_ARCH     | ❌ Requires review         |
-| Scope Creep       | Extends beyond PRD requirements | ❌ Log to IDEAS_BACKLOG    |
+| Category          | Example                         | Action                  |
+| ----------------- | ------------------------------- | ----------------------- |
+| Approved Feature  | Listed in PRD + TODO            | ✅ Implement            |
+| Enhancement       | Improves approved feature       | ⚠️ Validate against SDD |
+| New Idea          | Not in any source doc           | ❌ Log to IDEAS_BACKLOG |
+| Pattern Deviation | Different from UNIFIED_ARCH     | ❌ Requires review      |
+| Scope Creep       | Extends beyond PRD requirements | ❌ Log to IDEAS_BACKLOG |
 
 **See:** `/docs/governance/COMPLIANCE_RULES.md` R9 for full details.
 
@@ -184,7 +185,7 @@ Before implementing ANY task, validate:
 
 ## 🚨 PARALLEL AGENT LIMITS (Optimized Dec 2025)
 
-**Optimized for Opus 4.5 with stable context management:**
+**Optimized for Opus 4.7 with stable context management:**
 
 | Task Type                      | Max Agents | Token Cost | Reason                     |
 | ------------------------------ | ---------- | ---------- | -------------------------- |
@@ -333,11 +334,13 @@ TaskCreate({
 ```
 
 **When an agent starts work:**
+
 ```
 TaskUpdate({ taskId: "1", status: "in_progress" })
 ```
 
 **When an agent completes:**
+
 ```
 TaskUpdate({ taskId: "1", status: "completed" })
 ```
@@ -356,12 +359,12 @@ task tracking that survives compaction. Use them as the PRIMARY execution tracke
 
 ### When to Use Task Tools vs fix_plan.md
 
-| Purpose | Tool | Why |
-|---------|------|-----|
-| **WHAT to work on** | `fix_plan.md` | Source of truth for task selection |
-| **HOW execution is tracked** | Task tools (`TaskCreate`, `TaskUpdate`, `TaskList`) | Persistent state across compaction |
-| **Recovery after compaction** | `TaskList()` (primary), `session-state.md` (secondary) | Task tools survive compaction |
-| **Marking tasks done** | `Edit fix_plan.md` to `[x]` | Updates dashboard progress counter |
+| Purpose                       | Tool                                                   | Why                                |
+| ----------------------------- | ------------------------------------------------------ | ---------------------------------- |
+| **WHAT to work on**           | `fix_plan.md`                                          | Source of truth for task selection |
+| **HOW execution is tracked**  | Task tools (`TaskCreate`, `TaskUpdate`, `TaskList`)    | Persistent state across compaction |
+| **Recovery after compaction** | `TaskList()` (primary), `session-state.md` (secondary) | Task tools survive compaction      |
+| **Marking tasks done**        | `Edit fix_plan.md` to `[x]`                            | Updates dashboard progress counter |
 
 ### Task Lifecycle
 
@@ -577,6 +580,7 @@ EXAMPLE:
 ```
 
 **File Conflict Detection:**
+
 ```typescript
 // Simple heuristic: extract file paths from task descriptions
 const tasks = fixPlanTasks.slice(0, 10);
@@ -973,18 +977,18 @@ When CI fails, analyze which tasks can safely continue:
 
 ```typescript
 const TASK_DEPENDENCIES = {
-  'P1.6': [], // Auth - no deps
-  'P1.7': ['P1.6'], // Web Foundation - needs auth
-  'P1.8': ['P1.7'], // UI Components - needs web foundation
-  'P1.9': ['P1.6', 'P1.7'], // CRM - needs auth, web
-  'P1.10': ['P1.6', 'P1.7'], // Scheduling - needs auth, web
-  'P1.11': ['P1.9'], // Invoicing - needs CRM
-  'P1.12': ['P1.6'], // Mobile Auth - needs auth
-  'P1.13': ['P1.12'], // Mobile Features - needs mobile auth
-  'P1.14': ['P1.13'], // Mobile Polish - needs mobile features
-  'P1.15': [], // Marketing Site - independent
-  'P1.15a': [], // Marketing Homepage - independent
-  'P1.15b': ['P1.6', 'P1.7'], // Branding Config - needs auth, web
+  "P1.6": [], // Auth - no deps
+  "P1.7": ["P1.6"], // Web Foundation - needs auth
+  "P1.8": ["P1.7"], // UI Components - needs web foundation
+  "P1.9": ["P1.6", "P1.7"], // CRM - needs auth, web
+  "P1.10": ["P1.6", "P1.7"], // Scheduling - needs auth, web
+  "P1.11": ["P1.9"], // Invoicing - needs CRM
+  "P1.12": ["P1.6"], // Mobile Auth - needs auth
+  "P1.13": ["P1.12"], // Mobile Features - needs mobile auth
+  "P1.14": ["P1.13"], // Mobile Polish - needs mobile features
+  "P1.15": [], // Marketing Site - independent
+  "P1.15a": [], // Marketing Homepage - independent
+  "P1.15b": ["P1.6", "P1.7"], // Branding Config - needs auth, web
 };
 ```
 
@@ -1619,7 +1623,7 @@ git commit -m "type(scope): description
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>"
 git push origin main          # Push to remote
 ```
 
@@ -2429,7 +2433,7 @@ verification before proceeding.
 
 **Invocation (Continuous Mode)**:
 
-```
+````
 Task(subagent_type="orchestrator", run_in_background=true):
 "You are the TODO Resolution Orchestrator. Process TODO.md systematically.
 
@@ -2523,7 +2527,7 @@ REPORT FORMAT:
 ✅ VERIFIED: CLI + Playwright checks passed
 🔍 REVIEWED: /review-code + security audit complete
 ⏭️ NEXT: P1.X - [next task]"
-```
+````
 
 ### Resolution Order Enforcement
 
@@ -2533,38 +2537,38 @@ REPORT FORMAT:
 // Resolution priority (lower = first)
 const RESOLUTION_ORDER = [
   // Foundation (must complete first)
-  'P1.1', // Monorepo setup
-  'P1.2', // CI/CD workflows
-  'P1.3', // Shared packages
-  'P1.4', // Database layer
-  'P1.5', // API scaffold
+  "P1.1", // Monorepo setup
+  "P1.2", // CI/CD workflows
+  "P1.3", // Shared packages
+  "P1.4", // Database layer
+  "P1.5", // API scaffold
 
   // Core features (in dependency order)
-  'P1.6', // Authentication
-  'P1.7', // Web foundation
-  'P1.8', // UI components
-  'P1.9', // Customer/CRM
-  'P1.10', // Scheduling
-  'P1.11', // Invoicing
+  "P1.6", // Authentication
+  "P1.7", // Web foundation
+  "P1.8", // UI components
+  "P1.9", // Customer/CRM
+  "P1.10", // Scheduling
+  "P1.11", // Invoicing
 
   // Mobile (after web)
-  'P1.12', // Mobile auth
-  'P1.13', // Mobile features
-  'P1.14', // Mobile polish
+  "P1.12", // Mobile auth
+  "P1.13", // Mobile features
+  "P1.14", // Mobile polish
 
   // Marketing (independent)
-  'P1.15', // Marketing site
-  'P1.15a', // Homepage design
-  'P1.15b', // Branding config
+  "P1.15", // Marketing site
+  "P1.15a", // Homepage design
+  "P1.15b", // Branding config
 
   // Operations
-  'P1.16', // Training system
-  'P1.17', // Performance testing
-  'P1.18', // Backup/recovery
-  'P1.19', // iOS deployment
-  'P1.20', // Android deployment
-  'P1.21', // Security audit
-  'P1.22', // QA verification
+  "P1.16", // Training system
+  "P1.17", // Performance testing
+  "P1.18", // Backup/recovery
+  "P1.19", // iOS deployment
+  "P1.20", // Android deployment
+  "P1.21", // Security audit
+  "P1.22", // QA verification
 ];
 ```
 
@@ -2899,7 +2903,7 @@ Implements request-level JWT verification for all protected routes.
 📋 Review: All findings addressed per /review-code
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 ```
 
 ### No-Surprise Guarantee
@@ -2933,7 +2937,7 @@ data model
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
 
 ```
 
@@ -3102,6 +3106,7 @@ When adding to @human_actions.md, you MUST include:
 ### Service-Specific CLI Commands
 
 **Cloudflare (R2, Workers, DNS)**
+
 ```bash
 wrangler r2 bucket list                    # List all buckets
 wrangler r2 bucket create <name>           # Create bucket
@@ -3110,6 +3115,7 @@ wrangler secret list                       # List secrets
 ```
 
 **GitHub (Secrets, Actions)**
+
 ```bash
 gh secret set SECRET_NAME                  # Set secret
 gh secret list                             # List secrets
@@ -3118,6 +3124,7 @@ gh run rerun <run-id>                      # Rerun failed workflow
 ```
 
 **Stripe (Payments, Webhooks)**
+
 ```bash
 stripe listen --forward-to localhost:3000  # Forward webhooks locally
 stripe trigger payment_intent.succeeded    # Test webhook events
@@ -3125,6 +3132,7 @@ stripe products list                       # List products
 ```
 
 **Neon (PostgreSQL)**
+
 ```bash
 neonctl projects list                      # List projects
 neonctl connection-string                  # Get connection string
@@ -3136,6 +3144,7 @@ neonctl databases create --name <name>     # Create database
 **You have full Playwright access via MCP tools.** USE IT before escalating to human!
 
 **Available MCP Playwright Tools:**
+
 - `mcp__plugin_playwright_playwright__browser_navigate` - Go to URL
 - `mcp__plugin_playwright_playwright__browser_snapshot` - See page state
 - `mcp__plugin_playwright_playwright__browser_click` - Click elements
@@ -3154,6 +3163,7 @@ neonctl databases create --name <name>     # Create database
 ```
 
 **Example: Stripe Dashboard Automation**
+
 ```
 // 1. Navigate
 mcp__plugin_playwright_playwright__browser_navigate({ url: 'https://dashboard.stripe.com' })
@@ -3173,6 +3183,7 @@ mcp__plugin_playwright_playwright__browser_click({ element: 'Connect', ref: '<fr
 ```
 
 **Example: Cloudflare R2 Bucket Creation**
+
 ```
 // 1. Navigate to Cloudflare
 mcp__plugin_playwright_playwright__browser_navigate({ url: 'https://dash.cloudflare.com' })
@@ -3195,6 +3206,7 @@ mcp__plugin_playwright_playwright__browser_type({
 ```
 
 **When Playwright CANNOT work (legitimate human escalation):**
+
 - 2FA/MFA that requires authenticator app or SMS
 - Identity verification (upload ID, video selfie)
 - Payment information entry (credit card)
@@ -3204,6 +3216,7 @@ mcp__plugin_playwright_playwright__browser_type({
 ### Environment Variable Check
 
 Before claiming a secret is missing, CHECK:
+
 ```bash
 # Check all .env files
 grep -E "CLOUDFLARE|STRIPE|CLERK|GITHUB|NEON" .env .env.local .env.production 2>/dev/null
@@ -3214,6 +3227,7 @@ grep -E "CLOUDFLARE|STRIPE|CLERK|GITHUB|NEON" .env .env.local .env.production 2>
 ### Specialized Agents
 
 Before escalating, try the appropriate specialist:
+
 - `cloudflare-expert` → R2, Workers, D1, DNS
 - `devops-automation-expert` → CI/CD, deployment
 - `security-expert` → Secrets management
@@ -3223,6 +3237,7 @@ Before escalating, try the appropriate specialist:
 ### When to Escalate to Human
 
 ONLY escalate to `@human_actions.md` when:
+
 1. ❌ CLI tool requires interactive 2FA you cannot provide
 2. ❌ Account creation requires human identity verification
 3. ❌ Payment/billing information needs to be entered
@@ -3233,6 +3248,7 @@ ONLY escalate to `@human_actions.md` when:
 ### Adding to @human_actions.md
 
 When escalation IS necessary:
+
 1. Document what automation was attempted
 2. Explain why each attempt failed
 3. Provide clear step-by-step instructions
@@ -3241,6 +3257,7 @@ When escalation IS necessary:
 
 ```markdown
 ### [HA-XXX] Task Title
+
 - **Automation Attempted**:
   - ❌ CLI: `wrangler r2 bucket create` - Error: Not authenticated
   - ❌ Playwright: Dashboard automation - Error: 2FA required
@@ -3254,6 +3271,7 @@ When escalation IS necessary:
 ### Human Action Completion Flow
 
 When human completes an action:
+
 1. Human marks `- [x]` in @human_actions.md
 2. Next sync run detects completion
 3. Blocked tasks in fix_plan.md become actionable
