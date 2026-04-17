@@ -107,6 +107,34 @@ Track evaluator-driven refinement outcomes from Step 4b:
 
 An ESCALATE verdict means the evaluator detected the builder couldn't fix the issue alone — review the spec for unclear requirements or missing design guidance. Repeated failure categories across features signal a systemic gap — check if an instinct was created by `capture-learnings.sh` for compound learning.
 
+## 8g-bis. Scope Stability
+
+Step 2 wrote a scope-lock artifact at `.claude/state/plan-w-team-scope-lock-$SLUG.json`. Compute scope stability:
+
+```bash
+LOCK=".claude/state/plan-w-team-scope-lock-$SLUG.json"
+UNLOCK=".claude/state/plan-w-team-scope-unlock-$SLUG"
+
+if [ -f "$LOCK" ]; then
+  LOCKED=$(jq -r '.task_count' "$LOCK")
+  SHIPPED=$(TaskList by spec_path | wc -l)   # pseudocode — use your task tooling
+  DRIFT=$((SHIPPED - LOCKED))
+  UNLOCK_ACK=$([ -f "$UNLOCK" ] && echo true || echo false)
+
+  # Score: 5 = no drift, 4 = drift with ack, 2 = drift without ack, 1 = lock missing mid-flight
+  if [ "$DRIFT" -eq 0 ]; then SCORE=5
+  elif [ "$UNLOCK_ACK" = "true" ]; then SCORE=4
+  else SCORE=2
+  fi
+else
+  SCORE="n/a"
+fi
+```
+
+Report in retro: `Scope stability: <score>/5 (locked=<N>, shipped=<N>, drift=<D>, unlock_ack=<bool>)`.
+
+A score <= 2 means tasks were added mid-flight without the user acknowledging scope expansion. This is a process smell — the spec was probably incomplete, or scope creep happened silently. Feeds into 8i self-assessment.
+
 ## 8h. Untracked Hygiene
 
 Score how well this run handled untracked files. Read the state file written by the Step 5 ship gate:

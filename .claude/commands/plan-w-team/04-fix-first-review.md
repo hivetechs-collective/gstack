@@ -56,6 +56,37 @@ git fetch origin <base> --quiet
 git diff origin/<base>...HEAD
 ```
 
+### Spec Integrity Check (ENFORCING — runs before any review passes)
+
+Step 1 captured a SHA256 snapshot of the spec and its Acceptance Criteria section at `.claude/state/plan-w-team-ac-snapshot-$SLUG.md`. Verify the live spec still matches — a mid-flight spec edit that relaxed AC would bypass the evaluator's contract.
+
+```bash
+SNAPSHOT=".claude/state/plan-w-team-ac-snapshot-$SLUG.md"
+SPEC="docs/specs/${SLUG}.md"
+
+if [ ! -f "$SNAPSHOT" ]; then
+  echo "⚠ No AC snapshot at $SNAPSHOT — skipping integrity check (likely pre-snapshot feature)"
+else
+  SNAPSHOT_SPEC_SHA=$(awk '/^spec_sha256:/{print $2}' "$SNAPSHOT")
+  LIVE_SPEC_SHA=$(shasum -a 256 "$SPEC" | awk '{print $1}')
+
+  if [ "$SNAPSHOT_SPEC_SHA" != "$LIVE_SPEC_SHA" ]; then
+    cat <<EOF
+✗ SPEC DRIFT DETECTED
+  Snapshot SHA: $SNAPSHOT_SPEC_SHA
+  Live SHA:     $LIVE_SPEC_SHA
+  The spec was edited after Step 1. If the edit tightened AC, re-snapshot via Step 1.
+  If the edit loosened AC, this is a RED FLAG — present to user as ASK.
+EOF
+    # Flag as ASK item — do not auto-fail; legitimate tightening is possible
+  else
+    echo "✓ spec integrity verified"
+  fi
+fi
+```
+
+The check is **advisory** (ASK) because tightening AC mid-flight is legitimate. The point is to surface the edit, not to block it.
+
 ## 5b. Pass 1 — CRITICAL (blockers, must fix before ship)
 
 | Check                    | What to Look For                                                                  |

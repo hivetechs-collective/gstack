@@ -104,6 +104,48 @@ Verify Step 5 review is complete. If not, run it first. Track review completion 
 
 If the user wants to override a missing review, store the override decision (read `shared/artifact-storage.md` for override persistence format) so re-runs of `/plan-w-team` on the same branch do not re-ask.
 
+## 6a-bis. Scope Lock Enforcement (ENFORCING GATE)
+
+Step 2 wrote `.claude/state/plan-w-team-scope-lock-$SLUG.json` with the task set at planning time. Before shipping, verify no silent scope expansion occurred.
+
+```bash
+LOCK=".claude/state/plan-w-team-scope-lock-$SLUG.json"
+UNLOCK=".claude/state/plan-w-team-scope-unlock-$SLUG"
+
+if [ ! -f "$LOCK" ]; then
+  echo "⚠ No scope lock at $LOCK (likely --ship-only or pre-lock feature)"
+  echo "  Scope drift cannot be verified. Retro will note: scope-unverified"
+else
+  LOCKED_COUNT=$(jq -r '.task_count' "$LOCK")
+  # Count tasks actually shipped in this feature (metadata.spec_path matches)
+  SHIPPED_COUNT=$(TaskList by spec_path | wc -l)  # pseudocode — use your task tooling
+
+  if [ "$SHIPPED_COUNT" -ne "$LOCKED_COUNT" ]; then
+    if [ -f "$UNLOCK" ]; then
+      echo "✓ Scope expanded from $LOCKED_COUNT → $SHIPPED_COUNT tasks (unlock ack present)"
+    else
+      cat <<EOF
+✗ SHIP BLOCKED: scope drift detected
+  Locked at planning: $LOCKED_COUNT tasks
+  Shipping now:       $SHIPPED_COUNT tasks
+  New tasks added mid-flight — confirm this was intentional.
+  To override: touch "$UNLOCK"
+EOF
+      exit 1
+    fi
+  fi
+
+  # Verify scoped files — did any task modify files outside its declared scope?
+  # (Compares git diff to the locked tasks[].scope tags)
+  LOCKED_SCOPES=$(jq -r '.tasks[].scope' "$LOCK" | sort -u)
+  # Inspect `git diff --name-only origin/<base>...HEAD` against scope-to-path heuristics
+  # (e.g. FRONTEND should not touch src/db/, DATABASE should not touch components/)
+  # Flag any crossover as ASK — do not auto-fail (heuristics have false positives).
+fi
+```
+
+The gate is **enforcing** on task count drift (exit 1) and **advisory** on scope-tag crossover (ASK prompt). Scope-tag heuristics are too lossy to fail-close on — flag them for the user.
+
 ## 6b. Run Full Test Suite (ENFORCING GATE — not a prose request)
 
 Detect the project's test framework and run it. **The exit code is the gate.** If any command fails, refuse to ship.
