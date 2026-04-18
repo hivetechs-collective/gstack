@@ -135,6 +135,29 @@ Report in retro: `Scope stability: <score>/5 (locked=<N>, shipped=<N>, drift=<D>
 
 A score <= 2 means tasks were added mid-flight without the user acknowledging scope expansion. This is a process smell — the spec was probably incomplete, or scope creep happened silently. Feeds into 8i self-assessment.
 
+## 8g-ter. Writer↔Reader Symmetry
+
+Step 5 runs `.claude/scripts/plan-w-team-symmetry-check.sh` as an enforcing gate. Re-run it at retro time to score how the run's governance artifacts held up:
+
+```bash
+if .claude/scripts/plan-w-team-symmetry-check.sh >/dev/null 2>&1; then
+  SYMMETRY_SCORE=5
+  SYMMETRY_NOTE="clean"
+else
+  code=$?
+  case "$code" in
+    1) SYMMETRY_SCORE=1; SYMMETRY_NOTE="orphan (enforcing artifact with no reader)" ;;
+    2) SYMMETRY_SCORE=1; SYMMETRY_NOTE="stale (registry entry with no writer)" ;;
+    3) SYMMETRY_SCORE=0; SYMMETRY_NOTE="checker env failure" ;;
+    *) SYMMETRY_SCORE=0; SYMMETRY_NOTE="unknown exit $code" ;;
+  esac
+fi
+```
+
+Report in retro: `Writer↔reader symmetry: <SYMMETRY_SCORE>/5 (<SYMMETRY_NOTE>)`.
+
+A score <4 means the run introduced a new state artifact without completing the writer↔reader contract — the exact defect class this gate exists to catch. Feeds §8i self-assessment with category `spec-gap`. Unlike scope-lock drift (where user ack is an escape hatch), symmetry is a pure code-governance property: an orphan is always a real defect, never a legitimate user choice.
+
 ## 8h. Untracked Hygiene
 
 Score how well this run handled untracked files. Read the state file written by the Step 5 ship gate:

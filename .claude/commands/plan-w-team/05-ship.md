@@ -277,22 +277,28 @@ if [ ! -f "$ACK_FILE" ]; then
 fi
 ```
 
-### flock — prevent concurrent push races
+### mkdir lock — prevent concurrent push races
 
-Parallel `/plan-w-team --ship-only` sessions on the same branch can race. Serialize with a per-repo lock:
+Parallel `/plan-w-team --ship-only` sessions on the same branch can race. Serialize with an atomic `mkdir` lock — POSIX-ubiquitous, no `flock(1)` dependency (macOS ships without it), no `exec <fd>>` file-descriptor tricks that break under `zsh`:
 
 ```bash
-PUSH_LOCK=".claude/state/plan-w-team-push.lock"
+PUSH_LOCK_DIR=".claude/state/plan-w-team-push.lock"
 mkdir -p .claude/state
-exec 200>"$PUSH_LOCK"
-if ! flock -n 200; then
-  echo "✗ Another ship is in progress (lock held on $PUSH_LOCK). Aborting."
+if ! mkdir "$PUSH_LOCK_DIR" 2>/dev/null; then
+  HOLDER=$(cat "$PUSH_LOCK_DIR/holder" 2>/dev/null || echo "unknown")
+  echo "✗ Another ship is in progress (lock held by $HOLDER). Aborting."
+  echo "  If stale, remove: rmdir $PUSH_LOCK_DIR"
   exit 1
 fi
+# Record holder for diagnostics; release on any exit (success, error, signal).
+printf 'pid=%s ts=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PUSH_LOCK_DIR/holder"
+trap 'rm -f "$PUSH_LOCK_DIR/holder"; rmdir "$PUSH_LOCK_DIR" 2>/dev/null' EXIT
 
 git push -u origin "$BRANCH"
-# Lock released on exec 200>&- or script exit
+# Lock released by trap on script exit.
 ```
+
+`mkdir` is atomic on every POSIX filesystem: it either creates the directory (lock acquired) or fails with `EEXIST` (lock held). Stale-lock recovery is a single `rmdir`, surfaced in the error message.
 
 After push succeeds, delete the ack file so the next ship run requires a fresh opt-in:
 

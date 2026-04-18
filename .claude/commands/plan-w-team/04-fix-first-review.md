@@ -87,6 +87,49 @@ fi
 
 The check is **advisory** (ASK) because tightening AC mid-flight is legitimate. The point is to surface the edit, not to block it.
 
+### Writer↔Reader Symmetry Check (ENFORCING — runs before review passes)
+
+Every `.claude/state/plan-w-team-*` artifact declared in `shared/state-artifacts.md` must have both a writer and a reader in code (unless explicitly flagged `mode: audit-trail`). This prevents the "write-only by accident" defect class: a stage file that writes a state artifact but promises enforcement in prose without a wired reader.
+
+```bash
+if .claude/scripts/plan-w-team-symmetry-check.sh; then
+  echo "✓ writer↔reader symmetry verified"
+else
+  code=$?
+  case "$code" in
+    1)
+      cat <<'EOF'
+✗ ENFORCING/HANDOFF ORPHAN — a registered artifact has no reader in code.
+  This is a governance bug: the workflow writes a file nothing consumes.
+  FIX BEFORE SHIP: either (a) wire the reader, or (b) downgrade the
+  registry entry to `mode: audit-trail` with justification.
+  Do NOT relax the reader_grep pattern to make the check pass — that
+  defeats the purpose of the registry.
+EOF
+      exit 1  # fail-closed
+      ;;
+    2)
+      cat <<'EOF'
+✗ STALE REGISTRY ENTRY — a registered artifact has no writer in code.
+  Likely causes: a writer was renamed, moved, or removed, but the
+  registry entry was left behind.
+  FIX BEFORE SHIP: remove the stale registry entry, or fix the
+  writer_grep pattern if the writer was renamed.
+EOF
+      exit 1  # fail-closed
+      ;;
+    3)
+      echo "✗ symmetry check environment failure — investigate before ship"
+      exit 1
+      ;;
+  esac
+fi
+```
+
+**Why this is enforcing, not advisory**: The check has zero false-positive tolerance because every orphan is a governance defect by definition — the registry explicitly declared `enforcing`/`handoff` intent. An `audit-trail` artifact is the escape hatch for write-only-by-design cases; use it, don't bypass the checker.
+
+**If the check blocks review on a legitimate new artifact**: Add the entry to `shared/state-artifacts.md` in the same commit as the writer, with appropriate `writer_grep`, `reader_grep`, and `mode`. Re-run; the check now passes.
+
 ## 5b. Pass 1 — CRITICAL (blockers, must fix before ship)
 
 | Check                    | What to Look For                                                                  |
