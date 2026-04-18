@@ -222,12 +222,13 @@ Store self-assessment at the path defined in `shared/artifact-storage.md`.
 
 A self-assessment below 8 is not a vent — it is a signal that the workflow itself needs attention. When a score <8 is recorded:
 
-1. **Append the friction point** to `.claude/state/plan-w-team-friction-log.jsonl`. Use `flock` because this file is **global** across features — concurrent `/plan-w-team` retros on different features will race on append otherwise:
+1. **Append the friction point** to `.claude/state/plan-w-team-friction-log.jsonl`. Serialize concurrent retros with a portable mkdir-based atomic lock (flock is not available on macOS by default). Busy-wait because two parallel retros on different features legitimately race here and both must land:
 
    ```bash
    LOG=".claude/state/plan-w-team-friction-log.jsonl"
+   LOCK_DIR=".claude/state/plan-w-team-friction-log.lock"
    mkdir -p .claude/state
-   # Build the JSON line with jq to guarantee valid escaping, then append under flock.
+   # Build the JSON line with jq to guarantee valid escaping.
    LINE=$(jq -cn \
      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
      --arg feature "$SLUG" \
@@ -235,11 +236,15 @@ A self-assessment below 8 is not a vent — it is a signal that the workflow its
      --arg category "$FRICTION_CATEGORY" \
      --arg note "$FRICTION_NOTE" \
      '{timestamp:$ts, feature:$feature, score:$score, category:$category, note:$note}')
-   (
-     flock -x 9
-     printf '%s\n' "$LINE" >> "$LOG"
-   ) 9>> "$LOG.lock"
+   # mkdir is atomic on POSIX filesystems. Appends are <10ms so contention is rare.
+   while ! mkdir "$LOCK_DIR" 2>/dev/null; do sleep 0.1; done
+   trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+   printf '%s\n' "$LINE" >> "$LOG"
+   rmdir "$LOCK_DIR"
+   trap - EXIT
    ```
+
+   If a stale lock dir blocks retros (e.g. after a killed process), remove it: `rmdir .claude/state/plan-w-team-friction-log.lock`.
 
    `$FRICTION_CATEGORY` must be one of: `spec-gap|builder-struggle|review-noise|hook-friction|hygiene|other`. Reject any other value before the append — unknown categories defeat the 3-in-30-days pattern detection.
 
