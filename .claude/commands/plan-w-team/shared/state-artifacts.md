@@ -24,18 +24,23 @@ Prevent the "write-only by accident" defect class: artifacts whose writer is wir
      - `mode`: enforcing | handoff | audit-trail
      Do NOT add prose columns before/after without updating the checker's awk. -->
 
-| pattern                                                  | writer_grep                                           | reader_grep                                              | mode      | purpose                                       |
-| -------------------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------- | --------- | --------------------------------------------- |
-| `.claude/state/plan-w-team-untracked-baseline-$SLUG.txt` | `plan-w-team-untracked-baseline-.*\.txt`              | `BASELINE=".claude/state/plan-w-team-untracked-baseline` | enforcing | Ship gate anchor (Step 5 hygiene)             |
-| `.claude/state/plan-w-team-ac-snapshot-$SLUG.md`         | `SNAPSHOT=".claude/state/plan-w-team-ac-snapshot`     | `SNAPSHOT=".claude/state/plan-w-team-ac-snapshot`        | enforcing | AC contract integrity (evaluator + Step 5)    |
-| `.claude/state/plan-w-team-scope-lock-$SLUG.json`        | `cat > ".claude/state/plan-w-team-scope-lock`         | `LOCK=".claude/state/plan-w-team-scope-lock`             | enforcing | Scope drift detection (Step 5 + Step 8)       |
-| `.claude/state/plan-w-team-scope-unlock-$SLUG`           | `plan-w-team-scope-unlock-`                           | `UNLOCK=".claude/state/plan-w-team-scope-unlock`         | handoff   | User ack for mid-flight scope expansion       |
-| `.claude/state/plan-w-team-retro-$SLUG.json`             | `plan-w-team-retro-\$SLUG\.json`                      | `RETRO_STATE=".claude/state/plan-w-team-retro`           | handoff   | Cross-stage hygiene handoff (Step 5 → Step 8) |
-| `.claude/state/plan-w-team-friction-log.jsonl`           | `LOG=".claude/state/plan-w-team-friction-log`         | `plan-w-team-friction-log\.jsonl`                        | enforcing | Global feedback loop (3-in-30d detector)      |
-| `.claude/state/plan-w-team-friction-ack-<category>`      | `plan-w-team-friction-ack-`                           | `plan-w-team-friction-ack-`                              | handoff   | User dismissal of friction pattern            |
-| `.claude/state/plan-w-team-autofix-$SLUG.md`             | `plan-w-team-autofix-\$SLUG\.md`                      | `plan-w-team-autofix-\$SLUG\.md`                         | handoff   | Auto-fix scope fence (reviewer → builder)     |
-| `.claude/state/plan-w-team-ack-$SLUG`                    | `ACK_FILE=".claude/state/plan-w-team-ack`             | `ACK_FILE=".claude/state/plan-w-team-ack`                | enforcing | Push confirmation gate                        |
-| `.claude/state/plan-w-team-push.lock`                    | `PUSH_LOCK_DIR=".claude/state/plan-w-team-push\.lock` | `PUSH_LOCK_DIR=".claude/state/plan-w-team-push\.lock`    | enforcing | Concurrent push serialization (mkdir lock)    |
+| pattern                                                  | writer_grep                                               | reader_grep                                               | mode      | purpose                                                |
+| -------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------- | --------- | ------------------------------------------------------ |
+| `.claude/state/plan-w-team-untracked-baseline-$SLUG.txt` | `plan-w-team-untracked-baseline-.*\.txt`                  | `BASELINE=".claude/state/plan-w-team-untracked-baseline`  | enforcing | Ship gate anchor (Step 5 hygiene)                      |
+| `.claude/state/plan-w-team-ac-snapshot-$SLUG.md`         | `SNAPSHOT=".claude/state/plan-w-team-ac-snapshot`         | `SNAPSHOT=".claude/state/plan-w-team-ac-snapshot`         | enforcing | AC contract integrity (evaluator + Step 5)             |
+| `.claude/state/plan-w-team-scope-lock-$SLUG.json`        | `cat > ".claude/state/plan-w-team-scope-lock`             | `LOCK=".claude/state/plan-w-team-scope-lock`              | enforcing | Scope drift detection (Step 5 + Step 8)                |
+| `.claude/state/plan-w-team-scope-unlock-$SLUG`           | `plan-w-team-scope-unlock-`                               | `UNLOCK=".claude/state/plan-w-team-scope-unlock`          | handoff   | User ack for mid-flight scope expansion                |
+| `.claude/state/plan-w-team-retro-$SLUG.json`             | `plan-w-team-retro-\$SLUG\.json`                          | `RETRO_STATE=".claude/state/plan-w-team-retro`            | handoff   | Cross-stage hygiene handoff (Step 5 → Step 8)          |
+| `.claude/state/plan-w-team-friction-log.jsonl`           | `LOG=".claude/state/plan-w-team-friction-log`             | `plan-w-team-friction-log\.jsonl`                         | enforcing | Global feedback loop (3-in-30d detector)               |
+| `.claude/state/plan-w-team-friction-ack-<category>`      | `plan-w-team-friction-ack-`                               | `plan-w-team-friction-ack-`                               | handoff   | User dismissal of friction pattern                     |
+| `.claude/state/plan-w-team-autofix-$SLUG.md`             | `plan-w-team-autofix-\$SLUG\.md`                          | `plan-w-team-autofix-\$SLUG\.md`                          | handoff   | Auto-fix scope fence (reviewer → builder)              |
+| `.claude/state/plan-w-team-review-findings-$SLUG.md`     | `FINDINGS=".claude/state/plan-w-team-review-findings`     | `FINDINGS=".claude/state/plan-w-team-review-findings`     | enforcing | Review findings handoff (Step 5 → Step 6)              |
+| `.claude/state/plan-w-team-ack-$SLUG`                    | `ACK_FILE=".claude/state/plan-w-team-ack`                 | `ACK_FILE=".claude/state/plan-w-team-ack`                 | enforcing | Push confirmation gate                                 |
+| `.claude/state/plan-w-team-push.lock`                    | `PUSH_LOCK_DIR=".claude/state/plan-w-team-push\.lock`     | `PUSH_LOCK_DIR=".claude/state/plan-w-team-push\.lock`     | enforcing | Concurrent push serialization (mkdir lock)             |
+| `.claude/state/plan-w-team-secret-scan-allow-$SLUG`      | `ALLOW_FILE=".claude/state/plan-w-team-secret-scan-allow` | `ALLOW_FILE=".claude/state/plan-w-team-secret-scan-allow` | handoff   | User-curated allowlist for secret-scan false positives |
+| `.claude/state/plan-w-team-workflow-$SLUG.lock`          | `WORKFLOW_LOCK_DIR=".claude/state/plan-w-team-workflow`   | `WORKFLOW_LOCK_DIR=".claude/state/plan-w-team-workflow`   | enforcing | Per-SLUG concurrent /plan-w-team session lock          |
+| `.claude/state/plan-w-team-postship-$SLUG.json`          | `ARTIFACT=".claude/state/plan-w-team-postship`            | `plan-w-team-postship-\$SLUG\.json`                       | handoff   | Step 7 docs audit handoff to Step 8 retro §8d          |
+| `.claude/state/plan-w-team-friction-log.lock`            | `LOCK_DIR=".claude/state/plan-w-team-friction-log\.lock`  | `LOCK_DIR=".claude/state/plan-w-team-friction-log\.lock`  | enforcing | Concurrent retro friction-log mkdir lock               |
 
 ## When adding a new state artifact
 
@@ -58,6 +63,7 @@ Exit codes:
 - `1` — enforcing orphan (registry entry with no reader grep match)
 - `2` — stale registry entry (no writer grep match — likely renamed or removed)
 - `3` — environment failure (ripgrep missing, registry malformed)
+- `4` — orphan reader (code references `.claude/state/plan-w-team-*` with no matching registry entry)
 
 ## Where this runs
 

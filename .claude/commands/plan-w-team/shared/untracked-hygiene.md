@@ -67,6 +67,40 @@ The classification set is the exact list of files the current run introduced —
 
 ## Decision Matrix
 
+> See diagram below — every untracked file the run introduced flows through this tree exactly once. Terminal states (COMMIT / IGNORE / DISCARD / DEFER) are mutually exclusive; nothing exits unclassified.
+
+```mermaid
+flowchart TD
+    Start([New untracked file<br/>from classification set]) --> Q1{Carries semantic<br/>value for the feature?}
+    Q1 -->|Yes — output, doc, code| Q2{Belongs in repo<br/>history?}
+    Q1 -->|No — scratch, draft, build artifact| Q3{Will future runs<br/>regenerate this type?}
+    Q2 -->|Yes| COMMIT[COMMIT<br/>git add path<br/>joins ship commit]
+    Q2 -->|No — too large, sensitive,<br/>or external storage| Q4{Pattern broad enough<br/>to cover siblings?}
+    Q3 -->|Yes| IGNORE[IGNORE<br/>append narrowest pattern<br/>to .gitignore]
+    Q3 -->|No — one-off| Q5{Has any value<br/>to keep on disk?}
+    Q4 -->|Yes| IGNORE
+    Q4 -->|No — single file| Q5
+    Q5 -->|No| DISCARD[DISCARD<br/>rm path<br/>value-carrier guard runs]
+    Q5 -->|Yes — keep but defer<br/>commit/ignore decision| DEFER[DEFER<br/>record path,reason<br/>in retro artifact]
+    DISCARD --> Guard{Value-carrier<br/>guard passed?}
+    Guard -->|Yes| Done([Classified])
+    Guard -->|No — file > 1KB and<br/>contains text| BlockDiscard[BLOCK: ASK user<br/>guard suspects real content]
+    COMMIT --> Done
+    IGNORE --> Done
+    DEFER --> Done
+
+    classDef commit fill:#cfc,stroke:#080;
+    classDef ignore fill:#ddd,stroke:#666;
+    classDef discard fill:#fdd,stroke:#c00;
+    classDef defer fill:#ffd,stroke:#a80;
+    classDef block fill:#fee,stroke:#c00,color:#900;
+    class COMMIT commit
+    class IGNORE ignore
+    class DISCARD discard
+    class DEFER defer
+    class BlockDiscard block
+```
+
 For every file in the classification set, the agent (or user) picks exactly ONE:
 
 | Decision    | Meaning                                                                                     | Action the gate applies                                                                      |

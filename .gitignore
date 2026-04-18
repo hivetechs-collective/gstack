@@ -11,3 +11,7 @@ bun.lock
 .env.local
 .env.*
 !.env.example
+
+# Claude sync artifacts (auto-managed by sync-to-project.sh)
+.claude/agents.backup.*
+.claude/statusline.log

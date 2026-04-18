@@ -104,6 +104,41 @@ Verify Step 5 review is complete. If not, run it first. Track review completion 
 
 If the user wants to override a missing review, store the override decision (read `shared/artifact-storage.md` for override persistence format) so re-runs of `/plan-w-team` on the same branch do not re-ask.
 
+### Re-read persisted review findings (ENFORCING)
+
+Step 5 §5h wrote `.claude/state/plan-w-team-review-findings-$SLUG.md` with frontmatter declaring whether every Pass-1 CRITICAL was resolved. Verify the contract before proceeding to any other gate.
+
+```bash
+FINDINGS=".claude/state/plan-w-team-review-findings-$SLUG.md"
+
+if [ ! -f "$FINDINGS" ]; then
+  cat <<'EOF'
+✗ SHIP BLOCKED: no review-findings artifact found.
+  Step 5 must have written .claude/state/plan-w-team-review-findings-$SLUG.md
+  before Step 6 runs. Either re-run Step 5, or — if you intentionally skipped
+  review — write the file by hand and set all_critical_resolved: true.
+EOF
+  exit 1
+fi
+
+ALL_RESOLVED=$(awk '/^all_critical_resolved:/{print $2}' "$FINDINGS")
+CRITICAL_COUNT=$(awk '/^critical_count:/{print $2}' "$FINDINGS")
+
+if [ "$ALL_RESOLVED" != "true" ]; then
+  cat <<EOF
+✗ SHIP BLOCKED: review findings declare unresolved CRITICAL items.
+  $FINDINGS shows critical_count=$CRITICAL_COUNT but all_critical_resolved=$ALL_RESOLVED.
+  Resolve each CRITICAL with a "→ resolved in <sha>" marker or "→ DEFERRED" with user ack,
+  then re-run Step 5 §5h to refresh the file before retrying ship.
+EOF
+  exit 1
+fi
+
+echo "✓ review findings: $CRITICAL_COUNT critical, all resolved"
+```
+
+**Why this gate exists**: prior to this artifact, "review is complete" was a verbal claim that died at session boundaries. A compaction between Step 5 and Step 6 meant Step 6 had no way to verify CRITICALs were addressed and would happily ship a branch with known blockers.
+
 ## 6a-bis. Scope Lock Enforcement (ENFORCING GATE)
 
 Step 2 wrote `.claude/state/plan-w-team-scope-lock-$SLUG.json` with the task set at planning time. Before shipping, verify no silent scope expansion occurred.
@@ -117,8 +152,24 @@ if [ ! -f "$LOCK" ]; then
   echo "  Scope drift cannot be verified. Retro will note: scope-unverified"
 else
   LOCKED_COUNT=$(jq -r '.task_count' "$LOCK")
-  # Count tasks actually shipped in this feature (metadata.spec_path matches)
-  SHIPPED_COUNT=$(TaskList by spec_path | wc -l)  # pseudocode — use your task tooling
+  # Count tasks actually shipped in this feature.
+  # Three concrete strategies (pick the one your task tooling supports — all read-only, no pseudocode):
+  #
+  # Strategy A (preferred — works without a task DB): grep commit messages on the feature branch
+  # for the locked task IDs. Each task gets at least one commit referencing its ID; count unique IDs.
+  BASE_REF="origin/${BASE_BRANCH:-main}"
+  LOCKED_IDS=$(jq -r '.tasks[].id' "$LOCK")
+  SHIPPED_COUNT=$(
+    git log "$BASE_REF..HEAD" --pretty=%B \
+      | grep -oE '(task[-_]?[0-9]+|#[0-9]+|T[0-9]+)' \
+      | sort -u \
+      | grep -cFf <(printf '%s\n' $LOCKED_IDS)
+  )
+  # Strategy B (if you persist task metadata): list tasks whose metadata.spec_path matches the
+  # current spec, e.g. `jq -r '.[] | select(.metadata.spec_path=="'"$SPEC"'") | .id' ~/.claude/tasks/*.json | wc -l`
+  # Strategy C (last resort): count commits with the spec slug in the subject line:
+  #   git log "$BASE_REF..HEAD" --pretty=%s | grep -cE "(\($SLUG\)|: $SLUG[: ])"
+  # Strategy A is preferred because it survives task-DB migration and works on a fresh clone.
 
   if [ "$SHIPPED_COUNT" -ne "$LOCKED_COUNT" ]; then
     if [ -f "$UNLOCK" ]; then
@@ -349,6 +400,21 @@ Parallel `/plan-w-team --ship-only` sessions on the same branch can race. Serial
 ```bash
 PUSH_LOCK_DIR=".claude/state/plan-w-team-push.lock"
 mkdir -p .claude/state
+
+# Stale-lock auto-recovery (F-3.1): if the lock dir exists but is older than 30 minutes
+# AND its recorded PID is not running, treat it as abandoned and clear it before re-attempting.
+# 30 min is generous — the longest legitimate push (LFS, large repo, slow uplink) finishes well under that.
+if [ -d "$PUSH_LOCK_DIR" ]; then
+  # Portable mtime: stat -f on macOS, stat -c on Linux. `find` is the lowest-common-denominator alt.
+  LOCK_AGE_MIN=$(find "$PUSH_LOCK_DIR" -maxdepth 0 -mmin +30 -print 2>/dev/null | wc -l | tr -d ' ')
+  HOLDER_PID=$(awk -F= '/^pid=/{print $2}' "$PUSH_LOCK_DIR/holder" 2>/dev/null)
+  if [ "$LOCK_AGE_MIN" -gt 0 ] && [ -n "$HOLDER_PID" ] && ! kill -0 "$HOLDER_PID" 2>/dev/null; then
+    echo "⚠ stale push lock detected (>30min, holder pid=$HOLDER_PID not running) — clearing"
+    rm -f "$PUSH_LOCK_DIR/holder"
+    rmdir "$PUSH_LOCK_DIR" 2>/dev/null
+  fi
+fi
+
 if ! mkdir "$PUSH_LOCK_DIR" 2>/dev/null; then
   HOLDER=$(cat "$PUSH_LOCK_DIR/holder" 2>/dev/null || echo "unknown")
   echo "✗ Another ship is in progress (lock held by $HOLDER). Aborting."
@@ -359,11 +425,18 @@ fi
 printf 'pid=%s ts=%s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PUSH_LOCK_DIR/holder"
 trap 'rm -f "$PUSH_LOCK_DIR/holder"; rmdir "$PUSH_LOCK_DIR" 2>/dev/null' EXIT
 
+# WARNING: any subsequent `trap … EXIT` in this script MUST chain rather than
+# replace this handler. Bash `trap CMD EXIT` *replaces* the existing handler
+# unconditionally — a naked `trap 'rm -f /tmp/foo' EXIT` later in the script
+# silently drops this push-lock cleanup, causing the lock dir to leak until
+# the 30-min stale-recovery branch fires on the *next* run. See §"Link PR"
+# below for the chain pattern (`trap -p EXIT` capture + append).
+
 git push -u origin "$BRANCH"
 # Lock released by trap on script exit.
 ```
 
-`mkdir` is atomic on every POSIX filesystem: it either creates the directory (lock acquired) or fails with `EEXIST` (lock held). Stale-lock recovery is a single `rmdir`, surfaced in the error message.
+`mkdir` is atomic on every POSIX filesystem: it either creates the directory (lock acquired) or fails with `EEXIST` (lock held). Stale locks (>30min + dead holder PID) auto-clear at the top of the block; manual `rmdir` is the escape hatch for younger locks the operator knows are abandoned.
 
 After push succeeds, delete the ack file so the next ship run requires a fresh opt-in:
 
@@ -383,7 +456,11 @@ ISSUE_NUM=$(grep -o '#[0-9]*' docs/specs/<feature-name>.md | head -1)
 # fragments (spec links, issue titles, commit messages) and lets gh read directly.
 # See shared/shell-safety.md for why `<<EOF` on LLM-authored content is unsafe.
 PR_BODY_FILE=$(mktemp -t plan-w-team-pr-body.XXXXXX)
-trap 'rm -f "$PR_BODY_FILE"' EXIT
+# Chain cleanup onto the existing push-lock trap — do NOT replace it.
+# `trap -p EXIT` returns the existing handler in re-evaluable form (`trap -- 'CMD' EXIT`).
+# Strip the wrapper, append our cleanup, set the combined trap.
+EXISTING_TRAP=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\\1/")
+trap "${EXISTING_TRAP}; rm -f \"$PR_BODY_FILE\"" EXIT
 
 cat > "$PR_BODY_FILE" <<'EOF'
 ## Summary

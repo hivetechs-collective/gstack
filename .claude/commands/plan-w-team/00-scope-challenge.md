@@ -63,6 +63,20 @@ Two-way doors get standard review. One-way doors get extra validation in Step 5.
 
 Proceed / Proceed with modifications / Recommend against (with reasoning). If proceeding, carry the taste calibration, door labels, and dream state mapping forward into the spec.
 
+### Worked Example: a feature that failed the challenge
+
+> **Request:** "Build a custom retry queue for SES email sends so we never lose a notification."
+>
+> **0a Premise:** SES already retries with exponential backoff and emits `Bounce`/`Complaint` events; the loss scenario the user is worried about (transient SMTP failure) is the case SES handles best. **80% of value already exists.**
+>
+> **0c Complexity:** Custom retry queue = new table, new worker, new dead-letter mailbox, new dashboards. Touches >8 files; 2 new abstractions. **Smell positive.**
+>
+> **0d Doors:** Schema for the retry queue is one-way; backing it out after launch would require either retaining the old table indefinitely or migrating in-flight messages. **High-risk one-way door for a low-yield feature.**
+>
+> **Verdict:** Recommend against. Achieve the same goal by (a) subscribing to SES `DeliveryDelayed` events and surfacing them in the existing notifications dashboard, and (b) wiring a 24h-old-bounce alert. Two-way door, ~30 minutes of work, no new infrastructure.
+
+The vignette exists to remind the lead that "Recommend against" is a real outcome, not a theoretical one. Sunk-cost bias and "the user asked for it" are the two failure modes this stage exists to defeat.
+
 **Cognitive frameworks used here**: Inversion reflex (Munger), Essential vs accidental complexity (Brooks), Focus as subtraction (Jobs/Rams), One-way vs two-way doors (Bezos). Read `shared/cognitive-frameworks.md` for full reference.
 
 **Opus 4.7 tip**: Scope challenge is a gate, not a design session — use terse adaptive thinking ("prioritize responding quickly"). See `shared/opus-4-7-practices.md` §2.

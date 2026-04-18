@@ -165,7 +165,34 @@ Score how well this run handled untracked files. Read the state file written by 
 ```bash
 SLUG="<feature-slug>"
 RETRO_STATE=".claude/state/plan-w-team-retro-$SLUG.json"
-# Read untracked_hygiene.resolved counts and deferrals[] from the file
+BASELINE=".claude/state/plan-w-team-untracked-baseline-$SLUG.txt"
+
+# Degraded-mode sentinel: if the baseline never existed (e.g. --ship-only, --resume,
+# or a run that skipped preflight), persist hygiene_skipped: true to the retro JSON
+# so downstream readers (friction detector, dashboards) can distinguish "skipped" from
+# "scored low". A score of 1 means the gate ran and failed; a missing-baseline run
+# should score n/a, not 1.
+#
+# IMPORTANT: the write is unconditional — RETRO_STATE may not pre-exist on the
+# --ship-only and --retro paths (no Step 5 ship-gate hygiene loop ran), and that
+# is exactly the case the sentinel exists for. Round 1 had this guarded behind
+# `[ -f "$RETRO_STATE" ]`, which silently no-op'd on the most common skip path.
+if [ ! -f "$BASELINE" ]; then
+  mkdir -p .claude/state
+  TMP=$(mktemp "${RETRO_STATE}.tmp.XXXXXX")
+  if [ -f "$RETRO_STATE" ]; then
+    jq '.untracked_hygiene = {hygiene_skipped: true, reason: "baseline missing at retro time", score: null}' \
+      "$RETRO_STATE" > "$TMP"
+  else
+    jq -n '{untracked_hygiene: {hygiene_skipped: true, reason: "baseline missing at retro time", score: null}}' \
+      > "$TMP"
+  fi
+  mv "$TMP" "$RETRO_STATE"
+  echo "Score: n/a (hygiene-skipped — no baseline)"
+else
+  # Normal path: read untracked_hygiene.resolved counts and deferrals[] from the file
+  jq '.untracked_hygiene' "$RETRO_STATE"
+fi
 ```
 
 Report in the retro artifact using this format:
@@ -203,7 +230,7 @@ rm -f ".claude/state/plan-w-team-untracked-baseline-$SLUG.txt"
 
 Failed runs (retro aborted) leave the baseline intact so `--resume` can read it.
 
-If the Step 5 gate ran in degraded mode (no baseline, e.g. `--ship-only` or `--resume`), report `Score: n/a (hygiene-skipped)` instead of scoring 1 — skipping is not the same as failing.
+If the Step 5 gate ran in degraded mode (no baseline, e.g. `--ship-only` or `--resume`), report `Score: n/a (hygiene-skipped)` instead of scoring 1 — skipping is not the same as failing. The sentinel block above persists this distinction to `$RETRO_STATE.untracked_hygiene.hygiene_skipped` so the 3-in-30-days friction detector won't false-positive on legitimate skips.
 
 ## 8i. Self-Assessment
 
@@ -236,13 +263,18 @@ A self-assessment below 8 is not a vent — it is a signal that the workflow its
      --arg category "$FRICTION_CATEGORY" \
      --arg note "$FRICTION_NOTE" \
      '{timestamp:$ts, feature:$feature, score:$score, category:$category, note:$note}')
-   # mkdir is atomic on POSIX filesystems. Appends are <10ms so contention is rare.
+   # mkdir is atomic on POSIX filesystems. Serializes concurrent retros.
    while ! mkdir "$LOCK_DIR" 2>/dev/null; do sleep 0.1; done
-   trap 'rmdir "$LOCK_DIR" 2>/dev/null' EXIT
-   printf '%s\n' "$LINE" >> "$LOG"
+   trap 'rm -f "$LOG.tmp.$$"; rmdir "$LOCK_DIR" 2>/dev/null' EXIT
+   # Atomic write: build the full new file in a temp, then rename.
+   # `>>` can leave a partial line if the process is killed mid-append; rename is atomic on the same filesystem.
+   TMP="$LOG.tmp.$$"
+   { [ -f "$LOG" ] && cat "$LOG"; printf '%s\n' "$LINE"; } > "$TMP" && mv "$TMP" "$LOG"
    rmdir "$LOCK_DIR"
    trap - EXIT
    ```
+
+   **Why temp+rename instead of `>>`**: an append interrupted by SIGKILL can produce a half-written JSONL line, which silently corrupts every downstream `jq -s` read of the log. `mv` on the same filesystem is atomic — readers see either the old file or the new one, never a torn write.
 
    If a stale lock dir blocks retros (e.g. after a killed process), remove it: `rmdir .claude/state/plan-w-team-friction-log.lock`.
 

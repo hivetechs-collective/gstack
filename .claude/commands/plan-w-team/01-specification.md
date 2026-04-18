@@ -7,6 +7,19 @@ Create a **spec** (requirements document, persists in repo) at `docs/specs/<feat
 ```markdown
 # Feature: <name>
 
+## Scope Inputs (from Step 0)
+
+Captured from the Step 0 scope-challenge output. These travel with the spec so Step 5 review and Step 8 retro can verify the feature shipped against its declared inputs (and not against silently-shifted scope).
+
+| Field                | Value                                                                                                                                                                                   |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `scope_mode`         | EXPAND \| SELECTIVE EXPAND \| HOLD \| REDUCE — chosen at /plan-w-team invocation                                                                                                        |
+| `door_labels`        | List each major design decision tagged in §0d, e.g. `auth-table-schema: one-way`, `email-template-copy: two-way`                                                                        |
+| `taste_anchor`       | 2-3 in-repo good patterns + 1-2 anti-patterns from §0b, with file paths. The reviewer (Step 5) cites these when ranking subjective code quality.                                        |
+| `dream_state_delta`  | One sentence: how this feature moves CURRENT toward 12-MONTH IDEAL. If empty, Step 0 should have killed the feature.                                                                    |
+| `board_issue`        | `#<n>` from `scripts/board.sh add` (filled in after the Board Integration block below)                                                                                                  |
+| `complexity_signals` | Files-to-change estimate, new-files-to-create estimate, estimated-task count. If any exceeded the §0c Context Budget Gate threshold, this field MUST also reference the split decision. |
+
 ## Overview
 
 Brief description. Include dream state mapping:

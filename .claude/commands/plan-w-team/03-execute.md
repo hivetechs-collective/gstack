@@ -439,12 +439,79 @@ If you find yourself starting Step 5 without having checked for acceptance crite
 
 When invoked with `--resume`:
 
-1. TaskList -> identify tasks with status != "completed"
-2. For completed tasks: verify metadata.commit_sha exists in git log
-3. Reset orphaned in_progress tasks (no living builder) to "pending"
-4. Check for stale worktree branches with `git worktree list` — prune any orphaned worktrees
-5. Read metadata.spec_path from any task to reload requirements
-6. Reload taste calibration and door labels from spec
-7. TeamCreate, spawn builders for remaining work
-8. Builders self-claim incomplete tasks
-9. Normal execution continues from Step 4 above
+1. **Recover SLUG** (see contract below) — every other state file is keyed by it; getting it wrong silently forks a new run.
+2. TaskList -> identify tasks with status != "completed"
+3. For completed tasks: verify metadata.commit_sha exists in git log
+4. Reset orphaned in_progress tasks (no living builder) to "pending"
+5. Check for stale worktree branches with `git worktree list` — prune any orphaned worktrees
+6. Read metadata.spec_path from any task to reload requirements
+7. Reload taste calibration and door labels from spec
+8. TeamCreate, spawn builders for remaining work
+9. Builders self-claim incomplete tasks
+10. Normal execution continues from Step 4 above
+
+### SLUG Recovery Contract
+
+`--resume`, `--ship-only`, and `--retro` all need the original SLUG to find the baseline, scope-lock, ac-snapshot, retro state, and workflow lock. A wrong SLUG silently starts a parallel run with an empty state — the ship gate then misclassifies pre-existing files as "new" and the retro fires on the wrong feature.
+
+Recover SLUG in this order, stopping at the first hit:
+
+```bash
+# 1. Explicit user argument always wins
+SLUG="${USER_PROVIDED_SLUG:-}"
+
+# 2. If unset, derive from any in-progress/pending task's metadata.spec_path
+#    (TaskList output → first task with spec_path → basename without .md)
+if [ -z "$SLUG" ]; then
+  SPEC_PATH=$(task_list_first_metadata_value "spec_path") # docs/specs/<slug>.md
+  [ -n "$SPEC_PATH" ] && SLUG=$(basename "$SPEC_PATH" .md)
+fi
+
+# 3. If still unset, scan baselines for the most recent one
+if [ -z "$SLUG" ]; then
+  CANDIDATES=$(ls -t .claude/state/plan-w-team-untracked-baseline-*.txt 2>/dev/null | head -3)
+  COUNT=$(printf '%s\n' "$CANDIDATES" | grep -c .)
+  if [ "$COUNT" = "1" ]; then
+    SLUG=$(basename "$CANDIDATES" .txt)
+    SLUG="${SLUG#plan-w-team-untracked-baseline-}"
+    echo "ℹ recovered SLUG from baseline: $SLUG"
+  elif [ "$COUNT" -gt 1 ]; then
+    echo "✗ multiple baselines found — pass SLUG explicitly:"
+    printf '%s\n' "$CANDIDATES"
+    exit 1
+  fi
+fi
+
+# 4. Fail loud — never silently invent a SLUG
+if [ -z "$SLUG" ]; then
+  echo "✗ cannot recover SLUG. Pass it explicitly: /plan-w-team --resume <slug>"
+  exit 1
+fi
+```
+
+### Baseline-Missing Guard
+
+`--resume` and `--ship-only` both depend on `.claude/state/plan-w-team-untracked-baseline-$SLUG.txt`. Without it, the Step 5 ship gate has no anchor and would either:
+
+- (a) treat everything currently untracked as "introduced by this run" — punishing the user for pre-existing dirt, or
+- (b) skip the gate entirely — defeating the safeguard.
+
+Neither is acceptable. Detect and recover:
+
+```bash
+BASELINE=".claude/state/plan-w-team-untracked-baseline-${SLUG}.txt"
+
+if [ ! -f "$BASELINE" ]; then
+  echo "⚠ baseline missing for SLUG=$SLUG — Step 5 ship gate cannot run cleanly"
+  echo "  options:"
+  echo "    1. capture NOW (treats current untracked as 'pre-existing'):"
+  echo "       git ls-files --others --exclude-standard | sort > $BASELINE"
+  echo "    2. check git stash / other branches for the baseline file"
+  echo "    3. abort and start fresh (loses --resume context)"
+  exit 1
+fi
+```
+
+Option 1 is safe ONLY if the user can confirm no /plan-w-team-introduced files are currently untracked. The default action is to surface the choice, never to capture silently.
+
+**Why this lives in execute, not ship**: by the time Step 5 runs the gate, any prompt is too late — the user is already mid-pipeline. Catching at `--resume` entry forces the decision before work continues.

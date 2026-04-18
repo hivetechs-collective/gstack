@@ -130,6 +130,51 @@ fi
 
 **If the check blocks review on a legitimate new artifact**: Add the entry to `shared/state-artifacts.md` in the same commit as the writer, with appropriate `writer_grep`, `reader_grep`, and `mode`. Re-run; the check now passes.
 
+## Two-Pass Review Decision Tree
+
+> See diagram below — describes the route every diff line takes from raw evaluator handoff through Pass 1 / Pass 2 classification to the AUTO-FIX / ASK / DEFER terminal states.
+
+```mermaid
+flowchart TD
+    Start([Diff from Step 4 merge]) --> Integrity{Spec SHA<br/>matches snapshot?}
+    Integrity -->|No| AskDrift[ASK: spec drift]
+    Integrity -->|Yes| Symmetry{Writer↔reader<br/>symmetry OK?}
+    Symmetry -->|No| BlockSym[BLOCK: register artifact<br/>or remove writer]
+    Symmetry -->|Yes| EvalIn{Evaluator<br/>report?}
+    EvalIn -->|ESCALATE| Pass1Hot[Pass 1 — intensified<br/>read failure report first]
+    EvalIn -->|PASS / none| Pass1[Pass 1 — CRITICAL<br/>SQL · races · LLM trust ·<br/>side effects · one-way doors]
+    EvalIn -->|PASS w/ notes| Pass1
+    Pass1Hot --> Findings1
+    Pass1 --> Findings1{CRITICAL<br/>findings?}
+    Findings1 -->|Yes| BlockShip[BLOCK ship]
+    BlockShip --> Resolve{Resolved<br/>or DEFERRED + ack?}
+    Resolve -->|No| BlockShip
+    Resolve -->|Yes| Pass2
+    Findings1 -->|No| Pass2[Pass 2 — INFORMATIONAL<br/>dead code · magic numbers ·<br/>stale comments · N+1 · unused]
+    Pass2 --> Classify{Classify each<br/>finding}
+    Classify -->|Mechanical| AutoFix[Write autofix list<br/>+ compute SHA256]
+    Classify -->|Judgment call| Ask[ASK — present to user]
+    Classify -->|Out of scope| Defer[DEFER → spec<br/>Deferred Items table]
+    AutoFix --> Spawn[Spawn Hands-tier builder<br/>w/ pinned SHA]
+    Spawn --> ShaCheck{Builder<br/>verifies SHA?}
+    ShaCheck -->|No| Drift[ABORT: handoff drift<br/>re-run reviewer]
+    ShaCheck -->|Yes| Apply[Apply edits<br/>→ return diff]
+    Drift --> Pass2
+    Apply --> Persist[§5h persist findings<br/>all_critical_resolved=true]
+    Ask --> Persist
+    Defer --> Persist
+    Persist --> ShipGate([Step 6 ship gate])
+
+    classDef block fill:#fee,stroke:#c00,color:#900;
+    classDef pass fill:#efe,stroke:#080;
+    classDef ask fill:#ffd,stroke:#a80;
+    class BlockSym,BlockShip,Drift block
+    class Persist,ShipGate,Apply pass
+    class AskDrift,Ask ask
+```
+
+The diagram is the contract: every diff line that passes `Persist` is provably either auto-fixed, user-acknowledged, or deferred with context. A path that ends anywhere else is a workflow bug.
+
 ## 5b. Pass 1 — CRITICAL (blockers, must fix before ship)
 
 | Check                    | What to Look For                                                                  |
@@ -171,8 +216,16 @@ Auto-fix all AUTO-FIX items. Batch remaining ASK items and present them together
 The reviewer (Brain tier) analyzes and classifies. It **does not** perform the auto-fix edits itself. Spawn a Hands-tier subagent (`builder` agent, Opus 4.6) to apply AUTO-FIX items:
 
 1. Reviewer writes the auto-fix list to `.claude/state/plan-w-team-autofix-$SLUG.md` — one heading per file, bulleted change list.
-2. Reviewer spawns a builder subagent with: "Apply the mechanical edits listed in `.claude/state/plan-w-team-autofix-$SLUG.md`. Do not invent fixes. Do not touch files outside the list. Return a diff summary."
-3. Reviewer re-reads the diff after the builder returns and confirms no out-of-scope edits occurred.
+2. Reviewer **freezes the handoff file** by computing its SHA256 and recording the digest in the spawn prompt. This guards against the race where a second reviewer pass overwrites the file mid-flight while a builder is reading it:
+   ```bash
+   AUTOFIX=".claude/state/plan-w-team-autofix-$SLUG.md"
+   AUTOFIX_SHA=$(shasum -a 256 "$AUTOFIX" | awk '{print $1}')
+   # Builder will re-verify this digest before reading; mismatch = abort.
+   ```
+3. Reviewer spawns a builder subagent with: "Apply the mechanical edits listed in `.claude/state/plan-w-team-autofix-$SLUG.md`. **Before reading**, run `shasum -a 256 .claude/state/plan-w-team-autofix-$SLUG.md` and verify it matches `$AUTOFIX_SHA` — if it differs, abort and report 'autofix-handoff drift'. Do not invent fixes. Do not touch files outside the list. Return a diff summary."
+4. Reviewer re-reads the diff after the builder returns and confirms no out-of-scope edits occurred.
+
+**Why digest, not file-lock**: a `cp file file.locked` guard would also work, but it doubles the audit trail (now there are two files) and a stale `.locked` blocks the next run with no clear recovery. A SHA256 in the spawn prompt is the lightweight equivalent: the builder either sees the version the reviewer intended, or it aborts cleanly. No cleanup needed.
 
 **Why**: Brain-tier reviewers should not hand-edit files — they lose their neutral-reviewer frame when they touch code, and their per-token cost is 4-6x a Hands tier subagent's. This also creates a clean audit trail (the autofix-$SLUG.md file) if an AUTO-FIX later causes a regression.
 
@@ -226,3 +279,60 @@ Use design critique vocabulary for findings:
 ## 5g. E2E Failure Blame Protocol
 
 If any test fails during review, NEVER claim "not related to our changes" without proving it by running the same test on the base branch first. Confirmation bias is the enemy.
+
+## 5h. Persist Review Findings (handoff to Step 6)
+
+Step 6 (ship) needs to verify every CRITICAL Pass-1 finding was resolved before pushing. If the session compacts between Step 5 and Step 6, in-conversation findings are lost. Persist them to a state artifact so Step 6 can re-read regardless of session boundary.
+
+```bash
+SLUG="<feature-slug>"   # same slug used for baseline/scope-lock/ac-snapshot
+FINDINGS=".claude/state/plan-w-team-review-findings-$SLUG.md"
+mkdir -p .claude/state
+
+cat > "$FINDINGS" <<EOF
+---
+slug: $SLUG
+reviewed_at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
+base_sha: $(git rev-parse origin/${BASE_BRANCH:-main})
+head_sha: $(git rev-parse HEAD)
+critical_count: 0
+informational_count: 0
+auto_fixed_count: 0
+ask_count: 0
+all_critical_resolved: true
+---
+
+## Pass 1 — CRITICAL (blockers)
+
+<!-- One bullet per finding. Every CRITICAL must end "→ resolved in <commit-sha>" or "→ DEFERRED with user ack" before Step 6 will ship. -->
+
+- (none)
+
+## Pass 2 — INFORMATIONAL
+
+- (none)
+
+## Auto-Fixed (mechanical)
+
+<!-- Cross-reference plan-w-team-autofix-\$SLUG.md for the exact diff list. -->
+
+- (none)
+
+## ASK Items (presented to user)
+
+- (none)
+
+## Evaluator Report
+
+- Outcome: <PASS | PASS-with-notes | ESCALATE | N/A>
+- Snapshot: \`.claude/state/plan-w-team-ac-snapshot-${SLUG}.md\`
+EOF
+
+echo "✓ review findings persisted: $FINDINGS"
+```
+
+**Why persist**: Step 6's `6a. Review Readiness Check` greps this file's frontmatter for `all_critical_resolved: true`. If the file is missing or that flag is `false`, ship blocks. This converts the verbal "review is done" handoff into a re-readable contract.
+
+**What goes in the file**: every Pass-1 CRITICAL bullet, every Pass-2 INFORMATIONAL bullet, every AUTO-FIX line (cross-referenced to `plan-w-team-autofix-$SLUG.md`), and every ASK item with the user's decision. Mark each CRITICAL with its resolution: `→ resolved in <commit-sha>` or `→ DEFERRED (user ack: <reason>)`. If any CRITICAL lacks a resolution marker, set `all_critical_resolved: false` in the frontmatter.
+
+**Update on subsequent passes**: re-write the file (not append) at the end of every review iteration so the frontmatter counts stay accurate.

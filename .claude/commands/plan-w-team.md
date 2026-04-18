@@ -106,6 +106,44 @@ The baseline is consumed by Step 5 (Ship) and deleted by Step 8 (Retro) on succe
 
 Full decision matrix, IGNORE pattern guidance, DISCARD value-carrier guard, and worked examples live in `.claude/commands/plan-w-team/shared/untracked-hygiene.md`. Read that file when you reach Step 5 — do not load it here.
 
+### Pre-Flight: Workflow Lock (MANDATORY)
+
+Immediately after baseline capture, acquire a per-SLUG workflow lock. This prevents two concurrent `/plan-w-team` sessions on the same SLUG from clobbering each other's state files (spec, tasks, retro, scope-lock). Per-SLUG (not global) so legitimate parallel features still work.
+
+```bash
+WORKFLOW_LOCK_DIR=".claude/state/plan-w-team-workflow-${SLUG}.lock"
+
+# Stale-lock recovery: if the dir exists but its owner PID is dead, take it over.
+if [ -d "$WORKFLOW_LOCK_DIR" ]; then
+  STALE_PID=$(cat "$WORKFLOW_LOCK_DIR/pid" 2>/dev/null || echo "")
+  if [ -n "$STALE_PID" ] && ! kill -0 "$STALE_PID" 2>/dev/null; then
+    echo "⚠ stale workflow lock from dead PID $STALE_PID — reclaiming"
+    rm -rf "$WORKFLOW_LOCK_DIR"
+  fi
+fi
+
+if ! mkdir "$WORKFLOW_LOCK_DIR" 2>/dev/null; then
+  OWNER_PID=$(cat "$WORKFLOW_LOCK_DIR/pid" 2>/dev/null || echo "unknown")
+  echo "✗ another /plan-w-team session is active on SLUG=$SLUG (PID $OWNER_PID)"
+  echo "  if that session is dead, run: rm -rf $WORKFLOW_LOCK_DIR"
+  exit 1
+fi
+echo "$$" > "$WORKFLOW_LOCK_DIR/pid"
+
+# Chain the release trap so it does NOT clobber any later EXIT handlers.
+# (See shared/shell-safety.md for the trap-chain rationale.)
+EXISTING_TRAP=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\\1/")
+trap "${EXISTING_TRAP:+${EXISTING_TRAP}; }rm -rf \"$WORKFLOW_LOCK_DIR\"" EXIT
+```
+
+**Why per-SLUG and not global**: Two features can legitimately run in parallel (different specs, different worktrees). What must NOT race is two sessions both writing `plan-w-team-scope-lock-$SLUG.json`, `plan-w-team-retro-$SLUG.json`, etc. — the SLUG keying provides exclusivity per-feature.
+
+**Why mkdir and not flock**: macOS lacks `flock(1)`. `mkdir` is atomic on every POSIX filesystem and survives compaction. Same pattern as `plan-w-team-push.lock` in Step 5 and `plan-w-team-friction-log.lock` in Step 8.
+
+**Stale-lock recovery**: If a previous session crashed without releasing, the dir is reclaimed automatically when its owner PID is no longer alive. Manual override is the documented escape hatch in the error message.
+
+**Resume contract**: `--resume` and `--ship-only` must reuse the same SLUG and re-acquire the lock here. If the lock is held by a different live PID, that's a real conflict — surface it; don't silently overwrite.
+
 ### Step 0: Scope Challenge
 
 Read `.claude/commands/plan-w-team/00-scope-challenge.md` and execute it.

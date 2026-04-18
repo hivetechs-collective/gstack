@@ -105,7 +105,38 @@ Rubrics convert subjective quality into repeatable scores. The key is **anchor d
 
 ## Iteration Behavior
 
-The evaluator uses the contract to drive the iteration loop:
+The evaluator uses the contract to drive the iteration loop. Three terminal verdicts: **PASS** (proceed to review), **ITERATE** (loop back to builder with feedback), **ESCALATE** (exit to user — max iterations exhausted or unsafe to retry).
+
+> See diagram below — every evaluator pass exits through exactly one of the three terminal states. The ITERATE arrow re-enters the builder with structured feedback; the iteration counter is the only thing that changes between loops.
+
+```mermaid
+flowchart TD
+    Start([Builder ships task]) --> Eval[Evaluator runs contract]
+    Eval --> Verdict{Verdict?}
+
+    Verdict -->|All functional PASS<br/>+ all quality scores >= threshold| Pass([PASS<br/>exit to Step 5 review])
+    Verdict -->|Any functional FAIL<br/>OR quality score <= 2| IterCheck{iteration <<br/>max_iterations?}
+    Verdict -->|Builder unrecoverable<br/>OR contract invalid| Escalate([ESCALATE<br/>exit to user with<br/>failure report])
+
+    IterCheck -->|yes| Feedback[Generate structured feedback:<br/>specific failing criteria + fixes]
+    IterCheck -->|no — exhausted| Escalate
+
+    Feedback --> Increment[iteration++ ]
+    Increment --> Builder[Builder applies fixes]
+    Builder --> Eval
+
+    classDef pass fill:#90EE90,stroke:#333,color:#000
+    classDef escalate fill:#FFB6B6,stroke:#333,color:#000
+    classDef iterate fill:#FFE4B5,stroke:#333,color:#000
+    classDef neutral fill:#E6E6FA,stroke:#333,color:#000
+
+    class Pass pass
+    class Escalate escalate
+    class Feedback,Increment,Builder iterate
+    class Start,Eval,Verdict,IterCheck neutral
+```
+
+Worked example (max_iterations = 3):
 
 ```
 Iteration 1: Evaluator tests all criteria
@@ -121,6 +152,8 @@ Iteration 2: Builder applies fixes, evaluator re-tests
 
 Total iterations: 2 (within max of 3)
 ```
+
+ESCALATE example: if iteration 3 still has failing functional criteria, the evaluator emits ESCALATE — Step 4 stops, user sees the failure report (which criteria failed, what fixes were tried, why retry won't help), and decides whether to relax the contract, hand off to a different builder, or abandon the task.
 
 ## Contract Scope
 
