@@ -160,15 +160,20 @@ Every intermediate state after merging completed tasks must compile and pass tes
 At the end of Step 2, write a scope-lock file. Step 5 (review) and Step 6 (ship) read this file to detect scope creep — any task added after Step 2 that is not in the lock must be flagged.
 
 ```bash
-SLUG="<feature-slug>"
+SLUG="<feature-slug>"           # same slug used for the spec file
+SPEC_PATH="docs/specs/${SLUG}.md"
+LOCKED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p .claude/state
 
 # Write the locked task set. Lock includes task IDs, subjects, and scope tags.
-cat > ".claude/state/plan-w-team-scope-lock-$SLUG.json" <<'EOF'
+# Heredoc is unquoted so $SLUG / $SPEC_PATH / $LOCKED_AT are expanded by bash.
+# Fill in `tasks` and `acceptance_criteria_count` from the actual breakdown
+# before writing — the example here shows the expected shape.
+cat > ".claude/state/plan-w-team-scope-lock-${SLUG}.json" <<EOF
 {
-  "slug": "<feature-slug>",
-  "locked_at": "<ISO8601 timestamp>",
-  "spec_path": "docs/specs/<feature-name>.md",
+  "slug": "${SLUG}",
+  "locked_at": "${LOCKED_AT}",
+  "spec_path": "${SPEC_PATH}",
   "task_count": 0,
   "tasks": [
     {"id": "1", "subject": "...", "scope": "BACKEND", "door_type": "two-way"}

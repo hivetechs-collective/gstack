@@ -178,7 +178,7 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
 5. Builders self-claim from unassigned task pool via TaskList
 6. If plan approval: builders submit plans, lead approves before coding starts
 7. Builders implement, PostToolUse hooks validate, commit atomically to worktree branch
-8. On completion: TaskUpdate with metadata: {commit_sha, verification, builder_name, wtf_score}
+8. On completion: TaskUpdate with metadata: {commit_sha, verification, builder_name, wtf_score} (see `shared/self-regulation.md` §WTF-likelihood for the 0.0-1.0 scoring rubric)
 9. Builder checks TaskList for next task (self-claiming loop)
 10. Lead monitors progress — use `/loop 2m check TaskList and report status` or CronCreate for automated monitoring instead of manual checks
 11. When all tasks complete: SendMessage(shutdown_request) to all builders
@@ -342,24 +342,29 @@ while iteration < max_iterations:
       esac
     fi
 
-    if verdict == PASS:
+    case "$verdict" in
+      PASS)
         break  # proceed to Step 5
-    elif verdict == ESCALATE:
+        ;;
+      ESCALATE)
         break  # proceed to Step 5 with report attached
-    elif verdict == ITERATE:
-        # 3. No-progress check
-        if current_failures == previous_failures:
-            # Builder is stuck — same failures twice
-            escalate, break
-        previous_failures = current_failures
+        ;;
+      ITERATE)
+        # 3. No-progress check (bash arrays: equal if same length AND
+        #    same joined string — see self-regulation.md §No-Progress)
+        if [ "${current_failures[*]}" = "${previous_failures[*]}" ]; then
+          # Builder is stuck — same failures twice
+          verdict="ESCALATE"
+          break
+        fi
+        previous_failures=("${current_failures[@]}")
 
         # 4. Feed feedback to builder for fixes
-        # For lead-implements-directly: lead reads feedback and fixes
-        # For worktree builders: spawn fix builder with evaluator feedback
-        apply_fixes(evaluator_feedback)
-
-        # 5. Re-verify (tests pass, compiles)
-        run_tests()
+        #    - lead-implements-directly: lead reads $EVALUATOR_REPORT_FILE and fixes
+        #    - worktree builders: spawn a fix builder with the report as input
+        # 5. Re-verify (tests pass, compiles) before next loop iteration
+        ;;
+    esac
 
 # 6. Attach evaluator report to task metadata for Step 5
 TaskUpdate(metadata: {evaluator_report: report, eval_iterations: iteration})

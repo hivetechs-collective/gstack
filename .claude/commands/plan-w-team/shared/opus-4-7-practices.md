@@ -1,6 +1,6 @@
-# Opus 4.7 Best Practices (Cherny, 2026)
+# Opus 4.7 Best Practices (Condensed from Cherny, 2026)
 
-Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 with Claude Code". Read this file at the start of any Brain-tier stage (Step 0 scope, Step 1 spec, Step 3-4 execute, Step 5 review) and apply the patterns that match the current task.
+Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 with Claude Code". This file is a local condensation, not a verbatim reproduction of the source — when in doubt, defer to the original guidance. Read this file at the start of any Brain-tier stage (Step 0 scope, Step 1 spec, Step 3-4 execute, Step 5 review) and apply the patterns that match the current task.
 
 ## 1. Front-Load Task Specification
 
