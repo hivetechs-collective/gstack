@@ -57,48 +57,61 @@ fi
 ERRORS=()
 WARNINGS=()
 
-# Secret patterns (2026 comprehensive — AWS, GitHub, OpenAI, Anthropic, Stripe, Slack, GCP, Azure, GitLab)
-SECRET_PATTERNS=(
-    'AKIA[A-Z0-9]{16}'
-    'gh[pousr]_[a-zA-Z0-9_]{36,}'
-    'sk-[a-zA-Z0-9]{20,}'
-    'sk-ant-[a-zA-Z0-9_-]{20,}'
-    'sk_live_[a-zA-Z0-9]{20,}'
-    'pk_live_[a-zA-Z0-9]{20,}'
-    'xox[bpras]-[A-Za-z0-9-]{10,}'
-    'glpat-[A-Za-z0-9_-]{20,}'
-    'DefaultEndpointsProtocol=https'
-    'api_key[[:space:]]*[:=][[:space:]]*['"'"'"][^'"'"'"]+['"'"'"]'
-    '-----BEGIN.*PRIVATE KEY-----'
-)
+# Secret scan — delegate to shared scanner (single source of truth for pre-commit,
+# ship-gate, and sync). The scanner handles ALL file extensions (including .env.*,
+# .yaml, .sh, .md) and classifies placeholders vs live secrets.
+SECRET_SCANNER="$SCRIPT_DIR/../scripts/secret-scan.sh"
+# Allow-file aggregation: any per-feature `plan-w-team-secret-scan-allow-*`
+# file under `.claude/state/` is merged into a temp allow-file for the scanner.
+# Tradeoff: stale allow-files from abandoned features can mask real secrets
+# during pre-commit; ship-gate (Step 6a-ter) runs with only the current feature's
+# allow-file and catches that class of drift. Remove retired allow-files during
+# Step 8 retro.
+SCAN_ARGS=(--staged)
+ALLOW_AGG=""
+# shellcheck disable=SC2125
+for allow in .claude/state/plan-w-team-secret-scan-allow-*; do
+    [ -f "$allow" ] || continue
+    if [ -z "$ALLOW_AGG" ]; then
+        ALLOW_AGG=$(mktemp -t secret-scan-allow.XXXXXX)
+        trap 'rm -f "$ALLOW_AGG"' EXIT
+    fi
+    cat "$allow" >> "$ALLOW_AGG"
+done
+[ -n "$ALLOW_AGG" ] && SCAN_ARGS=(--allow "$ALLOW_AGG" --staged)
 
-# Check each staged file
+if [ -x "$SECRET_SCANNER" ]; then
+    SCAN_STDERR=$("$SECRET_SCANNER" "${SCAN_ARGS[@]}" 2>&1 >/dev/null) || SCAN_EXIT=$?
+    SCAN_EXIT=${SCAN_EXIT:-0}
+    if [ "$SCAN_EXIT" -eq 1 ]; then
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            ERRORS+=("$line")
+        done <<< "$SCAN_STDERR"
+    elif [ "$SCAN_EXIT" -ne 0 ]; then
+        WARNINGS+=("secret-scan.sh exited $SCAN_EXIT (internal error): $SCAN_STDERR")
+    fi
+else
+    WARNINGS+=("secret-scan.sh not found at $SECRET_SCANNER — secret scanning SKIPPED")
+fi
+
+# Check each staged file for debugger statements + console.log warnings.
+# These checks are scoped to code-file extensions; secret scanning above covers
+# all file types.
 while IFS= read -r file; do
     [ -z "$file" ] && continue
 
-    # Only check relevant file extensions
     case "$file" in
         *.js|*.jsx|*.ts|*.tsx|*.py|*.go|*.rs) ;;
         *) continue ;;
     esac
 
-    # Get the staged content of the file
     STAGED_CONTENT=$(git show ":$file" 2>/dev/null || continue)
 
-    # Check for debugger statements
     if echo "$STAGED_CONTENT" | grep -nE '^\s*debugger\s*;?\s*$' > /dev/null 2>&1; then
         ERRORS+=("$file: contains 'debugger' statement")
     fi
 
-    # Check for secret patterns
-    for pattern in "${SECRET_PATTERNS[@]}"; do
-        if echo "$STAGED_CONTENT" | grep -nE "$pattern" > /dev/null 2>&1; then
-            ERRORS+=("$file: contains potential secret matching pattern '$pattern'")
-        fi
-    done
-
-    # Check for console.log (warn only, skip comments)
-    # Filter out single-line comments (//) and hash comments (#)
     UNCOMMENTED=$(echo "$STAGED_CONTENT" | sed 's|//.*||' | sed 's|#.*||')
     if echo "$UNCOMMENTED" | grep -nE 'console\.log\(' > /dev/null 2>&1; then
         WARNINGS+=("$file: contains 'console.log' (consider removing before commit)")

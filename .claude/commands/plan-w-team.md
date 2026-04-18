@@ -224,16 +224,17 @@ This prevents context confusion when running parallel planning sessions.
 
 Stage files reference these shared components on-demand (only loaded when needed by the stage):
 
-| Shared File                      | Used By                                  | Content                                                                                                        |
-| -------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `shared/self-regulation.md`      | 03-execute                               | WTF-likelihood, fix caps, commits                                                                              |
-| `shared/cognitive-frameworks.md` | 00-scope, 01-spec, 05-ship               | Named frameworks reference                                                                                     |
-| `shared/artifact-storage.md`     | 05-ship, 07-retro                        | SLUG, paths, formats                                                                                           |
-| `shared/browser-qa.md`           | 04-review, 05-ship                       | Playwright MCP + browse binary QA                                                                              |
-| `shared/board-integration.md`    | All stages (01-07)                       | GitHub Issues board sync, fire-and-forget                                                                      |
-| `shared/opus-4-7-practices.md`   | 00-scope, 01-spec, 03-execute, 04-review | Cherny's Opus 4.7 patterns — front-load, adaptive thinking, deliberate subagents                               |
-| `shared/state-artifacts.md`      | 04-review (enforcing), 07-retro (metric) | Authoritative registry of `.claude/state/plan-w-team-*` artifacts — checked by `plan-w-team-symmetry-check.sh` |
-| `shared/shell-safety.md`         | all stage-file authors                   | Shell injection primer — safe/unsafe patterns, assert helpers                                                  |
+| Shared File                      | Used By                                  | Content                                                                                                         |
+| -------------------------------- | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `shared/self-regulation.md`      | 03-execute                               | WTF-likelihood, fix caps, commits                                                                               |
+| `shared/cognitive-frameworks.md` | 00-scope, 01-spec, 05-ship               | Named frameworks reference                                                                                      |
+| `shared/artifact-storage.md`     | 05-ship, 07-retro                        | SLUG, paths, formats                                                                                            |
+| `shared/browser-qa.md`           | 04-review, 05-ship                       | Playwright MCP + browse binary QA                                                                               |
+| `shared/board-integration.md`    | All stages (01-07)                       | GitHub Issues board sync, fire-and-forget                                                                       |
+| `shared/opus-4-7-practices.md`   | 00-scope, 01-spec, 03-execute, 04-review | Cherny's Opus 4.7 patterns — front-load, adaptive thinking, deliberate subagents                                |
+| `shared/state-artifacts.md`      | 04-review (enforcing), 07-retro (metric) | Authoritative registry of `.claude/state/plan-w-team-*` artifacts — checked by `plan-w-team-symmetry-check.sh`  |
+| `shared/shell-safety.md`         | all stage-file authors                   | Shell injection primer — safe/unsafe patterns, assert helpers                                                   |
+| `shared/secret-safety.md`        | 05-ship (§6a-ter), pre-commit, sync      | Secret-leak defense-in-depth: pattern catalog, placeholder rules, how to add a pattern, history-rewrite runbook |
 
 All shared files are at `.claude/commands/plan-w-team/shared/`.
 

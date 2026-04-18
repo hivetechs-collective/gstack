@@ -146,6 +146,71 @@ fi
 
 The gate is **enforcing** on task count drift (exit 1) and **advisory** on scope-tag crossover (ASK prompt). Scope-tag heuristics are too lossy to fail-close on — flag them for the user.
 
+## 6a-ter. Secret Leak Scan (ENFORCING GATE)
+
+Before committing or pushing, scan the about-to-ship content for live-shape credentials. This is the third and final layer of the defense-in-depth model (pre-commit hook → ship gate → sync filter) described in `shared/secret-safety.md`.
+
+The gate runs the shared scanner at `.claude/scripts/secret-scan.sh` in two modes:
+
+1. **`--staged`** — anything currently staged for the final commit
+2. **`--diff origin/<base>..HEAD`** — every added line across the feature branch that is about to be pushed
+
+Both must pass. The scanner fails closed on pattern shape — it cannot distinguish a revoked key from a live one, and that is the correct posture.
+
+```bash
+SCANNER=".claude/scripts/secret-scan.sh"
+BASE_REF="origin/${BASE_BRANCH:-main}"
+ALLOW_FILE=".claude/state/plan-w-team-secret-scan-allow-$SLUG"
+ALLOW_ARGS=()
+[ -f "$ALLOW_FILE" ] && ALLOW_ARGS=(--allow "$ALLOW_FILE")
+
+# Layer 1: staged content
+if ! "$SCANNER" "${ALLOW_ARGS[@]}" --staged; then
+  echo "✗ Ship gate 6a-ter: live-shape secret(s) detected in staged content."
+  echo "  This is fail-closed on pattern shape. If you believe this is a false"
+  echo "  positive (for example a test fixture for a revoked key that must"
+  echo "  remain in the repo), see 'Override for false positives' below."
+  exit 1
+fi
+
+# Layer 2: diff range across the branch
+if ! "$SCANNER" "${ALLOW_ARGS[@]}" --diff "$BASE_REF..HEAD"; then
+  echo "✗ Ship gate 6a-ter: live-shape secret(s) detected in commits $BASE_REF..HEAD."
+  echo "  A prior commit on this branch introduced a secret. This is not"
+  echo "  fixable by un-staging — git history must be rewritten before push."
+  echo "  See shared/secret-safety.md §'History rewrite' for the runbook."
+  exit 1
+fi
+```
+
+### Failure modes and what they mean
+
+| Scanner output               | What it means                                           | What to do                                                                                                                                |
+| ---------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `LIVE SECRET: <file>:<line>` | Pattern-shape match not suppressed by placeholder rules | Remove the value, rotate the credential upstream, re-stage. If test fixture, see override below.                                          |
+| Exit 1 on `--staged` only    | Secret is in the final commit's staging area            | `git reset HEAD <file>` + remediate, then re-stage clean content.                                                                         |
+| Exit 1 on `--diff` only      | Secret is in an earlier commit on this branch           | History rewrite required. Run `git filter-repo --replace-text` or rebase to edit the offending commit. Force-push must be explicit.       |
+| Exit 2                       | Scanner itself errored (bad args, internal failure)     | Read stderr. This is a scanner bug or a bad invocation — do NOT bypass by touching the allow file. Fix the scanner invocation and re-run. |
+
+### Override for false positives (documented, rare)
+
+Some test fixtures legitimately embed revoked pattern-shape credentials (for example, a regression test that asserts the scanner still catches a known-revoked Stripe test key). For these, create an allow file naming the exact `file:line:pattern` triples to suppress:
+
+```bash
+# .claude/state/plan-w-team-secret-scan-allow-<slug>
+# One finding per line, format: path:line:pattern-name
+# Every entry MUST carry an inline justification.
+tests/fixtures/revoked-stripe.txt:7:stripe-live-secret  # revoked 2026-01-01, kept for regression test
+```
+
+Before bypassing:
+
+1. Rotate the credential upstream anyway (belt and suspenders — shape might still be valid).
+2. Add a comment explaining why this file/line is safe to keep.
+3. Re-run the gate with the allow file in place.
+
+The allow file is checked into the repo (it documents intentional exceptions) but the entries must be reviewed during Step 5 Fix-First Review. A reviewer adding entries silently is itself a red flag.
+
 ## 6b. Run Full Test Suite (ENFORCING GATE — not a prose request)
 
 Detect the project's test framework and run it. **The exit code is the gate.** If any command fails, refuse to ship.
