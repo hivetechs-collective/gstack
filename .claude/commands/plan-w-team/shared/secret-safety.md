@@ -52,26 +52,32 @@ Defense in depth means no layer is load-bearing alone. The sync filter exists ev
 
 Authoritative list. Order in the source file is display-only; dedup is by `(file:line:name)`.
 
-| Name                 | Pattern (shape)                                                    | Remediation                                            |
-| -------------------- | ------------------------------------------------------------------ | ------------------------------------------------------ |
-| `aws`                | `AKIA[A-Z0-9]{16}`                                                 | Revoke at AWS IAM console; rotate access keys          |
-| `github-token`       | `gh[pousr]_[a-zA-Z0-9_]{36,}`                                      | Revoke at github.com/settings/tokens                   |
-| `anthropic`          | `sk-ant-[a-zA-Z0-9_-]{20,}`                                        | Revoke at console.anthropic.com/settings/keys          |
-| `openai-proj`        | `sk-proj-[A-Za-z0-9_-]{20,}`                                       | Revoke at platform.openai.com/api-keys                 |
-| `openai`             | `sk-[A-Za-z0-9]{48,}`                                              | Revoke at platform.openai.com/api-keys                 |
-| `stripe-live-secret` | `sk_live_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/apikeys                   |
-| `stripe-test-secret` | `sk_test_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/test/apikeys              |
-| `stripe-live-pub`    | `pk_live_[a-zA-Z0-9]{20,}`                                         | Publishable key — confirm intent before committing     |
-| `slack`              | `xox[baprs]-[A-Za-z0-9-]{10,}`                                     | Revoke at api.slack.com/apps                           |
-| `gitlab-pat`         | `glpat-[A-Za-z0-9_-]{20,}`                                         | Revoke at gitlab.com/-/profile/personal_access_tokens  |
-| `azure-conn`         | `DefaultEndpointsProtocol=https;AccountName=`                      | Rotate Azure storage account keys                      |
-| `azure-accountkey`   | `AccountKey=[A-Za-z0-9+/=]{40,}`                                   | Rotate Azure storage account keys                      |
-| `paddle-live`        | `pdl_live_apikey_[a-zA-Z0-9]{20,}`                                 | Revoke at vendors.paddle.com/authentication-v2         |
-| `paddle-sandbox`     | `pdl_sdbx_apikey_[a-zA-Z0-9]{20,}`                                 | Revoke at sandbox-vendors.paddle.com/authentication-v2 |
-| `resend`             | `re_[A-Za-z0-9]{20,}`                                              | Revoke at resend.com/api-keys                          |
-| `smtp2go`            | `api-[a-f0-9]{32}`                                                 | Revoke at app.smtp2go.com/settings/                    |
-| `jwt`                | `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}` | JWT in code — if live, rotate issuer secret            |
-| `private-key`        | `-----BEGIN [A-Z ]*PRIVATE KEY-----`                               | Rotate private key; revoke if used in production       |
+The table below is **auto-generated** from `.claude/scripts/secret-scan.sh` by `.claude/scripts/secret-doc-sync.sh`. Do not hand-edit between the markers — edit the `PATTERNS=()` array in the scanner and re-run the sync (the pre-commit hook also runs `secret-doc-sync.sh --check` whenever the scanner is staged, so drift is caught at commit time).
+
+<!-- BEGIN AUTO-GENERATED: secret-patterns -->
+
+| Name                 | Pattern (shape)                                                    | Remediation                                                       |
+| -------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------- |
+| `aws`                | `AKIA[A-Z0-9]{16}`                                                 | Revoke at AWS IAM console; rotate access keys                     |
+| `github-token`       | `gh[pousr]_[a-zA-Z0-9_]{36,}`                                      | Revoke at github.com/settings/tokens                              |
+| `anthropic`          | `sk-ant-[a-zA-Z0-9_-]{20,}`                                        | Revoke at console.anthropic.com/settings/keys                     |
+| `openai-proj`        | `sk-proj-[A-Za-z0-9_-]{20,}`                                       | Revoke at platform.openai.com/api-keys                            |
+| `openai`             | `sk-[A-Za-z0-9]{48,}`                                              | Revoke at platform.openai.com/api-keys                            |
+| `stripe-live-secret` | `sk_live_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/apikeys                              |
+| `stripe-test-secret` | `sk_test_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/test/apikeys                         |
+| `stripe-live-pub`    | `pk_live_[a-zA-Z0-9]{20,}`                                         | Stripe publishable key — confirm intent before committing       |
+| `slack`              | `xox[baprs]-[A-Za-z0-9-]{10,}`                                     | Revoke at api.slack.com/apps                                      |
+| `gitlab-pat`         | `glpat-[A-Za-z0-9_-]{20,}`                                         | Revoke at gitlab.com/-/profile/personal_access_tokens             |
+| `azure-conn`         | `DefaultEndpointsProtocol=https;AccountName=`                      | Rotate Azure storage account keys                                 |
+| `azure-accountkey`   | `AccountKey=[A-Za-z0-9+/=]{40,}`                                   | Rotate Azure storage account keys                                 |
+| `paddle-live`        | `pdl_live_apikey_[a-zA-Z0-9]{20,}`                                 | Revoke at vendors.paddle.com/authentication-v2                    |
+| `paddle-sandbox`     | `pdl_sdbx_apikey_[a-zA-Z0-9]{20,}`                                 | Revoke at sandbox-vendors.paddle.com/authentication-v2            |
+| `resend`             | `re_[A-Za-z0-9]{20,}`                                              | Revoke at resend.com/api-keys                                     |
+| `smtp2go`            | `api-[a-f0-9]{32}`                                                 | Revoke at app.smtp2go.com/settings/                               |
+| `jwt`                | `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}` | JWT in code — if live session/signing token, rotate issuer secret |
+| `private-key`        | `-----BEGIN [A-Z ]*PRIVATE KEY-----`                               | Rotate private key; revoke if used in production                  |
+
+<!-- END AUTO-GENERATED: secret-patterns -->
 
 Patterns are intentionally **shape-based, not entropy-based**. The scanner cannot distinguish a revoked key from a live one — and that is correct. Fail closed on shape is the defense posture. A revoked key checked into public source is still a security failure (it teaches attackers what shapes you use and indicates sloppy hygiene).
 
@@ -165,6 +171,7 @@ If `--diff origin/<base>..HEAD` exits 1, a commit on this branch introduced a se
 ### Single-file, single-commit case
 
 ```bash
+# snippet-lint: skip — illustrative placeholder syntax, not executable as-is
 # Find the offending commit
 git log -p --all -S '<literal-token-prefix>' -- <file>
 

@@ -40,12 +40,21 @@ ALL_DOCS=$(git ls-files '*.md' '*.rst' '*.adoc' \
 
 # Audit candidates: every doc that mentions a path, symbol, or command from the diff.
 # Build a search pattern from the diff's filenames + new symbols.
-AUDIT_CANDIDATES=$(
+#
+# The pipeline below is wrapped in `bash -c` because some hosts evaluate this
+# block in a zsh subshell where nested $(basename "$p" | sed ...) substitutions
+# fail with "command not found" on basename / sed / sort / grep. Forcing bash
+# resolves those builtins/PATH lookups consistently across hosts. Inputs are
+# passed via env (export ... bash -c) rather than string interpolation so
+# multi-line values and special characters round-trip safely. Do not unwrap
+# this — the failure mode is silent (zero candidates) on hosts that default
+# to zsh subshells.
+AUDIT_CANDIDATES=$(export CHANGED_FILES ALL_DOCS; bash -c '
   for path in $CHANGED_FILES; do
-    base="$(basename "$path" | sed 's/\.[^.]*$//')"
+    base="$(basename "$path" | sed "s/\.[^.]*$//")"
     [ -n "$base" ] && grep -lF "$base" $ALL_DOCS 2>/dev/null
   done | sort -u
-)
+')
 
 echo "Audit candidates ($(echo "$AUDIT_CANDIDATES" | wc -l | tr -d ' ') files):"
 echo "$AUDIT_CANDIDATES"

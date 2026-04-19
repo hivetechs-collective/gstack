@@ -119,6 +119,58 @@ while IFS= read -r file; do
 
 done <<< "$STAGED_FILES"
 
+# /plan-w-team test-skill gate — when ANY plan-w-team source file is staged
+# (skill markdown, helper scripts, shared docs, or the bats harness itself),
+# run `make test-skill`. Exit 1 → block; exit 0 → continue. This is the single
+# canonical test target — see Makefile anti-fragmentation note.
+PLAN_TEAM_STAGED=false
+while IFS= read -r file; do
+    case "$file" in
+        .claude/commands/plan-w-team*|\
+        .claude/scripts/plan-w-team-*|\
+        .claude/scripts/secret-scan.sh|\
+        .claude/scripts/secret-doc-sync.sh|\
+        tests/skill/*)
+            PLAN_TEAM_STAGED=true; break ;;
+    esac
+done <<< "$STAGED_FILES"
+
+if [ "$PLAN_TEAM_STAGED" = "true" ]; then
+    if [ -f "Makefile" ] && grep -q '^test-skill:' Makefile; then
+        if ! TEST_SKILL_OUT=$(make test-skill 2>&1); then
+            ERRORS+=("plan-w-team test-skill suite failed (run: make test-skill)")
+            # Surface the last 20 lines of failure to stderr now so the user can act
+            echo "[pre-commit-quality] make test-skill failure (tail):" >&2
+            printf '%s\n' "$TEST_SKILL_OUT" | tail -20 >&2
+        fi
+    else
+        WARNINGS+=("plan-w-team files staged but Makefile / test-skill target missing — skipping harness")
+    fi
+fi
+
+# secret-doc-sync gate — when secret-scan.sh is staged, the documented Pattern
+# Catalog in secret-safety.md MUST be regenerated to match. `--check` exits 1
+# on drift; we surface the diff via stderr (the script already prints it).
+SECRET_SCAN_STAGED=false
+while IFS= read -r file; do
+    case "$file" in
+        .claude/scripts/secret-scan.sh) SECRET_SCAN_STAGED=true; break ;;
+    esac
+done <<< "$STAGED_FILES"
+
+if [ "$SECRET_SCAN_STAGED" = "true" ]; then
+    SYNC_SCRIPT="$SCRIPT_DIR/../scripts/secret-doc-sync.sh"
+    if [ -x "$SYNC_SCRIPT" ]; then
+        if ! SYNC_OUT=$("$SYNC_SCRIPT" --check 2>&1); then
+            ERRORS+=("secret-safety.md is out of sync with secret-scan.sh — run: .claude/scripts/secret-doc-sync.sh && git add .claude/commands/plan-w-team/shared/secret-safety.md")
+            echo "[pre-commit-quality] secret-doc-sync --check output:" >&2
+            printf '%s\n' "$SYNC_OUT" >&2
+        fi
+    else
+        WARNINGS+=("secret-scan.sh staged but secret-doc-sync.sh not executable — skipping doc-sync check")
+    fi
+fi
+
 # Count drift detection — warn when CLAUDE.md counts diverge from reality
 # Triggers when staging CLAUDE.md, agents/, or hooks/
 DRIFT_CHECK=false

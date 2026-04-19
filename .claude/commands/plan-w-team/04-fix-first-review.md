@@ -177,15 +177,16 @@ The diagram is the contract: every diff line that passes `Persist` is provably e
 
 ## 5b. Pass 1 — CRITICAL (blockers, must fix before ship)
 
-| Check                    | What to Look For                                                                  |
-| ------------------------ | --------------------------------------------------------------------------------- |
-| SQL safety               | Raw string interpolation in queries, missing parameterization                     |
-| Race conditions          | TOCTOU (time-of-check-time-of-use) patterns, shared mutable state                 |
-| LLM trust boundaries     | User input passed directly to prompts without sanitization                        |
-| Conditional side effects | Database writes, API calls, notifications buried in conditionals                  |
-| Time window safety       | Operations assuming time relationships without handling timezone, clock skew, DST |
-| One-way door validation  | Extra scrutiny for tasks tagged `door_type: "one-way"`                            |
-| Error handling           | Catch-all handlers, swallowed errors, missing error types from Error & Rescue Map |
+| Check                      | What to Look For                                                                                                                                                                                                                                                                                                        |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SQL safety                 | Raw string interpolation in queries, missing parameterization                                                                                                                                                                                                                                                           |
+| Race conditions            | TOCTOU (time-of-check-time-of-use) patterns, shared mutable state                                                                                                                                                                                                                                                       |
+| LLM trust boundaries       | User input passed directly to prompts without sanitization                                                                                                                                                                                                                                                              |
+| Conditional side effects   | Database writes, API calls, notifications buried in conditionals                                                                                                                                                                                                                                                        |
+| Time window safety         | Operations assuming time relationships without handling timezone, clock skew, DST                                                                                                                                                                                                                                       |
+| One-way door validation    | Extra scrutiny for tasks tagged `door_type: "one-way"`                                                                                                                                                                                                                                                                  |
+| Error handling             | Catch-all handlers, swallowed errors, missing error types from Error & Rescue Map                                                                                                                                                                                                                                       |
+| Test-harness fragmentation | **REJECT** any PR that adds a second test framework, parallel runner, or test entry-point alongside `make test-skill` / `tests/skill/run.sh` / bats. The single canonical entry-point is the only thing that makes the pre-commit gate reliable. See `docs/specs/plan-w-team-followups.md` §Anti-Fragmentation Lock-In. |
 
 ## 5c. Pass 2 — INFORMATIONAL (fix or note, not blockers)
 

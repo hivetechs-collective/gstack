@@ -254,10 +254,12 @@ Some test fixtures legitimately embed revoked pattern-shape credentials (for exa
 tests/fixtures/revoked-stripe.txt:7:stripe-live-secret  # revoked 2026-01-01, kept for regression test
 ```
 
+**Allow-file comment sanitization (MANDATORY)**: comments inside the allow file must NOT contain literal pattern-shape values — describe them indirectly. Example: write `# AWS-published documentation example access key` not `# AKIAIOSFODNN7EXAMPLE`. Reason: the scanner reads the entire allow file when staged, and a literal value in a descriptive comment will match the same pattern as a real leak — blocking the very commit that documents the exception. The justification must convey _why_ the entry is safe, not duplicate the value the entry already references.
+
 Before bypassing:
 
 1. Rotate the credential upstream anyway (belt and suspenders — shape might still be valid).
-2. Add a comment explaining why this file/line is safe to keep.
+2. Add a comment explaining why this file/line is safe to keep — using indirect language only (see sanitization rule above).
 3. Re-run the gate with the allow file in place.
 
 The allow file is checked into the repo (it documents intentional exceptions) but the entries must be reviewed during Step 5 Fix-First Review. A reviewer adding entries silently is itself a red flag.

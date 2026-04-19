@@ -52,6 +52,7 @@ Prevent the "write-only by accident" defect class: artifacts whose writer is wir
 ## Checker invocation
 
 ```bash
+# snippet-lint: skip — illustrative `<path>` placeholder, not executable as-is
 .claude/scripts/plan-w-team-symmetry-check.sh                     # exit 0 = pass
 .claude/scripts/plan-w-team-symmetry-check.sh --json               # machine-readable
 .claude/scripts/plan-w-team-symmetry-check.sh --registry <path>    # alt registry (testing)
