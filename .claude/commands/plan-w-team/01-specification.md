@@ -106,6 +106,8 @@ Testable success criteria the evaluator agent checks in the iteration loop (Step
 
 **Required depth by feature type**: New features = Functional + Quality Rubrics. Bug fixes = Functional only ("bug no longer reproduces"). Refactors = Quality Rubrics only. Config/docs-only = skip contract entirely.
 
+**Tuning evaluator iteration depth** (`max_eval_iterations`): The evaluator loop (Step 4b) runs at most `spec.max_eval_iterations` iterations before emitting ESCALATE. Default is `3` — suitable for most features. Override only when the feature has clear justification: set higher (e.g., `5`) for high-ambiguity research features where early iterations are expected to refine the criteria themselves; set to `0` to skip the evaluator entirely, though **prefer omitting the AC contract** (per the rule above) for docs-only or config-only changes. When overriding, declare the field in spec frontmatter and justify it in the Overview section.
+
 ### Functional Criteria
 
 Testable assertions the evaluator can verify without subjective judgment. Each must use the `AC` prefix for trigger detection:
