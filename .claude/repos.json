@@ -77,7 +77,9 @@
       "path": "/Users/veronelazio/Developer/Private/hive",
       "remote": "git@github.com:hivetechs-collective/Hive.git",
       "branch": "master",
-      "host": "github"
+      "host": "github",
+      "archived": true,
+      "note": "GitHub-archived (read-only); pushes always fail with 'repository was archived'. Skip in sync. hive.ai is the active successor."
     },
     {
       "name": "hivetechs-website",
