@@ -96,23 +96,64 @@ auto_sync_from_pattern() {
         fi
     fi
 
-    if [ "$needs_sync" = true ]; then
-        echo ""
-        echo "🔄 AUTO-SYNC: $reason"
-        echo "   Syncing from claude-pattern..."
+    if [ "$needs_sync" != true ]; then
+        return 0
+    fi
 
-        # Run sync script silently, capture result
-        if "$SYNC_SCRIPT" "$PROJECT_ROOT" >/dev/null 2>&1; then
-            # Copy version marker to indicate sync completed
-            if [ -f "$SOURCE_VERSION_FILE" ]; then
-                cp "$SOURCE_VERSION_FILE" "$LOCAL_VERSION_FILE"
+    echo ""
+    echo "🔄 AUTO-SYNC: $reason"
+
+    # OPTION B: Prefer pull-from-origin when origin already has this version.
+    # Consumer machines (mac-mini, laptops) pull the committed sync — keeping the
+    # working tree clean. Only the author machine (where the bump originated)
+    # falls through to local regen, where a commit+push is expected to follow.
+    local origin_has_version=false
+    local current_branch=""
+    if [ -d "$PROJECT_ROOT/.git" ] && command -v git >/dev/null 2>&1; then
+        current_branch=$(git -C "$PROJECT_ROOT" symbolic-ref --short HEAD 2>/dev/null || echo "")
+        if [ -n "$current_branch" ] && git -C "$PROJECT_ROOT" remote get-url origin >/dev/null 2>&1; then
+            git -C "$PROJECT_ROOT" fetch origin "$current_branch" --quiet 2>/dev/null || true
+            local origin_version
+            origin_version=$(git -C "$PROJECT_ROOT" show "origin/$current_branch:.claude/.sync-version" 2>/dev/null || echo "")
+            local source_version
+            source_version=$(cat "$SOURCE_VERSION_FILE" 2>/dev/null || echo "")
+            if [ -n "$origin_version" ] && [ "$origin_version" = "$source_version" ]; then
+                origin_has_version=true
             fi
-            echo "   ✅ Sync complete"
+        fi
+    fi
+
+    if [ "$origin_has_version" = true ]; then
+        # Consumer path: refuse to pull over a dirty .claude/ — surface it instead.
+        if ! git -C "$PROJECT_ROOT" diff --quiet -- .claude/ 2>/dev/null \
+            || ! git -C "$PROJECT_ROOT" diff --cached --quiet -- .claude/ 2>/dev/null; then
+            echo "   ⚠️  .claude/ is dirty — skipping pull to preserve local changes"
+            echo "   Review: git -C $PROJECT_ROOT status -- .claude/"
+            echo ""
+            return 0
+        fi
+        echo "   ↓ pulling from origin/$current_branch (origin has this version)"
+        if git -C "$PROJECT_ROOT" pull --ff-only origin "$current_branch" --quiet 2>/dev/null; then
+            echo "   ✅ Pulled from origin"
         else
-            echo "   ⚠️  Sync failed - continuing with existing config"
+            echo "   ⚠️  Pull failed (non-fast-forward or conflict) — leave as-is"
         fi
         echo ""
+        return 0
     fi
+
+    # Author path: origin doesn't have this version yet (or no remote).
+    # Regen locally; caller is expected to commit+push so consumers can pull.
+    echo "   Syncing from claude-pattern (local regen — commit+push to share)..."
+    if "$SYNC_SCRIPT" "$PROJECT_ROOT" >/dev/null 2>&1; then
+        if [ -f "$SOURCE_VERSION_FILE" ]; then
+            cp "$SOURCE_VERSION_FILE" "$LOCAL_VERSION_FILE"
+        fi
+        echo "   ✅ Sync complete"
+    else
+        echo "   ⚠️  Sync failed - continuing with existing config"
+    fi
+    echo ""
 }
 
 # Run auto-sync check
