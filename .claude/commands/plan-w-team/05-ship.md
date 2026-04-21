@@ -379,6 +379,39 @@ git commit -o src/api/ tests/ -m "feat(api): add rate limiting"
 
 This is the pattern Round 4 audit flagged for all stage-file-driven commits. Never rely on `git add .` inside a pipeline. Always name the paths you mean.
 
+## 6g-bis. Tier Evidence Ledger (UI repos only)
+
+Runs only when `.claude/qa-profile.json` exists in the target repo AND the feature contains at least one FRONTEND or TESTS task. Skip for non-UI repos and non-UI features.
+
+Build the ledger by iterating over completed tasks and reading their `tier_evidence` metadata from Step 4 TaskUpdate calls. Tier glyphs are defined in `shared/qa-tiers.md`:
+
+| Glyph | Meaning                                                    |
+| ----- | ---------------------------------------------------------- |
+| ✅    | Evidence captured; tier enforced and passing.              |
+| ❌    | Evidence expected but missing or failing. Blocks merge.    |
+| ⏳    | Deferred to a follow-up task — must link to that task.     |
+| 🚫    | Not applicable to this feature (justify in the ledger).    |
+| N/A   | Tier is above the repo's profile (e.g., T5 on Tier-Light). |
+
+Render the ledger as a fenced block in the PR body, immediately after the ## Summary section:
+
+```
+## Tier Evidence Ledger
+
+| Tier                  | Status | Evidence                                                                              |
+| --------------------- | ------ | ------------------------------------------------------------------------------------- |
+| T1 (smoke)            | ✅     | `tests/e2e/<feature>.smoke.spec.ts` passing in CI run #<run-id>                       |
+| T2 (10x stability)    | ✅     | `scripts/run-stability.sh` — 10/10 passes logged at `test-results/stability-<sha>.json` |
+| T3 (regression)       | ✅     | Added `tests/e2e/<feature>.spec.ts`; ran full suite locally + CI                      |
+| T4 (BDD)              | 🚫     | Not applicable — Tier-Standard profile does not enforce T4.                           |
+| T5 (visual)           | N/A    | Tier-Standard profile does not include T5.                                            |
+| TO2 (team objectives) | ⏳     | Deferred to task #<n>: "Add accessibility audit for dashboard."                       |
+```
+
+**Gate**: if any row is ❌, block the push. Either fix the evidence (rerun §6b tests, add the missing spec) or downgrade to ⏳ with a tracked follow-up task on the board. A PR cannot ship with ❌ in the ledger — that is the entire point of the tier discipline.
+
+For non-UI features on the same repo (e.g., a backend-only PR), omit the ledger entirely. The board still records the PR; only the tier discipline is conditional.
+
 ## 6g. Push and Create PR (if on a branch)
 
 ### Ack gate — confirm before pushing

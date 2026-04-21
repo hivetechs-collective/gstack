@@ -192,6 +192,24 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
 14. Verify the final merged state: run full test suite + type check before proceeding to Step 5
 15. TeamDelete to clean up
 
+### UI-TDD Enforcement (UI repos only)
+
+When `.claude/qa-profile.json` exists AND any task's scope is `FRONTEND` or `TESTS`, every builder prompt MUST include the following directive BEFORE the shared self-regulation pointer:
+
+> **UI-TDD RULES (MANDATORY — READ BEFORE CODING):**
+>
+> 1. Read `.claude/commands/plan-w-team/shared/ui-tdd-enforcement.md` for the full protocol. These rules are non-negotiable.
+> 2. Read `.claude/commands/plan-w-team/shared/locator-hierarchy.md` before writing any Playwright locator.
+> 3. Read `.claude/commands/plan-w-team/shared/qa-tiers.md` to understand which tier glyphs your task produces (T1-T5 + TO2).
+> 4. **Page-object-only**: all Playwright locators live in `{{TEST_DIR}}/pages/*.page.ts`. Inline `page.locator(...)` calls in spec files are a hard violation — builder must fix before marking complete.
+> 5. **data-testid primary**: interactive elements (buttons, inputs, links, forms) MUST carry a `data-testid` attribute shaped `<feature>-<element>-<action>` in kebab-case. Missing or malformed attributes fail the `local/require-data-testid` ESLint rule and block the commit.
+> 6. **N.a before N.b**: if this task has a paired sibling, verify the sibling's commit SHA is merged before claiming. Do not race ahead and commit `N.b` (implementation) with `N.a` (tests) still failing on main.
+> 7. **Tier evidence**: on task completion, populate the Tier Evidence Ledger field in your TaskUpdate metadata: `{tier_evidence: {T1: "✅|❌|⏳|🚫|N/A", T2: ..., T3: ..., ...}}`. Glyph meanings are in `shared/qa-tiers.md`.
+
+This directive is prepended by the lead when spawning FRONTEND or TESTS builders. For BACKEND/DATABASE/CONFIG/DOCS tasks on the same UI repo, the directive is omitted — those builders follow the standard prompt template.
+
+When the lead implements directly (Multi-Session Feature Detection path), the lead reads the three shared files once at the start of Step 4 and follows the same rules for each UI task.
+
 ### Worktree Lifecycle Rules
 
 | Phase                   | Action                                           | Why                                                             |

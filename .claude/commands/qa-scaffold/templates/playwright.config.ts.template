@@ -1,0 +1,49 @@
+// ──────────────────────────────────────────────────────────────────────────────
+// Playwright config template — produced by /qa-scaffold Stage 02 (scaffold).
+// Stage 02 renders this into `playwright.config.ts` at the repo root.
+//
+// Placeholders ({{...}}) are replaced at scaffold time:
+//   {{BASE_URL}}           — dev server URL (e.g. http://localhost:3000)
+//   {{TEST_DIR}}           — default 'tests/e2e'
+//   {{REPORT_DIR}}         — default 'playwright-report'
+//   {{PROFILE}}             — Tier-Light | Tier-Standard | Tier-Full
+//
+// Safe against: Next, React, Vue, Svelte, Angular, Solid. No framework-specific
+// imports here — the locator layer is framework-agnostic (see
+// `shared/locator-hierarchy.md`).
+//
+// Do NOT edit after scaffolding; re-run /qa-scaffold to regenerate (existing
+// config is backed up to `playwright.config.ts.backup`, never silently
+// overwritten).
+// ──────────────────────────────────────────────────────────────────────────────
+
+import { defineConfig, devices } from '@playwright/test';
+
+export default defineConfig({
+  testDir: '{{TEST_DIR}}',
+  fullyParallel: true,
+  forbidOnly: !!process.env.CI,
+  retries: process.env.CI ? 2 : 0,
+  workers: process.env.CI ? 2 : undefined,
+
+  reporter: process.env.CI
+    ? [['github'], ['html', { outputFolder: '{{REPORT_DIR}}', open: 'never' }]]
+    : [['list'], ['html', { outputFolder: '{{REPORT_DIR}}', open: 'never' }]],
+
+  use: {
+    baseURL: process.env.PLAYWRIGHT_BASE_URL ?? '{{BASE_URL}}',
+    trace: 'on-first-retry',
+    screenshot: 'only-on-failure',
+    video: 'retain-on-failure',
+    testIdAttribute: 'data-testid', // locks in the convention — do not change
+  },
+
+  projects: [
+    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    { name: 'firefox', use: { ...devices['Desktop Firefox'] } },
+    { name: 'webkit', use: { ...devices['Desktop Safari'] } },
+  ],
+
+  // Tier-Full profiles enable a mutation/negative project (TO2) — Stage 02
+  // appends it when profile is Tier-Full. Tier-Light/Standard ship without it.
+});

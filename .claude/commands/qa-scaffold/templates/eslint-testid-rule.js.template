@@ -1,0 +1,153 @@
+/* eslint-disable */
+// ──────────────────────────────────────────────────────────────────────────────
+// ESLint rule — require `data-testid` on interactive elements.
+// Produced by /qa-scaffold Stage 03 (enforce).
+//
+// Stage 03 renders this into `eslint-rules/require-data-testid.js` in the
+// target repo and registers it in the repo's ESLint config as
+// `local/require-data-testid: 'error'`.
+//
+// Scope: JSX/TSX. For Vue/Svelte/Angular, Stage 03 installs the equivalent
+// upstream plugin (`eslint-plugin-vue`, `eslint-plugin-svelte`,
+// `@angular-eslint/*`) and a matching custom rule — this template is the
+// JSX-family reference; framework-specific variants share this structure.
+//
+// Rule behavior:
+//   1. Flags interactive elements (button, a with href, input, select,
+//      textarea, [role=button|link|menuitem|tab|option], tabindex >= 0) that
+//      lack `data-testid`.
+//   2. Also flags `data-testid` values that violate the kebab-case
+//      <feature>-<element>-<action> convention.
+//
+// Exit codes / severity: severity is controlled by the ESLint config level.
+// Stage 03 installs this as 'error' in the base config — downgrade to 'warn'
+// only in per-repo overrides when migrating a legacy surface incrementally
+// (document in the override with a // TODO: re-enable).
+// ──────────────────────────────────────────────────────────────────────────────
+
+'use strict';
+
+const INTERACTIVE_HTML_TAGS = new Set([
+  'button',
+  'input',
+  'select',
+  'textarea',
+]);
+
+const INTERACTIVE_ROLES = new Set([
+  'button',
+  'link',
+  'menuitem',
+  'tab',
+  'option',
+  'switch',
+  'checkbox',
+  'radio',
+  'slider',
+  'spinbutton',
+]);
+
+// kebab-case, 2+ segments: <feature>-<element>[-<action>]
+// Allows: 'submit-claim-button', 'claims-list-row', 'dashboard-refresh-icon-button'
+// Rejects: 'btn1', 'SubmitButton', 'submit_button', 'submit-btn' (single-char abbreviation),
+//          'submit', 'Submit-Claim-Button', 'data-test', 'data-cy'
+const KEBAB_CONVENTION = /^[a-z][a-z0-9]+(?:-[a-z][a-z0-9]+){1,}$/;
+
+function getAttr(node, name) {
+  return node.attributes.find(
+    (a) => a.type === 'JSXAttribute' && a.name && a.name.name === name,
+  );
+}
+
+function getAttrStringValue(attr) {
+  if (!attr || !attr.value) return null;
+  if (attr.value.type === 'Literal' && typeof attr.value.value === 'string') {
+    return attr.value.value;
+  }
+  if (
+    attr.value.type === 'JSXExpressionContainer' &&
+    attr.value.expression &&
+    attr.value.expression.type === 'Literal' &&
+    typeof attr.value.expression.value === 'string'
+  ) {
+    return attr.value.expression.value;
+  }
+  return null; // dynamic — skip, rule can't reason about runtime strings
+}
+
+function isInteractive(node) {
+  const tag = node.name && node.name.type === 'JSXIdentifier' ? node.name.name : null;
+  if (!tag) return false;
+
+  if (INTERACTIVE_HTML_TAGS.has(tag)) {
+    // <a> only counts when it carries an href (actionable link).
+    if (tag === 'a') return !!getAttr(node, 'href');
+    return true;
+  }
+
+  // [role="button"] etc. apply to any element, including custom components.
+  const roleAttr = getAttr(node, 'role');
+  const role = getAttrStringValue(roleAttr);
+  if (role && INTERACTIVE_ROLES.has(role)) return true;
+
+  // tabindex >= 0 makes an element keyboard-focusable → interactive.
+  const tabIndexAttr = getAttr(node, 'tabIndex') || getAttr(node, 'tabindex');
+  const tabIndex = getAttrStringValue(tabIndexAttr);
+  if (tabIndex !== null && !Number.isNaN(Number(tabIndex)) && Number(tabIndex) >= 0) {
+    return true;
+  }
+
+  return false;
+}
+
+module.exports = {
+  meta: {
+    type: 'problem',
+    docs: {
+      description:
+        'Require data-testid on interactive elements; enforce kebab-case convention.',
+      category: 'Best Practices',
+      recommended: true,
+    },
+    messages: {
+      missing:
+        'Interactive <{{tag}}> is missing data-testid. Add data-testid="<feature>-<element>-<action>". See shared/locator-hierarchy.md.',
+      malformed:
+        'data-testid "{{value}}" does not match <feature>-<element>-<action> kebab-case convention. Example: submit-claim-button.',
+      wrongAttr:
+        'Use data-testid, not {{attr}}. The project standardizes on data-testid (see shared/locator-hierarchy.md).',
+    },
+    schema: [],
+  },
+
+  create(context) {
+    return {
+      JSXOpeningElement(node) {
+        // Flag competing attributes first — 'data-test', 'data-cy', 'data-qa', 'data-pgr-id'.
+        for (const wrong of ['data-test', 'data-cy', 'data-qa', 'data-pgr-id']) {
+          const a = getAttr(node, wrong);
+          if (a) {
+            context.report({ node: a, messageId: 'wrongAttr', data: { attr: wrong } });
+          }
+        }
+
+        if (!isInteractive(node)) return;
+
+        const attr = getAttr(node, 'data-testid');
+        const tag = node.name.name;
+
+        if (!attr) {
+          context.report({ node, messageId: 'missing', data: { tag } });
+          return;
+        }
+
+        const value = getAttrStringValue(attr);
+        if (value === null) return; // dynamic value — trust the author
+
+        if (!KEBAB_CONVENTION.test(value)) {
+          context.report({ node: attr, messageId: 'malformed', data: { value } });
+        }
+      },
+    };
+  },
+};

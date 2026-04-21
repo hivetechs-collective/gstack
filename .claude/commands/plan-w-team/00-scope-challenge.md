@@ -59,6 +59,17 @@ Tag each major design decision in the feature as:
 
 Two-way doors get standard review. One-way doors get extra validation in Step 5.
 
+## 0e. UI Repo Detection Bridge (UI repos only)
+
+If `.claude/qa-profile.json` exists in the target repo, this feature runs against a QA-scaffolded UI codebase. When the bridge fires, Step 0 carries two additional signals forward:
+
+- **`qa_profile`** — read `.claude/qa-profile.json`'s `profile` field (`light` / `standard` / `full`) and surface it as a scope input. Downstream stages enforce the matching tier set from `shared/qa-tiers.md`.
+- **`ui_scope_flag`** — set to `true` whenever the feature's CURRENT→THIS PLAN mapping touches `.tsx`, `.jsx`, `.vue`, `.svelte`, or Angular `@Component` files. Triggers Step 1 UI Tier Profile & Test Plan, Step 2 paired-task protocol, Step 4 UI-TDD builder directive, Step 5 Pass 1 UI checks, and Step 6 Tier Evidence Ledger.
+
+If `.claude/qa-profile.json` is missing on a UI-scope feature, prompt: "UI files detected but `/qa-scaffold` has not been run. Run `/qa-scaffold` first so the tier profile and locator rules are available, or proceed without UI-TDD enforcement? [scaffold/skip]". Default `scaffold` — the friction is intentional.
+
+For non-UI features (backend, infra, docs) or non-scaffolded repos, skip §0e entirely and proceed to `## Output`. The rest of the /plan-w-team pipeline runs unchanged.
+
 ## Output
 
 Proceed / Proceed with modifications / Recommend against (with reasoning). If proceeding, carry the taste calibration, door labels, and dream state mapping forward into the spec.

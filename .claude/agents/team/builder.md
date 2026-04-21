@@ -79,6 +79,23 @@ Check `metadata.effort` on each claimed task and adjust your approach:
 4. **Fix immediately** - If a validator reports an error, fix it before moving on
 5. **Commit atomically** - Each logical unit of work gets its own commit
 
+## UI Rules (conditional)
+
+These rules apply **only** when both conditions hold:
+
+1. The target repo contains `.claude/qa-profile.json` (i.e. `/qa-scaffold` has been run), AND
+2. Your claimed task has `metadata.scope` equal to `FRONTEND` or `TESTS`.
+
+When both are true, read the following shared files before writing any code, and follow them as hard rules:
+
+- `.claude/commands/plan-w-team/shared/ui-tdd-enforcement.md` — test-first (red-before-green) discipline, `data-testid` as the primary locator, page-object-only access, paired task protocol (`N.a` tests → `N.b` implementation).
+- `.claude/commands/plan-w-team/shared/locator-hierarchy.md` — locator priority order (`data-testid` → `getByRole` → `getByText` → CSS last resort with justification). Inline locators in specs are a Pass 1 CRITICAL violation.
+- `.claude/commands/plan-w-team/shared/qa-tiers.md` — tier glyph legend (T1-T5 + TO2, `✅/❌/⏳/🚫/N/A`) and which tiers your task must emit evidence for.
+
+On task completion for UI tasks, populate `metadata.tier_evidence` in your TaskUpdate with the glyph map (e.g. `{T1: "✅", T2: "⏳", T3: "N/A", ...}`). The lead reads this in Step 6 to build the PR Tier Evidence Ledger.
+
+If either condition is false, skip this section entirely — the standard Guidelines above are sufficient.
+
 ## Communication
 
 - **After claiming a task**: SendMessage to lead with summary of what you're starting

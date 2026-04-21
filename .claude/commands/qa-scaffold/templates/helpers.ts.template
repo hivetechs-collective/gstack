@@ -1,0 +1,121 @@
+// ──────────────────────────────────────────────────────────────────────────────
+// E2E helper library — produced by /qa-scaffold Stage 02 (scaffold).
+// Stage 02 renders this into `{{TEST_DIR}}/helpers.ts`.
+//
+// Generic, deterministic primitives ported from Progressive CIT and
+// generalized. Every helper is framework-agnostic and uses only the public
+// Playwright API.
+//
+// DO NOT add `waitForTimeout(ms)`-based helpers here. Every wait below has a
+// deterministic exit condition. That is the whole point of this file.
+// ──────────────────────────────────────────────────────────────────────────────
+
+import type { Locator, Page } from '@playwright/test';
+import { expect } from '@playwright/test';
+
+/**
+ * Wait for a locator to stop moving/changing for `stableForMs` milliseconds.
+ * Use for elements that animate in (modals, toasts, lazily-rendered rows).
+ *
+ * Deterministic exit: position + size identical across two consecutive polls
+ * separated by `stableForMs`. No arbitrary timeouts.
+ */
+export async function waitForStable(
+  locator: Locator,
+  { stableForMs = 250, timeout = 10_000 }: { stableForMs?: number; timeout?: number } = {},
+): Promise<void> {
+  const deadline = Date.now() + timeout;
+  let last: { x: number; y: number; width: number; height: number } | null = null;
+  let stableSince = 0;
+
+  while (Date.now() < deadline) {
+    const box = await locator.boundingBox();
+    if (!box) {
+      last = null;
+      stableSince = 0;
+      await locator.page().waitForTimeout(50); // probe interval; not a user wait
+      continue;
+    }
+
+    if (
+      last &&
+      last.x === box.x &&
+      last.y === box.y &&
+      last.width === box.width &&
+      last.height === box.height
+    ) {
+      if (stableSince === 0) stableSince = Date.now();
+      if (Date.now() - stableSince >= stableForMs) return;
+    } else {
+      last = box;
+      stableSince = 0;
+    }
+
+    await locator.page().waitForTimeout(50);
+  }
+
+  throw new Error(`waitForStable: element did not stabilize within ${timeout}ms`);
+}
+
+/**
+ * Select an option from a native <select> OR a role=combobox custom widget.
+ * Resolves which path to take by checking the element's tag name at runtime.
+ */
+export async function selectOption(
+  locator: Locator,
+  value: string,
+): Promise<void> {
+  const tag = await locator.evaluate((el) => el.tagName.toLowerCase());
+
+  if (tag === 'select') {
+    await locator.selectOption(value);
+    return;
+  }
+
+  // Custom combobox path — open, then pick the option by accessible name.
+  await locator.click();
+  const option = locator.page().getByRole('option', { name: value, exact: true });
+  await option.waitFor({ state: 'visible' });
+  await option.click();
+}
+
+/**
+ * Assert a data-testid attribute is present on every interactive element
+ * reachable from `root`. Used in page-object smoke tests to catch missing
+ * test hooks before they cause locator failures downstream.
+ *
+ * This is a defense-in-depth check on top of the ESLint rule — it catches
+ * runtime-rendered markup the linter cannot see (conditionals, portals,
+ * third-party components the repo wraps).
+ */
+export async function assertInteractiveElementsHaveTestId(
+  page: Page,
+  root: Locator,
+): Promise<void> {
+  const missing = await root.evaluate((el) => {
+    const selector =
+      'button, a[href], input, select, textarea, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="option"], [tabindex]:not([tabindex="-1"])';
+    const nodes = Array.from(el.querySelectorAll(selector));
+    return nodes
+      .filter((n) => !n.hasAttribute('data-testid'))
+      .map((n) => ({
+        tag: n.tagName.toLowerCase(),
+        role: n.getAttribute('role'),
+        textSnippet: (n.textContent ?? '').trim().slice(0, 40),
+      }));
+  });
+
+  expect(
+    missing,
+    `Interactive elements missing data-testid:\n${JSON.stringify(missing, null, 2)}`,
+  ).toEqual([]);
+}
+
+/**
+ * Fill a form field and verify the value was accepted. Guards against the
+ * "field looked filled but the framework rejected the input" class of flakes.
+ */
+export async function fillVerified(locator: Locator, value: string): Promise<void> {
+  await locator.fill(value);
+  await expect(locator).toHaveValue(value);
+}

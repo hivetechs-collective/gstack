@@ -1,0 +1,129 @@
+# Selector Anti-Pattern Catalog
+
+<!--
+  Produced by /qa-scaffold Stage 02. Lives at `docs/testing/anti-patterns.md`
+  (or a repo-configured path) inside the target repo.
+
+  This is a LIVING document. When a flake is traced to a bad selector, add a
+  new row with: pattern, why it fails, what to use instead. The evaluator
+  reads this file when issuing Pass 1 verdicts; reviewers cite catalog rows
+  when blocking a PR.
+-->
+
+Catalog of selector and locator patterns that cause flakes, brittle tests, or false passes. Every entry has the same shape: **pattern**, **failure mode**, **replacement**.
+
+---
+
+## Starter entries (ported from Progressive CIT)
+
+### 1. `nth-child` / `nth-of-type` / `eq(n)`
+
+```ts
+// ❌ breaks on any sibling reorder
+page.locator('tbody tr:nth-child(3) td:nth-child(2) button');
+```
+
+**Failure mode:** a UX pass that adds a "status" column, or a data change that reorders rows, silently moves the target element. Tests pass against stale positions for weeks before someone notices.
+
+**Replacement:** `data-testid` on the row + column, resolved via `getByRole('row', { name }).getByTestId('status-cell')`.
+
+---
+
+### 2. Styling-class selectors
+
+```ts
+// ❌ `.btn-primary` is a Bootstrap utility — it'll change when the design
+//    system updates, and the test will silently pass against the wrong element.
+page.locator('button.btn-primary');
+```
+
+**Failure mode:** Theme upgrade renames `.btn-primary` to `.btn-filled`; the selector matches nothing; the test passes because the assertion also couldn't find what it was looking for.
+
+**Replacement:** `page.getByTestId('submit-claim-button')`.
+
+---
+
+### 3. XPath locators
+
+```ts
+// ❌ illegible, brittle, Playwright has better APIs for every case
+page.locator('xpath=//div[contains(@class, "card")]//button[text()="Save"]');
+```
+
+**Failure mode:** New wrapper `<div>` inserted anywhere in the ancestor chain breaks the path. The error message ("locator not found") gives no hint where in the chain the break happened.
+
+**Replacement:** `getByRole('button', { name: 'Save' })` or `getByTestId('save-card-button')`.
+
+---
+
+### 4. `waitForTimeout` as a wait primitive
+
+```ts
+// ❌ race — sometimes the modal animates in faster or slower than 500ms
+await page.click('[data-testid="open-modal"]');
+await page.waitForTimeout(500);
+await page.click('[data-testid="modal-confirm"]');
+```
+
+**Failure mode:** CI runs are slower than local dev; the 500ms passes before the modal finishes animating; the click lands on the underlay. Flake rate goes up with CI load.
+
+**Replacement:** `waitForStable()` from `helpers.ts`, or deterministic `.waitFor({ state: 'visible' })` on the target locator.
+
+---
+
+### 5. Internationalizable text locators on controls
+
+```ts
+// ❌ the moment i18n lands, French users break the test suite
+page.getByText('Submit');
+```
+
+**Failure mode:** Adding a locale silently changes the rendered text; the test fails with no connection back to the i18n work. Triage wastes hours.
+
+**Replacement:** `page.getByTestId('submit-claim-button')` for interactive elements; `page.getByRole('button', { name: /submit/i })` when i18n isn't yet planned and you want a regex fallback.
+
+---
+
+### 6. Generated / hash-based IDs
+
+```ts
+// ❌ Next.js and similar bundlers generate these on build
+page.locator('#__next-route-0_123');
+```
+
+**Failure mode:** Framework upgrade regenerates the hash scheme; every test using these IDs fails simultaneously.
+
+**Replacement:** `data-testid` on the meaningful element, or `getByRole` on the semantic wrapper.
+
+---
+
+### 7. Inline locator in spec (page-object boundary violation)
+
+```ts
+// ❌ spec reaches into the DOM directly
+test('submits claim', async ({ page }) => {
+  await page.getByTestId('submit-claim-button').click();
+});
+```
+
+**Failure mode:** When the feature is refactored and the testid renames (`submit-claim` → `file-claim`), every spec needs to change individually. Locator drift spreads across N spec files instead of being contained in one page object.
+
+**Replacement:** move locator into a page object; spec calls `claimsPage.submit()`. See `shared/locator-hierarchy.md`.
+
+---
+
+## How to add a new entry
+
+1. **Record the flake**: paste the failing selector + the failure message.
+2. **Diagnose the root cause**: what changed that broke it? (reorder, theme, i18n, framework upgrade, timing)
+3. **Write the entry**: pattern / failure mode / replacement — same shape as above.
+4. **Link from the offending PR**: in the fix PR, cite `docs/testing/anti-patterns.md#your-new-entry` in the description so future contributors find it.
+5. **Evaluator reads this file**: Pass 1 review will block PRs that introduce patterns already cataloged here.
+
+---
+
+## Catalog review cadence
+
+- **Weekly** (Tier-Standard/Full): scan new entries for duplicates; merge if two entries describe the same failure mode.
+- **Per release** (all tiers): confirm every entry still reflects current framework behavior — frameworks fix bugs, and an entry may be obsolete.
+- **On flake**: add a new entry before merging the fix. No catalog entry, no merge.

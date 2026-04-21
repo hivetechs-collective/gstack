@@ -33,6 +33,26 @@ Brief description. Include dream state mapping:
 - [ ] Requirement 1
 - [ ] Requirement 2
 
+## UI Tier Profile & Test Plan (UI features only)
+
+Populate this block when `ui_scope_flag == true` from §0e. Skip entirely for non-UI features — the rest of the spec template is unchanged.
+
+| Field                   | Value                                                                                                                                                             |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `qa_profile`            | `light` / `standard` / `full` — read from `.claude/qa-profile.json`. May be overridden per-feature via `qa_profile_override` front-matter (bump only, not lower). |
+| `tiers_enforced`        | Expanded from the profile per `shared/qa-tiers.md` (e.g., Tier-Standard → T1 + T2 + T3).                                                                          |
+| `locator_strategy`      | `data-testid` primary; hierarchy fallback order per `shared/locator-hierarchy.md`. Any CSS locator requires written justification in the test file.               |
+| `page_object_required`  | `true` for any feature touching ≥1 interactive element. Inline `page.locator(...)` in specs is a Pass 1 CRITICAL violation.                                       |
+| `data_testid_shape`     | `<feature>-<element>-<action>` kebab-case, e.g., `login-submit-button`. Enforced by `eslint-rules/require-data-testid.js`.                                        |
+| `smoke_spec_path`       | `{{TEST_DIR}}/<feature>.smoke.spec.ts` — T1 equivalence, runs on every commit.                                                                                    |
+| `regression_spec_paths` | Per-tier paths for T3/T4/T5 as applicable to the chosen profile.                                                                                                  |
+
+Link the relevant sections of `shared/qa-tiers.md` and `shared/locator-hierarchy.md` inline rather than restating their rules. Duplication causes drift; the shared files are canonical.
+
+### Waived Tiers (if any)
+
+If the feature explicitly waives a tier that the profile would otherwise enforce (e.g., skipping T2 stability for a pure-documentation UI change), list it here with justification. Step 6 Tier Evidence Ledger reads this block — a tier marked ❌ without a corresponding waiver blocks the push.
+
 ## Technical Design
 
 Architecture decisions, data flow, key interfaces.

@@ -117,6 +117,27 @@ Classify each task's change type. These tags control which review steps run in S
 | `TESTS`    | Test files only                   | Coverage audit                       |
 | `DOCS`     | Documentation only                | Consistency check                    |
 
+## Paired Task Protocol (UI features only)
+
+When `ui_scope_flag == true` from §0e, decompose each UI feature slice into a **paired task set**:
+
+| Task  | Role                                   | Blocked by | Scope      | Agent                                                                                                       |
+| ----- | -------------------------------------- | ---------- | ---------- | ----------------------------------------------------------------------------------------------------------- |
+| `N.a` | Write Playwright tests (FAILING — red) | (none)     | `TESTS`    | `stagehand-expert` or `unit-testing-specialist`                                                             |
+| `N.b` | Implement UI to make N.a pass (green)  | `N.a`      | `FRONTEND` | `react-typescript-specialist` / `vue-specialist` / `svelte-specialist` / `angular-specialist` per framework |
+
+**Rules**:
+
+- `N.a` commits specs that FAIL against current main. Builder verifies failure before marking complete.
+- `N.b` cannot claim its task until `N.a` is committed and merged. `blockedBy: ["<N.a-task-id>"]` is MANDATORY.
+- Every interactive element in `N.a` specs uses `data-testid` exclusively. Locator-hierarchy fallbacks only apply when `N.b` cannot add a `data-testid` (e.g., third-party widget); require justification in the spec file.
+- `N.b` may ONLY edit the files named in its `files_touched`. No "convenience refactors" in adjacent files — those go in a separate task.
+- Page objects live at `{{TEST_DIR}}/pages/<feature>.page.ts` and are created/edited as part of `N.a` (so the contract is test-owned, not implementation-owned).
+
+**Rationale**: paired tasks preserve the red-green-refactor discipline even when builders run in parallel. `N.a` defines the testable contract before any UI code exists, which is the only robust way to prevent `N.b` from shipping untested happy paths.
+
+For non-UI tasks, proceed with the standard single-task decomposition — no pairing required.
+
 ## Dual Time Estimates
 
 For each task, provide two effort estimates:

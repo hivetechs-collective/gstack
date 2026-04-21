@@ -1,0 +1,12 @@
+{
+  "name": "fixture-vue",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "vue": "^3.4.0"
+  },
+  "devDependencies": {
+    "vite": "^5.0.0",
+    "@vitejs/plugin-vue": "^5.0.0"
+  }
+}

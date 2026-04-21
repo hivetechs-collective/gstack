@@ -1,0 +1,73 @@
+// ──────────────────────────────────────────────────────────────────────────────
+// Page-object stub — produced by /qa-scaffold Stage 02 (scaffold).
+// Stage 02 renders this into `{{TEST_DIR}}/pages/{{FEATURE}}.page.ts`.
+//
+// Placeholders:
+//   {{FEATURE}}            — kebab-case feature name (e.g. 'submit-claim')
+//   {{FeatureClass}}       — PascalCase class name (e.g. 'SubmitClaim')
+//
+// Locator hierarchy (enforced — see `shared/locator-hierarchy.md`):
+//   1. data-testid       → page.getByTestId('<feature>-<element>-<action>')
+//   2. getByRole         → page.getByRole('role', { name })
+//   3. getByText         → page.getByText('exact text')
+//   4. CSS selector      → page.locator('...')  // inline-comment justification required
+//
+// Rules:
+//   - All locators live HERE, not in specs or step definitions.
+//   - Interactive elements MUST have `data-testid`; ESLint enforces this at
+//     lint time (see `/qa-scaffold/03-enforce.md`).
+//   - No `waitForTimeout`, no `nth-child`, no XPath — see the do-not-use list.
+// ──────────────────────────────────────────────────────────────────────────────
+
+import type { Page, Locator } from '@playwright/test';
+
+export class {{FeatureClass}}Page {
+  readonly page: Page;
+
+  // Primary interactive elements — all keyed by data-testid.
+  readonly submitButton: Locator;
+  readonly cancelButton: Locator;
+
+  // Accessibility-first fallbacks — use when data-testid is not available
+  // (e.g. third-party component, static heading).
+  readonly pageHeading: Locator;
+
+  constructor(page: Page) {
+    this.page = page;
+
+    // data-testid (primary) — fail fast if the attr is missing on an
+    // interactive element; the page object is where that failure surfaces.
+    this.submitButton = page.getByTestId('{{FEATURE}}-submit-button');
+    this.cancelButton = page.getByTestId('{{FEATURE}}-cancel-button');
+
+    // getByRole (accessibility fallback) — stable across visual refactors
+    // provided the semantic role is preserved.
+    this.pageHeading = page.getByRole('heading', { level: 1 });
+  }
+
+  // Navigation / setup helpers ------------------------------------------------
+
+  async goto() {
+    await this.page.goto('/{{FEATURE}}');
+    await this.pageHeading.waitFor({ state: 'visible' });
+  }
+
+  // Actions — each action wraps a locator call. Specs call the action; specs
+  // never reach into `this.page` directly.
+  // --------------------------------------------------------------------------
+
+  async submit() {
+    await this.submitButton.click();
+  }
+
+  async cancel() {
+    await this.cancelButton.click();
+  }
+
+  // Assertions — convenience wrappers that keep spec code readable.
+  // --------------------------------------------------------------------------
+
+  async expectVisible() {
+    await this.pageHeading.waitFor({ state: 'visible' });
+  }
+}
