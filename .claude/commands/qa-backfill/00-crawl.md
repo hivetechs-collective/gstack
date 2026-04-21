@@ -22,19 +22,21 @@ Read `.claude/qa-profile.json` (created by `/qa-scaffold` Stage 01).
 
 ## 0.2 Framework dispatch
 
-Stage 00 supports file-convention frameworks in v1. Code-convention frameworks (React Router, Vue Router, Angular router) drop through to the `unsupported` branch in 0.6.
+Stage 00 supports file-convention frameworks. Code-convention frameworks (classic React Router `<Route>` JSX, Vue Router, Angular router) drop through to the `unsupported` branch in 0.6.
 
-| `framework` value | Crawl root          | Route file glob                                                         |
-| ----------------- | ------------------- | ----------------------------------------------------------------------- |
-| `next`            | `app/`              | `app/**/page.{ts,tsx,js,jsx}` (App Router only)                         |
-| `sveltekit`       | `src/routes/`       | `src/routes/**/+page.svelte`                                            |
-| `svelte` (+ Kit)  | `src/routes/`       | `src/routes/**/+page.svelte` (treat Kit as sveltekit)                   |
-| `nuxt`            | `pages/`            | `pages/**/*.vue`                                                        |
-| `vue`             | — code-convention   | Emit `unsupported` fallback (Vue Router is code-based).                 |
-| `react`           | — code-convention   | Emit `unsupported` fallback (React Router is code-based).               |
-| `angular`         | — code-convention   | Emit `unsupported` fallback (Angular router is decorator-based).        |
-| `solid`, `remix`  | — not yet supported | Emit `unsupported` fallback (deferred to v2 — see spec Deferred Items). |
-| anything else     | —                   | Emit `unsupported` fallback.                                            |
+| `framework` value | Crawl root          | Route file glob                                                                                 |
+| ----------------- | ------------------- | ----------------------------------------------------------------------------------------------- |
+| `next`            | `app/`              | `app/**/page.{ts,tsx,js,jsx}` (App Router only)                                                 |
+| `sveltekit`       | `src/routes/`       | `src/routes/**/+page.svelte`                                                                    |
+| `svelte` (+ Kit)  | `src/routes/`       | `src/routes/**/+page.svelte` (treat Kit as sveltekit)                                           |
+| `nuxt`            | `pages/`            | `pages/**/*.vue`                                                                                |
+| `react-router`    | `app/routes/`       | `app/routes/**/*.{ts,tsx,js,jsx}` (React Router v7 flat-file convention)                        |
+| `astro`           | `src/pages/`        | `src/pages/**/*.astro` (Astro pages convention; endpoint extensions skipped — see 0.3)          |
+| `vue`             | — code-convention   | Emit `unsupported` fallback (Vue Router is code-based).                                         |
+| `react`           | — code-convention   | Emit `unsupported` fallback. Use `react-router` for RRv7; classic `<Route>` JSX is deferred P2. |
+| `angular`         | — code-convention   | Emit `unsupported` fallback (Angular router is decorator-based).                                |
+| `solid`, `remix`  | — not yet supported | Emit `unsupported` fallback (deferred — see spec Deferred Items). Remix v2+ migrated to RRv7.   |
+| anything else     | —                   | Emit `unsupported` fallback.                                                                    |
 
 If the dispatched crawl root does not exist on disk (e.g., `framework=next` but no `app/` directory — user might be on Pages Router), raise `RouteDirMissingError`: print which dir is missing, suggest re-running `/qa-scaffold` or manual path override, exit 2.
 
@@ -76,6 +78,29 @@ Skip these files even when they match the route glob.
 | `pages/*.client.vue`, `pages/*.server.vue`    | Rendering-mode variants; pair with the base file. |
 | `_middleware.{ts,js}`                         | Middleware; not a page.                           |
 
+### React Router v7
+
+React Router v7 flat-file routes live at `app/routes/**`. The convention encodes route shape in the filename via dots (`.`) for path separators and `$` for dynamic segments. Skip files that do not represent a navigable leaf route.
+
+| Skip                                                                                                          | Reason                                                                                                                             |
+| ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| Files whose first dotted segment starts with `_` and is **not** `_index` (e.g., `_protected.tsx`, `_app.tsx`) | Pathless layout — wraps children without adding a URL segment. `_index.tsx` is a valid index leaf and must NOT be skipped.         |
+| Files with no `export default`                                                                                | Shared module (loader-only helper, type file, util). Detect by scanning for `export default` anywhere in the file; absence → skip. |
+| Files outside `app/routes/**`                                                                                 | `app/root.tsx`, `app/entry.client.tsx`, `app/entry.server.tsx`, `app/lib/**`, etc. Not routes.                                     |
+| `*.test.{ts,tsx,js,jsx}`, `*.spec.{ts,tsx,js,jsx}`                                                            | Co-located tests.                                                                                                                  |
+| `*.css`, `*.module.css`, `*.scss`                                                                             | Stylesheets that happen to live in `app/routes/`.                                                                                  |
+
+### Astro
+
+Astro pages live under `src/pages/**`. Astro treats every `.astro` file as a page unless the filename begins with `_`, and treats any file whose name ends in `.xml.ts` / `.json.ts` / `.ts` / `.js` as a non-HTML **endpoint** (API route / feed / sitemap). Skip endpoints and underscore-prefixed partials.
+
+| Skip                                                                  | Reason                                                                                                          |
+| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Files under `src/pages/**` starting with `_` (e.g., `_partial.astro`) | Astro ignores underscore-prefixed files for routing — treated as partials/fragments.                            |
+| `src/pages/**/*.xml.ts`, `*.xml.js`, `*.json.ts`, `*.json.js`         | Endpoints emitting XML/JSON (sitemap, RSS, Open Search). Not HTML pages — omit from Playwright smoke coverage.  |
+| `src/pages/**/*.ts`, `*.js` without a paired `.astro`                 | Endpoint-only route (API handler). Skip — `/qa-backfill` targets HTML-rendered pages.                           |
+| Files outside `src/pages/**`                                          | Components, layouts, and content collections (`src/components/`, `src/layouts/`, `src/content/`) are not pages. |
+
 Record the count of skipped files as `notes` in the output JSON (AC11).
 
 ---
@@ -110,6 +135,83 @@ Steps for each route path `p`:
 | `/admin/users`            | `admin-users`        |
 | `/blog/[category]/[post]` | `blog-category-post` |
 
+### React Router v7 slug derivation
+
+RRv7 slugs come from the **filename**, not a path-string. The flat-file convention encodes routing in the filename itself via three sigils:
+
+| Sigil                                 | Meaning                                                                            |
+| ------------------------------------- | ---------------------------------------------------------------------------------- |
+| `.` (dot)                             | Path separator between URL segments.                                               |
+| `$name`                               | Dynamic segment named `name` (matches `:name` in path-string form).                |
+| `$` (bare, with no name)              | Splat / catch-all segment. Always normalized to slug `slug`.                       |
+| `_prefix` as **first** dotted segment | Pathless layout — skip the file entirely per §0.3. `_index` is the only exception. |
+
+Steps for each RRv7 route file at `app/routes/<basename>.<ext>` (and for index files nested in sub-directories like `app/routes/customers/_index.tsx`):
+
+1. Compute the relative path from `app/routes/` to the file (strip the extension). For nested directories, keep the directory separators as-is for a moment.
+2. Replace directory separators (`/`) with `.` — nested folders collapse into the same flat-file namespace.
+3. Split the resulting string by `.`.
+4. Reject (skip) if any segment starts with `_` and is **not** `_index` (redundant with §0.3 but keep the check here as a belt-and-braces guard — if the file slips past §0.3, §0.4 still drops it).
+5. Per-segment transform, in order:
+   - `_index` → empty string (the segment contributes nothing to the slug; an index leaf under `customers/` yields `customers-index`, an index at the routes root yields `index`).
+   - `$name` (where `name` is not empty) → `name`.
+   - `$` (bare) → `slug`.
+   - Any other literal → keep as-is.
+6. Filter out empty segments, lowercase, join the remainder with `-`.
+7. If the resulting slug is empty (a pure index at the routes root), emit `index`.
+8. Apply the same non-kebab normalization as above (replace stray `_` / `.` with `-`, collapse consecutive `-`).
+
+#### RRv7 pinned examples
+
+| Source file                         | Route path            | Slug                       |
+| ----------------------------------- | --------------------- | -------------------------- |
+| `app/routes/_index.tsx`             | `/`                   | `index`                    |
+| `app/routes/about.tsx`              | `/about`              | `about`                    |
+| `app/routes/dashboard.tsx`          | `/dashboard`          | `dashboard`                |
+| `app/routes/customers.tsx`          | `/customers`          | `customers`                |
+| `app/routes/customers.$id.tsx`      | `/customers/:id`      | `customers-id`             |
+| `app/routes/customers.$id.edit.tsx` | `/customers/:id/edit` | `customers-id-edit`        |
+| `app/routes/customers/_index.tsx`   | `/customers`          | `customers-index`          |
+| `app/routes/customers/new.tsx`      | `/customers/new`      | `customers-new`            |
+| `app/routes/$.tsx`                  | `/*`                  | `catch-slug`               |
+| `app/routes/docs.$.tsx`             | `/docs/*`             | `docs-slug`                |
+| `app/routes/_protected.tsx`         | —                     | **skip** (pathless layout) |
+
+**Note on `customers.tsx` + `customers/_index.tsx` coexisting**: in RRv7 they are two distinct leaves (a layout-style parent route and an index child). The crawler emits a stub for each — `customers` and `customers-index`. The spec collision guard in the next section catches the case where two files _derive_ the same slug (not this case, they are different by construction).
+
+### Astro slug derivation
+
+Astro slugs come from the **relative path under `src/pages/`**. The convention uses bracket syntax (`[param]` for single segments, `[...rest]` for catch-all) identical to Next.js — no new per-segment transforms are required beyond the shared §0.4 steps. The only Astro-specific rule is how to produce the cleaned route path from a pages file:
+
+1. Compute the relative path from `src/pages/` to the file.
+2. Strip the file extension (`.astro`).
+3. If the resulting stem is `index`, drop it (so `src/pages/blog/index.astro` → `/blog`; `src/pages/index.astro` → `/`).
+4. Prepend a leading `/`. This yields the canonical route path — feed it into the framework-agnostic rules above.
+
+#### Astro pinned examples
+
+| Source file                      | Route path     | Slug                      |
+| -------------------------------- | -------------- | ------------------------- |
+| `src/pages/index.astro`          | `/`            | `index`                   |
+| `src/pages/about.astro`          | `/about`       | `about`                   |
+| `src/pages/[slug].astro`         | `/[slug]`      | `slug`                    |
+| `src/pages/[...rest].astro`      | `/[...rest]`   | `catch-slug`              |
+| `src/pages/blog/index.astro`     | `/blog`        | `blog`                    |
+| `src/pages/blog/[slug].astro`    | `/blog/[slug]` | `blog-slug`               |
+| `src/pages/sitemap-index.xml.ts` | —              | **skip** (endpoint, §0.3) |
+
+**Catch-slug pinning (applies to all frameworks)**: every catch-all / splat / rest-parameter route — regardless of framework — must normalize to a slug whose final token is the literal string `slug`. The rule is enforced uniformly:
+
+| Framework       | Source form                                     | Slug final token |
+| --------------- | ----------------------------------------------- | ---------------- |
+| Next.js         | `[...slug]` or `[[...slug]]` or `[...anything]` | `slug`           |
+| SvelteKit       | `[...rest]` (any name)                          | `slug`           |
+| Nuxt 3          | `[...slug]` (any name)                          | `slug`           |
+| React Router v7 | Bare `$` segment, e.g., `$.tsx` / `docs.$.tsx`  | `slug`           |
+| Astro           | `[...rest]` (any name)                          | `slug`           |
+
+Root catch-all → `catch-slug` (three names normalize to the same output: `/catch/[...slug]`, `/[...rest]`, and `$.tsx` all emit slug `catch-slug`). Nested catch-all → `<parent>-slug` (e.g., `/docs/[...rest]` → `docs-slug`; `docs.$.tsx` → `docs-slug`). This pinning closes the v1 evaluator-rubric-3 gap: the convention is now explicit in the spec, not implied by example.
+
 ### Slug collisions
 
 If two different routes derive the same slug (e.g., `/users/[id]` and `/users/:id` in a mixed-convention repo), append a numeric suffix to the second one (`users-id-2`, `users-id-3`, …) and record the collision in `notes`.
@@ -120,13 +222,15 @@ If two different routes derive the same slug (e.g., `/users/[id]` and `/users/:i
 
 For each emitted route, Stage 01 needs to know whether to render the dynamic or static variant of the templates. Annotate with three fields.
 
-| Field                 | Semantics                                                                                                                                                                            |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `has_dynamic_segment` | `true` if the route path contains at least one `[segment]`, `[...segment]`, or `[[...segment]]`.                                                                                     |
-| `segment_name`        | The first dynamic segment's name (inside brackets, with `...` stripped). E.g., `/users/[id]/posts/[postId]` → `id`.                                                                  |
-| `segment_placeholder` | A substitution-friendly string Stage 01 drops into `goto('...')`. Pick by heuristic: `id`/`postId`/`*Id` → `"123"`; `slug`/`...slug` → `"example"`; anything else → `"placeholder"`. |
+| Field                 | Semantics                                                                                                                                                                                       |
+| --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `has_dynamic_segment` | `true` if the route path contains at least one `[segment]`, `[...segment]`, `[[...segment]]`, RRv7 `$name`, or RRv7 bare `$`.                                                                   |
+| `segment_name`        | The first dynamic segment's name. Next/SvelteKit/Nuxt: inside brackets, with `...` stripped. RRv7 `$name` → `name`; RRv7 bare `$` → `slug`. E.g., `customers.$id.tsx` → `id`.                   |
+| `segment_placeholder` | A substitution-friendly string Stage 01 drops into `goto('...')`. Pick by heuristic: `id`/`postId`/`*Id` → `"123"`; `slug`/`...slug`/bare-splat → `"example"`; anything else → `"placeholder"`. |
 
-Multi-dynamic-segment routes get only the first segment pinned in the annotation — the remaining placeholders are left as literal `[name]` inside the route string so the reader sees the TODO.
+Multi-dynamic-segment routes get only the first segment pinned in the annotation — the remaining placeholders are left as literal `[name]` (or `$name` for RRv7) inside the route string so the reader sees the TODO.
+
+**RRv7 segment name extraction**: when scanning the split-by-`.` filename segments in order, the first segment matching `^\$[a-zA-Z_][a-zA-Z0-9_]*$` yields `segment_name` = the identifier after `$`. The first segment that is exactly `$` (bare splat) yields `segment_name` = `"slug"` and is always a catch-all — pair with `segment_placeholder` = `"example"`.
 
 ---
 
@@ -240,11 +344,11 @@ Before exiting, print a human-readable summary:
 
 ## 0.11 Error & Rescue Map (referenced by spec)
 
-| Error type                    | When raised                                                       | Recovery action                             | User sees                                                    |
-| ----------------------------- | ----------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------ |
-| `ProfileNotFoundError`        | `.claude/qa-profile.json` absent                                  | Print `/qa-scaffold` instruction, exit 0    | "Run `/qa-scaffold` first, then re-run `/qa-backfill`"       |
-| `ProfileParseError`           | JSON parse fails                                                  | Print parse error + path, exit 2            | "Invalid qa-profile.json: <parse error>"                     |
-| `UnsupportedFrameworkWarning` | Framework is code-convention or unknown                           | Emit fallback stub, continue, exit 0        | "Framework <name> uses code-based routing; emitted fallback" |
-| `RouteDirMissingError`        | Framework dispatched but expected dir is absent                   | Print which dir is missing, exit 2          | "Expected <dir>/ for framework <name> — not found"           |
-| `SkipWithNoteWarning`         | A file matches the glob but hits the skip list                    | Skip, increment count, record in `notes`    | Summary shows "N files skipped"                              |
-| `PathTraversalError`          | Derived slug contains `..`, `/`, or backslash after normalization | Skip the route, record in `notes`, continue | "1 route skipped — slug failed traversal check"              |
+| Error type                    | When raised                                                                                                                                                                                                                        | Recovery action                             | User sees                                                                                                                              |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `ProfileNotFoundError`        | `.claude/qa-profile.json` absent                                                                                                                                                                                                   | Print `/qa-scaffold` instruction, exit 0    | "Run `/qa-scaffold` first, then re-run `/qa-backfill`"                                                                                 |
+| `ProfileParseError`           | JSON parse fails                                                                                                                                                                                                                   | Print parse error + path, exit 2            | "Invalid qa-profile.json: <parse error>"                                                                                               |
+| `UnsupportedFrameworkWarning` | Framework is code-convention or unknown                                                                                                                                                                                            | Emit fallback stub, continue, exit 0        | "Framework <name> uses code-based routing; emitted fallback"                                                                           |
+| `RouteDirMissingError`        | Framework dispatched but expected dir is absent                                                                                                                                                                                    | Print which dir is missing, exit 2          | "Expected <dir>/ for framework <name> — not found"                                                                                     |
+| `SkipWithNoteWarning`         | A file matches the glob but hits the skip list (per-framework §0.3: Next layouts/loading; SvelteKit `+layout`/`+server`; Nuxt `.client.vue`/`_middleware`; RRv7 pathless-layout `_prefix.*`, no-default-export, co-located tests). | Skip, increment count, record in `notes`    | Summary shows "N files skipped" with a one-line breakdown per trigger (e.g., "3 pathless-layout skipped, 1 no-default-export skipped") |
+| `PathTraversalError`          | Derived slug contains `..`, `/`, or backslash after normalization                                                                                                                                                                  | Skip the route, record in `notes`, continue | "1 route skipped — slug failed traversal check"                                                                                        |

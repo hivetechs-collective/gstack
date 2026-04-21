@@ -91,36 +91,42 @@ Every emitted spec starts with the `@T1-smoke @stub` describe tag. Retag to `@ba
 
 ## When does `/qa-backfill` run (and when does it skip)?
 
-| `.claude/qa-profile.json` | Framework                     | Routes found | Existing stubs      | Outcome                                                                          |
-| ------------------------- | ----------------------------- | ------------ | ------------------- | -------------------------------------------------------------------------------- |
-| absent                    | —                             | —            | —                   | Clean abort: "Run `/qa-scaffold` first." Exit 0.                                 |
-| present, malformed        | —                             | —            | —                   | Exit 2 with `ProfileParseError`.                                                 |
-| present                   | next/sveltekit/nuxt           | 0            | —                   | Exit 0; informational "No routes to backfill."                                   |
-| present                   | next/sveltekit/nuxt           | N            | none                | Emit N specs + N page objects.                                                   |
-| present                   | next/sveltekit/nuxt           | N            | all N already exist | Skip all. Final summary: `W=0, S=N`. Hint: "Re-run with --overwrite to refresh." |
-| present                   | next/sveltekit/nuxt           | N            | M of N exist        | Emit `N-M` new; skip `M`. Clean additive run.                                    |
-| present                   | react/vue/angular/solid/remix | —            | —                   | Emit single `routes-unknown.spec.ts` fallback stub. See §Unsupported below.      |
+| `.claude/qa-profile.json` | Framework                                | Routes found | Existing stubs      | Outcome                                                                          |
+| ------------------------- | ---------------------------------------- | ------------ | ------------------- | -------------------------------------------------------------------------------- |
+| absent                    | —                                        | —            | —                   | Clean abort: "Run `/qa-scaffold` first." Exit 0.                                 |
+| present, malformed        | —                                        | —            | —                   | Exit 2 with `ProfileParseError`.                                                 |
+| present                   | next/sveltekit/nuxt/react-router/astro   | 0            | —                   | Exit 0; informational "No routes to backfill."                                   |
+| present                   | next/sveltekit/nuxt/react-router/astro   | N            | none                | Emit N specs + N page objects.                                                   |
+| present                   | next/sveltekit/nuxt/react-router/astro   | N            | all N already exist | Skip all. Final summary: `W=0, S=N`. Hint: "Re-run with --overwrite to refresh." |
+| present                   | next/sveltekit/nuxt/react-router/astro   | N            | M of N exist        | Emit `N-M` new; skip `M`. Clean additive run.                                    |
+| present                   | vue/angular/solid/tanstack/remix-classic | —            | —                   | Emit single `routes-unknown.spec.ts` fallback stub. See §Unsupported below.      |
 
 ---
 
 ## Unsupported frameworks
 
-`/qa-backfill` v1 supports **file-convention** routing only:
+`/qa-backfill` supports **file-convention** routing only:
 
-- **Next.js App Router** (`app/**/page.tsx`)
-- **SvelteKit** (`src/routes/**/+page.svelte`)
-- **Nuxt 3** (`pages/**/*.vue`)
+- **Next.js App Router** (`app/**/page.tsx`) — since v1
+- **SvelteKit** (`src/routes/**/+page.svelte`) — since v1
+- **Nuxt 3** (`pages/**/*.vue`) — since v1
+- **React Router v7 flat-file routes** (`app/routes/**/*.{tsx,jsx,ts,js}`) — since v1.1
+- **Astro** (`src/pages/**/*.astro`) — since v1.1
+
+All five file-convention frameworks share the universal **catch-slug pinning** rule (any catch-all / splat / rest-parameter route emits a slug ending in literal `slug`, e.g. `catch-slug`, `docs-slug`). See [`00-crawl.md` §0.4](00-crawl.md) for the full pinning table.
 
 Code-convention routers enumerate routes at runtime via a router config object, which requires AST analysis to trace statically:
 
-| Framework            | Router library                           | Status         |
-| -------------------- | ---------------------------------------- | -------------- |
-| React                | `react-router`, `@tanstack/router`       | Deferred to v2 |
-| Vue                  | `vue-router`                             | Deferred to v2 |
-| Angular              | `@angular/router`                        | Deferred to v2 |
-| Solid                | `@solidjs/router`                        | Deferred to v2 |
-| Next.js Pages Router | Legacy `pages/*.tsx`                     | Deferred to v2 |
-| Remix                | v2 file convention (close to file-based) | Deferred to v2 |
+| Framework            | Router library                        | Status         |
+| -------------------- | ------------------------------------- | -------------- |
+| React (non-RRv7)     | `react-router` v6, `@tanstack/router` | Deferred to v2 |
+| Vue                  | `vue-router`                          | Deferred to v2 |
+| Angular              | `@angular/router`                     | Deferred to v2 |
+| Solid                | `@solidjs/router`                     | Deferred to v2 |
+| Next.js Pages Router | Legacy `pages/*.tsx`                  | Deferred to v2 |
+| Remix (classic)      | `remix.config.js` routes fn           | Deferred to v2 |
+
+> **Note**: React Router v7 in its flat-file convention mode (`app/routes/*.tsx`) IS supported as of v1.1 — the crawler walks the filesystem directly and handles the `.`-as-separator / `$name` / bare `$` / `_prefix` conventions. Earlier React Router versions (v6 and prior) and TanStack Router still require AST analysis and remain deferred.
 
 When the framework dispatch hits any of the above, Stage 00 emits a single `routes-unknown` fallback entry and Stage 01 renders one `routes-unknown.spec.ts` whose header directs the user to either:
 
@@ -140,6 +146,45 @@ Full details in the spec's Deferred Items: `docs/specs/qa-backfill.md`.
 - **Retag signal**: When a stub has been promoted to real assertions, retag the describe from `@stub` to `@backfilled`. Future audits (and `/plan-w-team` Step 5 review) use the retag to distinguish "stub from /qa-backfill" from "handwritten by an engineer."
 
 This three-command sequence — scaffold → backfill → plan — gets a legacy UI repo from "no tests anywhere" to "every route has a smoke check + the important features have real assertions" in about an hour of human time plus the planner's execution time.
+
+---
+
+## Monorepo adoption (per-app profile)
+
+`/qa-backfill` has no monorepo-native dispatcher — Stage 00 crawls one app at a time. In a monorepo you get monorepo coverage by running the command once per app, each with its own `.claude/qa-profile.json`. No schema changes, no flags.
+
+**Setup** (example: a monorepo with `apps/admin`, `apps/web`, `apps/website`):
+
+```
+apps/
+├── admin/                          # React Router v7 flat-file routes
+│   ├── .claude/qa-profile.json    # framework="react-router", test_dir="tests/e2e"
+│   └── app/routes/**
+├── web/                            # React Router v7 flat-file routes
+│   ├── .claude/qa-profile.json    # framework="react-router", test_dir="tests/e2e"
+│   └── app/routes/**
+└── website/                        # Astro
+    ├── .claude/qa-profile.json    # framework="astro", test_dir="tests/e2e"
+    └── src/pages/**
+```
+
+**Usage**:
+
+```bash
+# From the monorepo root
+for app in apps/admin apps/web apps/website; do
+  (cd "$app" && /qa-backfill)
+done
+
+# Or run against a single app when only one changed
+(cd apps/admin && /qa-backfill)
+```
+
+Each app's specs land under that app's `{{test_dir}}/backfilled/` — no cross-app leakage, no shared state. The three apps can sit on different QA profiles (e.g., `apps/admin` on `full`, `apps/website` on `light`) because each profile is read from its own app root.
+
+**When this breaks down**: if the same route path exists in two apps (e.g., both `apps/admin` and `apps/web` serve `/dashboard`), the emitted spec slug (`dashboard.spec.ts`) is identical. Because specs live under _each app's_ test_dir, they don't collide — but test runners aggregated across the whole monorepo (e.g., a root-level Playwright project) will need distinct test IDs. The `data-testid` convention `<feature>-<element>-<action>` is app-agnostic; prefix per-app (`admin-dashboard-…`, `web-dashboard-…`) when the aggregator can't disambiguate by directory.
+
+A native monorepo dispatcher (one command, discovers all `.claude/qa-profile.json` files, fans out) is tracked in `docs/specs/qa-backfill.md` Deferred Items as P2 — it remains deferred because the per-app loop covers the 80% case with zero command-shape complexity.
 
 ---
 
