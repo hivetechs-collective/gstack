@@ -1,0 +1,37 @@
+// AUTO-GENERATED BACKFILL PAGE OBJECT — {{ROUTE}}
+// Generated: {{GENERATED_AT}}
+// Generator: /qa-backfill {{VERSION}}
+//
+// Rules for this page object:
+//   1. Locator hierarchy — data-testid is PRIMARY. See
+//      .claude/commands/plan-w-team/shared/locator-hierarchy.md for the full
+//      fallback ladder and when a non-testid locator is permitted.
+//   2. Page-object-only — specs must NEVER inline `page.locator(...)` or
+//      `page.getByTestId(...)`. Every interactive element gets a named
+//      `readonly x = this.page.getByTestId('<feature>-<element>-<action>')`
+//      accessor on this class.
+//   3. Every locator identifier follows <feature>-<element>-<action> kebab-case
+//      (e.g., `{{FEATURE}}-submit-button`, `{{FEATURE}}-email-input`).
+
+import type { Page } from '@playwright/test';
+
+export class {{SLUG_PASCAL}}Page {
+  constructor(private readonly page: Page) {}
+
+  // {{HAS_DYNAMIC_SEGMENT_BEGIN}}
+  async goto({{SEGMENT_NAME}}: string): Promise<void> {
+    await this.page.goto(`{{ROUTE_TEMPLATE_LITERAL}}`);
+  }
+  // {{HAS_DYNAMIC_SEGMENT_END}}
+  // {{STATIC_ROUTE_BEGIN}}
+  async goto(): Promise<void> {
+    await this.page.goto('{{ROUTE}}');
+  }
+  // {{STATIC_ROUTE_END}}
+
+  // TODO: uncomment and populate these accessors once real data-testid
+  // attributes are added to the {{ROUTE}} UI.
+  //
+  // readonly primaryAction   = this.page.getByTestId('{{FEATURE}}-primary-button');
+  // readonly headingTitle    = this.page.getByTestId('{{FEATURE}}-heading-title');
+}

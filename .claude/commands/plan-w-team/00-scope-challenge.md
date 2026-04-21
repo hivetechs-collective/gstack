@@ -68,6 +68,8 @@ If `.claude/qa-profile.json` exists in the target repo, this feature runs agains
 
 If `.claude/qa-profile.json` is missing on a UI-scope feature, prompt: "UI files detected but `/qa-scaffold` has not been run. Run `/qa-scaffold` first so the tier profile and locator rules are available, or proceed without UI-TDD enforcement? [scaffold/skip]". Default `scaffold` — the friction is intentional.
 
+If the repo HAS been scaffolded but has legacy routes without specs, run [`/qa-backfill`](../qa-backfill/README.md) first to generate tier-T1 stubs for every route. This `/plan-w-team` feature can then focus on promoting stubs to real assertions (retag `@stub` → `@backfilled`) rather than rediscovering route structure — Step 2's paired-task protocol consumes the existing `@T1-smoke @stub` skeletons instead of writing parallel specs in a different directory.
+
 For non-UI features (backend, infra, docs) or non-scaffolded repos, skip §0e entirely and proceed to `## Output`. The rest of the /plan-w-team pipeline runs unchanged.
 
 ## Output

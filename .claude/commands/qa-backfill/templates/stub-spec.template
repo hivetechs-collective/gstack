@@ -1,0 +1,58 @@
+// AUTO-GENERATED BACKFILL STUB — {{ROUTE}}
+// Generated: {{GENERATED_AT}}
+// Generator: /qa-backfill {{VERSION}}
+// Default tier: T1-smoke
+//
+// This spec is a SKELETON. Humans or /plan-w-team must:
+//   1. Replace every `data-testid="TODO-*"` placeholder with a real
+//      <feature>-<element>-<action> identifier on the rendered element.
+//   2. Promote the @T2-critical-path test.skip block to real assertions
+//      exercising the route's primary user flow.
+//   3. Retag the describe from `@stub` to `@backfilled` once (1) and (2)
+//      are complete and the spec passes locally.
+//
+// Locator rules: see .claude/commands/plan-w-team/shared/locator-hierarchy.md
+// Tier glyphs:   see .claude/commands/plan-w-team/shared/qa-tiers.md
+
+import { test, expect } from '@playwright/test';
+import { {{SLUG_PASCAL}}Page } from './pages/backfilled/{{SLUG}}.page';
+
+test.describe('@T1-smoke @stub {{ROUTE}}', () => {
+  let consoleErrors: string[];
+
+  test.beforeEach(async ({ page }) => {
+    consoleErrors = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
+  });
+
+  test('page loads without console errors', async ({ page }) => {
+    const pom = new {{SLUG_PASCAL}}Page(page);
+    // {{HAS_DYNAMIC_SEGMENT_BEGIN}}
+    // TODO: replace '{{SEGMENT_PLACEHOLDER}}' with a real {{SEGMENT_NAME}} value
+    await pom.goto('{{SEGMENT_PLACEHOLDER}}');
+    // {{HAS_DYNAMIC_SEGMENT_END}}
+    // {{STATIC_ROUTE_BEGIN}}
+    await pom.goto();
+    // {{STATIC_ROUTE_END}}
+
+    await expect(page).toHaveURL(new RegExp('{{ROUTE_REGEX}}'));
+    expect(consoleErrors, `console errors on ${page.url()}:\n${consoleErrors.join('\n')}`).toEqual([]);
+  });
+
+  /*
+   * @T2-critical-path — TODO: implement the primary user flow for {{ROUTE}}.
+   *
+   * test.skip('completes primary {{FEATURE}} flow', async ({ page }) => {
+   *   const pom = new {{SLUG_PASCAL}}Page(page);
+   *   await pom.goto({{DYNAMIC_ARG}});
+   *
+   *   // TODO: add data-testid="{{FEATURE}}-TODO-trigger" to the element that starts the flow
+   *   await page.getByTestId('{{FEATURE}}-TODO-trigger').click();
+   *
+   *   // TODO: add data-testid="{{FEATURE}}-TODO-confirmation" to the element that proves success
+   *   await expect(page.getByTestId('{{FEATURE}}-TODO-confirmation')).toBeVisible();
+   * });
+   */
+});

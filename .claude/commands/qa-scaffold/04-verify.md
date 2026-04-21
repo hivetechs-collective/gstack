@@ -214,6 +214,12 @@ Next:
 
 The summary is shown to the user once. After this, `/qa-scaffold` exits 0 and `/plan-w-team` takes over for subsequent feature-level work.
 
+### Next steps for repos with existing UI
+
+If this repo has routes that pre-date test authoring, run [`/qa-backfill`](../qa-backfill/README.md) before moving on to `/plan-w-team`. It crawls the routes configured by `/qa-scaffold` and emits one tier-T1 smoke-spec stub + companion page object per route, tagged `@T1-smoke @stub`. You then use `/plan-w-team` to author real assertions — the skeletons keep new features from writing parallel specs in different directories.
+
+`/qa-backfill` is safe to re-invoke: new routes get stubs, existing stubs are skipped, and stubs already promoted to real specs stay untouched.
+
 ---
 
 ## 4.12 Exit conditions
