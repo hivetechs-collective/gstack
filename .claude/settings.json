@@ -15,6 +15,31 @@
       "Bash(gh *)",
       "Bash(uv run *)",
       "Bash(bun *)",
+      "Bash(mkdir *)",
+      "Bash(find *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(chmod *)",
+      "Bash(shasum *)",
+      "Bash(awk *)",
+      "Bash(sed *)",
+      "Bash(jq *)",
+      "Bash(rsync *)",
+      "Bash(date *)",
+      "Bash(test *)",
+      "Bash(bash *)",
+      "Bash(sh *)",
+      "Bash(./scripts/*)",
+      "Bash(.claude/scripts/*)",
+      "Bash(scripts/*)",
+      "Bash(*)",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
       "Agent(*)",
       "TeamCreate",
       "TeamDelete",
@@ -109,6 +134,42 @@
       },
       {
         "matcher": "Grep(*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\": \"allow\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Write(*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\": \"allow\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit(*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\": \"allow\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash(*)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"decision\": \"allow\"}'"
+          }
+        ]
+      },
+      {
+        "matcher": "Agent(*)",
         "hooks": [
           {
             "type": "command",

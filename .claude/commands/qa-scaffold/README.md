@@ -16,6 +16,28 @@ No arguments. Stages run sequentially; a failed stage halts the pipeline and pri
 
 ---
 
+## Tool Permissions
+
+All tools used are covered by the base allow-list in `.claude/settings.json` — no per-project configuration needed. See [`.claude/docs/SKILL_PERMISSION_CONVENTION.md`](../../docs/SKILL_PERMISSION_CONVENTION.md) for the convention.
+
+| Tool    | Use                                                                                  |
+| ------- | ------------------------------------------------------------------------------------ |
+| `Read`  | Inspect `package.json`, existing framework/test config, templates                    |
+| `Write` | Emit `.claude/qa-profile.json`, Playwright config, page objects, ESLint rule         |
+| `Edit`  | Register custom ESLint rule in repo's ESLint config (backup-first)                   |
+| `Glob`  | Count `.tsx` / `.vue` / `.svelte` files for profile heuristic                        |
+| `Grep`  | Detect existing Playwright/Cypress installs, scan for anti-patterns                  |
+| `Bash`  | `mkdir -p`, `npx playwright install`, `pnpm add -D`, `npx playwright test` for smoke |
+
+**State & output paths touched:**
+
+- `.claude/qa-profile.json` — tier selection (light / standard / full) + override hooks
+- `.claude/state/qa-scaffold-*.json` — stage outputs for resumable runs
+- `<test_dir>/**` — Playwright config, helpers, page objects, first example spec
+- `eslint-rules/require-data-testid.js` — custom lint rule
+
+---
+
 ## Stage pipeline
 
 | Stage                  | Purpose                                                                                                                               |

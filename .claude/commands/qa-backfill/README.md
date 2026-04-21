@@ -43,6 +43,29 @@ Do **not** run `--overwrite` against a repo whose stubs have already been retagg
 
 ---
 
+## Tool Permissions
+
+All tools used are covered by the base allow-list in `.claude/settings.json` — no per-project configuration needed. See [`.claude/docs/SKILL_PERMISSION_CONVENTION.md`](../../docs/SKILL_PERMISSION_CONVENTION.md) for the convention.
+
+| Tool    | Use                                                                                 |
+| ------- | ----------------------------------------------------------------------------------- |
+| `Read`  | Read `.claude/qa-profile.json`, route files, spec + page-object templates           |
+| `Write` | Emit per-route specs + page objects, state files, summary JSON                      |
+| `Edit`  | Update existing stubs when `--overwrite` is passed (backup-first)                   |
+| `Glob`  | Enumerate routes for Next / SvelteKit / Nuxt / React Router v7 / Astro              |
+| `Grep`  | Locate existing stubs to preserve (skip-by-default idempotence)                     |
+| `Bash`  | `mkdir -p`, `cp` for `.backup-<UTC>` siblings, optional `tsc --noEmit` verification |
+
+**State & output paths touched:**
+
+- `.claude/state/qa-backfill-routes.json` — Stage 00 route enumeration
+- `.claude/state/qa-backfill-emit-summary.json` — Stage 01 emit record
+- `<test_dir>/backfilled/*.spec.ts` — per-route stub specs
+- `<test_dir>/pages/backfilled/*.page.ts` — per-route page objects
+- `<any-file>.backup-<UTC-timestamp>` — backup siblings when `--overwrite` differs
+
+---
+
 ## Stage pipeline
 
 | Stage                               | Responsibility                                                            | Writes                                                                                                                        |
