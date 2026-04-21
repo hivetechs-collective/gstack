@@ -1,0 +1,282 @@
+# CI Alert — universal failure visibility & auto-triage workflow
+#
+# Distributed by claude-pattern (see docs/ci-alerting.md).
+# Install target: .github/workflows/ci-alert.yml (handled by /ci-alert-setup).
+#
+# What this does
+# --------------
+# Observes every OTHER workflow in this repo via `workflow_run`. On failure:
+#   1. Opens (or comments on) a single GitHub Issue per failing workflow,
+#      title = "CI Red: <workflow-name>", label = "ci-red".
+#   2. Pushes a notification to the user's configured provider (Discord / ntfy /
+#      Pushover) — only on failure *transitions* (first failure after success)
+#      to avoid alert storms during ongoing outages.
+# On success of a workflow that has an open "ci-red" issue: comments
+# "Resolved by <sha>" and closes the issue.
+#
+# Required repo secrets (configure ONE; others fall through):
+#   - CI_ALERT_DISCORD_WEBHOOK   Discord webhook URL (default, free)
+#   - CI_ALERT_NTFY_TOPIC        ntfy.sh topic name (free, no account)
+#   - PUSHOVER_USER_KEY          Pushover user key (requires PUSHOVER_APP_TOKEN)
+#   - PUSHOVER_APP_TOKEN         Pushover app token
+# If none are set, the workflow runs in "issue-only mode": it still manages the
+# ci-red issue but does NOT push (workflow exits 0; no failure).
+#
+# Managed label: ci-red (auto-created on first use)
+# Auto-resolve:  green `workflow_run` of the same workflow closes open ci-red
+#                issue with state_reason=completed and a resolution comment.
+
+name: CI Alert
+
+on:
+  workflow_run:
+    workflows: ["*"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+
+jobs:
+  triage:
+    # Self-skip guard: never observe our own runs (prevents infinite loop).
+    if: ${{ github.event.workflow_run.name != 'CI Alert' }}
+    runs-on: ubuntu-latest
+    env:
+      WF_NAME: ${{ github.event.workflow_run.name }}
+      WF_ID: ${{ github.event.workflow_run.workflow_id }}
+      WF_STATUS: ${{ github.event.workflow_run.conclusion }}
+      WF_RUN_ID: ${{ github.event.workflow_run.id }}
+      WF_RUN_URL: ${{ github.event.workflow_run.html_url }}
+      WF_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      WF_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      WF_EVENT: ${{ github.event.workflow_run.event }}
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Derive commit subject and failing jobs
+        id: ctx
+        run: |
+          set -u
+          # Commit subject (best-effort; empty on scheduled events without commit ctx)
+          subject="$(gh api "/repos/${REPO}/commits/${WF_HEAD_SHA}" --jq '.commit.message' 2>/dev/null | head -n1 || true)"
+          [ -z "$subject" ] && subject="(commit subject unavailable)"
+          # Failing job names (only populated on failure; may be empty if setup failed)
+          failing_jobs=""
+          if [ "$WF_STATUS" = "failure" ]; then
+            failing_jobs="$(gh api "/repos/${REPO}/actions/runs/${WF_RUN_ID}/jobs" \
+              --jq '[.jobs[] | select(.conclusion=="failure") | .name] | join(", ")' 2>/dev/null || true)"
+            [ -z "$failing_jobs" ] && failing_jobs="(job info unavailable)"
+          fi
+          # Write to step outputs (escape multiline)
+          {
+            echo "subject<<EOF"
+            echo "$subject"
+            echo "EOF"
+            echo "failing_jobs<<EOF"
+            echo "$failing_jobs"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Ensure ci-red label exists
+        run: |
+          set -u
+          if ! gh api "/repos/${REPO}/labels/ci-red" >/dev/null 2>&1; then
+            gh api -X POST "/repos/${REPO}/labels" \
+              -f name="ci-red" \
+              -f color="d73a4a" \
+              -f description="Automated: a workflow is currently red" >/dev/null 2>&1 || true
+          fi
+
+      - name: Find existing open ci-red issue for this workflow
+        id: issue
+        run: |
+          set -u
+          title="CI Red: ${WF_NAME}"
+          # Find issues matching label + title; take first open.
+          num="$(gh issue list --repo "$REPO" --label ci-red --state open --json number,title \
+            --jq "[.[] | select(.title==\"${title}\")] | first | .number // empty")"
+          echo "number=${num:-}" >> "$GITHUB_OUTPUT"
+          echo "title=${title}" >> "$GITHUB_OUTPUT"
+
+      - name: Detect failure transition (previous run status)
+        id: transition
+        if: ${{ env.WF_STATUS == 'failure' }}
+        run: |
+          set -u
+          # Look up the two most recent completed runs of this workflow on this branch.
+          prev_conclusion="$(gh api \
+            "/repos/${REPO}/actions/workflows/${WF_ID}/runs?branch=${WF_HEAD_BRANCH}&status=completed&per_page=2" \
+            --jq '.workflow_runs[1].conclusion // "none"' 2>/dev/null || echo "none")"
+          # Transition = no prior run, or prior run was success.
+          if [ "$prev_conclusion" = "success" ] || [ "$prev_conclusion" = "none" ]; then
+            transition="true"
+          else
+            transition="false"
+          fi
+          echo "transition=${transition}" >> "$GITHUB_OUTPUT"
+          echo "prev_conclusion=${prev_conclusion}" >> "$GITHUB_OUTPUT"
+
+      - name: Open or comment on ci-red issue (failure path)
+        id: failure_issue
+        if: ${{ env.WF_STATUS == 'failure' }}
+        env:
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.title }}
+          SUBJECT: ${{ steps.ctx.outputs.subject }}
+          FAILING_JOBS: ${{ steps.ctx.outputs.failing_jobs }}
+          TRANSITION: ${{ steps.transition.outputs.transition }}
+          PREV: ${{ steps.transition.outputs.prev_conclusion }}
+        run: |
+          set -u
+          ts="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          if [ "$TRANSITION" = "true" ]; then
+            transition_note="previous run was \`${PREV}\` → push sent"
+          else
+            transition_note="previous run was \`${PREV}\` → ongoing outage, no new push"
+          fi
+          body="$(printf '%s\n' \
+            "**Workflow**: \`${WF_NAME}\`" \
+            "**Branch**: \`${WF_HEAD_BRANCH}\` (event: \`${WF_EVENT}\`)" \
+            "**Commit**: [\`${WF_HEAD_SHA:0:7}\`](https://github.com/${REPO}/commit/${WF_HEAD_SHA}) — ${SUBJECT}" \
+            "**Failing jobs**: ${FAILING_JOBS}" \
+            "**Run**: ${WF_RUN_URL}" \
+            "**When**: ${ts}" \
+            "**Transition**: ${transition_note}")"
+          if [ -z "${ISSUE_NUMBER}" ]; then
+            # No open issue — create one.
+            new_num="$(gh issue create --repo "$REPO" \
+              --title "$ISSUE_TITLE" \
+              --label ci-red \
+              --body "$body" \
+              --json number --jq '.number' 2>/dev/null || true)"
+            # Older gh CLI may not support --json on create; fall back.
+            if [ -z "$new_num" ]; then
+              url="$(gh issue create --repo "$REPO" --title "$ISSUE_TITLE" --label ci-red --body "$body")"
+              new_num="$(basename "$url")"
+            fi
+            echo "issue_number=${new_num}" >> "$GITHUB_OUTPUT"
+          else
+            gh issue comment "$ISSUE_NUMBER" --repo "$REPO" --body "$body" >/dev/null
+            echo "issue_number=${ISSUE_NUMBER}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Route notification (transitions only)
+        id: notify
+        if: ${{ env.WF_STATUS == 'failure' && steps.transition.outputs.transition == 'true' }}
+        env:
+          CI_ALERT_DISCORD_WEBHOOK: ${{ secrets.CI_ALERT_DISCORD_WEBHOOK }}
+          CI_ALERT_NTFY_TOPIC: ${{ secrets.CI_ALERT_NTFY_TOPIC }}
+          PUSHOVER_USER_KEY: ${{ secrets.PUSHOVER_USER_KEY }}
+          PUSHOVER_APP_TOKEN: ${{ secrets.PUSHOVER_APP_TOKEN }}
+          ISSUE_NUMBER: ${{ steps.failure_issue.outputs.issue_number }}
+          SUBJECT: ${{ steps.ctx.outputs.subject }}
+          FAILING_JOBS: ${{ steps.ctx.outputs.failing_jobs }}
+        run: |
+          set -u
+          # Mask any provider-derived values BEFORE use.
+          [ -n "${CI_ALERT_DISCORD_WEBHOOK:-}" ] && echo "::add-mask::${CI_ALERT_DISCORD_WEBHOOK}"
+          [ -n "${CI_ALERT_NTFY_TOPIC:-}" ] && echo "::add-mask::${CI_ALERT_NTFY_TOPIC}"
+          [ -n "${PUSHOVER_USER_KEY:-}" ] && echo "::add-mask::${PUSHOVER_USER_KEY}"
+          [ -n "${PUSHOVER_APP_TOKEN:-}" ] && echo "::add-mask::${PUSHOVER_APP_TOKEN}"
+
+          # Provider precedence (first configured wins):
+          #   1. Discord  — free, rich embeds, default recommendation
+          #   2. ntfy     — free, privacy-friendly, no account
+          #   3. Pushover — paid one-time, purpose-built alerts
+          #   4. (none)   — issue-only mode
+          if [ -n "${CI_ALERT_DISCORD_WEBHOOK:-}" ]; then
+            provider="discord"
+          elif [ -n "${CI_ALERT_NTFY_TOPIC:-}" ]; then
+            provider="ntfy"
+          elif [ -n "${PUSHOVER_USER_KEY:-}" ] && [ -n "${PUSHOVER_APP_TOKEN:-}" ]; then
+            provider="pushover"
+          else
+            provider="none"
+          fi
+          echo "provider=${provider}"
+
+          push_err=""
+          title="CI Red: ${REPO} · ${WF_NAME}"
+          summary="Branch \`${WF_HEAD_BRANCH}\` · ${WF_HEAD_SHA:0:7} · ${SUBJECT}
+          Failing: ${FAILING_JOBS}"
+
+          case "$provider" in
+            discord)
+              payload="$(jq -n \
+                --arg title "$title" \
+                --arg url "$WF_RUN_URL" \
+                --arg repo "$REPO" \
+                --arg wf "$WF_NAME" \
+                --arg branch "$WF_HEAD_BRANCH" \
+                --arg sha "${WF_HEAD_SHA:0:7}" \
+                --arg subject "$SUBJECT" \
+                --arg jobs "$FAILING_JOBS" \
+                '{embeds:[{title:$title,url:$url,color:15158332,fields:[
+                  {name:"Repo",value:$repo,inline:true},
+                  {name:"Workflow",value:$wf,inline:true},
+                  {name:"Branch",value:$branch,inline:true},
+                  {name:"Commit",value:$sha,inline:true},
+                  {name:"Failing jobs",value:$jobs,inline:false},
+                  {name:"Subject",value:$subject,inline:false}
+                ]}]}')"
+              http_code="$(curl -sS -o /tmp/discord.out -w '%{http_code}' \
+                -H 'Content-Type: application/json' \
+                -X POST --data "$payload" \
+                --max-time 15 \
+                "$CI_ALERT_DISCORD_WEBHOOK" || echo "000")"
+              if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+                push_err="discord push failed (HTTP ${http_code})"
+              fi
+              ;;
+            ntfy)
+              http_code="$(curl -sS -o /tmp/ntfy.out -w '%{http_code}' \
+                -H "Title: ${title}" \
+                -H "Priority: high" \
+                -H "Tags: rotating_light,x" \
+                -H "Click: ${WF_RUN_URL}" \
+                --max-time 15 \
+                -d "$summary" \
+                "https://ntfy.sh/${CI_ALERT_NTFY_TOPIC}" || echo "000")"
+              if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+                push_err="ntfy push failed (HTTP ${http_code})"
+              fi
+              ;;
+            pushover)
+              http_code="$(curl -sS -o /tmp/pushover.out -w '%{http_code}' \
+                --max-time 15 \
+                --data-urlencode "token=${PUSHOVER_APP_TOKEN}" \
+                --data-urlencode "user=${PUSHOVER_USER_KEY}" \
+                --data-urlencode "title=${title}" \
+                --data-urlencode "message=${summary}" \
+                --data-urlencode "url=${WF_RUN_URL}" \
+                --data-urlencode "priority=1" \
+                "https://api.pushover.net/1/messages.json" || echo "000")"
+              if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+                push_err="pushover push failed (HTTP ${http_code})"
+              fi
+              ;;
+            none)
+              echo "issue-only mode (no provider secret configured)"
+              ;;
+          esac
+
+          # If push failed, comment on the issue so the failure is visible.
+          if [ -n "$push_err" ] && [ -n "${ISSUE_NUMBER:-}" ]; then
+            gh issue comment "$ISSUE_NUMBER" --repo "$REPO" \
+              --body "⚠️ Notification push failed: ${push_err}. Issue still recorded; configure or rotate provider secret to restore pushes." \
+              >/dev/null || true
+          fi
+          # Never fail this workflow on a push error — the issue is the source of truth.
+          exit 0
+
+      - name: Auto-resolve ci-red issue on green run
+        if: ${{ env.WF_STATUS == 'success' && steps.issue.outputs.number != '' }}
+        env:
+          ISSUE_NUMBER: ${{ steps.issue.outputs.number }}
+        run: |
+          set -u
+          gh issue comment "$ISSUE_NUMBER" --repo "$REPO" \
+            --body "✅ Resolved by [\`${WF_HEAD_SHA:0:7}\`](https://github.com/${REPO}/commit/${WF_HEAD_SHA}) · [run](${WF_RUN_URL})"
+          gh issue close "$ISSUE_NUMBER" --repo "$REPO" --reason completed
