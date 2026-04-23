@@ -25,12 +25,7 @@
     },
     "git": {
       "command": "npx",
-      "args": [
-        "-y",
-        "@modelcontextprotocol/server-git",
-        "--repository",
-        "."
-      ],
+      "args": ["-y", "@modelcontextprotocol/server-git", "--repository", "."],
       "description": "Git repository operations with structured output"
     },
     "ref": {
@@ -44,6 +39,16 @@
         "Requires REF_API_KEY environment variable in .env file",
         "Get API key from https://ref.tools/",
         "Copy .env.example to .env and add your key"
+      ]
+    },
+    "notion": {
+      "url": "https://mcp.notion.com/mcp",
+      "description": "Official Notion remote MCP server — CleanRev Ideas workspace read/write. OAuth via /mcp.",
+      "notes": [
+        "Authenticate with /mcp then follow browser OAuth flow",
+        "No API key required — user-based OAuth only",
+        "Used for CleanRev Ideas intake from Alex and Beth",
+        "Build spec: .claude/state/cleanrev-notion-design.md"
       ]
     }
   },

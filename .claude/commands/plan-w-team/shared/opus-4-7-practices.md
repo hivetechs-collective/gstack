@@ -53,15 +53,16 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 
 ## 5. Effort Levels: Default High, Drop Deliberately
 
-**Rule**: Default effort to `high` (or `xhigh` where the runtime exposes it). Drop to `medium`/`low` only for cost/latency-sensitive narrow tasks.
+**Rule**: Default effort to `high`. `xhigh` is API-only (Messages API `output_config.effort`) and is **not reachable via Claude Code on the Max subscription** — substitute with prompt-level phrasing per §2 ("think very carefully, consider all edge cases"). Drop to `medium`/`low` only for cost/latency-sensitive narrow tasks.
 
-**Why**: 4.7 balances autonomy and intelligence at high effort without token runaway. Low effort on complex work produces shallow output.
+**Why**: 4.7 balances autonomy and intelligence at high effort without token runaway. Low effort on complex work produces shallow output, and on 4.7 the effort calibration is _stricter_ than 4.6 — `low`/`medium` now scope to exactly what was asked, so under-thinking risk on complex tasks is higher than on prior generations.
 
 **How to apply**:
 
-- Brain-tier work (scope challenge, spec, review, evaluator) → `high`.
+- Brain-tier work (scope challenge, spec, review, evaluator) → `high` + "think carefully" prompt phrasing to approximate `xhigh`.
 - Hands-tier mechanical work (sync scripts, changelog bump, retro metrics) → `medium`.
 - One-off triage, log parsing, trivial grep → `low` or Haiku 4.5.
+- If you observe shallow reasoning at `high`, **raise effort (or add "think harder")** — do not try to prompt around it with more scaffolding.
 
 ## 6. Delegate Like an Engineer, Not a Pair
 
@@ -74,18 +75,44 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 - Bad: "Add import on line 5, then call the function on line 42, then update the test on line 100."
 - Good: "Wire the new `X` service into the signup flow. Acceptance: signup creates an `X` record, verified by the existing `signup.test.ts`. Update any tests that break."
 
-## 7. Cross-References
+## 7. Response Length & Tone Calibration
 
-| Lifecycle Stage        | Applied Practices                                  |
-| ---------------------- | -------------------------------------------------- |
-| Step 0 (Scope)         | §2 adaptive thinking (terse mode)                  |
-| Step 1 (Spec)          | §1 front-load, §6 outcome-oriented AC              |
-| Step 3-4 (Execute)     | §3 explicit parallelism, §4 auto mode, §6 delegate |
-| Step 4b (Evaluator)    | §1 front-load criteria, §2 think carefully         |
-| Step 5 (Review)        | §2 deep-think Pass 1, quick Pass 2                 |
-| Step 6-7 (Ship / Docs) | §5 medium effort, Hands tier                       |
+**Rule**: 4.7 calibrates response length to judged task complexity, and produces more direct / less validation-forward prose than 4.6. When you need to steer either dimension, use _positive_ examples (show the desired shape) rather than negative instructions (forbid the undesired shape).
 
-## 8. What Stays the Same from 4.6
+**Why**: 4.7's literalism makes negative instructions brittle — it follows "don't do X" as exactly "don't do X" and may still do X-adjacent. A single positive exemplar ("respond like this: ...") calibrates verbosity and tone in one shot. 4.7 prose is also more direct and less warm by default, which will surface in free-form outputs (retros, ship notes, spec narratives) even when you did not change the prompt.
+
+**How to apply**:
+
+- Tool-call prompts (builder, evaluator): already structured — no action. The machine-fenced verdict block in Step 4b is exactly the positive-exemplar pattern 4.7 wants.
+- Free-form prose prompts (`07-retro.md` narrative, `01-specification.md` overview sections, `06-post-ship.md` changelog): if a prior output voice felt too warm or too long, add one short positive exemplar inline rather than adding "be concise" or "avoid enthusiasm".
+- If a stage prompt currently says "Provide a detailed report with sections X/Y/Z", that already works. Do not strip it — structured scaffolding is still helpful; only _forced verbosity_ ("write at least 500 words") is now a liability.
+
+## 8. Tokenization Awareness (~1x–1.35x tokens on 4.7)
+
+**Rule**: 4.7 uses a new tokenizer that may produce up to ~35% more tokens than 4.6 for the same text. Treat existing context-percentage thresholds as _approximate_ — they were calibrated on 4.6 tokenization.
+
+**Why**: Our compaction triggers (`03-execute.md` "finish merging current batch… before spawning new agents" at >60%, evaluator skip at >60%) were tuned pre-4.7. On 4.7, 60% measured context may represent materially more "real text" than the same percentage did on 4.6. The thresholds remain safe (conservative direction), but planners should not treat them as tight budgets.
+
+**How to apply**:
+
+- Keep the existing 60% thresholds in `03-execute.md` — they are conservative on 4.7, not reckless.
+- When `max_tokens` or output caps are exposed (SDK callers, not Claude Code Max), set them ≥64k when running intelligence-sensitive work. Claude Code on Max does not expose this; no action there.
+- When estimating "will this fit in context" for a long spec or retro, add a ~25% buffer vs. prior mental models.
+- If you observe compaction firing earlier than expected on 4.7, that is tokenization, not a bug. Tighten the trigger to 50% only if it starts causing real loss; do not preemptively tighten.
+
+## 9. Cross-References
+
+| Lifecycle Stage        | Applied Practices                                   |
+| ---------------------- | --------------------------------------------------- |
+| Step 0 (Scope)         | §2 adaptive thinking (terse mode)                   |
+| Step 1 (Spec)          | §1 front-load, §6 outcome-oriented AC, §7 prose     |
+| Step 3-4 (Execute)     | §3 explicit parallelism, §4 auto mode, §6 delegate  |
+| Step 4b (Evaluator)    | §1 front-load criteria, §2 think carefully, §7 form |
+| Step 5 (Review)        | §2 deep-think Pass 1, quick Pass 2                  |
+| Step 6-7 (Ship / Docs) | §5 medium effort, Hands tier, §7 prose calibration  |
+| Any long-context stage | §8 tokenization buffer                              |
+
+## 10. What Stays the Same from 4.6
 
 - Context isolation for evaluator (still critical — 4.7 is not immune to bias from builder reasoning)
 - Worktree isolation for parallel builders (not a model issue, it's a git hygiene issue)
