@@ -85,6 +85,51 @@ After file-touch analysis, check for **new types/interfaces** that one task crea
    ```
    Builders use this to know: `(create)` → Write new file, `(modify)` → Read first, then Edit
 
+## Import-Coupling Check (MANDATORY)
+
+After file-touch and new-type analysis, run the deterministic import-coupling analyzer. This catches structural coupling that the manual file/type review can miss — e.g., task A's file imports a type from a file task B is also editing, or two tasks both depend on a shared utility neither of them owns.
+
+```bash
+SLUG="<feature-slug>"
+# Serialize the current task list (id + files_touched only) to JSON, then pipe.
+# In practice the lead runs:
+#   TaskList → filter to this run's tasks → write to /tmp/tasks-$SLUG.json
+npx tsx .claude/scripts/plan-w-team-import-coupling.ts \
+  --slug "$SLUG" \
+  --tasks-json /tmp/tasks-"$SLUG".json
+```
+
+The analyzer writes its report to `.claude/state/plan-w-team-coupling-$SLUG.json` (registered in `shared/state-artifacts.md`) and prints a human-readable summary. Exit code carries the verdict:
+
+| Exit | Meaning                            | Lead action                                                                                        |
+| ---- | ---------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `0`  | No coupling detected               | Proceed to scope-lock                                                                              |
+| `1`  | Coupling detected, no ack          | Choose a resolution (table below), then EITHER fix the breakdown and re-run, OR write the ack file |
+| `2`  | Coupling detected and acknowledged | Proceed to scope-lock; the ack is recorded                                                         |
+| `3`  | Environment error                  | Fix input/IO and re-run                                                                            |
+
+### Resolution strategies (consume the report's `kind` field)
+
+| Coupling kind                                   | What the report says                           | Strategy                                                                                                                                                                           |
+| ----------------------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `direct` (A imports a file owned by B)          | `evidence[].imports` is in B's `files_touched` | Merge tasks, OR designate one task as `shared_file_owner: true` and add `addBlockedBy` so the dependent task waits for it. Same options as the file-overlap table above.           |
+| `transitive` (A and B both import a third file) | `shared_target` names the third file           | Default: extract a T0 shared-types task that owns `shared_target`, then `addBlockedBy: [T0]` on both A and B. This mirrors §New Type Dependency Detection's "Extract T0" strategy. |
+
+### Acknowledgement escape hatch
+
+If the lead has reviewed the matrix and accepts the coupling (e.g., a small, intentional cross-cut), create an ack file with a one-line justification:
+
+```bash
+echo "intentional: T1 owns canonical type, T2 reads it for read-only consumption" \
+  > .claude/state/plan-w-team-coupling-ack-"$SLUG"
+```
+
+Re-run the analyzer; it returns exit 2. The ack file (registered in `shared/state-artifacts.md` as mode `handoff`) is preserved so Step 5 review and Step 8 retro can audit the decision.
+
+### Why this is enforcing, not advisory
+
+Post-merge type duplication is the single most-cited Stage 2 pain point (this exists section, and the §New Type Dependency Detection block above). The check exists to make the cross-reference deterministic instead of asking the lead to spot it by reading. If the report shows coupling and there is no ack, the scope-lock writer below refuses to proceed.
+
 ## Task Metadata Fields
 
 | Field          | Required | Values                  | Purpose                                   |
@@ -180,11 +225,29 @@ Every intermediate state after merging completed tasks must compile and pass tes
 
 At the end of Step 2, write a scope-lock file. Step 5 (review) and Step 6 (ship) read this file to detect scope creep — any task added after Step 2 that is not in the lock must be flagged.
 
+**Pre-condition (ENFORCING)**: the import-coupling check above must have produced either a clean report (`couplings: []` in `.claude/state/plan-w-team-coupling-$SLUG.json`) or a coupling-ack file (`.claude/state/plan-w-team-coupling-ack-$SLUG`). The scope-lock writer below refuses to proceed otherwise — making the coupling decision a conscious, audited gate rather than a step the lead can forget.
+
 ```bash
 SLUG="<feature-slug>"           # same slug used for the spec file
 SPEC_PATH="docs/specs/${SLUG}.md"
 LOCKED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p .claude/state
+
+# Pre-condition gate: import-coupling check must have run
+COUPLING_REPORT=".claude/state/plan-w-team-coupling-${SLUG}.json"
+COUPLING_ACK=".claude/state/plan-w-team-coupling-ack-${SLUG}"
+if [ ! -f "$COUPLING_REPORT" ]; then
+  echo "✗ scope-lock refused: missing $COUPLING_REPORT"
+  echo "  Run: npx tsx .claude/scripts/plan-w-team-import-coupling.ts --slug $SLUG --tasks-json /tmp/tasks-$SLUG.json"
+  exit 1
+fi
+COUPLING_COUNT=$(grep -c '"kind"' "$COUPLING_REPORT" || true)
+if [ "$COUPLING_COUNT" != "0" ] && [ ! -f "$COUPLING_ACK" ]; then
+  echo "✗ scope-lock refused: $COUPLING_COUNT coupling(s) detected and no ack file"
+  echo "  Either fix the breakdown and re-run the analyzer, OR write a one-line"
+  echo "  justification to: $COUPLING_ACK"
+  exit 1
+fi
 
 # Write the locked task set. Lock includes task IDs, subjects, and scope tags.
 # Heredoc is unquoted so $SLUG / $SPEC_PATH / $LOCKED_AT are expanded by bash.
