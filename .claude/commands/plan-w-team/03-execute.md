@@ -57,6 +57,7 @@ scripts/board.sh comment "<feature-name>" "## Execution Started
   If fast-forward fails (local has diverged), stop and ask the user to resolve before spawning builders. This prevents the stale-base bug where worktrees fork from an old commit.
 - Record the base commit SHA: `BASE_SHA=$(git rev-parse HEAD)`. All worktrees must branch from this exact commit. Log it in the team context so post-merge can verify ancestry.
 - **Verify shared file analysis**: Confirm Step 2's shared file conflict detection was completed. If any task lacks `files_touched` metadata, fill it in now before spawning builders.
+- **Verify import-coupling gate**: Confirm `.claude/state/plan-w-team-coupling-$SLUG.json` exists. If `couplings` is non-empty AND `.claude/state/plan-w-team-coupling-ack-$SLUG` does not exist, refuse to spawn — the lead must either resolve the couplings (merge tasks / designate barrel-owner / extract T0) and re-run the analyzer, or acknowledge them via the ack file. Stage 2 should have caught this; the verification here is the last line of defense before worktrees fork.
 - **Verify acceptance criteria exist** (evaluator pre-flight): Scan the spec for evaluable criteria. Detection order:
   1. Spec has `### Functional Criteria` with real `- [ ] AC` items → evaluator WILL run in Step 4b
   2. Spec has `- [ ] AC` pattern under any `## Acceptance Criteria` heading → evaluator WILL run (backward compat)
