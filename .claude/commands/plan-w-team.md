@@ -326,3 +326,9 @@ All shared files are at `.claude/commands/plan-w-team/shared/`.
 - The self-assessment in Step 8 is a feedback loop — patterns that score below 8 should be investigated and the workflow updated
 - All artifacts are stored under `~/.claude/plan-w-team/projects/<SLUG>/` for cross-session persistence
 - Browser QA requires gstack's browse binary — install once, benefits all projects
+
+## Background Execution (Claude Code 2.1.139+)
+
+`/plan-w-team` is safe to launch as a background session: `claude --bg "/plan-w-team <feature>"`. The per-SLUG workflow lock (acquired in pre-flight) makes parallel runs on different features non-racing. Monitor and peek-reply with `claude agents` — the agent-view dashboard shows live state for every running plan-w-team session across all projects.
+
+When launched via `--bg`, Claude Code's supervisor auto-creates a worktree under `.claude/worktrees/` for the lead session itself. The skill's own builder worktrees (Step 3-4) nest correctly inside; no code changes required. The pre-flight `worktree.baseRef` guard (see `03-execute.md`) still applies and will push the spec to origin before fan-out if the active baseRef is `fresh` (the 2.1.133+ default).

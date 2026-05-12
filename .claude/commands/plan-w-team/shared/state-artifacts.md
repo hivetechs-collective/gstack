@@ -44,6 +44,11 @@ Prevent the "write-only by accident" defect class: artifacts whose writer is wir
 | `.claude/state/plan-w-team-coupling-$SLUG.json`          | `plan-w-team-coupling-\$\{slug\}\.json`                   | `COUPLING_REPORT=`                                        | handoff   | Stage 2 import-coupling matrix (T2 reads, scope-lock gates)     |
 | `.claude/state/plan-w-team-coupling-ack-$SLUG`           | `> "?\.claude/state/plan-w-team-coupling-ack`             | `COUPLING_ACK=`                                           | handoff   | User ack for intentional coupling (escape hatch for scope-lock) |
 
+## Claude Code interactions (2.1.139+)
+
+- **`claude project purge [path]`** removes all `.claude/state/plan-w-team-*` artifacts including in-flight baselines, scope-locks, AC snapshots, and retros. Treat purge mid-feature as equivalent to abandoning the SLUG — the workflow lock dir is removed but the workflow itself cannot detect this. If a user purges mid-run, instruct them to start a new SLUG rather than resume.
+- **`worktree.baseRef` inheritance** — Builder worktrees spawned in Step 3-4 inherit the repo's `worktree.baseRef` setting. Default changed to `"fresh"` in Claude Code 2.1.133, which means builders branch from `origin/<default>` and CANNOT see the lead's local-only spec commit. Step 3-4 has a pre-fan-out guard that detects this and pushes the spec before spawning. If the repo has no remote, set `worktree.baseRef: "head"` in `.claude/settings.json` to restore pre-2.1.133 behavior.
+
 ## When adding a new state artifact
 
 1. Add a row to the table above **in the same commit** as the writer code.

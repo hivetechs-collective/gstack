@@ -56,6 +56,44 @@ scripts/board.sh comment "<feature-name>" "## Execution Started
   ```
   If fast-forward fails (local has diverged), stop and ask the user to resolve before spawning builders. This prevents the stale-base bug where worktrees fork from an old commit.
 - Record the base commit SHA: `BASE_SHA=$(git rev-parse HEAD)`. All worktrees must branch from this exact commit. Log it in the team context so post-merge can verify ancestry.
+- **Verify worktree.baseRef and reach the spec** (Claude Code 2.1.133+ guard): Claude Code's `worktree.baseRef` default flipped to `"fresh"` in v2.1.133. With `fresh`, builder worktrees branch from `origin/<default>` and CANNOT see the lead's local-only spec commit (Step 1) or task metadata commit (Step 2). Without this check, builders spawn into a tree missing the spec they're supposed to implement.
+
+  ```bash
+  # Read the active baseRef. Missing file or missing key → treat as "fresh" (2.1.133+ default).
+  BASE_REF=$(jq -r '.worktree.baseRef // "fresh"' .claude/settings.json 2>/dev/null || echo "fresh")
+  CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+
+  if [ "$BASE_REF" = "fresh" ]; then
+    # Builders will branch from origin/<default>. Ensure the spec/task commits reach origin first.
+    if ! git remote get-url origin >/dev/null 2>&1; then
+      echo "✗ worktree.baseRef=fresh but repo has no 'origin' remote."
+      echo "  Builders will branch from origin/<default> and miss the spec."
+      echo "  Fix: set worktree.baseRef to \"head\" in .claude/settings.json, OR add an origin remote."
+      exit 1
+    fi
+    # Compare local HEAD against origin's tracking branch for this branch.
+    UPSTREAM="origin/${CURRENT_BRANCH}"
+    if ! git rev-parse --verify --quiet "$UPSTREAM" >/dev/null; then
+      echo "ℹ pushing $CURRENT_BRANCH to origin so builder worktrees inherit the spec…"
+      git push -u origin "$CURRENT_BRANCH" || {
+        echo "✗ push failed — set worktree.baseRef to \"head\" in .claude/settings.json to spawn builders from local HEAD instead."
+        exit 1
+      }
+    elif [ "$(git rev-parse HEAD)" != "$(git rev-parse "$UPSTREAM")" ]; then
+      echo "ℹ pushing spec/task commits to $UPSTREAM so builder worktrees see them…"
+      git push origin "HEAD:${CURRENT_BRANCH}" || {
+        echo "✗ push failed — set worktree.baseRef to \"head\" in .claude/settings.json to spawn builders from local HEAD instead."
+        exit 1
+      }
+    fi
+    echo "✓ baseRef=fresh: builders will branch from $UPSTREAM (contains spec)"
+  else
+    echo "✓ baseRef=$BASE_REF: builders inherit local HEAD (pre-2.1.133 behavior)"
+  fi
+  ```
+
+  Why pushing matters: with `baseRef: "fresh"`, the spec at `docs/specs/<slug>.md` only reaches the builder if it's reachable from `origin/<branch>`. The push above makes that explicit so the failure mode is "push failed loudly" rather than "builder hallucinated requirements". For air-gapped repos (no remote, or push-protected branches), set `worktree.baseRef: "head"` in `.claude/settings.json` to restore pre-2.1.133 behavior — builders will branch from local HEAD and see the spec without a push.
+
 - **Verify shared file analysis**: Confirm Step 2's shared file conflict detection was completed. If any task lacks `files_touched` metadata, fill it in now before spawning builders.
 - **Verify import-coupling gate**: Confirm `.claude/state/plan-w-team-coupling-$SLUG.json` exists. If `couplings` is non-empty AND `.claude/state/plan-w-team-coupling-ack-$SLUG` does not exist, refuse to spawn — the lead must either resolve the couplings (merge tasks / designate barrel-owner / extract T0) and re-run the analyzer, or acknowledge them via the ack file. Stage 2 should have caught this; the verification here is the last line of defense before worktrees fork.
 - **Verify acceptance criteria exist** (evaluator pre-flight): Scan the spec for evaluable criteria. Detection order:
