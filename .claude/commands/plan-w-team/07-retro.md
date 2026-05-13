@@ -291,3 +291,39 @@ A self-assessment below 8 is not a vent — it is a signal that the workflow its
 3. **The user can dismiss with `.claude/state/plan-w-team-friction-ack-<category>`** (touch a file with the category name) if the pattern is intentional or already addressed. Dismissals expire after 30 days — chronic friction resurfaces.
 
 This turns "write-only retro prose" into a lightweight feedback loop that updates the workflow without requiring the user to manually cross-reference old retros.
+
+## 8j. Auto-Memory Hints (advisory)
+
+Claude Code 2.1.x ships **Auto Memory** — a per-project memory store at `~/.claude/projects/<project>/memory/` that Claude's memory module manages on its own. The module reads conversation context and decides what's worth persisting. /plan-w-team does **not** write to memory files directly — Claude owns that decision.
+
+What the retro _can_ do is **surface candidate patterns** worth remembering, in the conversation flow that Claude's memory module reads. This sub-step emits 1-2 lines of memory-candidate prose; the module then chooses whether to persist.
+
+### What qualifies as a memory candidate
+
+Pull from §8c quality signals, §8f friction log, §8g evaluator iteration health, and §8i self-assessment notes. The good candidates are **non-obvious, durable, and cross-feature applicable**:
+
+- ✅ A recurring friction mode (e.g., "PostToolUse formatter races with mid-edit reads — Read before re-Edit when the formatter is active") — survives across features.
+- ✅ A surprising heuristic that worked (e.g., "Splitting 5 similar implementations into 2 /plan-w-team runs of 2-3 each beat 1 run of 5 every time") — informs future scope decisions.
+- ✅ A subtle constraint discovered during build (e.g., "Agent tool's `model` parameter only accepts aliases — full IDs go in agent frontmatter") — easy to forget, costly to relearn.
+- ❌ Feature-specific implementation detail (e.g., "the new alerting service uses Redis"). That's in the code and git history.
+- ❌ Routine successes ("build passed, tests green"). Not memorable.
+- ❌ Anything already documented in CLAUDE.md or a shared/ file. Memory is for what isn't already written down.
+
+### Emission format
+
+Append to the retro narrative — a paragraph headed `### Memory candidates`:
+
+```markdown
+### Memory candidates
+
+- **<one-line pattern>** — Why: <reason this pattern emerged>. How to apply: <where this matters next time>.
+- **<one-line pattern>** — Why: <…>. How to apply: <…>.
+```
+
+Two bullets is the cap. If nothing rises above the bar, write `_(none worth memorializing this run)_` and move on. Pattern-fishing produces noise; the memory module rejects noise on its own, but it wastes the surface.
+
+### Why advisory, not prescriptive
+
+The skill cannot reliably know what is or isn't already in memory — the `~/.claude/projects/<project>/memory/MEMORY.md` index is per-user, not per-repo. Even if the skill could read it, deciding what's worth saving is judgment work the memory module is designed for. /plan-w-team's role is to **surface the signal**; the module decides. If the module ignores the hint, no harm done — the friction log (§8i) and BOARD.md (§Board Comment Auto) remain the skill's authoritative retro outputs.
+
+This sub-step adds zero state files and no enforcement gates. It is pure prose appended to the retro section.

@@ -17,6 +17,26 @@ If neither is available, browser QA falls back to code-only review (read CSS/JSX
 
 Available when the Playwright MCP server is connected. No installation needed — it comes with Claude Code's MCP configuration.
 
+### Tool Search: Load Playwright MCP On-Demand
+
+Claude Code 2.1.x ships **Tool Search** — MCP tools are not loaded into the default toolset; they appear as deferred names in `<system-reminder>` blocks and must be fetched via `ToolSearch` before they can be called. This conserves context (the Playwright MCP server alone exposes ~30 tools; loading them eagerly costs ~5k tokens of schema text every turn).
+
+**Builders, evaluators, and reviewers running browser QA in /plan-w-team should defer Playwright MCP loading until the QA step actually needs it.** The pattern:
+
+```
+1. Builder reaches a step that requires browser QA.
+2. ToolSearch query="select:browser_navigate,browser_snapshot,browser_click,browser_fill_form,browser_console_messages,browser_take_screenshot,browser_wait_for"
+   (or keyword search: query="playwright browser" max_results=10)
+3. Schemas now loaded — call browser_navigate / browser_snapshot / etc. as needed.
+4. Subsequent turns in the same session retain the loaded schemas; no re-load needed.
+```
+
+**When NOT to pre-load**: do not call `ToolSearch` in Step 0 (scope), Step 1 (spec), or Step 2 (task breakdown) — these stages don't run browser tools. Pre-loading there wastes the cache window. The right time is the first turn that actually needs `browser_navigate`.
+
+**For full-MCP-toolset projects** (multiple MCP servers connected): always use `ToolSearch` with `select:` form rather than keyword search when you know the exact tool names — it loads only what you ask for. Keyword search returns the top N matches and may pull in adjacent unwanted tools.
+
+Aligns with `shared/opus-4-7-practices.md` §1 (front-load **specification**, not tools) — the spec belongs in the prompt; the tools belong loaded just-in-time.
+
 ### Key Tools
 
 | Tool                       | Purpose                                      |

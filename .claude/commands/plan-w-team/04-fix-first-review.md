@@ -175,6 +175,107 @@ flowchart TD
 
 The diagram is the contract: every diff line that passes `Persist` is provably either auto-fixed, user-acknowledged, or deferred with context. A path that ends anywhere else is a workflow bug.
 
+## 5b-pre. Pass 1 Routing — Single Reviewer vs Hybrid Multi-Agent Fan-Out
+
+Per Anthropic's 2026 Claude Code presentation, the most effective code-review pattern at scale is **multi-phase, multi-agent**: spin up a team of reviewers to look at independent aspects of the diff, then verify findings before reporting. /plan-w-team's Pass 1 was originally single-reviewer; this routing block decides whether this run should fan out instead.
+
+### Trigger Conditions
+
+Enable the hybrid fan-out if **either** of the following is true:
+
+1. **One-way door present**: any task or design decision in this feature is tagged `door_type: "one-way"` (per Step 0 §0d / Step 2 task metadata).
+2. **Explicit opt-in**: the spec frontmatter sets `quality_gate: ultra-review` (see snippet below).
+
+```yaml
+# In docs/specs/<slug>.md frontmatter:
+---
+quality_gate: ultra-review # forces multi-agent Pass 1 even on all-two-way-door features
+---
+```
+
+If neither trigger fires, skip to **§5b (single-reviewer Pass 1)** unchanged — the existing path remains the default for low-risk, all-two-way-door features.
+
+### Fan-Out Roster
+
+Spawn **three parallel reviewers**, each focused on an independent dimension. Use `Agent` calls with `run_in_background: true` and rely on completion notifications (per `shared/opus-4-7-practices.md` §4). Reviewers are **Hands-tier** (`claude-opus-4-6` — pinned via the agent's frontmatter, **not** via the Agent tool's `model` parameter, which only accepts aliases per the rule in `plan-w-team.md` Model Strategy). Reviewers read and report; they do not synthesize. Synthesis is the lead's job.
+
+| Slot | Agent (frontmatter-pinned)             | Focus                                                            | Skip If                                                                      |
+| ---- | -------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 1    | `security-expert`                      | SQL safety, auth, secrets, LLM trust boundaries, OWASP top-10    | Never (always include — security is the highest-cost class to miss)          |
+| 2    | `code-review-expert`                   | Test coverage gaps, complexity, dependency audit, technical debt | Never                                                                        |
+| 3    | **Domain specialist (lead picks one)** | Feature-specific quality (see selection table below)             | Skip if no task has matching scope tag — fall back to fan-out of 2 reviewers |
+
+**Domain specialist selection** (lead chooses based on the feature's scope tags from Step 2):
+
+| If any task has scope tag…              | Pick                                              | Why                                                             |
+| --------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------- |
+| `FRONTEND` (UI repos)                   | `style-theme-expert`                              | Catches AI Slop, design-system drift, accessibility regressions |
+| `DATABASE` / `BACKEND` w/ schema change | `database-expert`                                 | Catches index gaps, denormalization mistakes, migration safety  |
+| `DEVOPS` / `INFRA`                      | `terraform-specialist` or `kubernetes-specialist` | Catches misconfig, drift, blast-radius issues                   |
+| Docs-heavy (>50% of diff is `.md`)      | `documentation-expert`                            | Catches stale cross-refs, broken links, info-architecture drift |
+| API-shape change                        | `api-expert`                                      | Catches breaking changes, REST/GraphQL contract drift           |
+| LLM/AI prompts or tool use              | `llm-application-specialist`                      | Catches prompt-injection, tool-call boundary issues             |
+| (no matching tag)                       | omit slot 3                                       | Fan out 2 reviewers — over-fitting a third would generate noise |
+
+### Spawn Pattern
+
+```
+Agent #1 (security-expert)        — run_in_background: true
+Agent #2 (code-review-expert)     — run_in_background: true
+Agent #3 (domain specialist)      — run_in_background: true   [if applicable]
+```
+
+Each reviewer receives an identical context envelope:
+
+```
+You are reviewing a diff against origin/<base>...HEAD as a <ROLE> specialist.
+Repo: <project-name>
+Spec: docs/specs/<slug>.md   (you may read this for context, but DO NOT trust it for AC — read .claude/state/plan-w-team-ac-snapshot-<slug>.md if you need the frozen AC)
+Diff: see `git diff origin/<base>...HEAD`
+Your remit: <slot-specific focus from the table above>
+What to report:
+  - A list of CRITICAL findings (blocks ship) with file:line refs and a one-sentence justification each
+  - A list of INFORMATIONAL findings (nice to fix, not blocking) — keep this short
+  - Findings OUTSIDE your remit MUST be reported as "out of remit: pass to another reviewer" (the lead synthesizes)
+What NOT to do:
+  - Do not edit files. Do not auto-fix. Read-only review.
+  - Do not duplicate the diff in your response — file:line + one sentence is enough.
+  - Do not score the AC contract — that's the evaluator's job (Step 4b).
+Return format: structured markdown with `## CRITICAL`, `## INFORMATIONAL`, `## Out of Remit` headings.
+```
+
+### Verifier Synthesis (Lead)
+
+When all reviewers return (completion notifications fire — do not poll; per §4 of opus-4-7-practices.md), the lead synthesizes:
+
+1. **Union the CRITICAL findings** across all three reports.
+2. **Dedupe by file:line + issue-class** — if two reviewers flagged the same line, keep one entry with both citations.
+3. **Verifier filter**: for each CRITICAL, ask: _"Is this finding genuinely a blocker, or did the reviewer over-flag?"_ Drop findings where:
+   - The "issue" is actually intended behavior documented in the spec
+   - The line is already covered by an existing test that the reviewer didn't see
+   - The risk is conditional on a code path the diff doesn't introduce
+4. **Promote out-of-remit findings** to the matching reviewer slot for the next pass if substantive — usually they're noise (a security reviewer commenting on style); drop them.
+5. **Persist the synthesized CRITICAL list to** `.claude/state/plan-w-team-pass1-synthesis-$SLUG.md` (so retro can audit the fan-out).
+
+The synthesized CRITICAL list is the input to **§5b (Pass 1 — CRITICAL)** below. The rest of Pass 1 (block-ship gate, ASK loop) runs unchanged on the synthesized list.
+
+### Cost Discipline
+
+Three parallel Hands-tier reviewers consume context. To keep this bounded:
+
+- Reviewers must be told "file:line + one sentence" per finding — verbose review prose is the cost spike.
+- Skip Slot 3 when no matching scope tag exists (table above).
+- For diffs <50 lines, **skip the fan-out entirely** even when triggered — the marginal value is below the agent-spawn overhead. Note this in `.claude/state/plan-w-team-pass1-synthesis-$SLUG.md` as `skipped_reason: small-diff`.
+- Track `pass1_reviewer_tokens` in retro 8e (Parallel Execution Health) — warning threshold: >40k tokens cumulative across reviewers.
+
+### Manual Branch Review Outside /plan-w-team
+
+For ad-hoc reviews of any branch (not driven by /plan-w-team), use the user-facing `/ultra-review` slash command. It is Anthropic's official multi-agent review command and runs an equivalent fan-out without the rest of the lifecycle. /plan-w-team's hybrid Pass 1 is the lifecycle-integrated variant; `/ultra-review` is the standalone variant. Use whichever matches the workflow.
+
+### Rollback
+
+To revert to single-reviewer Pass 1 globally, delete this §5b-pre block. The existing §5b is the fallback path and remains intact. No code outside this file references the fan-out.
+
 ## 5b. Pass 1 — CRITICAL (blockers, must fix before ship)
 
 | Check                      | What to Look For                                                                                                                                                                                                                                                                                                        |

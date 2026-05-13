@@ -12,6 +12,7 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 
 - When spawning a builder, put all constraints in the initial prompt. Don't drip-feed via SendMessage.
 - When writing a spec (Step 1), include the Error & Rescue Map, Shadow Paths, and acceptance criteria in the first draft — these are the constraints 4.7 needs.
+- **Front-load the spec, NOT the tools**: Tool Search (Claude Code 2.1.x) defers MCP tool schemas until needed. Builders and reviewers should call `ToolSearch` to load MCP toolsets just-in-time, not eagerly. See `shared/browser-qa.md` "Tool Search: Load Playwright MCP On-Demand" for the canonical pattern. Loading the full Playwright MCP toolset eagerly costs ~5k tokens of schema text per turn — wasted in stages that don't run browser QA (Step 0, 1, 2).
 
 ## 2. Adaptive Thinking (Don't Fix the Budget)
 
