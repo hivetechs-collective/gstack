@@ -579,3 +579,15 @@ The `Closes #N` keyword creates a bidirectional link:
 - Merging the PR auto-closes the Issue and triggers the board Done workflow
 
 Read `shared/artifact-storage.md` for review log and streak tracking formats.
+
+## End-of-Stage Status Block (PWT-T5)
+
+At the end of this stage, emit a status block for the `/goal` evaluator. This is a one-line invocation; the helper handles all field population (workflow lock, supervisor log, fleet log, escalations).
+
+```bash
+.claude/scripts/plan-w-team-surface-status.sh "$SLUG" "ship"
+```
+
+The stage label `ship` is the second argument — see `shared/goal-conditions.md` §Status-Block Schema for the full label list. `/goal` evaluator reads the emitted block to judge whether the pipeline terminal condition is met.
+
+Skip this block entirely when `PLAN_W_TEAM_DISABLE_GOAL=1` (kill switch) — the helper itself is observability and remains safe to call, but invocation here is optional in that mode.

@@ -50,6 +50,32 @@ If the user does not specify, default to **HOLD**. Ask only if the feature descr
 
 Each step is defined in a separate stage file. **Read the stage file when you reach that step** — do not load all stages upfront.
 
+### Top-of-Pipeline `/goal` Wrapper (PWT-T5)
+
+Before Pre-Flight, open `/goal` with the standard terminal condition so the
+Haiku evaluator can decide when this pipeline run is complete. The user can
+then walk away — `/goal` returns control automatically when the condition
+fires.
+
+**Skip this block when:**
+
+- `PLAN_W_TEAM_DISABLE_GOAL=1` is set (kill switch)
+- The running Claude Code version does not have `/goal` (pre-2.1.139) — the
+  command will not be available; the rest of the pipeline runs unchanged
+
+**Otherwise, invoke `/goal` with the condition from
+`.claude/commands/plan-w-team/shared/goal-conditions.md`** (substitute
+`<SLUG>` with the chosen feature slug). Use the copy-paste template there
+verbatim — never inline an alternate condition here (it must stay
+single-source-of-truth). The condition is ~990 chars; well under `/goal`'s
+4000 char limit.
+
+After `/goal` opens, proceed to Pre-Flight: Board Auto-Setup below. Each
+lead-driven stage emits a `status` block at end-of-stage via
+`.claude/scripts/plan-w-team-surface-status.sh` so the evaluator has signals
+to judge. Step 3-4 is covered by the T4 supervisor's per-turn `summary`
+block (see `shared/supervisor-protocol.md`).
+
 ### Pre-Flight: Board Auto-Setup (MANDATORY)
 
 Before starting any step, **run the preflight script**. This is a single command, not optional:

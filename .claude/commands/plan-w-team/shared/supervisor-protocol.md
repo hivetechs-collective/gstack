@@ -5,8 +5,8 @@ Authoritative reference for the PWT-T4 persistent supervisor agent (`.claude/age
 Spec: `docs/specs/pwt-t4-supervisor.md`
 Agent: `.claude/agents/team/supervisor.md`
 Wrapper: `.claude/scripts/plan-w-team-supervisor-route.sh`
-Feature flag: `PLAN_W_TEAM_SUPERVISOR=1` (default OFF)
-Kill switch: `PLAN_W_TEAM_DISABLE_SUPERVISOR=1` (overrides feature flag)
+Default: ON for parallel-builder runs (no env var needed)
+Kill switch: `PLAN_W_TEAM_DISABLE_SUPERVISOR=1` (reverts to legacy lead-fanout)
 
 ## Overview
 
@@ -134,18 +134,16 @@ For each: emit `escalation` row + `supervisor_stop` row, end turn with escalatio
 - Make hard-gate decisions itself (always escalate)
 - Override router fallback behavior (`-fallback` suffix from parse failures still flows through to user, per existing contract)
 
-## Kill Switch + Feature Flag Contract
+## Kill Switch Contract
 
-| Env var                            | Default     | Effect                                                                                 |
-| ---------------------------------- | ----------- | -------------------------------------------------------------------------------------- |
-| `PLAN_W_TEAM_SUPERVISOR=1`         | unset (OFF) | Enables Pattern C in `03-execute.md`; without this, supervisor is never spawned        |
-| `PLAN_W_TEAM_DISABLE_SUPERVISOR=1` | unset       | Force-OFF override; even if feature flag is on, wrapper exits 2 and lead falls through |
+| Env var                            | Default | Effect                                                                  |
+| ---------------------------------- | ------- | ----------------------------------------------------------------------- |
+| `PLAN_W_TEAM_DISABLE_SUPERVISOR=1` | unset   | Kill switch — wrapper exits 2, lead falls through to legacy Pattern A/B |
 
-The wrapper script (`plan-w-team-supervisor-route.sh`) enforces both at invocation time:
+Supervisor is the default dispatcher for parallel-builder runs — no opt-in env var required. The wrapper script (`plan-w-team-supervisor-route.sh`) enforces only the kill switch:
 
 ```bash
 [ "${PLAN_W_TEAM_DISABLE_SUPERVISOR:-}" = "1" ] && { echo "kill switch set" >&2; exit 2; }
-[ "${PLAN_W_TEAM_SUPERVISOR:-}" = "1" ] || { echo "feature flag off" >&2; exit 2; }
 ```
 
 Exit 2 from the wrapper signals "fall through to Pattern A/B" — `03-execute.md` Pattern C is wrapped in `if .../plan-w-team-supervisor-route.sh "$SLUG"; then ... fi`, so a non-zero exit is the documented fall-through path.
@@ -164,13 +162,13 @@ Exit 2 from the wrapper signals "fall through to Pattern A/B" — `03-execute.md
 
 ## Where This Runs
 
-| Stage                                 | What happens                                                                                                   |
-| ------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `03-execute.md` Pattern C             | Spawns supervisor agent when feature flag on (and wrapper exits 0); falls through to Pattern A/B when flag off |
-| `07-retro.md` §8j-quater              | Reads supervisor-actions log; scores supervisor decision health 1-5; cleans up log on `RETRO_SUCCESS=1`        |
-| `shared/orchestrator-interception.md` | Notes (in §Where This Runs) that supervisor is a caller of `route_orchestrator`, not a replacement             |
-| `shared/state-artifacts.md`           | Registers `plan-w-team-supervisor-actions-$SLUG.jsonl` as mode `handoff`                                       |
-| Future T5 `/goal` wrapper             | Evaluator reads transcript summary blocks each turn to judge progress                                          |
+| Stage                                 | What happens                                                                                                         |
+| ------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `03-execute.md` Pattern C             | Spawns supervisor agent BY DEFAULT for parallel-builder runs; falls through to Pattern A/B only when kill switch set |
+| `07-retro.md` §8j-quater              | Reads supervisor-actions log; scores supervisor decision health 1-5; cleans up log on `RETRO_SUCCESS=1`              |
+| `shared/orchestrator-interception.md` | Notes (in §Where This Runs) that supervisor is a caller of `route_orchestrator`, not a replacement                   |
+| `shared/state-artifacts.md`           | Registers `plan-w-team-supervisor-actions-$SLUG.jsonl` as mode `handoff`                                             |
+| Future T5 `/goal` wrapper             | Evaluator reads transcript summary blocks each turn to judge progress                                                |
 
 ## Adding a New Event Type or Summary Field
 

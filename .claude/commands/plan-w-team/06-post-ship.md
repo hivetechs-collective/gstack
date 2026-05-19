@@ -226,3 +226,15 @@ Do **not** mark Step 7 complete if any of the following are true:
 - The post-ship artifact (§7e) was not written
 
 Each of these is a known leak point: the doc-debt that "we'll get to it" rarely gets gotten to. Catching it at this stage costs minutes; catching it three sprints later costs a re-investigation.
+
+## End-of-Stage Status Block (PWT-T5)
+
+At the end of this stage, emit a status block for the `/goal` evaluator. This is a one-line invocation; the helper handles all field population (workflow lock, supervisor log, fleet log, escalations).
+
+```bash
+.claude/scripts/plan-w-team-surface-status.sh "$SLUG" "post-ship"
+```
+
+The stage label `post-ship` is the second argument — see `shared/goal-conditions.md` §Status-Block Schema for the full label list. `/goal` evaluator reads the emitted block to judge whether the pipeline terminal condition is met.
+
+Skip this block entirely when `PLAN_W_TEAM_DISABLE_GOAL=1` (kill switch) — the helper itself is observability and remains safe to call, but invocation here is optional in that mode.

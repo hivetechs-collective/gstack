@@ -542,6 +542,65 @@ Report in retro: `Supervisor decision health: <SUP_SCORE>/5 (spawns=<N>, delegat
 
 A score <4 feeds friction log with category `supervisor-quality`. Recurring low scores suggest the supervisor's system prompt needs refinement — review the action log to identify whether dispatch logic, delegation discipline, or escalation classification was the issue.
 
+## 8j-quinquies. `/goal` Evaluator Health
+
+When `/plan-w-team` was opened with `/goal` at the top (PWT-T5; default unless `PLAN_W_TEAM_DISABLE_GOAL=1`), score how well the evaluator drove the pipeline to a terminal state. Mirrors §8j-bis / §8j-ter / §8j-quater scoring patterns.
+
+```bash
+SLUG="<feature-slug>"
+
+# /goal is session-scoped — its state is read via the /goal status command
+# or surfaced in the conversation transcript. There is no persistent on-disk
+# log; the retro reads the most recent evaluator outcome from the transcript
+# (cite the terminal-state block emitted by the helper or supervisor).
+#
+# If /goal was disabled (PLAN_W_TEAM_DISABLE_GOAL=1) or unavailable
+# (pre-2.1.139 Claude Code), report n/a.
+
+if [ "${PLAN_W_TEAM_DISABLE_GOAL:-}" = "1" ]; then
+  echo "Score: n/a (PLAN_W_TEAM_DISABLE_GOAL=1 — /goal wrapper skipped)"
+else
+  # Terminal state is one of: SUCCESS, USER_ESCALATION_HALT, LOW_CONFIDENCE_STREAK, TIME_OR_TURN_CAP
+  # The lead surfaces the terminal reason at retro time by quoting /goal's final reason text.
+
+  cat <<EOF
+### /goal Evaluator Health
+
+- Terminal state: <SUCCESS|USER_ESCALATION_HALT|LOW_CONFIDENCE_STREAK|TIME_OR_TURN_CAP|n/a>
+- Turns evaluated: <N>
+- Evaluator reason on terminal turn: <short quote from /goal's "yes" message>
+- Pipeline duration: <wall-clock>
+
+EOF
+
+  # Score: 5 = SUCCESS in <100 turns (clean autonomous run)
+  #        4 = SUCCESS but >100 turns (verbose evaluator dialog)
+  #        3 = USER_ESCALATION_HALT (expected hard-gate; not a failure)
+  #        2 = TIME_OR_TURN_CAP (pipeline ran out of budget without finishing)
+  #        1 = LOW_CONFIDENCE_STREAK (supervisor was confused, evaluator halted)
+  #
+  # The lead sets GOAL_SCORE manually after reading the terminal reason.
+  # Future enhancement: parse /goal's structured output if Anthropic exposes it.
+
+  echo "Score: <GOAL_SCORE>/5"
+
+  if [ "${GOAL_SCORE:-5}" -lt 4 ]; then
+    echo "⚠ /goal evaluator health below threshold — feeding into friction log"
+    # Category: goal-evaluator-quality
+  fi
+fi
+```
+
+Report in retro: `/goal evaluator health: <GOAL_SCORE>/5 (terminal=<state>, turns=<N>)`.
+
+A score <4 feeds friction log with category `goal-evaluator-quality`. Recurring low scores suggest either:
+
+- The terminal condition in `shared/goal-conditions.md` is too strict (false negatives — evaluator never says yes even when pipeline is done)
+- The transcript-surfacing helpers (status block + supervisor summary block) aren't emitting the anchors the condition looks for
+- The pipeline is genuinely stuck (real failures the supervisor should have escalated)
+
+Investigate by reading the most recent supervisor-actions log and the final few `status` / `summary` blocks the helper emitted.
+
 ## 8j. Auto-Memory Hints (advisory)
 
 Claude Code 2.1.x ships **Auto Memory** — a per-project memory store at `~/.claude/projects/<project>/memory/` that Claude's memory module manages on its own. The module reads conversation context and decides what's worth persisting. /plan-w-team does **not** write to memory files directly — Claude owns that decision.
@@ -577,3 +636,15 @@ Two bullets is the cap. If nothing rises above the bar, write `_(none worth memo
 The skill cannot reliably know what is or isn't already in memory — the `~/.claude/projects/<project>/memory/MEMORY.md` index is per-user, not per-repo. Even if the skill could read it, deciding what's worth saving is judgment work the memory module is designed for. /plan-w-team's role is to **surface the signal**; the module decides. If the module ignores the hint, no harm done — the friction log (§8i) and BOARD.md (§Board Comment Auto) remain the skill's authoritative retro outputs.
 
 This sub-step adds zero state files and no enforcement gates. It is pure prose appended to the retro section.
+
+## End-of-Stage Status Block (PWT-T5)
+
+The final action of the retro stage emits the terminal status block — its presence with `stage="retro-complete"` and `workflow_lock="done"` is the SUCCESS anchor the `/goal` evaluator's terminal condition looks for (see `shared/goal-conditions.md` §Terminal-State Reference).
+
+```bash
+.claude/scripts/plan-w-team-surface-status.sh "$SLUG" "retro-complete"
+```
+
+When this block appears in the transcript, `/goal` evaluator's next turn should return "yes" with `SUCCESS` as the terminal state and clear the goal.
+
+Skip this block entirely when `PLAN_W_TEAM_DISABLE_GOAL=1` (kill switch).

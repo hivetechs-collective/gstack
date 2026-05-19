@@ -273,3 +273,15 @@ rm -f "${SNAPSHOT}.body"
 - **Audit trail**: The snapshot is preserved for retro (Step 8). A feature that shipped with `ac_sha256=X` and a post-ship spec with `ac_sha256=Y` means the AC was retroactively rewritten — caught at retro.
 
 If a legitimate mid-flight AC change is needed, re-run Step 1 to refresh the snapshot and note the reason in the spec's "Changelog" section. Do not edit the snapshot file directly — it has no authority if hand-edited.
+
+## End-of-Stage Status Block (PWT-T5)
+
+At the end of this stage, emit a status block for the `/goal` evaluator. This is a one-line invocation; the helper handles all field population (workflow lock, supervisor log, fleet log, escalations).
+
+```bash
+.claude/scripts/plan-w-team-surface-status.sh "$SLUG" "specification"
+```
+
+The stage label `specification` is the second argument — see `shared/goal-conditions.md` §Status-Block Schema for the full label list. `/goal` evaluator reads the emitted block to judge whether the pipeline terminal condition is met.
+
+Skip this block entirely when `PLAN_W_TEAM_DISABLE_GOAL=1` (kill switch) — the helper itself is observability and remains safe to call, but invocation here is optional in that mode.

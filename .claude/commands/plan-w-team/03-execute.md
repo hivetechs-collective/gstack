@@ -311,20 +311,19 @@ spawn was for — the hook cannot populate `task_id` directly (it's in the
 agent's prompt, not the hook payload). Write the intent row BEFORE calling
 `Agent()` so the timestamp ordering is reliable.
 
-**Pattern C — Persistent Supervisor (PLAN_W_TEAM_SUPERVISOR=1, PWT-T4):**
-A single Brain-tier supervisor agent owns dispatch for the whole run.
-Replaces the lead's batch fan-out (Pattern A) and continuous-dispatch loop
-(Pattern B) with one persistent agent that reads fleet state, makes spawn
-decisions, delegates pause-site decisions to `route_orchestrator`, and
-escalates only on the 3 hard-gate sites.
-
-The supervisor is gated by a feature flag and a wrapper script:
+**Pattern C — Persistent Supervisor (DEFAULT, PWT-T4):**
+A single Brain-tier supervisor agent owns dispatch for the whole run. **This
+is the default dispatch path for any parallel-builder run** — Pattern A and
+Pattern B are fallbacks used only when the kill switch is set. The
+supervisor replaces the lead's batch fan-out with one persistent agent that
+reads fleet state, makes spawn decisions, delegates pause-site decisions to
+`route_orchestrator`, and escalates only on the 3 hard-gate sites.
 
 ```bash
 # snippet-lint: skip — illustrative Pattern C dispatch
 if .claude/scripts/plan-w-team-supervisor-route.sh "$SLUG"; then
-    # Wrapper returned 0 → feature flag on + kill switch off + supervisor_start
-    # row written to .claude/state/plan-w-team-supervisor-actions-<slug>.jsonl
+    # Wrapper returned 0 → kill switch NOT set; supervisor_start row written
+    # to .claude/state/plan-w-team-supervisor-actions-<slug>.jsonl
     Agent(
         subagent_type: "supervisor",
         prompt: "You are the persistent supervisor for SLUG=$SLUG.
@@ -351,30 +350,30 @@ if .claude/scripts/plan-w-team-supervisor-route.sh "$SLUG"; then
     # Supervisor returns when all tasks complete OR a hard-gate is hit.
     # On hard-gate return, lead surfaces the escalation block to the user.
 else
-    # Wrapper exit 2 → feature flag off OR kill switch on
+    # Wrapper exit 2 → kill switch set (PLAN_W_TEAM_DISABLE_SUPERVISOR=1)
     # Fall through to Pattern A (self-claiming pool) or Pattern B (continuous
-    # dispatch) — both remain default behavior when supervisor is off.
+    # dispatch). These remain fully functional as fallbacks for incident response.
     : # no-op; existing parallel-builder flow below continues unchanged
 fi
 ```
 
-**When Pattern C is off (default):** zero behavior change. The wrapper exits
-non-zero, the `if` falls through, and the existing parallel-builder flow
-runs as before.
+**Default behavior (no env vars):** supervisor takes over dispatch. Pattern A
+and Pattern B are the fallback dispatch surfaces — still wired up, still
+work, but used only when the kill switch fires.
 
-**When Pattern C is on:** the supervisor is the only spawner. Pattern A and
-Pattern B are bypassed for that run — but the fleet log and intent sidecar
-are STILL written (the supervisor uses both, and T3 hooks fire regardless
-of pattern).
+**Kill switch (`PLAN_W_TEAM_DISABLE_SUPERVISOR=1`):** wrapper exits 2,
+Pattern C falls through, lead does ad-hoc fanout via Pattern A or B. Use
+during incident response when the supervisor is misbehaving. No code
+changes needed to revert.
 
-Kill switch: `PLAN_W_TEAM_DISABLE_SUPERVISOR=1` overrides the feature flag
-(wrapper exits 2 even with `PLAN_W_TEAM_SUPERVISOR=1`). Use during incident
-response. The lead falls through to Pattern A/B without code changes.
+**When Pattern C runs:** the supervisor is the only spawner for that run.
+Fleet log and intent sidecar are STILL written (T3 hooks fire regardless;
+supervisor reads both).
 
-Pattern C is RECOMMENDED for runs where pause-site decisions benefit from
-full-run context (the persistent supervisor remembers earlier decisions
-when ruling on later ones; ephemeral PWT-T1/T2 orchestrators do not). For
-simple feature work, Pattern A or B is fine.
+The supervisor pattern collapses pause-site decisions to one persistent
+agent that holds full-run context — ephemeral PWT-T1/T2 orchestrators see
+each decision in isolation. For single-builder, lead-implements-directly,
+or bug-fix strategies, Pattern C is skipped (no dispatch surface to own).
 
 ### UI-TDD Enforcement (UI repos only)
 

@@ -511,3 +511,15 @@ echo "✓ review findings persisted: $FINDINGS"
 **What goes in the file**: every Pass-1 CRITICAL bullet, every Pass-2 INFORMATIONAL bullet, every AUTO-FIX line (cross-referenced to `plan-w-team-autofix-$SLUG.md`), and every ASK item with the user's decision. Mark each CRITICAL with its resolution: `→ resolved in <commit-sha>` or `→ DEFERRED (user ack: <reason>)`. If any CRITICAL lacks a resolution marker, set `all_critical_resolved: false` in the frontmatter.
 
 **Update on subsequent passes**: re-write the file (not append) at the end of every review iteration so the frontmatter counts stay accurate.
+
+## End-of-Stage Status Block (PWT-T5)
+
+At the end of this stage, emit a status block for the `/goal` evaluator. This is a one-line invocation; the helper handles all field population (workflow lock, supervisor log, fleet log, escalations).
+
+```bash
+.claude/scripts/plan-w-team-surface-status.sh "$SLUG" "review"
+```
+
+The stage label `review` is the second argument — see `shared/goal-conditions.md` §Status-Block Schema for the full label list. `/goal` evaluator reads the emitted block to judge whether the pipeline terminal condition is met.
+
+Skip this block entirely when `PLAN_W_TEAM_DISABLE_GOAL=1` (kill switch) — the helper itself is observability and remains safe to call, but invocation here is optional in that mode.
