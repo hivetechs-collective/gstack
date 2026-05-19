@@ -473,6 +473,75 @@ Report in retro: `Fleet parallelism health: <FLEET_SCORE>/5 (spawned=<N>, max_co
 
 A score <3 suggests batch-fan-out waste. The retro recommendation is Pattern B continuous dispatch (`shared/fleet-manager.md` §Query Subcommand Reference). For lead-implements-directly runs or runs with `PLAN_W_TEAM_FLEET_DISABLE=1`, this section is n/a — no parallelism to measure.
 
+## 8j-quater. Supervisor Decision Health
+
+Read the per-SLUG supervisor-actions JSONL to score how well the persistent supervisor (PWT-T4) performed during this run. Added by PWT-T4 to close the feedback loop between supervisor dispatch decisions and retro assessment. Mirrors §8j-bis (orchestrator) and §8j-ter (fleet) scoring patterns.
+
+```bash
+SLUG="<feature-slug>"
+SUP_LOG=".claude/state/plan-w-team-supervisor-actions-$SLUG.jsonl"
+
+if [ ! -f "$SUP_LOG" ]; then
+  echo "Score: n/a (no supervisor invocation — PLAN_W_TEAM_SUPERVISOR was off or kill switch was on)"
+else
+  SUP_TOTAL=$(wc -l < "$SUP_LOG" | tr -d ' ')
+  SPAWN_DECISIONS=$(grep -c '"event":"spawn_decision"' "$SUP_LOG" 2>/dev/null || echo 0)
+  ROUTE_DELEGATIONS=$(grep -c '"event":"route_delegation"' "$SUP_LOG" 2>/dev/null || echo 0)
+  ESCALATIONS=$(grep -c '"event":"escalation"' "$SUP_LOG" 2>/dev/null || echo 0)
+  LOW_CONFIDENCE_ROUTES=$(jq -r 'select(.event == "route_delegation" and .router_confidence == "low") | .call_site' "$SUP_LOG" 2>/dev/null | wc -l | tr -d ' ')
+
+  STOP_REASON=$(jq -r 'select(.event == "supervisor_stop") | .reason' "$SUP_LOG" 2>/dev/null | tail -1)
+  DURATION_S=$(jq -r 'select(.event == "supervisor_stop") | .duration_s' "$SUP_LOG" 2>/dev/null | tail -1)
+
+  cat <<EOF
+### Supervisor Decision Health
+
+- Total supervisor actions: $SUP_TOTAL
+- Spawn decisions: $SPAWN_DECISIONS
+- Route delegations: $ROUTE_DELEGATIONS
+- Hard-gate escalations: $ESCALATIONS
+- Low-confidence router decisions: $LOW_CONFIDENCE_ROUTES
+- Stop reason: $STOP_REASON
+- Duration: ${DURATION_S}s
+
+EOF
+
+  # Score: 5 = supervisor ran clean (all-tasks-complete stop, no low-confidence routes,
+  #            escalations only on documented hard-gate sites)
+  #        4 = 1-2 low-confidence routes; otherwise clean
+  #        3 = escalation count > 1 (multiple hard-gates hit in one run) OR 3+ low-confidence
+  #        2 = supervisor stopped on error reason
+  #        1 = supervisor effectively non-functional (no spawn_decision rows at all)
+  if [ "$SPAWN_DECISIONS" -eq 0 ]; then
+    SUP_SCORE=1
+  elif [[ "$STOP_REASON" == error:* ]]; then
+    SUP_SCORE=2
+  elif [ "$ESCALATIONS" -gt 1 ] || [ "$LOW_CONFIDENCE_ROUTES" -gt 2 ]; then
+    SUP_SCORE=3
+  elif [ "$LOW_CONFIDENCE_ROUTES" -ge 1 ]; then
+    SUP_SCORE=4
+  else
+    SUP_SCORE=5
+  fi
+
+  echo "Score: $SUP_SCORE/5"
+
+  if [ "$SUP_SCORE" -lt 4 ]; then
+    echo "⚠ Supervisor decision quality below threshold — feeding into friction log"
+    # Category: supervisor-quality
+  fi
+fi
+
+# Cleanup on successful retro (mirrors §8j-ter fleet cleanup)
+if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
+  rm -f "$SUP_LOG"
+fi
+```
+
+Report in retro: `Supervisor decision health: <SUP_SCORE>/5 (spawns=<N>, delegations=<N>, escalations=<N>, stop=<reason>)`.
+
+A score <4 feeds friction log with category `supervisor-quality`. Recurring low scores suggest the supervisor's system prompt needs refinement — review the action log to identify whether dispatch logic, delegation discipline, or escalation classification was the issue.
+
 ## 8j. Auto-Memory Hints (advisory)
 
 Claude Code 2.1.x ships **Auto Memory** — a per-project memory store at `~/.claude/projects/<project>/memory/` that Claude's memory module manages on its own. The module reads conversation context and decides what's worth persisting. /plan-w-team does **not** write to memory files directly — Claude owns that decision.

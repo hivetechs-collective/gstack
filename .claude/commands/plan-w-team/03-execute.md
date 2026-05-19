@@ -311,6 +311,71 @@ spawn was for — the hook cannot populate `task_id` directly (it's in the
 agent's prompt, not the hook payload). Write the intent row BEFORE calling
 `Agent()` so the timestamp ordering is reliable.
 
+**Pattern C — Persistent Supervisor (PLAN_W_TEAM_SUPERVISOR=1, PWT-T4):**
+A single Brain-tier supervisor agent owns dispatch for the whole run.
+Replaces the lead's batch fan-out (Pattern A) and continuous-dispatch loop
+(Pattern B) with one persistent agent that reads fleet state, makes spawn
+decisions, delegates pause-site decisions to `route_orchestrator`, and
+escalates only on the 3 hard-gate sites.
+
+The supervisor is gated by a feature flag and a wrapper script:
+
+```bash
+# snippet-lint: skip — illustrative Pattern C dispatch
+if .claude/scripts/plan-w-team-supervisor-route.sh "$SLUG"; then
+    # Wrapper returned 0 → feature flag on + kill switch off + supervisor_start
+    # row written to .claude/state/plan-w-team-supervisor-actions-<slug>.jsonl
+    Agent(
+        subagent_type: "supervisor",
+        prompt: "You are the persistent supervisor for SLUG=$SLUG.
+
+        Read your instructions at .claude/agents/team/supervisor.md and the
+        action-log + summary-block schemas at
+        .claude/commands/plan-w-team/shared/supervisor-protocol.md.
+
+        Your inputs:
+        - SLUG=$SLUG
+        - Spec: docs/specs/${SLUG}.md
+        - Task graph: TaskList / TaskGet
+        - Fleet log + intent sidecar: .claude/state/plan-w-team-fleet-${SLUG}.jsonl
+          and plan-w-team-fleet-intent-${SLUG}.jsonl
+        - Fleet query: .claude/scripts/plan-w-team-fleet-query.sh
+
+        Dispatch all unblocked tasks. Delegate every classified pause site to
+        .claude/scripts/plan-w-team-orchestrator-route.sh. Escalate to me
+        ONLY on push-ack, secret-scan-allow, or scope-unlock-for-drift.
+
+        End EVERY turn with the fenced \`\`\`summary block from
+        shared/supervisor-protocol.md."
+    )
+    # Supervisor returns when all tasks complete OR a hard-gate is hit.
+    # On hard-gate return, lead surfaces the escalation block to the user.
+else
+    # Wrapper exit 2 → feature flag off OR kill switch on
+    # Fall through to Pattern A (self-claiming pool) or Pattern B (continuous
+    # dispatch) — both remain default behavior when supervisor is off.
+    : # no-op; existing parallel-builder flow below continues unchanged
+fi
+```
+
+**When Pattern C is off (default):** zero behavior change. The wrapper exits
+non-zero, the `if` falls through, and the existing parallel-builder flow
+runs as before.
+
+**When Pattern C is on:** the supervisor is the only spawner. Pattern A and
+Pattern B are bypassed for that run — but the fleet log and intent sidecar
+are STILL written (the supervisor uses both, and T3 hooks fire regardless
+of pattern).
+
+Kill switch: `PLAN_W_TEAM_DISABLE_SUPERVISOR=1` overrides the feature flag
+(wrapper exits 2 even with `PLAN_W_TEAM_SUPERVISOR=1`). Use during incident
+response. The lead falls through to Pattern A/B without code changes.
+
+Pattern C is RECOMMENDED for runs where pause-site decisions benefit from
+full-run context (the persistent supervisor remembers earlier decisions
+when ruling on later ones; ephemeral PWT-T1/T2 orchestrators do not). For
+simple feature work, Pattern A or B is fine.
+
 ### UI-TDD Enforcement (UI repos only)
 
 When `.claude/qa-profile.json` exists AND any task's scope is `FRONTEND` or `TESTS`, every builder prompt MUST include the following directive BEFORE the shared self-regulation pointer:

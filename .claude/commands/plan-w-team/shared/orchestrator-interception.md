@@ -30,22 +30,22 @@ orchestrator misbehavior.
 
 ## Classifier Table
 
-| Call-site label | Verdict | Rationale |
-| --- | --- | --- |
-| `scope-challenge-mode` | `orchestrator` | Mode selection (HOLD/EXPAND/REDUCE) on bounded, reversible scope work |
-| `pass-2-ask` | `orchestrator` | Spec second-pass clarification — orchestrator can resolve from doc context |
-| `version-bump-major-vs-minor` | `orchestrator` | Semver bump choice; deterministic from diff scope |
-| `agent-roster-selection` | `orchestrator` | Choosing which agents to spawn for a task — orchestrator owns roster |
-| `task-breakdown-granularity` | `orchestrator` | Coarse-vs-fine task split is a planning detail |
-| `qa-tier-selection` | `orchestrator` | Light/Standard/Full tier picked from change shape |
-| `evaluator-iterate-vs-escalate` | `orchestrator` | Evaluator-loop continuation; already machine-verdict-driven |
-| `review-autofix-vs-defer` | `orchestrator` | Reviewer applies small fixes vs defers; bounded by autofix scope fence |
-| `ship-readiness-gate` | `orchestrator` | Pre-ship checklist verdict (PASS/HOLD); evidence-driven |
-| `post-ship-docs-target` | `orchestrator` | Which docs to update; derived from changed paths |
-| `retro-friction-categorize` | `orchestrator` | Friction-log category assignment; taxonomy-driven |
-| `push-ack` | `user` | Irreversible push to remote — requires human confirmation |
-| `secret-scan-allow` | `user` | Secret-scan allowlist additions — security-sensitive, audit-required |
-| `scope-unlock-for-drift` | `user` | Mid-flight scope expansion — alters the contract the user signed off on |
+| Call-site label                 | Verdict        | Rationale                                                                  |
+| ------------------------------- | -------------- | -------------------------------------------------------------------------- |
+| `scope-challenge-mode`          | `orchestrator` | Mode selection (HOLD/EXPAND/REDUCE) on bounded, reversible scope work      |
+| `pass-2-ask`                    | `orchestrator` | Spec second-pass clarification — orchestrator can resolve from doc context |
+| `version-bump-major-vs-minor`   | `orchestrator` | Semver bump choice; deterministic from diff scope                          |
+| `agent-roster-selection`        | `orchestrator` | Choosing which agents to spawn for a task — orchestrator owns roster       |
+| `task-breakdown-granularity`    | `orchestrator` | Coarse-vs-fine task split is a planning detail                             |
+| `qa-tier-selection`             | `orchestrator` | Light/Standard/Full tier picked from change shape                          |
+| `evaluator-iterate-vs-escalate` | `orchestrator` | Evaluator-loop continuation; already machine-verdict-driven                |
+| `review-autofix-vs-defer`       | `orchestrator` | Reviewer applies small fixes vs defers; bounded by autofix scope fence     |
+| `ship-readiness-gate`           | `orchestrator` | Pre-ship checklist verdict (PASS/HOLD); evidence-driven                    |
+| `post-ship-docs-target`         | `orchestrator` | Which docs to update; derived from changed paths                           |
+| `retro-friction-categorize`     | `orchestrator` | Friction-log category assignment; taxonomy-driven                          |
+| `push-ack`                      | `user`         | Irreversible push to remote — requires human confirmation                  |
+| `secret-scan-allow`             | `user`         | Secret-scan allowlist additions — security-sensitive, audit-required       |
+| `scope-unlock-for-drift`        | `user`         | Mid-flight scope expansion — alters the contract the user signed off on    |
 
 **Count:** 14 entries (11 orchestrator + 3 user + 0 inline-rule). When adding
 a 15th site, append a row here in the same commit as the router caller.
@@ -145,7 +145,7 @@ do not break.
   - count of low-confidence decisions
   - parse-failure ratio (via `-fallback` call-site suffix)
   - per-site verdict distribution
-  Score <4 feeds `§8i` friction log with category `orchestrator-quality`.
+    Score <4 feeds `§8i` friction log with category `orchestrator-quality`.
 - **Lock:** `.claude/state/plan-w-team-orchestrator-decisions-<slug>.lock`
   (mkdir-based, released via `trap … EXIT`).
 - **Mode:** `handoff` — Step 5 review fails closed if registered without a
@@ -189,3 +189,21 @@ The script is called `route_orchestrator` in prose; on disk it is
   (retrofitted in PWT-T2, 2026-05-18).
 - **Step 5 review** scores the symmetry check that registers this artifact.
 - **Step 8 retro §8j-bis** reads the JSONL for decision-health metrics.
+
+## Relationship to the PWT-T4 Supervisor
+
+When `PLAN_W_TEAM_SUPERVISOR=1` is set, the persistent supervisor agent
+(`.claude/agents/team/supervisor.md`, PWT-T4) is a **caller** of
+`route_orchestrator` — it does NOT replace it. The classifier table above
+remains the single source of truth for pause-site routing.
+
+The supervisor's job at every classified pause site is to invoke this
+router script and log the result (as a `route_delegation` event in its
+own supervisor-actions JSONL). The supervisor reimplements nothing in
+this table; it only adds delegation telemetry and dispatch context.
+
+The 3 user-verdict sites (`push-ack`, `secret-scan-allow`,
+`scope-unlock-for-drift`) remain user-escalated under T4 — the supervisor
+emits an `escalation` event and returns to the lead for user surfacing.
+See `shared/supervisor-protocol.md` for the supervisor's full delegation
+contract.
