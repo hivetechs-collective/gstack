@@ -1,5 +1,18 @@
 # Step 0: Scope Challenge (Pre-Planning Gate)
 
+<!-- PWT-T2 Orchestrator Retrofit (2026-05-18)
+     Pause sites in this file routed via .claude/scripts/plan-w-team-orchestrator-route.sh
+     Classifier: shared/orchestrator-interception.md
+
+     | Call-site label        | Verdict        | Original behavior                    |
+     | ---------------------- | -------------- | ------------------------------------ |
+     | scope-challenge-mode   | orchestrator   | Ambiguity on EXPAND/HOLD/REDUCE      |
+     | qa-tier-selection      | orchestrator   | scaffold/skip prompt for QA profile  |
+
+     Safe-fail: if router unavailable, falls through to AskUserQuestion.
+     Kill switch: PLAN_W_TEAM_DISABLE_ORCHESTRATOR=1
+-->
+
 Before writing a single line of spec, challenge the premise. This step can kill a bad idea before wasting tokens.
 
 ## 0a. Premise Challenge
@@ -66,11 +79,42 @@ If `.claude/qa-profile.json` exists in the target repo, this feature runs agains
 - **`qa_profile`** — read `.claude/qa-profile.json`'s `profile` field (`light` / `standard` / `full`) and surface it as a scope input. Downstream stages enforce the matching tier set from `shared/qa-tiers.md`.
 - **`ui_scope_flag`** — set to `true` whenever the feature's CURRENT→THIS PLAN mapping touches `.tsx`, `.jsx`, `.vue`, `.svelte`, or Angular `@Component` files. Triggers Step 1 UI Tier Profile & Test Plan, Step 2 paired-task protocol, Step 4 UI-TDD builder directive, Step 5 Pass 1 UI checks, and Step 6 Tier Evidence Ledger.
 
-If `.claude/qa-profile.json` is missing on a UI-scope feature, prompt: "UI files detected but `/qa-scaffold` has not been run. Run `/qa-scaffold` first so the tier profile and locator rules are available, or proceed without UI-TDD enforcement? [scaffold/skip]". Default `scaffold` — the friction is intentional.
+If `.claude/qa-profile.json` is missing on a UI-scope feature, route through the orchestrator for a QA tier decision:
+
+```bash
+# snippet-lint: skip — illustrative orchestrator routing
+QA_DECISION=$(route_orchestrator qa-tier-selection "$SLUG" \
+  "ui_files_detected=true" \
+  "qa_profile_missing=true" \
+  "options=scaffold,skip")
+# Default: scaffold (the friction is intentional)
+```
+
+<!-- Original: prompt "UI files detected but /qa-scaffold has not been run.
+     Run /qa-scaffold first... [scaffold/skip]". Default scaffold.
+     Orchestrator decides based on UI file presence + project context.
+     Fall-through: AskUserQuestion with the same prompt if router unavailable. -->
 
 If the repo HAS been scaffolded but has legacy routes without specs, run [`/qa-backfill`](../qa-backfill/README.md) first to generate tier-T1 stubs for every route. This `/plan-w-team` feature can then focus on promoting stubs to real assertions (retag `@stub` → `@backfilled`) rather than rediscovering route structure — Step 2's paired-task protocol consumes the existing `@T1-smoke @stub` skeletons instead of writing parallel specs in a different directory.
 
 For non-UI features (backend, infra, docs) or non-scaffolded repos, skip §0e entirely and proceed to `## Output`. The rest of the /plan-w-team pipeline runs unchanged.
+
+### Scope Mode Resolution
+
+When the scope mode (`EXPAND` / `SELECTIVE-EXPAND` / `HOLD` / `REDUCE`) is ambiguous from the feature description, route through the orchestrator for a sizing decision rather than pausing for user input:
+
+```bash
+# snippet-lint: skip — illustrative orchestrator routing
+SCOPE_MODE=$(route_orchestrator scope-challenge-mode "$SLUG" \
+  "feature_description=$FEATURE_DESC" \
+  "complexity_signals=$COMPLEXITY" \
+  "options=EXPAND,SELECTIVE-EXPAND,HOLD,REDUCE")
+# Default: HOLD (safest when orchestrator cannot decide)
+```
+
+<!-- Original: implicit pause — lead asked user for scope mode when ambiguous.
+     Orchestrator decides based on feature description + complexity signals.
+     Fall-through: AskUserQuestion with the same options if router unavailable. -->
 
 ## Output
 

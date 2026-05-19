@@ -1,5 +1,18 @@
 # Step 5: Fix-First Review
 
+<!-- PWT-T2 Orchestrator Retrofit (2026-05-18)
+     Pause sites in this file routed via .claude/scripts/plan-w-team-orchestrator-route.sh
+     Classifier: shared/orchestrator-interception.md
+
+     | Call-site label           | Verdict      | Original behavior                                |
+     | ------------------------- | ------------ | ------------------------------------------------ |
+     | pass-2-ask                | orchestrator | Pass-2 ASK findings (dead code, design choices)  |
+     | review-autofix-vs-defer   | orchestrator | Auto-fix vs defer classification                 |
+
+     Safe-fail: if router unavailable, falls through to AskUserQuestion.
+     Kill switch: PLAN_W_TEAM_DISABLE_ORCHESTRATOR=1
+-->
+
 **Opus 4.7 tip**: Pass 1 (CRITICAL) benefits from deep adaptive thinking ("think carefully about security implications"). Pass 2 (INFORMATIONAL) benefits from terse thinking ("prioritize responding quickly — just list findings"). See `shared/opus-4-7-practices.md` §2.
 
 After builders complete, worktrees are merged, and the evaluator loop (Step 4b) has run, perform a two-pass review on the full diff.
@@ -71,14 +84,26 @@ else
   LIVE_SPEC_SHA=$(shasum -a 256 "$SPEC" | awk '{print $1}')
 
   if [ "$SNAPSHOT_SPEC_SHA" != "$LIVE_SPEC_SHA" ]; then
-    cat <<EOF
+    # PWT-T2: Route spec-drift assessment through orchestrator.
+    # Orchestrator analyzes the diff between snapshot and live spec to determine
+    # if AC was tightened (OK) vs loosened (RED FLAG requiring user decision).
+    DRIFT_VERDICT=$(route_orchestrator pass-2-ask "$SLUG" \
+      "finding_type=spec-drift" \
+      "snapshot_sha=$SNAPSHOT_SPEC_SHA" \
+      "live_sha=$LIVE_SPEC_SHA" \
+      "options=tightened-OK,loosened-RED,ambiguous-ASK" 2>/dev/null || echo "ambiguous-ASK")
+    if [ "$DRIFT_VERDICT" = "loosened-RED" ] || [ "$DRIFT_VERDICT" = "ambiguous-ASK" ]; then
+      cat <<EOF
 ✗ SPEC DRIFT DETECTED
   Snapshot SHA: $SNAPSHOT_SPEC_SHA
   Live SHA:     $LIVE_SPEC_SHA
   The spec was edited after Step 1. If the edit tightened AC, re-snapshot via Step 1.
   If the edit loosened AC, this is a RED FLAG — present to user as ASK.
 EOF
-    # Flag as ASK item — do not auto-fail; legitimate tightening is possible
+    else
+      echo "✓ spec drift detected but orchestrator assessed as tightened (OK)"
+    fi
+    # Original: Flag as ASK item — do not auto-fail; legitimate tightening is possible
   else
     echo "✓ spec integrity verified"
   fi
@@ -326,9 +351,42 @@ For each Pass 1 UI-TDD hit, §5d auto-fix vs ask logic applies the same way as e
 
 **Missing error handling is ASK-leaning**: Only AUTO-FIX when the fix is mechanically obvious (e.g., wrap an `await` in try/catch with `throw`). Policy changes (logging vs swallowing vs escalating) are ASK.
 
-Auto-fix all AUTO-FIX items. Batch remaining ASK items and present them together.
+Auto-fix all AUTO-FIX items. For remaining ASK items, route each through the orchestrator before falling through to the user:
+
+```bash
+# snippet-lint: skip — illustrative orchestrator routing for Pass 2 ASK items
+for finding in "${ASK_FINDINGS[@]}"; do
+  DECISION=$(route_orchestrator pass-2-ask "$SLUG" \
+    "finding=$finding" \
+    "finding_type=$FINDING_TYPE" \
+    "options=fix,defer,escalate-to-user")
+  # If orchestrator returns "escalate-to-user", batch for user ASK.
+  # Otherwise, apply the orchestrator's decision (fix or defer).
+done
+```
+
+<!-- Original: Batch remaining ASK items and present them together to user.
+     Orchestrator now handles orchestration-class ASK items (dead code assessment,
+     missing error handling policy) autonomously. Only true escalations reach user.
+     Fall-through: AskUserQuestion with the full batch if router unavailable. -->
+
+For any findings the orchestrator escalates (or if the router is unavailable), batch the remaining ASK items and present them to the user together.
 
 ### Auto-fix must run in a separate Hands-tier subagent
+
+When classifying findings as AUTO-FIX vs ASK, the orchestrator can handle the boundary cases:
+
+```bash
+# snippet-lint: skip — illustrative orchestrator routing
+AUTOFIX_DECISION=$(route_orchestrator review-autofix-vs-defer "$SLUG" \
+  "finding=$FINDING" \
+  "finding_category=$CATEGORY" \
+  "options=auto-fix,defer,escalate-to-user")
+```
+
+<!-- Original: Reviewer classified each finding as AUTO-FIX or ASK manually.
+     Orchestrator handles the judgment calls (e.g., is this dead code safe to remove?).
+     Fall-through: reviewer classifies manually if router unavailable. -->
 
 The reviewer (Brain tier) analyzes and classifies. It **does not** perform the auto-fix edits itself. Spawn a Hands-tier subagent (`builder` agent, Opus 4.6) to apply AUTO-FIX items:
 

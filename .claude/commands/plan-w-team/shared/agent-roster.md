@@ -106,7 +106,7 @@ Use `subagent_type` value when spawning builders in Step 3.
 
 | subagent_type  | Domain                                                     | Color  |
 | -------------- | ---------------------------------------------------------- | ------ |
-| `orchestrator` | Multi-agent coordination                                   | blue   |
+| `orchestrator` | Multi-agent coordination (see `shared/orchestrator-interception.md` for in-pipeline routing contract) | blue   |
 | `git-expert`   | Branching, conflict resolution                             | green  |
 | `builder`      | General implementation                                     | red    |
 | `evaluator`    | Quality evaluation against acceptance criteria (read-only) | orange |

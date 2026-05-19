@@ -1,5 +1,17 @@
 # Step 7: Post-Ship Documentation
 
+<!-- PWT-T2 Orchestrator Retrofit (2026-05-18)
+     Pause sites in this file routed via .claude/scripts/plan-w-team-orchestrator-route.sh
+     Classifier: shared/orchestrator-interception.md
+
+     | Call-site label         | Verdict      | Original behavior                              |
+     | ----------------------- | ------------ | ---------------------------------------------- |
+     | post-ship-docs-target   | orchestrator | Substantive doc update, new section, drift ASK  |
+
+     Safe-fail: if router unavailable, falls through to AskUserQuestion.
+     Kill switch: PLAN_W_TEAM_DISABLE_ORCHESTRATOR=1
+-->
+
 After shipping, update documentation to reflect what changed. This stage closes the loop between code (which now reflects new reality) and prose (which by default still describes the old reality).
 
 The stage produces a state artifact `.claude/state/plan-w-team-postship-$SLUG.json` consumed by Step 8 retro §8d. The artifact captures what was audited, what was updated, and what was deliberately deferred — so retro can score documentation hygiene without re-running the audit.
@@ -64,12 +76,28 @@ echo "$AUDIT_CANDIDATES"
 
 | Classification                                          | Action                     | Concrete examples                                                                                                                                            |
 | ------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Mechanical update (paths, command names, config keys)   | Auto-update without asking | Version number bump in 3 places; CLI flag rename `--foo` → `--bar`; config key rename in YAML examples; copy a stable config table that already moved        |
-| Substantive change (architecture description, workflow) | ASK before updating        | New auth flow needs README's "How It Works" rewritten; ARCHITECTURE.md sequence diagram now wrong; CONTRIBUTING needs a new step                             |
-| New section needed                                      | ASK before adding          | Brand-new public API needs its own README section; new env var needs a row in `docs/configuration.md`                                                        |
-| No change required                                      | Skip silently              | Doc references the changed code only by stable identifier (e.g. "the user service") that still resolves; docs in unrelated module unaffected by this feature |
+| Mechanical update (paths, command names, config keys)   | Auto-update without asking         | Version number bump in 3 places; CLI flag rename `--foo` → `--bar`; config key rename in YAML examples; copy a stable config table that already moved        |
+| Substantive change (architecture description, workflow) | Route through orchestrator         | New auth flow needs README's "How It Works" rewritten; ARCHITECTURE.md sequence diagram now wrong; CONTRIBUTING needs a new step                             |
+| New section needed                                      | Route through orchestrator         | Brand-new public API needs its own README section; new env var needs a row in `docs/configuration.md`                                                        |
+| No change required                                      | Skip silently                      | Doc references the changed code only by stable identifier (e.g. "the user service") that still resolves; docs in unrelated module unaffected by this feature |
 
-**Why "mechanical" gets auto-update**: zero risk of meaning shift. A path rename is a path rename. **Why "substantive" gets ASK**: rewording an explanation requires understanding the user's intent for the documentation (tutorial vs reference vs background) — a judgment call the lead should make once per substantive change, not per-doc.
+For substantive changes and new sections, route through the orchestrator instead of pausing for user input:
+
+```bash
+# snippet-lint: skip — illustrative orchestrator routing
+DOC_DECISION=$(route_orchestrator post-ship-docs-target "$SLUG" \
+  "doc_path=$DOC_PATH" \
+  "change_type=$CLASSIFICATION" \
+  "feature_summary=$FEATURE_SUMMARY" \
+  "options=update-tutorial,update-reference,add-section,skip,escalate-to-user")
+```
+
+<!-- Original: "ASK before updating" / "ASK before adding" for substantive and
+     new-section classifications. Orchestrator decides the doc-rewrite intent
+     (tutorial vs reference vs background) autonomously.
+     Fall-through: AskUserQuestion if router unavailable. -->
+
+**Why "mechanical" gets auto-update**: zero risk of meaning shift. A path rename is a path rename. **Why "substantive" was previously ASK**: rewording an explanation requires understanding the user's intent for the documentation (tutorial vs reference vs background). The orchestrator can now make this judgment call from the feature context and changed-file evidence.
 
 ### Worked example: mechanical vs substantive
 
@@ -96,7 +124,22 @@ done | sort -k2 | awk -F'\t' '{
 }'
 ```
 
-Flag every "POSSIBLE DRIFT" entry as ASK. The check has false positives (legitimate divergence between, say, a README quickstart and an ARCHITECTURE deep-dive) but every false positive is cheap to dismiss and every true drift is expensive to leave alone.
+For each "POSSIBLE DRIFT" entry, route through the orchestrator for batch assessment:
+
+```bash
+# snippet-lint: skip — illustrative orchestrator routing for cross-doc drift
+DRIFT_DECISION=$(route_orchestrator post-ship-docs-target "$SLUG" \
+  "finding_type=cross-doc-drift" \
+  "drift_entries=$DRIFT_ENTRIES" \
+  "options=fix-all,fix-selective,escalate-to-user")
+```
+
+<!-- Original: Flag every "POSSIBLE DRIFT" entry as ASK.
+     Orchestrator handles the batch assessment — resolving false positives
+     (legitimate divergence) from true drift autonomously.
+     Fall-through: AskUserQuestion with the drift list if router unavailable. -->
+
+The check has false positives (legitimate divergence between, say, a README quickstart and an ARCHITECTURE deep-dive) but every false positive is cheap to dismiss and every true drift is expensive to leave alone.
 
 ## 7c. TODOS Cleanup
 
@@ -177,7 +220,7 @@ Step 8 retro reads this file in §8d to score "documentation hygiene" without re
 
 Do **not** mark Step 7 complete if any of the following are true:
 
-- A substantive update was identified but the user has not yet been asked
+- A substantive update was identified but neither the orchestrator nor the user has resolved it
 - A `POSSIBLE DRIFT` from §7b is unresolved and not on the deferral list
 - A spec deferred item is missing context-needed-to-resume in TODOS.md
 - The post-ship artifact (§7e) was not written

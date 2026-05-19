@@ -1,5 +1,18 @@
 # Steps 3-4: Choose Strategy & Execute
 
+<!-- PWT-T2 Orchestrator Retrofit (2026-05-18)
+     Pause sites in this file routed via .claude/scripts/plan-w-team-orchestrator-route.sh
+     Classifier: shared/orchestrator-interception.md
+
+     | Call-site label                 | Verdict      | Original behavior                               |
+     | ------------------------------- | ------------ | ----------------------------------------------- |
+     | agent-roster-selection          | orchestrator | Choosing execution strategy + agent assignments  |
+     | evaluator-iterate-vs-escalate   | orchestrator | Evaluator loop continuation decision             |
+
+     Safe-fail: if router unavailable, falls through to AskUserQuestion.
+     Kill switch: PLAN_W_TEAM_DISABLE_ORCHESTRATOR=1
+-->
+
 **Opus 4.7 tips** (read `shared/opus-4-7-practices.md` before spawning):
 
 - §3 **Deliberate subagent spawning**: 4.7 is judicious. When you want parallelism, state "spawn N parallel builders" explicitly — do not assume the lead will fan out.
@@ -42,7 +55,21 @@ scripts/board.sh comment "<feature-name>" "## Execution Started
 
 ### Pre-flight Checks
 
-- Require clean working tree (`git status` must show no uncommitted changes). This ensures builder changes can be cleanly attributed. If dirty, ask user to commit or stash first.
+- Require clean working tree (`git status` must show no uncommitted changes). This ensures builder changes can be cleanly attributed. If dirty, route through the orchestrator for a stash/commit decision rather than blocking:
+
+  ```bash
+  # snippet-lint: skip — illustrative orchestrator routing
+  if [ -n "$(git status --porcelain)" ]; then
+    DIRTY_ACTION=$(route_orchestrator agent-roster-selection "$SLUG" \
+      "dirty_tree=true" \
+      "options=stash,commit,abort")
+    # Orchestrator typically chooses: git stash push -u -m "plan-w-team-auto-stash-$SLUG"
+  fi
+  ```
+
+  <!-- Original: "ask user to commit or stash first". Orchestrator auto-stashes.
+       Fall-through: AskUserQuestion if router unavailable. -->
+
 - **Prune stale worktrees**: Run `git worktree list` and remove any orphaned worktrees from previous runs before spawning new agents. Stale worktrees cause agents to operate on old code.
   ```bash
   git worktree list                    # identify orphans
@@ -231,6 +258,59 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
 14. Verify the final merged state: run full test suite + type check before proceeding to Step 5
 15. TeamDelete to clean up
 
+### Fleet State Integration (optional, PWT-T3)
+
+The `SubagentStart` / `SubagentStop` hooks automatically write spawn and
+complete events to `.claude/state/plan-w-team-fleet-<SLUG>.jsonl` whenever
+this stage spawns subagents (zero lead effort). The reader
+`.claude/scripts/plan-w-team-fleet-query.sh` exposes this telemetry via
+four subcommands — see `shared/fleet-manager.md` for the full schema and
+subcommand reference.
+
+Two ways to use it:
+
+**Pattern A — Self-claiming pool (existing):** No code changes. The hook
+captures spawn/complete events as a side effect. Step 8 retro §8j-ter reads
+the fleet log to compute parallelism efficiency. Use this when the existing
+builder pool pattern is working.
+
+**Pattern B — Continuous dispatch (new, recommended for >3 tasks):**
+Replace the batch fan-out with a fleet-aware loop:
+
+```bash
+# snippet-lint: skip — illustrative continuous dispatch
+while true; do
+    NEXT=$(.claude/scripts/plan-w-team-fleet-query.sh next-spawnable "$SLUG")
+    [ "$(echo "$NEXT" | jq 'length')" = "0" ] && break
+
+    for TASK_ID in $(echo "$NEXT" | jq -r '.[]'); do
+        # Write intent sidecar so retro can join agent_id ↔ task_id
+        printf '{"ts":"%s","task_id":"%s","agent_type":"%s"}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TASK_ID" "$AGENT_TYPE" \
+            >> .claude/state/plan-w-team-fleet-intent-"$SLUG".jsonl
+
+        # Spawn the agent with explicit task assignment in prompt
+        Agent(subagent_type: "$AGENT_TYPE", ...)
+    done
+
+    # When ANY agent completes, re-query immediately — don't wait for the batch
+    # (the SubagentStop hook updates the fleet log; the next loop iteration
+    # picks up newly-unblocked tasks)
+    sleep 5
+done
+```
+
+Pattern B eliminates batch-fan-out waste: when builder-3 finishes 4 min
+before builder-5, the next-spawnable task is launched immediately rather
+than waiting for the whole batch to close. Kill switch:
+`PLAN_W_TEAM_FLEET_DISABLE=1` makes both the hook writer and reader no-op,
+restoring legacy batch behavior without code changes.
+
+The intent sidecar is the lead's authoritative record of which task each
+spawn was for — the hook cannot populate `task_id` directly (it's in the
+agent's prompt, not the hook payload). Write the intent row BEFORE calling
+`Agent()` so the timestamp ordering is reliable.
+
 ### UI-TDD Enforcement (UI repos only)
 
 When `.claude/qa-profile.json` exists AND any task's scope is `FRONTEND` or `TESTS`, every builder prompt MUST include the following directive BEFORE the shared self-regulation pointer:
@@ -397,6 +477,21 @@ while iteration < max_iterations:
         PASS|ITERATE|ESCALATE) ;;
         *) verdict="ESCALATE" ;;
       esac
+    fi
+
+    # PWT-T2: Route evaluator continuation decision through orchestrator
+    # when verdict is ambiguous or ITERATE count is high.
+    if [ "$verdict" = "ITERATE" ] && [ "$iteration" -ge 2 ]; then
+      # At iteration 2+, the iterate-vs-escalate decision benefits from
+      # orchestrator judgment on whether another round is likely to converge.
+      EVAL_DECISION=$(route_orchestrator evaluator-iterate-vs-escalate "$SLUG" \
+        "iteration=$iteration" \
+        "max_iterations=$max_iterations" \
+        "verdict=$verdict" \
+        "failure_count=${#current_failures[@]}" \
+        "options=ITERATE,ESCALATE" 2>/dev/null || echo "")
+      [ "$EVAL_DECISION" = "ESCALATE" ] && verdict="ESCALATE"
+      # Fall-through: if router unavailable, use the evaluator's own verdict.
     fi
 
     case "$verdict" in

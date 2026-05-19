@@ -1,5 +1,20 @@
 # Step 8: Retro (Optional but Recommended)
 
+<!-- PWT-T2 Orchestrator Retrofit (2026-05-18)
+     Pause sites in this file routed via .claude/scripts/plan-w-team-orchestrator-route.sh
+     Classifier: shared/orchestrator-interception.md
+
+     | Call-site label             | Verdict      | Original behavior                           |
+     | --------------------------- | ------------ | ------------------------------------------- |
+     | retro-friction-categorize   | orchestrator | Friction-log category assignment             |
+
+     New section: §8j-bis Orchestrator Decision Health reads the per-SLUG JSONL
+     decision log and scores orchestrator decision quality for the retro.
+
+     Safe-fail: if router unavailable, falls through to AskUserQuestion.
+     Kill switch: PLAN_W_TEAM_DISABLE_ORCHESTRATOR=1
+-->
+
 Quantitative retrospective on the shipped work. Run automatically for features that took >2 hours of builder time, or on demand with `--retro`.
 
 ## Board Comment (Auto)
@@ -278,7 +293,22 @@ A self-assessment below 8 is not a vent — it is a signal that the workflow its
 
    If a stale lock dir blocks retros (e.g. after a killed process), remove it: `rmdir .claude/state/plan-w-team-friction-log.lock`.
 
-   `$FRICTION_CATEGORY` must be one of: `spec-gap|builder-struggle|review-noise|hook-friction|hygiene|other`. Reject any other value before the append — unknown categories defeat the 3-in-30-days pattern detection.
+   `$FRICTION_CATEGORY` must be one of: `spec-gap|builder-struggle|review-noise|hook-friction|hygiene|orchestrator-quality|other`. Reject any other value before the append — unknown categories defeat the 3-in-30-days pattern detection.
+
+   When the friction category is ambiguous, route through the orchestrator for classification:
+
+   ```bash
+   # snippet-lint: skip — illustrative orchestrator routing
+   FRICTION_CATEGORY=$(route_orchestrator retro-friction-categorize "$SLUG" \
+     "friction_note=$FRICTION_NOTE" \
+     "score=$SELF_ASSESSMENT_SCORE" \
+     "options=spec-gap,builder-struggle,review-noise,hook-friction,hygiene,orchestrator-quality,other" \
+     2>/dev/null || echo "other")
+   ```
+
+   <!-- Original: Lead manually chose friction category. Orchestrator classifies
+        based on the friction note content and taxonomy.
+        Fall-through: default to "other" if router unavailable. -->
 
 2. **After 3 entries in the same category** accumulate within 30 days, surface at the next `/plan-w-team` preflight:
 
@@ -291,6 +321,157 @@ A self-assessment below 8 is not a vent — it is a signal that the workflow its
 3. **The user can dismiss with `.claude/state/plan-w-team-friction-ack-<category>`** (touch a file with the category name) if the pattern is intentional or already addressed. Dismissals expire after 30 days — chronic friction resurfaces.
 
 This turns "write-only retro prose" into a lightweight feedback loop that updates the workflow without requiring the user to manually cross-reference old retros.
+
+## 8j-bis. Orchestrator Decision Health
+
+Read the per-SLUG decision JSONL to score how well the orchestrator performed during this run. This section was added by PWT-T2 to close the feedback loop between orchestrator decisions and retro assessment.
+
+```bash
+SLUG="<feature-slug>"
+RETRO_DECISIONS=".claude/state/plan-w-team-orchestrator-decisions-$SLUG.jsonl"
+
+if [ ! -f "$RETRO_DECISIONS" ]; then
+  echo "Score: n/a (no orchestrator decisions — likely pre-upgrade SLUG or PLAN_W_TEAM_DISABLE_ORCHESTRATOR=1)"
+else
+  DECISIONS_TOTAL=$(wc -l < "$RETRO_DECISIONS" | tr -d ' ')
+  DECISIONS_ESCALATED=$(grep -c '"escalate-to-user"' "$RETRO_DECISIONS" 2>/dev/null || echo 0)
+  DECISIONS_FALLBACK=$(grep -c '"-fallback"' "$RETRO_DECISIONS" 2>/dev/null || echo 0)
+  LOW_CONFIDENCE=$(jq -r 'select(.decision.confidence == "low") | .call_site' "$RETRO_DECISIONS" 2>/dev/null | wc -l | tr -d ' ')
+
+  # Per-stage distribution
+  DECISIONS_PER_STAGE=$(jq -r '.call_site' "$RETRO_DECISIONS" 2>/dev/null | sort | uniq -c | sort -rn)
+
+  cat <<EOF
+### Orchestrator Decision Health
+
+- Decisions total: $DECISIONS_TOTAL
+- Decisions escalated to user: $DECISIONS_ESCALATED
+- Parse-failure fallbacks: $DECISIONS_FALLBACK
+- Low-confidence decisions: $LOW_CONFIDENCE
+- Per-stage distribution:
+$(echo "$DECISIONS_PER_STAGE" | sed 's/^/  /')
+
+EOF
+
+  # Score: 5 = all decisions made, no fallbacks, no low-confidence
+  #        4 = 1-2 fallbacks or low-confidence
+  #        3 = 3+ fallbacks or escalations > 30% of total
+  #        2 = majority escalated or fallback
+  #        1 = orchestrator effectively disabled (all fallback)
+  if [ "$DECISIONS_FALLBACK" -eq 0 ] && [ "$LOW_CONFIDENCE" -eq 0 ]; then
+    ORCH_SCORE=5
+  elif [ "$DECISIONS_FALLBACK" -le 2 ] && [ "$LOW_CONFIDENCE" -le 2 ]; then
+    ORCH_SCORE=4
+  elif [ "$DECISIONS_ESCALATED" -gt $((DECISIONS_TOTAL / 3)) ]; then
+    ORCH_SCORE=3
+  elif [ "$DECISIONS_ESCALATED" -gt $((DECISIONS_TOTAL / 2)) ]; then
+    ORCH_SCORE=2
+  else
+    ORCH_SCORE=3
+  fi
+
+  echo "Score: $ORCH_SCORE/5"
+
+  # Feed low scores into friction log
+  if [ "$ORCH_SCORE" -lt 4 ]; then
+    echo "⚠ Orchestrator decision quality below threshold — feeding into friction log"
+    # Category: orchestrator-quality
+  fi
+fi
+```
+
+Report in retro: `Orchestrator decision health: <ORCH_SCORE>/5 (total=<N>, escalated=<N>, fallback=<N>, low-confidence=<N>)`.
+
+A score <4 feeds `§8i` friction log with category `orchestrator-quality`. Recurring low scores suggest the classifier table needs rebalancing — review the per-stage distribution to identify which call sites are producing low-confidence or fallback decisions.
+
+## 8j-ter. Fleet Parallelism Health
+
+Read the per-SLUG fleet log to score how well parallelism was achieved during execution. Added by PWT-T3 to close the feedback loop between Step 3-4 spawn decisions and retro assessment.
+
+```bash
+SLUG="<feature-slug>"
+FLEET_LOG=".claude/state/plan-w-team-fleet-$SLUG.jsonl"
+FLEET_INTENT=".claude/state/plan-w-team-fleet-intent-$SLUG.jsonl"
+
+if [ ! -f "$FLEET_LOG" ]; then
+  echo "Score: n/a (no fleet log — likely lead-implements-directly run or PLAN_W_TEAM_FLEET_DISABLE=1)"
+else
+  SUMMARY=$(.claude/scripts/plan-w-team-fleet-query.sh summary "$SLUG")
+  SPAWNED=$(echo "$SUMMARY" | jq -r '.spawned')
+  COMPLETED=$(echo "$SUMMARY" | jq -r '.completed')
+  FAILED=$(echo "$SUMMARY" | jq -r '.failed')
+  MAX_CONCURRENT=$(echo "$SUMMARY" | jq -r '.max_concurrent')
+
+  # Total wall-clock seconds from first spawn to last complete event
+  FIRST_TS=$(jq -r 'select(.event=="spawn") | .ts' "$FLEET_LOG" | sort | head -1)
+  LAST_TS=$(jq -r 'select(.event=="complete") | .ts' "$FLEET_LOG" | sort | tail -1)
+  if [ -n "$FIRST_TS" ] && [ -n "$LAST_TS" ]; then
+    DURATION_S=$(( $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$LAST_TS" +%s) - $(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$FIRST_TS" +%s) ))
+  else
+    DURATION_S=0
+  fi
+
+  # Parallelism efficiency: max_concurrent / spawned approximates how
+  # batched-vs-streamed the dispatch was. Proper time-weighted ∫concurrent dt
+  # would need a finer-grained calculation; this is the MVP heuristic.
+  if [ "$SPAWNED" -gt 0 ]; then
+    PCT=$(( MAX_CONCURRENT * 100 / SPAWNED ))
+  else
+    PCT=0
+  fi
+
+  cat <<EOF
+### Fleet Parallelism Health
+
+- Agents spawned: $SPAWNED
+- Agents completed: $COMPLETED
+- Errors (hook-detected payload gaps): $FAILED
+- Max concurrent: $MAX_CONCURRENT
+- Wall-clock duration: ${DURATION_S}s
+- Parallelism heuristic: $PCT% (max_concurrent / spawned)
+
+EOF
+
+  # Score: 5 = max_concurrent == spawned (perfect parallel)
+  #        4 = >= 75% parallelism
+  #        3 = 50-74%
+  #        2 = 25-49% (mostly serial)
+  #        1 = <25% (batch-wait heavy)
+  if [ "$PCT" -ge 95 ]; then
+    FLEET_SCORE=5
+  elif [ "$PCT" -ge 75 ]; then
+    FLEET_SCORE=4
+  elif [ "$PCT" -ge 50 ]; then
+    FLEET_SCORE=3
+  elif [ "$PCT" -ge 25 ]; then
+    FLEET_SCORE=2
+  else
+    FLEET_SCORE=1
+  fi
+
+  echo "Score: $FLEET_SCORE/5"
+
+  # Identify tasks that could have spawned earlier (intent-aware analysis,
+  # only available when the lead used Pattern B continuous dispatch in 03-execute)
+  if [ -f "$FLEET_INTENT" ]; then
+    LATE_SPAWNS=$(jq -s '[.[] | select(.event != null)] | length' "$FLEET_INTENT" 2>/dev/null || echo 0)
+    [ "$LATE_SPAWNS" -gt 0 ] && echo "Intent sidecar present: $LATE_SPAWNS dispatched tasks (full timing analysis available)"
+  fi
+
+  if [ "$FLEET_SCORE" -lt 3 ]; then
+    echo "⚠ Parallelism below 50% — consider Pattern B continuous dispatch in 03-execute.md for future runs"
+  fi
+fi
+
+# Cleanup on successful retro completion (mirrors baseline-file cleanup)
+if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
+  rm -f "$FLEET_LOG" "$FLEET_INTENT"
+fi
+```
+
+Report in retro: `Fleet parallelism health: <FLEET_SCORE>/5 (spawned=<N>, max_concurrent=<N>, duration=<N>s)`.
+
+A score <3 suggests batch-fan-out waste. The retro recommendation is Pattern B continuous dispatch (`shared/fleet-manager.md` §Query Subcommand Reference). For lead-implements-directly runs or runs with `PLAN_W_TEAM_FLEET_DISABLE=1`, this section is n/a — no parallelism to measure.
 
 ## 8j. Auto-Memory Hints (advisory)
 

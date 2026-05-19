@@ -1,5 +1,18 @@
 # Step 2: Create Task Breakdown
 
+<!-- PWT-T2 Orchestrator Retrofit (2026-05-18)
+     Pause sites in this file routed via .claude/scripts/plan-w-team-orchestrator-route.sh
+     Classifier: shared/orchestrator-interception.md
+
+     | Call-site label              | Verdict      | Original behavior                           |
+     | ---------------------------- | ------------ | ------------------------------------------- |
+     | task-breakdown-granularity   | orchestrator | Coarse-vs-fine task split decision           |
+     | scope-unlock-for-drift       | user         | Mid-flight scope expansion (kept as user)    |
+
+     Safe-fail: if router unavailable, falls through to AskUserQuestion.
+     Kill switch: PLAN_W_TEAM_DISABLE_ORCHESTRATOR=1
+-->
+
 Using TaskCreate, create tasks with metadata and dependencies:
 
 ```
@@ -21,6 +34,20 @@ TaskCreate({
 Tasks are created **unassigned**. Use TaskUpdate(addBlockedBy) for dependency chains.
 
 Decompose by **feature** (not by file) — each task owns all files for its feature area.
+
+When the optimal task granularity is ambiguous (e.g., should a complex module be one task or three?), route through the orchestrator:
+
+```bash
+# snippet-lint: skip — illustrative orchestrator routing
+GRANULARITY=$(route_orchestrator task-breakdown-granularity "$SLUG" \
+  "module=$MODULE" \
+  "file_count=$FILE_COUNT" \
+  "options=single-task,split-by-layer,split-by-feature")
+```
+
+<!-- Original: implicit pause — lead asked user for task granularity guidance.
+     Orchestrator decides based on complexity signals + file count.
+     Fall-through: AskUserQuestion if router unavailable. -->
 
 ## Specialist Agent Assignment (MANDATORY)
 
@@ -274,3 +301,8 @@ EOF
 - Step 8 retro reads the lock to compute "scope stability" as a retro metric.
 
 The lock is not a straitjacket — users can expand scope during execution by acknowledging the unlock file — but it forces the expansion to be a conscious decision, not silent accretion.
+
+<!-- PWT-T2: scope-unlock-for-drift is classified as `user` in the orchestrator
+     classifier table. This pause site is INTENTIONALLY kept as a user decision
+     because mid-flight scope expansion alters the contract the user signed off on.
+     It is a one-way-door for the feature's scope boundary. -->

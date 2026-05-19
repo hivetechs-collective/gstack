@@ -1,5 +1,21 @@
 # Step 6: Ship
 
+<!-- PWT-T2 Orchestrator Retrofit (2026-05-18)
+     Pause sites in this file routed via .claude/scripts/plan-w-team-orchestrator-route.sh
+     Classifier: shared/orchestrator-interception.md
+
+     | Call-site label               | Verdict      | Original behavior                               |
+     | ----------------------------- | ------------ | ----------------------------------------------- |
+     | ship-readiness-gate           | orchestrator | Scope-tag crossover heuristic ASK                |
+     | version-bump-major-vs-minor   | orchestrator | MINOR/MAJOR version bump decision                |
+     | scope-unlock-for-drift        | user         | Mid-flight scope expansion (kept as user)        |
+     | push-ack                      | user         | Push confirmation gate (kept as user)            |
+     | secret-scan-allow             | user         | Secret scan allowlist (kept as user)             |
+
+     Safe-fail: if router unavailable, falls through to AskUserQuestion.
+     Kill switch: PLAN_W_TEAM_DISABLE_ORCHESTRATOR=1
+-->
+
 After review passes, execute the ship pipeline.
 
 ## 6-0. Ship Gate: Untracked File Classification (MANDATORY)
@@ -191,7 +207,23 @@ EOF
   LOCKED_SCOPES=$(jq -r '.tasks[].scope' "$LOCK" | sort -u)
   # Inspect `git diff --name-only origin/<base>...HEAD` against scope-to-path heuristics
   # (e.g. FRONTEND should not touch src/db/, DATABASE should not touch components/)
-  # Flag any crossover as ASK — do not auto-fail (heuristics have false positives).
+  # PWT-T2: Route scope-tag crossover assessment through orchestrator instead of
+  # pausing for user ASK. Orchestrator evaluates the heuristic flags and decides
+  # whether the crossover is intentional (OK) or suspicious (escalate to user).
+  CROSSOVER_FILES=$(git diff --name-only "$BASE_REF..HEAD" | grep -vE "$(echo "$LOCKED_SCOPES" | tr '\n' '|')" || true)
+  if [ -n "$CROSSOVER_FILES" ]; then
+    CROSSOVER_DECISION=$(route_orchestrator ship-readiness-gate "$SLUG" \
+      "crossover_files=$CROSSOVER_FILES" \
+      "locked_scopes=$LOCKED_SCOPES" \
+      "options=intentional-OK,suspicious-escalate" 2>/dev/null || echo "suspicious-escalate")
+    if [ "$CROSSOVER_DECISION" = "suspicious-escalate" ]; then
+      echo "⚠ Scope-tag crossover detected — escalating to user for confirmation"
+      # Fall through to user ASK for suspicious crossovers
+    else
+      echo "✓ Scope-tag crossover assessed as intentional by orchestrator"
+    fi
+  fi
+  # Original: Flag any crossover as ASK — do not auto-fail (heuristics have false positives).
 fi
 ```
 
@@ -242,6 +274,11 @@ fi
 | Exit 1 on `--staged` only    | Secret is in the final commit's staging area            | `git reset HEAD <file>` + remediate, then re-stage clean content.                                                                         |
 | Exit 1 on `--diff` only      | Secret is in an earlier commit on this branch           | History rewrite required. Run `git filter-repo --replace-text` or rebase to edit the offending commit. Force-push must be explicit.       |
 | Exit 2                       | Scanner itself errored (bad args, internal failure)     | Read stderr. This is a scanner bug or a bad invocation — do NOT bypass by touching the allow file. Fix the scanner invocation and re-run. |
+
+<!-- PWT-T2: secret-scan-allow is classified as `user` in the orchestrator classifier
+     table. This pause site is INTENTIONALLY kept as a user decision because adding
+     entries to the secret-scan allowlist is security-critical and audit-required.
+     The orchestrator cannot make security exemption decisions. -->
 
 ### Override for false positives (documented, rare)
 
@@ -340,12 +377,27 @@ If no coverage floor is declared, this gate is skipped (the star-rating audit ab
 
 ## 6d. Version Bump (if applicable)
 
-| Change Size       | Bump        | Decision     |
-| ----------------- | ----------- | ------------ |
-| <50 lines changed | MICRO/PATCH | Auto-decided |
-| 50+ lines changed | PATCH       | Auto-decided |
-| New feature/API   | MINOR       | Ask user     |
-| Breaking change   | MAJOR       | Ask user     |
+| Change Size       | Bump        | Decision                  |
+| ----------------- | ----------- | ------------------------- |
+| <50 lines changed | MICRO/PATCH | Auto-decided              |
+| 50+ lines changed | PATCH       | Auto-decided              |
+| New feature/API   | MINOR       | Route through orchestrator |
+| Breaking change   | MAJOR       | Route through orchestrator |
+
+For MINOR and MAJOR bumps, route through the orchestrator instead of pausing for user input:
+
+```bash
+# snippet-lint: skip — illustrative orchestrator routing
+VERSION_DECISION=$(route_orchestrator version-bump-major-vs-minor "$SLUG" \
+  "change_size=$LINES_CHANGED" \
+  "has_breaking_change=$HAS_BREAKING" \
+  "has_new_api=$HAS_NEW_API" \
+  "options=PATCH,MINOR,MAJOR")
+```
+
+<!-- Original: MINOR and MAJOR bumps asked the user. Orchestrator decides based
+     on diff classification (breaking changes, new API surface, feature scope).
+     Fall-through: AskUserQuestion if router unavailable. -->
 
 ## 6e. CHANGELOG Generation
 
@@ -415,6 +467,10 @@ For non-UI features on the same repo (e.g., a backend-only PR), omit the ledger 
 ## 6g. Push and Create PR (if on a branch)
 
 ### Ack gate — confirm before pushing
+
+<!-- PWT-T2: push-ack is classified as `user` in the orchestrator classifier table.
+     This pause site is INTENTIONALLY kept as a user decision because git push is
+     an irreversible shared-state action — a true one-way door. -->
 
 `git push` is a shared-state action. Require an explicit acknowledgment file or user confirmation before pushing. This guards against spurious `--ship-only` re-runs pushing partial state.
 
