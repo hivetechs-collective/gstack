@@ -115,7 +115,7 @@ Emitted by `plan-w-team-surface-status.sh` at the end of every lead-driven stage
  "low_confidence_routes":N}
 ````
 
-```
+````
 
 Stage labels in use:
 - `scope-challenge` (after Step 0)
@@ -128,11 +128,70 @@ Stage labels in use:
 
 The supervisor's per-turn summary block (fenced as `summary` not `status`) is documented in `shared/supervisor-protocol.md` §Turn-End Summary Block Contract.
 
+## Feature-Specific Done Criteria (PWT-T5c)
+
+The goal state file optionally carries a `feature_specific_done_criteria` array that extends the SUCCESS terminal condition. Generic anchors alone are insufficient when this array is non-empty — every criterion in it must ALSO appear in the transcript before SUCCESS fires.
+
+### Schema
+
+```jsonc
+{
+  // ... (existing T5b state fields above)
+  "feature_specific_done_criteria": [
+    {
+      "pattern": "AC1.*PASS",
+      "description": "Payment endpoint returns 200 with valid stripe token",
+      "met": false,
+      "met_at": null
+    },
+    {
+      "pattern": "AC2.*PASS",
+      "description": "Secret scan reports 0 findings",
+      "met": false,
+      "met_at": null
+    }
+  ]
+}
+````
+
+| Field         | Type                   | Required | Purpose                                                                                                     |
+| ------------- | ---------------------- | -------- | ----------------------------------------------------------------------------------------------------------- |
+| `pattern`     | string (grep -E regex) | yes      | Pattern matched against transcript via `grep -E`. Default derivation: `AC<N>.*PASS` for AC entries in spec. |
+| `description` | string                 | yes      | Human-readable text from the AC line. Used in block reason when criterion is unmet.                         |
+| `met`         | boolean                | yes      | `false` initially. Hook flips to `true` on first match.                                                     |
+| `met_at`      | ISO8601 string \| null | yes      | Set to current UTC timestamp when `met` flips. Preserved across subsequent invocations (first-match-wins).  |
+
+### Derivation (Step 1 §1.5)
+
+`01-specification.md` §1.5 reads the spec's `## Acceptance Criteria` section and extracts every `AC<N>:` line. For each, it derives a criterion with pattern `AC<N>.*PASS` and the original line's text (after the `AC<N>:` prefix) as description. Template placeholders (e.g., `[Subject] [verb]`) are skipped. The array is then injected into the goal state file via `jq`.
+
+This is mechanical — no LLM judgment needed. The AC contract in the spec IS the source of truth, and Step 5 review / Step 6 ship already emit `AC<N>: PASS` verification lines that match the derived patterns.
+
+### Evaluator semantics (AND-check)
+
+When the generic SUCCESS anchors appear (`stage="retro-complete"` + `workflow_lock="done"` + slug match), the hook iterates the criteria array:
+
+1. For each `met: false` criterion, run `echo "$RECENT" | grep -E "$pattern"`.
+2. On match: persist `{met: true, met_at: <ts>}` atomically (`jq … > tmp && mv tmp`). First match wins — `met_at` is not overwritten on later matches.
+3. On no-match: append `description` to the unmet-list.
+
+If the unmet-list is empty: SUCCESS fires. If not: hook demotes terminal back to empty and blocks the stop with a reason citing the unmet criteria descriptions ("Generic SUCCESS anchors present but feature-specific criteria unmet: …").
+
+### Backward compatibility
+
+A goal state file without `feature_specific_done_criteria` (or with `feature_specific_done_criteria: []`) behaves identically to T5b — generic anchors alone fire SUCCESS. Existing T5b state files continue to work unchanged.
+
+### Failure modes
+
+- **Malformed regex** in a `pattern` → hook skips that criterion, continues with others. The criterion stays unmet forever (manual investigation needed).
+- **Spec has no AC entries** → derivation injects empty array, evaluator falls back to T5b generic-only SUCCESS.
+- **Criterion never matches** (real bug in pipeline or wrong pattern) → eventually hits `TIME_OR_TURN_CAP`; retro surfaces as data signal.
+
 ## Kill Switch Contract
 
-| Env var | Default | Effect |
-| --- | --- | --- |
-| `PLAN_W_TEAM_DISABLE_GOAL=1` | unset | Skip top-of-pipeline `/goal` open entirely; pipeline runs as today (lead-driven turn-by-turn polling) |
+| Env var                      | Default | Effect                                                                                                |
+| ---------------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
+| `PLAN_W_TEAM_DISABLE_GOAL=1` | unset   | Skip top-of-pipeline `/goal` open entirely; pipeline runs as today (lead-driven turn-by-turn polling) |
 
 The kill switch only affects the `/goal` invocation in the skill md. The `plan-w-team-surface-status.sh` helper is unaffected — it remains observability infrastructure (status blocks still appear in the transcript whether or not `/goal` is active).
 
@@ -154,15 +213,15 @@ without an evaluator consumer.
 
 ## Failure Modes
 
-| Failure | Behavior |
-| --- | --- |
-| `/goal` command unavailable (older Claude Code) | Top-of-pipeline section no-ops; pipeline runs as today |
-| Condition string exceeds 4000 chars | Truncate to first 3900 + note truncation in skill comment |
-| Helper crashes during stage execution | Stage echoes minimal inline status block as fallback; evaluator gets degraded signal |
-| Supervisor doesn't emit summary blocks during Step 3-4 | Evaluator falls back to stage-end status blocks only (less granular but functional) |
-| Network failure prevents Haiku evaluator from running | `/goal` retries per Anthropic's internal logic; pipeline continues regardless |
-| Evaluator returns "yes" prematurely (false success) | User reviews final state; can `/goal clear` mid-pipeline if needed |
-| Evaluator never returns "yes" (stuck in "no") | TIME_OR_TURN_CAP terminal state fires after 12h or 200 turns |
+| Failure                                                | Behavior                                                                             |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| `/goal` command unavailable (older Claude Code)        | Top-of-pipeline section no-ops; pipeline runs as today                               |
+| Condition string exceeds 4000 chars                    | Truncate to first 3900 + note truncation in skill comment                            |
+| Helper crashes during stage execution                  | Stage echoes minimal inline status block as fallback; evaluator gets degraded signal |
+| Supervisor doesn't emit summary blocks during Step 3-4 | Evaluator falls back to stage-end status blocks only (less granular but functional)  |
+| Network failure prevents Haiku evaluator from running  | `/goal` retries per Anthropic's internal logic; pipeline continues regardless        |
+| Evaluator returns "yes" prematurely (false success)    | User reviews final state; can `/goal clear` mid-pipeline if needed                   |
+| Evaluator never returns "yes" (stuck in "no")          | TIME_OR_TURN_CAP terminal state fires after 12h or 200 turns                         |
 
 ## Adding a New Terminal State
 
@@ -177,11 +236,14 @@ The condition template is the single source of truth — never inline an alterna
 
 ## Where This Runs
 
-| Stage | What happens |
-| --- | --- |
-| `plan-w-team.md` top-of-pipeline section | Opens `/goal` with condition above (unless `PLAN_W_TEAM_DISABLE_GOAL=1`) |
-| Lead stages 00, 01, 02, 04, 05, 06 | End of stage calls `plan-w-team-surface-status.sh` to emit status block |
-| Step 3-4 (`03-execute.md`) | Supervisor emits summary block per turn (no helper call here — supervisor protocol owns the signal) |
-| Step 8 (`07-retro.md`) | Final stage call emits `stage="retro-complete"` status — the SUCCESS terminal anchor |
-| `07-retro.md` §8j-quinquies | Reads `/goal` terminal state + turn count; scores evaluator health 1-5 |
+| Stage                                    | What happens                                                                                        |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `plan-w-team.md` top-of-pipeline section | Opens `/goal` with condition above (unless `PLAN_W_TEAM_DISABLE_GOAL=1`)                            |
+| Lead stages 00, 01, 02, 04, 05, 06       | End of stage calls `plan-w-team-surface-status.sh` to emit status block                             |
+| Step 3-4 (`03-execute.md`)               | Supervisor emits summary block per turn (no helper call here — supervisor protocol owns the signal) |
+| Step 8 (`07-retro.md`)                   | Final stage call emits `stage="retro-complete"` status — the SUCCESS terminal anchor                |
+| `07-retro.md` §8j-quinquies              | Reads `/goal` terminal state + turn count; scores evaluator health 1-5                              |
+
+```
+
 ```

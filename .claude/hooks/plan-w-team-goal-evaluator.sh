@@ -85,27 +85,75 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     REASON=""
 
     # (1) SUCCESS: status block with stage="retro-complete" AND workflow_lock="done"
+    # PWT-T5b dogfood fix (2026-05-20): also require slug match to prevent
+    # false positives from documentation/example text that mentions the
+    # anchor strings. The status block always includes "slug":"<this-SLUG>".
+    SLUG_ANCHOR="\"slug\":\"${SLUG}\""
     if echo "$RECENT" | grep -F '"stage":"retro-complete"' >/dev/null 2>&1 \
-       && echo "$RECENT" | grep -F '"workflow_lock":"done"' >/dev/null 2>&1; then
+       && echo "$RECENT" | grep -F '"workflow_lock":"done"' >/dev/null 2>&1 \
+       && echo "$RECENT" | grep -F "$SLUG_ANCHOR" >/dev/null 2>&1; then
         TERMINAL="SUCCESS"
-        REASON="retro-complete status block emitted with workflow_lock=done"
+        REASON="retro-complete status block emitted with workflow_lock=done for slug=$SLUG"
+
+        # PWT-T5c: AND-check feature-specific done criteria
+        CRITERIA_LEN=$(jq '.feature_specific_done_criteria // [] | length' "$GOAL_FILE")
+        if [ "$CRITERIA_LEN" -gt 0 ]; then
+            UNMET_DESCRIPTIONS=""
+            NEW_CRITERIA=$(jq -c '.feature_specific_done_criteria' "$GOAL_FILE")
+            for i in $(seq 0 $((CRITERIA_LEN - 1))); do
+                PATTERN=$(echo "$NEW_CRITERIA" | jq -r ".[$i].pattern")
+                ALREADY_MET=$(echo "$NEW_CRITERIA" | jq -r ".[$i].met")
+                if [ "$ALREADY_MET" = "true" ]; then continue; fi
+                # Validate regex compiles by attempting an empty-input grep
+                if ! echo "" | grep -E "$PATTERN" >/dev/null 2>&1; then
+                    : # grep returns 1 on no-match; ok. Real regex failure prints to stderr.
+                fi
+                if echo "$RECENT" | grep -E "$PATTERN" >/dev/null 2>&1; then
+                    NEW_CRITERIA=$(echo "$NEW_CRITERIA" \
+                        | jq --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+                             ".[$i].met = true | .[$i].met_at = \$ts")
+                else
+                    DESC=$(echo "$NEW_CRITERIA" | jq -r ".[$i].description")
+                    UNMET_DESCRIPTIONS="${UNMET_DESCRIPTIONS}${UNMET_DESCRIPTIONS:+; }${DESC}"
+                fi
+            done
+            # Persist updated criteria atomically
+            jq --argjson c "$NEW_CRITERIA" '.feature_specific_done_criteria = $c' "$GOAL_FILE" \
+                > "$GOAL_FILE.tmp" && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
+            if [ -n "$UNMET_DESCRIPTIONS" ]; then
+                TERMINAL=""
+                REASON=""
+                # Will be picked up by the BLOCK_REASON branch below
+                CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but feature-specific criteria unmet: ${UNMET_DESCRIPTIONS}. Continue pipeline until each criterion appears in transcript (typically as 'AC<N>: PASS' lines emitted by Step 5 review and Step 6 ship)."
+            fi
+        fi
     fi
 
     # (2) USER_ESCALATION_HALT: pending_escalations contains a hard-gate label
+    # Slug-match defense: the status/summary block including the escalation MUST
+    # carry "slug":"<SLUG>" within the same ~10 lines, otherwise the match is
+    # likely from documentation text mentioning the site name.
     if [ -z "$TERMINAL" ]; then
         for SITE in push-ack secret-scan-allow scope-unlock-for-drift; do
-            if echo "$RECENT" | grep -E "\"pending_escalations\":\[[^]]*\"$SITE\"" >/dev/null 2>&1; then
+            # grep -B/-A scope: any pending_escalations line referencing $SITE
+            # must have $SLUG within 10 lines (status block size).
+            if echo "$RECENT" | grep -B5 -A5 -E "\"pending_escalations\":\[[^]]*\"$SITE\"" \
+                | grep -F "\"slug\":\"$SLUG\"" >/dev/null 2>&1; then
                 TERMINAL="USER_ESCALATION_HALT"
-                REASON="hard-gate site '$SITE' in pending_escalations — user must respond"
+                REASON="hard-gate site '$SITE' in pending_escalations for slug=$SLUG — user must respond"
                 break
             fi
         done
     fi
 
     # (3) LOW_CONFIDENCE_STREAK: status block reports low_confidence_routes >= 3
+    # Slug-match defense: extract low_confidence_routes values only from
+    # transcript regions where this slug appears within ±5 lines.
     if [ -z "$TERMINAL" ]; then
-        MAX_LOW=$(echo "$RECENT" | grep -oE '"low_confidence_routes":[0-9]+' \
-                  | grep -oE '[0-9]+$' | sort -n | tail -1)
+        MAX_LOW=$(echo "$RECENT" \
+            | grep -B5 -A5 -F "\"slug\":\"$SLUG\"" \
+            | grep -oE '"low_confidence_routes":[0-9]+' \
+            | grep -oE '[0-9]+$' | sort -n | tail -1)
         if [ -n "$MAX_LOW" ] && [ "$MAX_LOW" -ge 3 ]; then
             TERMINAL="LOW_CONFIDENCE_STREAK"
             REASON="low_confidence_routes=$MAX_LOW (≥3 — supervisor confidence threshold breached)"
@@ -144,12 +192,20 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         echo "[goal-evaluator] SLUG=$SLUG terminal=$TERMINAL reason=$REASON" >&2
     else
         # Build a block reason combining condition status
-        BLOCK_REASON="/plan-w-team SLUG=$SLUG not yet terminal (turn $((TURNS + 1))/$TURN_CAP). Continue pipeline. Need ONE of: status block with stage=retro-complete + workflow_lock=done; pending_escalations containing a hard-gate site (push-ack/secret-scan-allow/scope-unlock-for-drift); low_confidence_routes>=3."
+        # PWT-T5c: prefer the specific criteria-unmet reason when it exists
+        if [ -n "${CRITERIA_BLOCK_REASON:-}" ]; then
+            BLOCK_REASON="$CRITERIA_BLOCK_REASON"
+        else
+            BLOCK_REASON="/plan-w-team SLUG=$SLUG not yet terminal (turn $((TURNS + 1))/$TURN_CAP). Continue pipeline. Need ONE of: status block with stage=retro-complete + workflow_lock=done; pending_escalations containing a hard-gate site (push-ack/secret-scan-allow/scope-unlock-for-drift); low_confidence_routes>=3."
+        fi
     fi
 done
 
-# Allow stop if any goal hit terminal OR none are still pending
-if [ "$ANY_TERMINAL" = "true" ] || [ -z "$BLOCK_REASON" ]; then
+# Allow stop only if no pending blocks remain.
+# (Previously: "if ANY_TERMINAL || no_block" — wrong. One goal going terminal
+# must NOT suppress block emission for other still-pending goals. PWT-T5c
+# dogfood fix: multi-goal isolation.)
+if [ -z "$BLOCK_REASON" ]; then
     exit 0
 fi
 

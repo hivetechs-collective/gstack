@@ -274,6 +274,48 @@ rm -f "${SNAPSHOT}.body"
 
 If a legitimate mid-flight AC change is needed, re-run Step 1 to refresh the snapshot and note the reason in the spec's "Changelog" section. Do not edit the snapshot file directly — it has no authority if hand-edited.
 
+## §1.5. Derive Feature-Specific Done Criteria (PWT-T5c)
+
+After the AC snapshot, derive feature-specific grep patterns from the spec's Acceptance Criteria entries and inject them into the goal state file. This makes the `/goal` evaluator's SUCCESS condition require BOTH the generic terminal anchors AND every feature-specific criterion to appear in the transcript before allowing stop.
+
+The derivation is MECHANICAL: every `AC<N>:` entry in the spec's Acceptance Criteria section becomes one criterion with pattern `AC<N>.*PASS`. The pattern matches the verification lines that Step 5 review and Step 6 ship already emit per AC.
+
+```bash
+SLUG="<feature-slug>"
+SPEC="docs/specs/${SLUG}.md"
+GOAL_FILE=".claude/state/plan-w-team-goal-${SLUG}.json"
+
+# Skip if /goal disabled or state file absent (top-of-pipeline activation skipped)
+if [ "${PLAN_W_TEAM_DISABLE_GOAL:-}" = "1" ] || [ ! -f "$GOAL_FILE" ]; then
+    echo "[§1.5] /goal disabled or state file missing — skipping criteria derivation"
+else
+    CRITERIA_JSON='[]'
+    while IFS= read -r line; do
+        n=$(echo "$line" | grep -oE 'AC[0-9]+' | head -1 | grep -oE '[0-9]+')
+        [ -z "$n" ] && continue
+        desc=$(echo "$line" | sed -E "s/.*AC${n}:[[:space:]]*//" | head -c 200)
+        [[ "$desc" == *"[Subject]"* ]] && continue
+        CRITERIA_JSON=$(echo "$CRITERIA_JSON" | jq --arg p "AC${n}.*PASS" --arg d "$desc" \
+            '. + [{pattern: $p, description: $d, met: false, met_at: null}]')
+    done < <(awk '/^## Acceptance Criteria/,/^## [^A]/' "$SPEC" | grep -E '^\s*-?\s*\[?\s*\]?\s*AC[0-9]+:')
+
+    CRITERIA_COUNT=$(echo "$CRITERIA_JSON" | jq 'length')
+    if [ "$CRITERIA_COUNT" -gt 0 ]; then
+        jq --argjson c "$CRITERIA_JSON" '.feature_specific_done_criteria = $c' \
+            "$GOAL_FILE" > "$GOAL_FILE.tmp" && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
+        echo "[§1.5] injected $CRITERIA_COUNT feature-specific done criteria into goal state"
+    else
+        echo "[§1.5] no AC entries found in spec — goal evaluator uses generic anchors only (T5b behavior)"
+    fi
+fi
+```
+
+**What this enforces**: The `/goal` evaluator's SUCCESS terminal state now requires both generic anchors (`stage="retro-complete"` + `workflow_lock="done"` + `slug` match) AND every `feature_specific_done_criteria` pattern present in the transcript. Each criterion is marked `met: true` + `met_at: <ts>` the first turn its pattern is found. If generic anchors arrive but some criteria are unmet, the hook blocks the stop with a reason citing the specific unmet criteria descriptions — keeping the pipeline running until every AC is verified in transcript.
+
+**Backward compatibility**: If the spec has no AC entries (e.g., docs-only feature) or `PLAN_W_TEAM_DISABLE_GOAL=1`, the criteria array stays empty and the evaluator behaves identically to T5b (generic anchors alone are SUCCESS).
+
+**Schema reference**: `shared/goal-conditions.md` documents the `feature_specific_done_criteria` array field and the AND-check semantics.
+
 ## End-of-Stage Status Block (PWT-T5)
 
 At the end of this stage, emit a status block for the `/goal` evaluator. This is a one-line invocation; the helper handles all field population (workflow lock, supervisor log, fleet log, escalations).

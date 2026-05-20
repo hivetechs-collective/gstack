@@ -80,6 +80,8 @@ EOF
 
 That's it. The hook activates automatically on the next Claude turn. The condition (4 terminal states) is implemented in the hook — see `shared/goal-conditions.md` for the anchor patterns the evaluator looks for and how each lead stage / supervisor turn contributes signals.
 
+**Feature-specific criteria (PWT-T5c):** Step 1 §1.5 (after the AC snapshot) injects `feature_specific_done_criteria` derived from the spec's `AC<N>:` entries into the goal state file. The hook then AND-checks the generic SUCCESS anchors with every feature criterion — SUCCESS fires only when both are satisfied in the transcript. This makes the "definition of done" feature-specific rather than generic. No action needed here at top-of-pipeline; Step 1 handles the injection.
+
 **Block-cap consideration:** Claude Code defaults the Stop-hook block cap to 8 consecutive blocks. A full `/plan-w-team` run can exceed that. Set `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=200` in your shell environment (e.g., `~/.zshrc`) before invoking `/plan-w-team` so the hook can block through a complete pipeline run without being overridden. This is a one-time shell config, not a per-invocation step.
 
 After the state file is written, proceed to Pre-Flight: Board Auto-Setup below. Each lead-driven stage emits a `status` block at end-of-stage via `.claude/scripts/plan-w-team-surface-status.sh`; the supervisor emits a `summary` block per turn during Step 3-4 (see `shared/supervisor-protocol.md`). The evaluator hook grep-matches both block types.
