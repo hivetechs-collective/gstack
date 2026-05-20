@@ -10,6 +10,56 @@ Kill switch: `PLAN_W_TEAM_DISABLE_GOAL=1` — hook exits 0 without evaluation
 Companion: `shared/supervisor-protocol.md` (supervisor's per-turn summary block — second evaluator sensor)
 Anthropic docs (for context — we no longer use `/goal`): https://code.claude.com/docs/en/goal
 
+## Quick-start: `pwt-goal` helper (for `/goal`-driven autonomous runs)
+
+When you want to start an autonomous run that uses Anthropic's `/goal` command as the outer autonomy loop with `/plan-w-team` as the executor — the pattern you'd actually use for multi-hour or multi-day unattended runs — derive the `/goal` directive from natural language with:
+
+```bash
+.claude/scripts/pwt-goal.sh "ship payment API with stripe webhook handling"
+```
+
+The script prints a properly-formatted `/goal` command to stdout. Copy and paste it at the start of a fresh `claude` session, or use `--launch` to invoke `claude -p` directly:
+
+```bash
+.claude/scripts/pwt-goal.sh --launch "ship payment API with stripe webhook handling"
+```
+
+The derived `/goal` command embeds:
+
+- Instruction to use `/plan-w-team` to accomplish the request
+- Definition-of-done anchors (transcript markers Anthropic's Haiku evaluator looks for to decide SUCCESS)
+- Hard-gate escalation triggers (push-ack, secret-scan-allow, scope-unlock-for-drift, low-confidence streak)
+- Wall-clock + turn caps
+
+Template variants for different work types (`--type feature` is default):
+
+```bash
+.claude/scripts/pwt-goal.sh --type refactor "extract auth middleware"
+.claude/scripts/pwt-goal.sh --type bugfix "fix login redirect on safari"
+.claude/scripts/pwt-goal.sh --type docs "update README architecture diagram"
+```
+
+Interactive mode prompts for additional DoD criteria beyond the defaults:
+
+```bash
+.claude/scripts/pwt-goal.sh -i "ship payment API"
+# Enter additional done criteria, one per line. Empty line to finish:
+# > stripe webhook signature verification has unit test
+# > rate limiting middleware applied to /api/charges
+# > <enter>
+```
+
+### Two evaluators, two purposes
+
+When you start a session with `/goal` and the goal directive invokes `/plan-w-team`, **two Stop hooks fire after every Claude turn**:
+
+1. **Anthropic's `/goal` Haiku evaluator** — judges your custom condition (with semantic understanding via Haiku)
+2. **Our self-hosted goal evaluator** (PWT-T5b/c, this doc) — deterministically checks the 4 terminal anchors + feature-specific criteria injected by Step 1 §1.5
+
+Both blocking = Claude continues. Either allowing alone is not enough; both must allow for Claude to stop. This is belt + braces: Anthropic's evaluator handles the freeform "is the user's intent satisfied" question; ours handles "did the structured pipeline reach its terminal state with all ACs verified."
+
+For interactive sessions where you ask the agent to run `/plan-w-team` (no `/goal` outer loop), only our hook fires — same effect, no LLM tokens, deterministic anchor matching. See §Why self-hosted instead of Anthropic's /goal below.
+
 ## Why self-hosted instead of Anthropic's `/goal`
 
 `/goal` is a user-typed slash command. When the agent (Claude) invokes `/plan-w-team` on the user's behalf via the Skill tool, the agent **cannot type `/goal`** to bootstrap the wrapper — slash commands are user-initiated. Net effect with the original T5 design: in agent-driven invocation (the user's actual usage pattern), `/goal` never opens and T5 does nothing.

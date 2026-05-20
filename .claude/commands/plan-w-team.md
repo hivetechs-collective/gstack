@@ -370,6 +370,22 @@ For ad-hoc branch reviews **outside** the /plan-w-team lifecycle, Anthropic ship
 - All artifacts are stored under `~/.claude/plan-w-team/projects/<SLUG>/` for cross-session persistence
 - Browser QA requires gstack's browse binary — install once, benefits all projects
 
+## Autonomous Multi-Hour Runs with `/goal` + `pwt-goal`
+
+For unattended runs spanning hours or days, use Anthropic's `/goal` as the outer autonomy loop with `/plan-w-team` as the executor. The `pwt-goal` helper derives a properly-formatted `/goal` directive from a natural-language request:
+
+```bash
+.claude/scripts/pwt-goal.sh "ship payment API with stripe webhook handling"
+# Prints the /goal command; copy and paste at session start.
+
+# Or launch directly:
+.claude/scripts/pwt-goal.sh --launch "ship payment API with stripe webhook handling"
+```
+
+The derived directive embeds definition-of-done anchors, hard-gate escalation triggers, and wall-clock/turn caps appropriate for autonomous operation. See `shared/goal-conditions.md` §Quick-start for template variants (feature, refactor, bugfix, docs) and interactive mode.
+
+When `/goal` is active, **both** Anthropic's Haiku evaluator AND our self-hosted Stop hook fire per turn. Either blocking → Claude continues. This is belt-and-braces autonomy: Anthropic's evaluator judges your custom condition semantically; ours deterministically checks pipeline terminal anchors + feature ACs. See `shared/architecture-layers.md` for how all 4 layers compose.
+
 ## Background Execution (Claude Code 2.1.139+)
 
 `/plan-w-team` is safe to launch as a background session: `claude --bg "/plan-w-team <feature>"`. The per-SLUG workflow lock (acquired in pre-flight) makes parallel runs on different features non-racing. Monitor and peek-reply with `claude agents` — the agent-view dashboard shows live state for every running plan-w-team session across all projects.
