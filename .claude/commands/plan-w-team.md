@@ -4,6 +4,36 @@ Full-lifecycle planning and execution workflow: scope challenge, specification, 
 
 Based on IndyDevDan's claude-code-hooks-mastery pattern, extended with gstack-inspired lifecycle stages (scope challenge, fix-first review, ship pipeline, retro), self-regulation heuristics, cognitive frameworks, and artifact handoffs between stages.
 
+## ⚠️ Routing Pre-Check (READ FIRST — runs before everything below)
+
+**STOP and re-route to `/pwt-goal` if** the user's invocation phrased this as an autonomous run rather than in-session work. The canonical user pattern is `/goal` as the outer autonomy loop with `/plan-w-team` as the executor; natural-language requests for autonomous work should derive a `/goal` directive for paste-into-fresh-session, NOT consume the current session executing in-line.
+
+**Re-route triggers** (any one match → invoke `/pwt-goal` skill instead, with the user's words as args):
+
+- "use /plan-w-team to ..."
+- "using /plan-w-team ..."
+- "with /plan-w-team ..."
+- "kick off /plan-w-team for ..."
+- "start a /plan-w-team run to ..."
+- "use our /plan-w-team to ..."
+- Any message containing "definition of done" OR "done when" alongside `/plan-w-team`
+
+**Re-route exception** (continue in-session execution): user explicitly says "do this **now in this session**", "invoke /plan-w-team **in this session**", "**run /plan-w-team here**", or similar.
+
+**Decision table:**
+
+| User says...                                            | Route to                                 |
+| ------------------------------------------------------- | ---------------------------------------- |
+| "use /plan-w-team to build X. Definition of done: Y."   | `/pwt-goal` (derive /goal for paste)     |
+| "use our /plan-w-team to do a holistic check"           | `/pwt-goal` (derive /goal for paste)     |
+| "use /plan-w-team right now in this session to build X" | This skill (in-session execution)        |
+| "kick off an autonomous run to build X"                 | `/pwt-goal`                              |
+| Direct slash invocation `/plan-w-team <feature>`        | This skill (explicit slash = in-session) |
+
+**Why this matters:** The user's proven autonomous workflow (24+ hour runs in cleanscale) starts with `/goal "use /plan-w-team to X..."` typed at session start. Natural-language phrasing of that pattern should produce the structured `/goal` directive for them to paste, not consume their current session. **Do NOT ask clarifying questions before re-routing** — the rule is absolute. If you're reading this for the first time and the user's phrasing matched a trigger, exit this skill and invoke `/pwt-goal` immediately with the user's literal request as args.
+
+See `.claude/commands/pwt-goal.md` for the derivation skill and `.claude/scripts/pwt-goal.sh` for the underlying script.
+
 ## Usage
 
 ```
