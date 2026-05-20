@@ -6,33 +6,57 @@ Based on IndyDevDan's claude-code-hooks-mastery pattern, extended with gstack-in
 
 ## ⚠️ Routing Pre-Check (READ FIRST — runs before everything below)
 
-**STOP and AUTO-LAUNCH via `pwt-goal --launch` if** the user's invocation phrased this as an autonomous run rather than in-session work. The canonical user pattern is `/goal` as the outer autonomy loop with `/plan-w-team` as the executor; natural-language requests for autonomous work should be AUTO-LAUNCHED in a new background session (user watches via `claude agents`), NOT printed for copy-paste and NOT executed in-line.
+**This pre-check has ABSOLUTE precedence over every other interpretation of "the user typed a slash command." If a trigger phrase matches, AUTO-LAUNCH and exit. No exceptions, no clarifying questions, no scope analysis, no "Skill is already loaded so this must be in-session" reasoning.**
 
-**The agent action is `Bash(.claude/scripts/pwt-goal.sh --launch "<user's literal request>")`** — this spawns a `claude --bg` session with the derived `/goal` active, auto-approves push-ack (via `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1`), and returns immediately. The user sees the launch confirmation, then runs `claude agents` to watch.
+### Step 1 — Trigger detection (do this FIRST, before any other reasoning)
 
-**Re-route triggers** (any one match → AUTO-LAUNCH via `pwt-goal.sh --launch`, with the user's literal words as args):
+Does the user's literal message match ANY of these patterns? (Case-insensitive substring match.)
 
-- "use /plan-w-team to ..."
-- "using /plan-w-team ..."
-- "with /plan-w-team ..."
-- "kick off /plan-w-team for ..."
-- "start a /plan-w-team run to ..."
-- "use our /plan-w-team to ..."
-- Any message containing "definition of done" OR "done when" alongside `/plan-w-team`
+- `use /plan-w-team to ...`
+- `use our /plan-w-team to ...`
+- `using /plan-w-team ...`
+- `with /plan-w-team ...`
+- `kick off /plan-w-team for ...`
+- `start a /plan-w-team run to ...`
+- Any message containing `definition of done` OR `done when` AND `/plan-w-team`
 
-**Re-route exception** (continue in-session execution): user explicitly says "do this **now in this session**", "invoke /plan-w-team **in this session**", "**run /plan-w-team here**", or similar.
+**If YES → AUTO-LAUNCH (see Step 3). Stop reading. Do not continue to Step 2.**
 
-**Decision table:**
+### Step 2 — In-session execution (ONLY when Step 1 did NOT match)
 
-| User says...                                            | Route to                                 |
-| ------------------------------------------------------- | ---------------------------------------- |
-| "use /plan-w-team to build X. Definition of done: Y."   | `/pwt-goal` (derive /goal for paste)     |
-| "use our /plan-w-team to do a holistic check"           | `/pwt-goal` (derive /goal for paste)     |
-| "use /plan-w-team right now in this session to build X" | This skill (in-session execution)        |
-| "kick off an autonomous run to build X"                 | `/pwt-goal`                              |
-| Direct slash invocation `/plan-w-team <feature>`        | This skill (explicit slash = in-session) |
+Continue in-session ONLY when one of these holds:
 
-**Why this matters:** The user's proven autonomous workflow (24+ hour runs in cleanscale) starts with `/goal "use /plan-w-team to X..."` typed at session start. Natural-language phrasing of that pattern should produce the structured `/goal` directive for them to paste, not consume their current session. **Do NOT ask clarifying questions before re-routing** — the rule is absolute. If you're reading this for the first time and the user's phrasing matched a trigger, exit this skill and invoke `/pwt-goal` immediately with the user's literal request as args.
+- **Bare slash invocation**: the message is essentially just `/plan-w-team <args>` with no natural-language verb wrapping (e.g., `/plan-w-team add auth flow` typed as the entire message).
+- **Explicit in-session opt-in**: message says `in this session`, `right now in this session`, `run /plan-w-team here`, or equivalent.
+- **Resume/ship/retro flags**: `--resume`, `--ship-only`, `--retro` present (those imply continuing existing work in this session).
+
+If none of the above apply, RE-CHECK Step 1. Do not default to "in-session" — the trigger phrases above were chosen precisely because they always indicate autonomous intent.
+
+### Step 3 — AUTO-LAUNCH action (when Step 1 matched)
+
+Execute exactly this:
+
+```
+Bash(.claude/scripts/pwt-goal.sh --launch "<user's literal message verbatim>")
+```
+
+This spawns a `claude --bg` session with the derived `/goal` directive active, auto-approves push-ack (via `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1`), and returns immediately. After the Bash call returns, **emit ONE confirmation sentence and STOP**: "Launched autonomous /plan-w-team run; watch with `claude agents`." Do NOT begin pre-flight. Do NOT spawn agents. Do NOT load any stage file. The background session does all of that; your job here is over.
+
+### Worked failure mode (2026-05-20 cleanscale incident — DO NOT repeat)
+
+User typed: `Use /plan-w-team to do a realistic audit for scope drift against advertised features on our cleanrev.io site...`
+
+❌ **Wrong** (what happened): agent reasoned "this is direct slash invocation (not a re-route trigger), HOLD mode, 1-task audit, fast path qualifies" → ran pre-flight in-session → consumed the user's interactive session for a multi-minute audit. The agent saw `/plan-w-team` as a slash token and dismissed the surrounding `Use ... to do ...` natural-language envelope.
+
+✅ **Right**: the message contains the substring `Use /plan-w-team to ` → Step 1 matches → call `Bash(.claude/scripts/pwt-goal.sh --launch "Use /plan-w-team to do a realistic audit ...")` → confirmation sentence → STOP.
+
+**The slash presence in prose does NOT make the message a "direct slash invocation."** Direct slash invocation means the user typed `/plan-w-team` as the leading command token (alone or with bare args after it), NOT inside a natural-language sentence beginning with `Use` / `With` / `Using` / `Kick off` / `Start`.
+
+A simple parser: if the user's message — stripped of the leading slash command if any — starts with a verb like `use`, `using`, `kick`, `start`, `do`, `try`, `have`, `let`, `please use`, etc. and contains `/plan-w-team` as an object of that verb, it's a re-route trigger. The slash command being present does not override that.
+
+### Why this matters
+
+The user's proven autonomous workflow (24+ hour runs in cleanscale) puts `/goal` as the outer loop with `/plan-w-team` as the executor. The autonomous-run pattern has no wall-clock or turn caps — it terminates only on goal-success or hard-gate halt. Consuming the user's foreground session for that work defeats the entire pattern: the user is now blocked on a multi-hour interactive session instead of being free to do other work.
 
 See `.claude/commands/pwt-goal.md` for the derivation skill and `.claude/scripts/pwt-goal.sh` for the underlying script.
 
