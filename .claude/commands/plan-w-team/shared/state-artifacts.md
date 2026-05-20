@@ -45,6 +45,7 @@ Prevent the "write-only by accident" defect class: artifacts whose writer is wir
 | `.claude/state/plan-w-team-coupling-ack-$SLUG`             | `> "?\.claude/state/plan-w-team-coupling-ack`              | `COUPLING_ACK=`                                           | handoff   | User ack for intentional coupling (escape hatch for scope-lock)                   |
 | `.claude/state/plan-w-team-fleet-$SLUG.jsonl`              | `FLEET_FILE="\$STATE_DIR/plan-w-team-fleet-`               | `FLEET_FILE="\$STATE_DIR/plan-w-team-fleet-`              | handoff   | Subagent spawn/complete events (T3-04 retro reads, lead reads via fleet-query.sh) |
 | `.claude/state/plan-w-team-supervisor-actions-$SLUG.jsonl` | `ACTIONS_LOG="\$STATE_DIR/plan-w-team-supervisor-actions-` | `SUP_LOG=".claude/state/plan-w-team-supervisor-actions-`  | handoff   | Persistent supervisor (PWT-T4) action audit log (07-retro §8j-quater reads)       |
+| `.claude/state/plan-w-team-goal-$SLUG.json`                | `plan-w-team-goal-\$\{SLUG\}\.json`                        | `plan-w-team-goal-\*\.json`                               | handoff   | T5b goal evaluator state (turns_evaluated, terminal_state, terminal_reason)       |
 
 ## Claude Code interactions (2.1.139+)
 

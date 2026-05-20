@@ -50,31 +50,41 @@ If the user does not specify, default to **HOLD**. Ask only if the feature descr
 
 Each step is defined in a separate stage file. **Read the stage file when you reach that step** — do not load all stages upfront.
 
-### Top-of-Pipeline `/goal` Wrapper (PWT-T5)
+### Top-of-Pipeline Goal Activation (PWT-T5b)
 
-Before Pre-Flight, open `/goal` with the standard terminal condition so the
-Haiku evaluator can decide when this pipeline run is complete. The user can
-then walk away — `/goal` returns control automatically when the condition
-fires.
+Before Pre-Flight, **activate the self-hosted goal evaluator** by writing a goal state file. The evaluator is a Stop hook (`.claude/hooks/plan-w-team-goal-evaluator.sh`) that fires after every Claude turn while the state file exists. It deterministically grep-checks the transcript for terminal-state anchors and either lets Claude stop (terminal reached) or blocks the stop with guidance to keep working.
 
-**Skip this block when:**
+**Why a state-file activation instead of `/goal`:** the previous design wrapped Anthropic's `/goal` slash command, but slash commands are user-typed and the agent cannot invoke them on the user's behalf. State-file activation works in both interactive and agent-driven usage.
 
-- `PLAN_W_TEAM_DISABLE_GOAL=1` is set (kill switch)
-- The running Claude Code version does not have `/goal` (pre-2.1.139) — the
-  command will not be available; the rest of the pipeline runs unchanged
+**Skip this block when** `PLAN_W_TEAM_DISABLE_GOAL=1` is set (kill switch — hook exits 0 without evaluation).
 
-**Otherwise, invoke `/goal` with the condition from
-`.claude/commands/plan-w-team/shared/goal-conditions.md`** (substitute
-`<SLUG>` with the chosen feature slug). Use the copy-paste template there
-verbatim — never inline an alternate condition here (it must stay
-single-source-of-truth). The condition is ~990 chars; well under `/goal`'s
-4000 char limit.
+**Otherwise, write the goal state file:**
 
-After `/goal` opens, proceed to Pre-Flight: Board Auto-Setup below. Each
-lead-driven stage emits a `status` block at end-of-stage via
-`.claude/scripts/plan-w-team-surface-status.sh` so the evaluator has signals
-to judge. Step 3-4 is covered by the T4 supervisor's per-turn `summary`
-block (see `shared/supervisor-protocol.md`).
+```bash
+SLUG="<feature-slug>"   # same slug used by the rest of the pipeline
+STATE_DIR=".claude/state"
+mkdir -p "$STATE_DIR"
+
+cat > "$STATE_DIR/plan-w-team-goal-${SLUG}.json" <<EOF
+{
+  "slug": "${SLUG}",
+  "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "turns_evaluated": 0,
+  "turn_cap": 200,
+  "wall_clock_cap_h": 12,
+  "terminal_state": null,
+  "terminal_reason": null
+}
+EOF
+```
+
+That's it. The hook activates automatically on the next Claude turn. The condition (4 terminal states) is implemented in the hook — see `shared/goal-conditions.md` for the anchor patterns the evaluator looks for and how each lead stage / supervisor turn contributes signals.
+
+**Block-cap consideration:** Claude Code defaults the Stop-hook block cap to 8 consecutive blocks. A full `/plan-w-team` run can exceed that. Set `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=200` in your shell environment (e.g., `~/.zshrc`) before invoking `/plan-w-team` so the hook can block through a complete pipeline run without being overridden. This is a one-time shell config, not a per-invocation step.
+
+After the state file is written, proceed to Pre-Flight: Board Auto-Setup below. Each lead-driven stage emits a `status` block at end-of-stage via `.claude/scripts/plan-w-team-surface-status.sh`; the supervisor emits a `summary` block per turn during Step 3-4 (see `shared/supervisor-protocol.md`). The evaluator hook grep-matches both block types.
+
+**Cleanup:** Step 8 retro deletes the goal state file as part of its cleanup on `RETRO_SUCCESS=1` (mirrors fleet log + baseline cleanup).
 
 ### Pre-Flight: Board Auto-Setup (MANDATORY)
 

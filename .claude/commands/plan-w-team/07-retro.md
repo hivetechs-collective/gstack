@@ -535,6 +535,7 @@ fi
 # Cleanup on successful retro (mirrors §8j-ter fleet cleanup)
 if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
   rm -f "$SUP_LOG"
+  rm -f ".claude/state/plan-w-team-goal-${SLUG}.json"   # T5b goal evaluator state
 fi
 ```
 

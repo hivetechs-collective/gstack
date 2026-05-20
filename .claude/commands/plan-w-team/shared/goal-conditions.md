@@ -1,25 +1,53 @@
-# Goal Conditions — `/goal` Wrapper Contract
+# Goal Conditions — `/plan-w-team` Self-Hosted Goal Evaluator
 
-Authoritative reference for PWT-T5: the `/goal` wrapper that opens at the top of every `/plan-w-team` invocation and decides each turn whether the pipeline is complete.
+Authoritative reference for PWT-T5b: the deterministic Stop-hook evaluator that fires after every Claude turn while a `/plan-w-team` run is active and decides whether the pipeline reached a terminal state.
 
-Spec: `docs/specs/pwt-t5-goal-wrapper.md`
-Helper: `.claude/scripts/plan-w-team-surface-status.sh`
-Kill switch: `PLAN_W_TEAM_DISABLE_GOAL=1` — skip `/goal` open entirely
-Companion: `shared/supervisor-protocol.md` (supervisor's per-turn summary block — the second evaluator sensor)
-Anthropic docs: https://code.claude.com/docs/en/goal
+Spec: `docs/specs/pwt-t5b-goal-evaluator.md`
+Evaluator hook: `.claude/hooks/plan-w-team-goal-evaluator.sh` (Stop event)
+Helper: `.claude/scripts/plan-w-team-surface-status.sh` (emits status blocks the evaluator reads)
+State file: `.claude/state/plan-w-team-goal-<SLUG>.json` (written by skill at top-of-pipeline, deleted at retro-complete)
+Kill switch: `PLAN_W_TEAM_DISABLE_GOAL=1` — hook exits 0 without evaluation
+Companion: `shared/supervisor-protocol.md` (supervisor's per-turn summary block — second evaluator sensor)
+Anthropic docs (for context — we no longer use `/goal`): https://code.claude.com/docs/en/goal
+
+## Why self-hosted instead of Anthropic's `/goal`
+
+`/goal` is a user-typed slash command. When the agent (Claude) invokes `/plan-w-team` on the user's behalf via the Skill tool, the agent **cannot type `/goal`** to bootstrap the wrapper — slash commands are user-initiated. Net effect with the original T5 design: in agent-driven invocation (the user's actual usage pattern), `/goal` never opens and T5 does nothing.
+
+PWT-T5b replaces the `/goal` wrapper with our own Stop hook that the skill activates by writing a state file. No slash command required. The hook reads the same status/summary blocks the original T5 designed and applies the same 4-state terminal condition — but as deterministic grep-pattern matching, not LLM evaluation. All 4 terminal anchors are concrete enough (exact JSON field values) that no Haiku judgment is needed.
+
+Trade-off: we lose Haiku's flexibility to interpret novel conditions, but we gain:
+
+- Zero tokens per turn (free)
+- Faster (no LLM round-trip)
+- Deterministic (no eval hallucination)
+- Works in agent-driven `/plan-w-team` invocation
 
 ## Overview
 
-`/goal` (Claude Code 2.1.139+, released 2026-05-12) is a wrapper around a session-scoped prompt-based Stop hook. After every turn, a small fast model (Haiku by default) reads the conversation transcript and returns yes/no plus a short reason. "Yes" → the goal clears and control returns to the user. "No" → Claude continues to the next turn with the reason injected as guidance.
+The evaluator hook fires on every `Stop` event (Claude finishes a turn). It:
 
-`/plan-w-team` opens `/goal` at the top of its skill invocation with a precise terminal condition. The pipeline then runs Step 0 → Step 8 as usual; the evaluator polls the transcript after every turn. The user can walk away — `/goal` decides when the run is done.
+1. Returns immediately if `PLAN_W_TEAM_DISABLE_GOAL=1` (kill switch).
+2. Returns immediately if no active goal state file exists (no `/plan-w-team` run in progress).
+3. Returns immediately if `stop_hook_active=true` in hook input (block-cap protection).
+4. Reads the transcript file path from hook input, tails recent lines.
+5. Checks for each of the 4 terminal-state anchors via grep.
+6. If a terminal state is hit: persists `terminal_state` + `terminal_reason` to state file, exits 0 (let Claude stop).
+7. If no terminal state: increments turn counter, outputs `{"decision":"block","reason":"..."}` to keep Claude working.
 
-The evaluator **cannot call tools**. Its only sensor is the conversation transcript. Two surfacing mechanisms exist:
+The evaluator **has no semantic intelligence**. It only matches concrete patterns:
 
 1. **`status` block** — emitted by `plan-w-team-surface-status.sh` at the end of every lead-driven stage (Steps 0/1/2/5/6/7/8).
 2. **`summary` block** — emitted by the T4 supervisor at the end of every turn during Step 3-4 (see `shared/supervisor-protocol.md`).
 
-Both blocks contain machine-readable JSON the evaluator parses.
+Both blocks contain machine-readable JSON. The evaluator greps for specific anchors:
+
+| Terminal state          | Anchor pattern (grep)                                                                                       |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `SUCCESS`               | `"stage":"retro-complete"` AND `"workflow_lock":"done"`                                                     |
+| `USER_ESCALATION_HALT`  | `"pending_escalations":[...]` containing `"push-ack"`, `"secret-scan-allow"`, or `"scope-unlock-for-drift"` |
+| `LOW_CONFIDENCE_STREAK` | `"low_confidence_routes":N` where N ≥ 3                                                                     |
+| `TIME_OR_TURN_CAP`      | turn count ≥ 200 OR wall clock ≥ 12h (tracked in state file)                                                |
 
 ## The Condition (copy-paste template)
 

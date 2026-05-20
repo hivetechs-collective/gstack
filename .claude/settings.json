@@ -425,6 +425,10 @@
           {
             "type": "command",
             "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/plan-w-team-goal-evaluator.sh"
           }
         ]
       }
