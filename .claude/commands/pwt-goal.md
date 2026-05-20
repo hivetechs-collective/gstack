@@ -1,12 +1,12 @@
 ---
 description: Derive a structured /goal command from a natural-language request that uses /plan-w-team as the executor. Output is ready to copy-paste at the start of a fresh Claude Code session for autonomous multi-hour runs.
-argument-hint: <natural language request> [--type feature|refactor|bugfix|docs] [--hours N] [--turns N] [-i] [--launch]
+argument-hint: <natural language request> [--type feature|refactor|bugfix|docs] [-i] [--launch]
 allowed-tools: Bash, Read
 ---
 
 # /pwt-goal — Natural-Language → Structured /goal Derivation
 
-Wrap a feature request into a properly-formatted Anthropic `/goal` command that drives an autonomous `/plan-w-team` run with explicit definition-of-done anchors, hard-gate escalations, and time/turn caps.
+Wrap a feature request into a properly-formatted Anthropic `/goal` command that drives an autonomous `/plan-w-team` run with explicit definition-of-done anchors and hard-gate escalations. **No wall-clock or turn caps** — the only stopping points are goal-success and hard-gate halts.
 
 ## What this does
 
@@ -47,7 +47,7 @@ Run the derivation script with the user's natural-language request as the argume
 .claude/scripts/pwt-goal.sh "<the user's request>"
 ```
 
-If the user supplied `--type`, `--hours`, `--turns`, `-i`, or `--launch` flags, pass them through. If the user used natural language, infer `--type` from cues:
+If the user supplied `--type`, `-i`, or `--launch` flags, pass them through. If the user used natural language, infer `--type` from cues:
 
 | Cue in user message                           | Inferred `--type`   |
 | --------------------------------------------- | ------------------- |

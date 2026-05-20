@@ -63,9 +63,6 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
 
     SLUG=$(jq -r '.slug' "$GOAL_FILE")
     STARTED_AT=$(jq -r '.started_at' "$GOAL_FILE")
-    TURNS=$(jq -r '.turns_evaluated // 0' "$GOAL_FILE")
-    TURN_CAP=$(jq -r '.turn_cap // 200' "$GOAL_FILE")
-    WALL_CAP_H=$(jq -r '.wall_clock_cap_h // 12' "$GOAL_FILE")
     EXISTING_TERMINAL=$(jq -r '.terminal_state // ""' "$GOAL_FILE")
 
     # Already marked terminal in a previous turn → allow stop
@@ -160,28 +157,10 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         fi
     fi
 
-    # (4) TIME_OR_TURN_CAP: turns + wall-clock check
-    if [ -z "$TERMINAL" ]; then
-        # Turn cap
-        NEW_TURNS=$((TURNS + 1))
-        if [ "$NEW_TURNS" -ge "$TURN_CAP" ]; then
-            TERMINAL="TIME_OR_TURN_CAP"
-            REASON="turn cap reached ($NEW_TURNS/$TURN_CAP)"
-        else
-            # Wall-clock cap
-            START_EPOCH=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$STARTED_AT" +%s 2>/dev/null || echo 0)
-            NOW_EPOCH=$(date -u +%s)
-            ELAPSED_H=$(( (NOW_EPOCH - START_EPOCH) / 3600 ))
-            if [ "$START_EPOCH" -gt 0 ] && [ "$ELAPSED_H" -ge "$WALL_CAP_H" ]; then
-                TERMINAL="TIME_OR_TURN_CAP"
-                REASON="wall-clock cap reached (${ELAPSED_H}h/${WALL_CAP_H}h)"
-            fi
-        fi
-
-        # Persist new turn count
-        jq --arg n "$NEW_TURNS" '.turns_evaluated = ($n | tonumber)' "$GOAL_FILE" \
-            > "$GOAL_FILE.tmp" && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
-    fi
+    # No (4) TIME_OR_TURN_CAP: removed by design. Only goal-success and hard-gate
+    # escalations are valid terminal states (see shared/goal-conditions.md). If the
+    # evaluator never returns success, the supervisor's low-confidence streak signal
+    # (state 3) is the human-attention trigger, not a wall-clock or turn fallback.
 
     if [ -n "$TERMINAL" ]; then
         # Persist terminal state
@@ -196,7 +175,7 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         if [ -n "${CRITERIA_BLOCK_REASON:-}" ]; then
             BLOCK_REASON="$CRITERIA_BLOCK_REASON"
         else
-            BLOCK_REASON="/plan-w-team SLUG=$SLUG not yet terminal (turn $((TURNS + 1))/$TURN_CAP). Continue pipeline. Need ONE of: status block with stage=retro-complete + workflow_lock=done; pending_escalations containing a hard-gate site (push-ack/secret-scan-allow/scope-unlock-for-drift); low_confidence_routes>=3."
+            BLOCK_REASON="/plan-w-team SLUG=$SLUG not yet terminal. Continue pipeline. Need ONE of: status block with stage=retro-complete + workflow_lock=done; pending_escalations containing a hard-gate site (push-ack/secret-scan-allow/scope-unlock-for-drift); low_confidence_routes>=3."
         fi
     fi
 done

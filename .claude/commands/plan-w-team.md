@@ -101,16 +101,13 @@ cat > "$STATE_DIR/plan-w-team-goal-${SLUG}.json" <<EOF
 {
   "slug": "${SLUG}",
   "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-  "turns_evaluated": 0,
-  "turn_cap": 200,
-  "wall_clock_cap_h": 12,
   "terminal_state": null,
   "terminal_reason": null
 }
 EOF
 ```
 
-That's it. The hook activates automatically on the next Claude turn. The condition (4 terminal states) is implemented in the hook — see `shared/goal-conditions.md` for the anchor patterns the evaluator looks for and how each lead stage / supervisor turn contributes signals.
+That's it. The hook activates automatically on the next Claude turn. The condition (3 terminal states — SUCCESS, USER_ESCALATION_HALT, LOW_CONFIDENCE_STREAK; **no wall-clock or turn caps by design**) is implemented in the hook — see `shared/goal-conditions.md` for the anchor patterns the evaluator looks for and how each lead stage / supervisor turn contributes signals.
 
 **Feature-specific criteria (PWT-T5c):** Step 1 §1.5 (after the AC snapshot) injects `feature_specific_done_criteria` derived from the spec's `AC<N>:` entries into the goal state file. The hook then AND-checks the generic SUCCESS anchors with every feature criterion — SUCCESS fires only when both are satisfied in the transcript. This makes the "definition of done" feature-specific rather than generic. No action needed here at top-of-pipeline; Step 1 handles the injection.
 
@@ -414,7 +411,7 @@ For unattended runs spanning hours or days, use Anthropic's `/goal` as the outer
 .claude/scripts/pwt-goal.sh --launch "ship payment API with stripe webhook handling"
 ```
 
-The derived directive embeds definition-of-done anchors, hard-gate escalation triggers, and wall-clock/turn caps appropriate for autonomous operation. See `shared/goal-conditions.md` §Quick-start for template variants (feature, refactor, bugfix, docs) and interactive mode.
+The derived directive embeds definition-of-done anchors and hard-gate escalation triggers appropriate for autonomous operation — and **no wall-clock or turn caps**: the only stopping points are goal-success (terminal SUCCESS anchors) and hard-gate halts (push-ack, secret-scan-allow, scope-unlock-for-drift, 3-consecutive low-confidence). See `shared/goal-conditions.md` §Quick-start for template variants (feature, refactor, bugfix, docs) and interactive mode.
 
 When `/goal` is active, **both** Anthropic's Haiku evaluator AND our self-hosted Stop hook fire per turn. Either blocking → Claude continues. This is belt-and-braces autonomy: Anthropic's evaluator judges your custom condition semantically; ours deterministically checks pipeline terminal anchors + feature ACs. See `shared/architecture-layers.md` for how all 4 layers compose.
 

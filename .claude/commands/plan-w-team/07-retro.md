@@ -561,23 +561,21 @@ SLUG="<feature-slug>"
 if [ "${PLAN_W_TEAM_DISABLE_GOAL:-}" = "1" ]; then
   echo "Score: n/a (PLAN_W_TEAM_DISABLE_GOAL=1 — /goal wrapper skipped)"
 else
-  # Terminal state is one of: SUCCESS, USER_ESCALATION_HALT, LOW_CONFIDENCE_STREAK, TIME_OR_TURN_CAP
+  # Terminal state is one of: SUCCESS, USER_ESCALATION_HALT, LOW_CONFIDENCE_STREAK
+  # (TIME_OR_TURN_CAP was removed by design — no wall-clock or turn caps in the evaluator.)
   # The lead surfaces the terminal reason at retro time by quoting /goal's final reason text.
 
   cat <<EOF
 ### /goal Evaluator Health
 
-- Terminal state: <SUCCESS|USER_ESCALATION_HALT|LOW_CONFIDENCE_STREAK|TIME_OR_TURN_CAP|n/a>
-- Turns evaluated: <N>
+- Terminal state: <SUCCESS|USER_ESCALATION_HALT|LOW_CONFIDENCE_STREAK|n/a>
 - Evaluator reason on terminal turn: <short quote from /goal's "yes" message>
-- Pipeline duration: <wall-clock>
+- Pipeline duration: <wall-clock — reporting only, NOT a termination signal>
 
 EOF
 
-  # Score: 5 = SUCCESS in <100 turns (clean autonomous run)
-  #        4 = SUCCESS but >100 turns (verbose evaluator dialog)
+  # Score: 5 = SUCCESS (clean autonomous run — pipeline reached retro-complete)
   #        3 = USER_ESCALATION_HALT (expected hard-gate; not a failure)
-  #        2 = TIME_OR_TURN_CAP (pipeline ran out of budget without finishing)
   #        1 = LOW_CONFIDENCE_STREAK (supervisor was confused, evaluator halted)
   #
   # The lead sets GOAL_SCORE manually after reading the terminal reason.

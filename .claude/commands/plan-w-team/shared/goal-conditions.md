@@ -29,7 +29,7 @@ The derived `/goal` command embeds:
 - Instruction to use `/plan-w-team` to accomplish the request
 - Definition-of-done anchors (transcript markers Anthropic's Haiku evaluator looks for to decide SUCCESS)
 - Hard-gate escalation triggers (push-ack, secret-scan-allow, scope-unlock-for-drift, low-confidence streak)
-- Wall-clock + turn caps
+- **No wall-clock or turn caps by design** — the only stopping points are goal-success and hard-gate halts
 
 Template variants for different work types (`--type feature` is default):
 
@@ -81,9 +81,9 @@ The evaluator hook fires on every `Stop` event (Claude finishes a turn). It:
 2. Returns immediately if no active goal state file exists (no `/plan-w-team` run in progress).
 3. Returns immediately if `stop_hook_active=true` in hook input (block-cap protection).
 4. Reads the transcript file path from hook input, tails recent lines.
-5. Checks for each of the 4 terminal-state anchors via grep.
+5. Checks for each of the 3 terminal-state anchors via grep.
 6. If a terminal state is hit: persists `terminal_state` + `terminal_reason` to state file, exits 0 (let Claude stop).
-7. If no terminal state: increments turn counter, outputs `{"decision":"block","reason":"..."}` to keep Claude working.
+7. If no terminal state: outputs `{"decision":"block","reason":"..."}` to keep Claude working.
 
 The evaluator **has no semantic intelligence**. It only matches concrete patterns:
 
@@ -97,7 +97,8 @@ Both blocks contain machine-readable JSON. The evaluator greps for specific anch
 | `SUCCESS`               | `"stage":"retro-complete"` AND `"workflow_lock":"done"`                                                     |
 | `USER_ESCALATION_HALT`  | `"pending_escalations":[...]` containing `"push-ack"`, `"secret-scan-allow"`, or `"scope-unlock-for-drift"` |
 | `LOW_CONFIDENCE_STREAK` | `"low_confidence_routes":N` where N ≥ 3                                                                     |
-| `TIME_OR_TURN_CAP`      | turn count ≥ 200 OR wall clock ≥ 12h (tracked in state file)                                                |
+
+**No `TIME_OR_TURN_CAP` terminal state**: the only valid termination signals are goal-success (above) and the three hard-gate / low-confidence anchors. The evaluator does not track turn count or wall-clock and will not auto-stop a run for taking too long. If the pipeline truly stalls without producing those signals, the user halts it manually (`/goal clear` or session interrupt).
 
 ## The Condition (copy-paste template)
 
@@ -123,14 +124,16 @@ When `/plan-w-team` opens `/goal`, it uses this condition verbatim (with `<SLUG>
     any status block reports `low_confidence_routes >= 3`. This signals
     the supervisor is confused and should not continue dispatching.
 
-(4) TIME_OR_TURN_CAP: 12 wall-clock hours have elapsed OR 200 turns have
-    run, whichever comes first.
-
-Stop when ANY of (1)–(4) holds. When stopping, state which terminal state
+Stop when ANY of (1)–(3) holds. When stopping, state which terminal state
 was reached and quote the most recent transcript line that demonstrates it.
+
+There is NO wall-clock or turn cap. The pipeline runs until one of (1)–(3)
+fires. If neither fires, keep working — the absence of a terminal anchor
+means the work is genuinely not done. User intervention (`/goal clear` or
+session interrupt) is the manual escape hatch.
 ```
 
-The condition is ~990 characters — well under `/goal`'s 4000 char limit.
+The condition is well under `/goal`'s 4000 char limit.
 
 ## Terminal-State Reference
 
@@ -139,7 +142,8 @@ The condition is ~990 characters — well under `/goal`'s 4000 char limit.
 | `SUCCESS`               | A status block with `stage: "retro-complete"` AND `workflow_lock: "done"` (emitted by `07-retro.md`)                                                  | Pipeline ran end-to-end without escalation; ship gate passed              |
 | `USER_ESCALATION_HALT`  | Any status/summary block with non-empty `pending_escalations` containing one of the 3 hard-gate labels                                                | A hard-gate was hit; user must respond before pipeline can proceed        |
 | `LOW_CONFIDENCE_STREAK` | Either: 3 consecutive supervisor summary blocks mentioning "low-confidence" in `goal_progress`, OR any status block with `low_confidence_routes >= 3` | Supervisor's decisions are unreliable; do not let it continue dispatching |
-| `TIME_OR_TURN_CAP`      | Wall-clock or turn-count limit (evaluator tracks both internally)                                                                                     | Run took too long; surface state to user for manual review                |
+
+**Removed:** an earlier `TIME_OR_TURN_CAP` terminal state was deleted by design (2026-05-19). Wall-clock and turn-count termination conflated "the work is done" with "we've used our budget" — neither is a legitimate stopping signal for autonomous engineering work. The three states above are the only ways a `/plan-w-team` run reaches terminal.
 
 The 3 hard-gate labels referenced in `USER_ESCALATION_HALT` are:
 
@@ -235,7 +239,7 @@ A goal state file without `feature_specific_done_criteria` (or with `feature_spe
 
 - **Malformed regex** in a `pattern` → hook skips that criterion, continues with others. The criterion stays unmet forever (manual investigation needed).
 - **Spec has no AC entries** → derivation injects empty array, evaluator falls back to T5b generic-only SUCCESS.
-- **Criterion never matches** (real bug in pipeline or wrong pattern) → eventually hits `TIME_OR_TURN_CAP`; retro surfaces as data signal.
+- **Criterion never matches** (real bug in pipeline or wrong pattern) → pipeline keeps running; eventually surfaces via `LOW_CONFIDENCE_STREAK` (supervisor noticing repeated failure) or via user interrupt. There is no time-based escape — the user is the final stop.
 
 ## Kill Switch Contract
 
@@ -263,15 +267,15 @@ without an evaluator consumer.
 
 ## Failure Modes
 
-| Failure                                                | Behavior                                                                             |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------------ |
-| `/goal` command unavailable (older Claude Code)        | Top-of-pipeline section no-ops; pipeline runs as today                               |
-| Condition string exceeds 4000 chars                    | Truncate to first 3900 + note truncation in skill comment                            |
-| Helper crashes during stage execution                  | Stage echoes minimal inline status block as fallback; evaluator gets degraded signal |
-| Supervisor doesn't emit summary blocks during Step 3-4 | Evaluator falls back to stage-end status blocks only (less granular but functional)  |
-| Network failure prevents Haiku evaluator from running  | `/goal` retries per Anthropic's internal logic; pipeline continues regardless        |
-| Evaluator returns "yes" prematurely (false success)    | User reviews final state; can `/goal clear` mid-pipeline if needed                   |
-| Evaluator never returns "yes" (stuck in "no")          | TIME_OR_TURN_CAP terminal state fires after 12h or 200 turns                         |
+| Failure                                                | Behavior                                                                                                   |
+| ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| `/goal` command unavailable (older Claude Code)        | Top-of-pipeline section no-ops; pipeline runs as today                                                     |
+| Condition string exceeds 4000 chars                    | Truncate to first 3900 + note truncation in skill comment                                                  |
+| Helper crashes during stage execution                  | Stage echoes minimal inline status block as fallback; evaluator gets degraded signal                       |
+| Supervisor doesn't emit summary blocks during Step 3-4 | Evaluator falls back to stage-end status blocks only (less granular but functional)                        |
+| Network failure prevents Haiku evaluator from running  | `/goal` retries per Anthropic's internal logic; pipeline continues regardless                              |
+| Evaluator returns "yes" prematurely (false success)    | User reviews final state; can `/goal clear` mid-pipeline if needed                                         |
+| Evaluator never returns "yes" (stuck in "no")          | Pipeline keeps blocking stops. User intervention required (`/goal clear`); no automatic time-based escape. |
 
 ## Adding a New Terminal State
 
