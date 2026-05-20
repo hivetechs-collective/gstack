@@ -6,9 +6,11 @@ Based on IndyDevDan's claude-code-hooks-mastery pattern, extended with gstack-in
 
 ## ⚠️ Routing Pre-Check (READ FIRST — runs before everything below)
 
-**STOP and re-route to `/pwt-goal` if** the user's invocation phrased this as an autonomous run rather than in-session work. The canonical user pattern is `/goal` as the outer autonomy loop with `/plan-w-team` as the executor; natural-language requests for autonomous work should derive a `/goal` directive for paste-into-fresh-session, NOT consume the current session executing in-line.
+**STOP and AUTO-LAUNCH via `pwt-goal --launch` if** the user's invocation phrased this as an autonomous run rather than in-session work. The canonical user pattern is `/goal` as the outer autonomy loop with `/plan-w-team` as the executor; natural-language requests for autonomous work should be AUTO-LAUNCHED in a new background session (user watches via `claude agents`), NOT printed for copy-paste and NOT executed in-line.
 
-**Re-route triggers** (any one match → invoke `/pwt-goal` skill instead, with the user's words as args):
+**The agent action is `Bash(.claude/scripts/pwt-goal.sh --launch "<user's literal request>")`** — this spawns a `claude --bg` session with the derived `/goal` active, auto-approves push-ack (via `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1`), and returns immediately. The user sees the launch confirmation, then runs `claude agents` to watch.
+
+**Re-route triggers** (any one match → AUTO-LAUNCH via `pwt-goal.sh --launch`, with the user's literal words as args):
 
 - "use /plan-w-team to ..."
 - "using /plan-w-team ..."
