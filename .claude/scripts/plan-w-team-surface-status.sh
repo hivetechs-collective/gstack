@@ -35,7 +35,26 @@ if [ -z "$SLUG" ]; then
 fi
 
 PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
-STATE_DIR="$PROJECT_ROOT/.claude/state"
+FALLBACK_STATE_DIR="$PROJECT_ROOT/.claude/state"
+PWD_STATE_DIR="$PWD/.claude/state"
+
+# Worktree-aware state lookup: prefer $PWD/.claude/state when /plan-w-team is
+# running in a worktree distinct from the project root. Fall back to the
+# canonical project root state dir otherwise. Picks whichever holds the active
+# workflow lock for this SLUG; if neither does, defaults to $PWD path (where a
+# new run will write its state). See 2026-05-20 holistic-check retro: state
+# written in a worktree was invisible to status emitters and goal evaluator
+# running in the main checkout.
+if [ -d "$PWD_STATE_DIR/plan-w-team-workflow-${SLUG}.lock" ] && [ "$PWD_STATE_DIR" != "$FALLBACK_STATE_DIR" ]; then
+    STATE_DIR="$PWD_STATE_DIR"
+elif [ -d "$FALLBACK_STATE_DIR/plan-w-team-workflow-${SLUG}.lock" ]; then
+    STATE_DIR="$FALLBACK_STATE_DIR"
+elif [ -d "$PWD_STATE_DIR" ] && [ "$PWD_STATE_DIR" != "$FALLBACK_STATE_DIR" ]; then
+    STATE_DIR="$PWD_STATE_DIR"
+else
+    STATE_DIR="$FALLBACK_STATE_DIR"
+fi
+
 LOCK_DIR="$STATE_DIR/plan-w-team-workflow-${SLUG}.lock"
 SUP_LOG="$STATE_DIR/plan-w-team-supervisor-actions-${SLUG}.jsonl"
 FLEET_LOG="$STATE_DIR/plan-w-team-fleet-${SLUG}.jsonl"

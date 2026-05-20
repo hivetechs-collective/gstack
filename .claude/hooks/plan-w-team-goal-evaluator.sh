@@ -30,12 +30,34 @@ if [ "$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true
 fi
 
 PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
-STATE_DIR="$PROJECT_ROOT/.claude/state"
+FALLBACK_STATE_DIR="$PROJECT_ROOT/.claude/state"
+PWD_STATE_DIR="$PWD/.claude/state"
 
-# Find active goal state files
+# Worktree-aware state lookup: check $PWD/.claude/state first (the case when
+# /plan-w-team is running in a worktree), fall back to project root. We
+# aggregate goal files from both locations so the evaluator catches active
+# goals regardless of where they were written. See 2026-05-20 holistic-check
+# retro for the failure this fixes.
 shopt -s nullglob
-GOAL_FILES=("$STATE_DIR"/plan-w-team-goal-*.json)
+declare -a GOAL_FILES=()
+if [ -d "$PWD_STATE_DIR" ] && [ "$PWD_STATE_DIR" != "$FALLBACK_STATE_DIR" ]; then
+    for f in "$PWD_STATE_DIR"/plan-w-team-goal-*.json; do
+        GOAL_FILES+=("$f")
+    done
+fi
+for f in "$FALLBACK_STATE_DIR"/plan-w-team-goal-*.json; do
+    GOAL_FILES+=("$f")
+done
 shopt -u nullglob
+
+# Pick effective STATE_DIR for any downstream writes: prefer $PWD if it holds a
+# matching goal, else fall back. (Used by terminal-state persistence below.)
+if [ -d "$PWD_STATE_DIR" ] && [ "$PWD_STATE_DIR" != "$FALLBACK_STATE_DIR" ] && \
+   compgen -G "$PWD_STATE_DIR/plan-w-team-goal-*.json" >/dev/null 2>&1; then
+    STATE_DIR="$PWD_STATE_DIR"
+else
+    STATE_DIR="$FALLBACK_STATE_DIR"
+fi
 
 # No active goal → let Claude stop normally
 [ "${#GOAL_FILES[@]}" -eq 0 ] && exit 0

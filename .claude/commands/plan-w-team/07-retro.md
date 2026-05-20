@@ -41,11 +41,28 @@ scripts/board.sh comment "<feature-name>" "## Retrospective
 
 ## 8a. Gather Metrics
 
+**Invoke the metrics script** — do NOT recall numbers from memory. The script
+emits validated JSON with all the fields §8b needs. A retrospective without
+this script is unreliable (2026-05-20 holistic-check retro showed three
+metrics recalled from memory diverged from git reality by 30%+).
+
 ```bash
-# Run these in parallel:
-git log --oneline --since="<feature-start>" --until="now"
-git diff --stat origin/<base>...HEAD
-git log --format="%H %aI" --since="<feature-start>"
+.claude/scripts/plan-w-team-retro-metrics.sh "$SLUG" | tee /tmp/retro-${SLUG}.json | jq '.'
+```
+
+Optional flags: `--base origin/develop` (override default `origin/main`).
+
+The JSON has fields: `commit_count`, `lines_added`, `lines_removed`,
+`files_changed`, `commit_type_breakdown` (feat/fix/refactor/test/docs/chore/other),
+`fix_ratio`, `ai_assisted_count`, `test_pass_count`, `fleet_stats`.
+
+For ad-hoc inspection alongside the JSON, the raw git commands remain
+available:
+
+```bash
+# Quick sanity check (not the source of truth — use the script above):
+git log --oneline "$(jq -r '.base_ref' /tmp/retro-${SLUG}.json)..HEAD"
+git diff --stat "$(jq -r '.base_ref' /tmp/retro-${SLUG}.json)...HEAD"
 ```
 
 ## 8b. Compute and Report

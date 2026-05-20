@@ -148,6 +148,32 @@ if [ "$PLAN_TEAM_STAGED" = "true" ]; then
     fi
 fi
 
+# sync-allowlist symmetry gate — when ANY plan-w-team-* / pwt-* script or
+# sync-to-project.sh is staged, verify that all such scripts appear in
+# sync-to-project.sh's allowlist. This catches new scripts that would silently
+# fail to propagate to consumer repos.
+SYNC_ALLOWLIST_RELEVANT=false
+while IFS= read -r file; do
+    case "$file" in
+        .claude/scripts/plan-w-team-*|\
+        .claude/scripts/pwt-*|\
+        .claude/scripts/sync-to-project.sh)
+            SYNC_ALLOWLIST_RELEVANT=true; break ;;
+    esac
+done <<< "$STAGED_FILES"
+
+if [ "$SYNC_ALLOWLIST_RELEVANT" = "true" ]; then
+    ALLOWLIST_CHECK="$SCRIPT_DIR/../scripts/plan-w-team-sync-allowlist-check.sh"
+    if [ -x "$ALLOWLIST_CHECK" ]; then
+        if ! ALLOWLIST_OUT=$("$ALLOWLIST_CHECK" 2>&1); then
+            ERRORS+=("Sync allowlist drift — new plan-w-team-* / pwt-* script not in sync-to-project.sh (run: .claude/scripts/plan-w-team-sync-allowlist-check.sh)")
+            echo "[pre-commit-quality] sync-allowlist-check output:" >&2
+            printf '%s\n' "$ALLOWLIST_OUT" >&2
+        fi
+    fi
+    # Soft-skip when check script missing (e.g., during initial sync rollout)
+fi
+
 # secret-doc-sync gate — when secret-scan.sh is staged, the documented Pattern
 # Catalog in secret-safety.md MUST be regenerated to match. `--check` exits 1
 # on drift; we surface the diff via stderr (the script already prints it).

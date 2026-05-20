@@ -82,6 +82,29 @@ If the user does not specify, default to **HOLD**. Ask only if the feature descr
 
 Each step is defined in a separate stage file. **Read the stage file when you reach that step** — do not load all stages upfront.
 
+### Fast Path — when stage-file Reads MAY be skipped
+
+The default contract above (Read the stage file when you reach that step) exists because skill drift between conversation memory and the canonical stage file silently degrades pipeline quality. **One narrowly-defined exception applies:**
+
+**Fast-path criterion (BOTH must hold):**
+
+1. **Scope mode is HOLD** — no scope expansion, no exploratory mode, no REDUCE bargaining; the work is bounded by an explicit user-provided checklist.
+2. **Task count ≤ 2** — the implementation expands to two or fewer discrete tasks in Step 2 (or, for pre-counted user requests, ≤ 2 distinct deliverables).
+
+When BOTH hold, the lead MAY skip reading a stage file IF the lead has internalized that stage from the in-conversation skill load (initial Skill invocation) and is confident about its contract.
+
+**Outside the fast path** (anything else — EXPAND/SELECTIVE EXPAND/REDUCE scope OR > 2 tasks): the lead MUST Read the stage file at each step.
+
+**Bypass warning (MANDATORY when bypassing outside fast path):** If the lead decides to skip a stage-file Read AND the fast-path criterion does NOT hold, the lead MUST emit a warning to the transcript before proceeding. Warning format (grep-able by retros and supervisors):
+
+```
+⚠ stage-file-bypass: skipping <stage_name> — reason: <reason>
+```
+
+Where `<stage_name>` is one of `00-scope-challenge`, `01-specification`, `02-task-breakdown`, `03-execute`, `04-fix-first-review`, `05-ship`, `06-post-ship`, `07-retro` (or a shared/ stage). The `<reason>` should be one short clause (e.g., "already loaded in this turn", "trivial doc-only edit", "Step 5 review only references stage file by name").
+
+Retros downstream MAY count `⚠ stage-file-bypass:` occurrences against the bypass-rate quality signal. A run with multiple unjustified bypasses suggests the stage files need consolidation or the fast-path criterion needs widening.
+
 ### Top-of-Pipeline Goal Activation (PWT-T5b)
 
 Before Pre-Flight, **activate the self-hosted goal evaluator** by writing a goal state file. The evaluator is a Stop hook (`.claude/hooks/plan-w-team-goal-evaluator.sh`) that fires after every Claude turn while the state file exists. It deterministically grep-checks the transcript for terminal-state anchors and either lets Claude stop (terminal reached) or blocks the stop with guidance to keep working.
@@ -116,6 +139,26 @@ That's it. The hook activates automatically on the next Claude turn. The conditi
 After the state file is written, proceed to Pre-Flight: Board Auto-Setup below. Each lead-driven stage emits a `status` block at end-of-stage via `.claude/scripts/plan-w-team-surface-status.sh`; the supervisor emits a `summary` block per turn during Step 3-4 (see `shared/supervisor-protocol.md`). The evaluator hook grep-matches both block types.
 
 **Cleanup:** Step 8 retro deletes the goal state file as part of its cleanup on `RETRO_SUCCESS=1` (mirrors fleet log + baseline cleanup).
+
+### Pre-Flight: Background Session Worktree (MANDATORY when `claude --bg`)
+
+When `/plan-w-team` is invoked inside a background session (`claude --bg`, the `Agent` tool, or any non-interactive harness that will perform Edit/Write operations), the lead session MUST run inside its own git worktree BEFORE any file-edit stage. Verify with `pwd` — if the path contains `.claude/worktrees/`, the lead is already isolated. Otherwise, call `EnterWorktree` immediately after Pre-Flight: Workflow Lock (and before Step 0).
+
+**Why this matters** (lessons from the 2026-05-20 holistic-check retro):
+
+1. **State-file split** — without a worktree, state files written by the lead land in the main checkout, while the goal-evaluator (running in a different harness `$PWD`) looks for them elsewhere. The fallback added to `surface-status.sh` and `plan-w-team-goal-evaluator.sh` (worktree-aware lookup) mitigates but does not eliminate this; the safe default is "lead lives in worktree".
+2. **Baseline pollution** — the Step 5 untracked-file gate captures the pre-run baseline once at preflight. Edits in the main checkout while a parallel session is also active produce a noisy baseline diff.
+3. **Conflicting concurrent edits** — two background sessions on the same checkout will race on Edit/Write of the same file. Worktrees are the per-session isolation boundary.
+
+**Invocation pattern:**
+
+```
+EnterWorktree({ name: "<feature-slug>" })   # if not already in a worktree
+```
+
+After EnterWorktree, the session's `$PWD` is the worktree path; all subsequent Pre-Flight steps (baseline, workflow lock, goal state) run inside it. ExitWorktree happens implicitly when the session ends (or explicitly after Step 8 retro if you want the main checkout to inherit the merge).
+
+**Exception:** Interactive `claude` sessions (live user) that DO NOT plan file edits (e.g., `--retro` only on already-committed work, status checks) MAY skip this. Any path that will Write or Edit MUST be in a worktree under `--bg`.
 
 ### Pre-Flight: Board Auto-Setup (MANDATORY)
 
