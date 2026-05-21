@@ -232,15 +232,16 @@ Spawn **three parallel reviewers**, each focused on an independent dimension. Us
 
 **Domain specialist selection** (lead chooses based on the feature's scope tags from Step 2):
 
-| If any task has scope tag…              | Pick                                              | Why                                                             |
-| --------------------------------------- | ------------------------------------------------- | --------------------------------------------------------------- |
-| `FRONTEND` (UI repos)                   | `style-theme-expert`                              | Catches AI Slop, design-system drift, accessibility regressions |
-| `DATABASE` / `BACKEND` w/ schema change | `database-expert`                                 | Catches index gaps, denormalization mistakes, migration safety  |
-| `DEVOPS` / `INFRA`                      | `terraform-specialist` or `kubernetes-specialist` | Catches misconfig, drift, blast-radius issues                   |
-| Docs-heavy (>50% of diff is `.md`)      | `documentation-expert`                            | Catches stale cross-refs, broken links, info-architecture drift |
-| API-shape change                        | `api-expert`                                      | Catches breaking changes, REST/GraphQL contract drift           |
-| LLM/AI prompts or tool use              | `llm-application-specialist`                      | Catches prompt-injection, tool-call boundary issues             |
-| (no matching tag)                       | omit slot 3                                       | Fan out 2 reviewers — over-fitting a third would generate noise |
+| If any task has scope tag…                                                                            | Pick                                              | Why                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `FRONTEND` (UI repos)                                                                                 | `style-theme-expert`                              | Catches AI Slop, design-system drift, accessibility regressions                                                                                                          |
+| `DATABASE` / `BACKEND` w/ schema change                                                               | `database-expert`                                 | Catches index gaps, denormalization mistakes, migration safety                                                                                                           |
+| `DEVOPS` / `INFRA`                                                                                    | `terraform-specialist` or `kubernetes-specialist` | Catches misconfig, drift, blast-radius issues                                                                                                                            |
+| Docs-heavy (>50% of diff is `.md`)                                                                    | `documentation-expert`                            | Catches stale cross-refs, broken links, info-architecture drift                                                                                                          |
+| API-shape change                                                                                      | `api-expert`                                      | Catches breaking changes, REST/GraphQL contract drift                                                                                                                    |
+| LLM/AI prompts or tool use                                                                            | `llm-application-specialist`                      | Catches prompt-injection, tool-call boundary issues                                                                                                                      |
+| Diff contains new `try`/`catch`, `.catch(`, `throw`, error callbacks, retry loops, or fallback chains | `silent-failure-hunter`                           | Catches empty catches, broad exception swallowing, fallback masking, retry-exhausted-silently, `?.` hiding failures (see `.claude/agents/team/silent-failure-hunter.md`) |
+| (no matching tag)                                                                                     | omit slot 3                                       | Fan out 2 reviewers — over-fitting a third would generate noise                                                                                                          |
 
 ### Spawn Pattern
 
