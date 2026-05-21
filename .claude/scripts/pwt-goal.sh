@@ -16,6 +16,10 @@
 #   pwt-goal.sh "ship payment API with stripe webhooks"
 #   pwt-goal.sh -i "ship payment API"          # interactive: prompt for extra DoD
 #   pwt-goal.sh --launch "ship payment API"    # auto-launches `claude -p` for you
+#   pwt-goal.sh --worker-only "ship payment API"  # spawn worker only (no bg supervisor);
+#                                              # caller (e.g. UserPromptSubmit hook or
+#                                              # origin chat) acts as the live supervisor.
+#                                              # Emits worker SID on stdout.
 #   pwt-goal.sh --type refactor "extract auth"  # variant template (refactor/bugfix/docs)
 #   pwt-goal.sh -h                              # help
 #
@@ -35,6 +39,15 @@ Options:
   -t, --type TYPE      Template variant: feature (default), refactor, bugfix, docs
       --launch         AUTO-LAUNCH: spawn 'claude --bg' with the derived /goal.
                        User monitors via 'claude agents'. Implies --auto-push.
+                       Also spawns a separate bg supervisor session for
+                       detached / shell-driven runs (legacy mode; AC7).
+      --worker-only    Spawn ONLY the worker bg session (no bg supervisor).
+                       Worker SID is emitted on stdout as
+                         "worker_sid=<SID>"
+                       The caller is expected to act as the live supervisor
+                       (e.g. UserPromptSubmit hook injecting additionalContext
+                       so the origin assistant turn observes the worker).
+                       Implies --auto-push unless --no-auto-push is given.
       --auto-push      Auto-approve push-ack hard-gate during the run (sets
                        PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 for child session).
                        Trades safety for autonomy — only push-ack auto-approves;
@@ -60,6 +73,7 @@ EOF
 # Defaults
 INTERACTIVE=0
 LAUNCH=0
+WORKER_ONLY=0    # spawn only the worker bg session; caller is the supervisor
 AUTO_PUSH=0      # auto-approve push-ack hard-gate during autonomous run
 TYPE="feature"
 REQUEST=""
@@ -70,6 +84,7 @@ while [ $# -gt 0 ]; do
         -h|--help) usage; exit 0 ;;
         -i|--interactive) INTERACTIVE=1; shift ;;
         --launch) LAUNCH=1; AUTO_PUSH=1; shift ;;
+        --worker-only) WORKER_ONLY=1; LAUNCH=1; AUTO_PUSH=1; shift ;;
         --auto-push) AUTO_PUSH=1; shift ;;
         --no-auto-push) AUTO_PUSH=0; shift ;;
         -t|--type) TYPE="$2"; shift 2 ;;
@@ -177,14 +192,19 @@ if [ "$LAUNCH" = "1" ]; then
     # to the main repo while the user's session runs in a worktree under
     # .claude/worktrees/. The statusline reads from $PWD's state dir, so writes
     # must land in the same place. Preference order:
-    #   1. git rev-parse --show-toplevel (handles worktree correctly)
-    #   2. script-relative ../.. (when not in a git checkout)
-    #   3. $CLAUDE_PROJECT_DIR (last-resort fallback)
-    PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
-    if [ -z "$PROJECT_ROOT" ]; then
-        PROJECT_ROOT=$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)
+    #   1. $PWT_PROJECT_ROOT_OVERRIDE (test-only override; takes precedence)
+    #   2. git rev-parse --show-toplevel (handles worktree correctly)
+    #   3. script-relative ../.. (when not in a git checkout)
+    #   4. $CLAUDE_PROJECT_DIR (last-resort fallback)
+    if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+        PROJECT_ROOT="$PWT_PROJECT_ROOT_OVERRIDE"
+    else
+        PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+        if [ -z "$PROJECT_ROOT" ]; then
+            PROJECT_ROOT=$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)
+        fi
+        [ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-}"
     fi
-    [ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-}"
     USER_SID="${CLAUDE_JOB_DIR:-}"
     USER_SID="${USER_SID##*/}"
     [ -z "$USER_SID" ] && USER_SID="${PWT_PARENT_SID:-}"
@@ -225,6 +245,34 @@ if [ "$LAUNCH" = "1" ]; then
     fi
 
     echo "  worker session:     $WORKER_SID" >&2
+
+    # ─── --worker-only: emit SID on stdout and exit (no bg supervisor) ────────
+    # In this mode the CALLER (UserPromptSubmit hook → origin assistant) acts
+    # as the live supervisor. We still register the worker in pwt-launches.jsonl
+    # so the statusline classifies it correctly.
+    if [ "$WORKER_ONLY" = "1" ]; then
+        if [ -n "$PROJECT_ROOT" ] && [ -d "$PROJECT_ROOT/.claude/state" ]; then
+            REGISTRY="$PROJECT_ROOT/.claude/state/pwt-launches.jsonl"
+            NOW=$(date -u +%FT%TZ)
+            printf '{"sid":"%s","parent_sid":"%s","at":"%s","purpose":"%s","launched_by":"pwt-goal","role":"worker","supervisor":"origin-chat"}\n' \
+                "$WORKER_SID" "$USER_SID" "$NOW" "$REQUEST_SAFE" \
+                >> "$REGISTRY" 2>/dev/null || true
+        fi
+        REGISTER_HELPER="$(dirname "$0")/plan-w-team-register-spawn.sh"
+        if [ -x "$REGISTER_HELPER" ]; then
+            SLUG_GUESS=$(printf '%s' "$REQUEST" \
+                | tr '[:upper:]' '[:lower:]' \
+                | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+                | cut -c1-64 \
+                || echo "")
+            [ -z "$SLUG_GUESS" ] && SLUG_GUESS="_unsourced"
+            "$REGISTER_HELPER" "$WORKER_SID" "pwt-goal-launch" "$SLUG_GUESS" "" "pwt-goal.sh --worker-only" \
+                >/dev/null 2>&1 || true
+        fi
+        # Machine-readable stdout for the hook to parse.
+        echo "worker_sid=$WORKER_SID"
+        exit "$LAUNCH_RC"
+    fi
 
     # ─── Build supervisor bootstrap ─────────────────────────────────────────
     # The supervisor is a separate claude --bg session whose ONLY purpose is

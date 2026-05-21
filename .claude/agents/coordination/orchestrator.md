@@ -10,22 +10,6 @@ description: |
   between multiple specialist agents working simultaneously. Now with 79 agents covering
   96.0% of modern tech stacks. **OPUS 4.5 OPTIMIZED** with extended thinking for superior
   strategic planning. Examples:
-  <example>
-  Context: User wants to build a full-stack application with frontend, backend, and deployment components.
-  user: "I need to create a task management app with React frontend, Python FastAPI backend, and deploy it to AWS"
-  assistant: "I'll use the task-orchestrator agent to break this down into parallel tasks for our specialist agents"
-  <commentary>This complex request spans multiple domains (frontend, backend, deployment) and would benefit from parallel execution by different specialists coordinated by the orchestrator.</commentary>
-  </example>
-  <example>
-  Context: User has a large refactoring project affecting multiple parts of the codebase.
-  user: "We need to refactor our entire authentication system - update the React components, modify the Python API endpoints, update the database schema, and write comprehensive tests"
-  assistant: "Let me use the task-orchestrator agent to coordinate this multi-domain refactoring effort"
-  <commentary>This involves multiple technologies and would be most efficient with parallel work streams coordinated by the orchestrator.</commentary>
-  </example>
-
-# ============================================================================
-# MODEL CONFIGURATION (Required for v2.1.0)
-# ============================================================================
 model: opus
 
 # ============================================================================

@@ -2,12 +2,20 @@
 # plan-w-team-route-prompt.sh
 #
 # UserPromptSubmit hook — defense-in-depth enforcement of the /plan-w-team
-# routing rule. When the user's prompt OPENS with a "use /plan-w-team to ..."
-# trigger phrase (natural-language autonomous-run pattern), this hook
-# auto-launches pwt-goal.sh --launch in the background and blocks the original
-# prompt so it never reaches the skill's pre-check. Closes the failure mode
-# observed in cleanscale on 2026-05-20 where the agent misread the slash
-# token as a "direct slash invocation" and ran the work in-session.
+# routing rule. When the user's prompt contains a "use /plan-w-team to ..."
+# trigger phrase (natural-language autonomous-run pattern), this hook spawns
+# a bg WORKER via `pwt-goal.sh --worker-only` and injects `additionalContext`
+# so the ORIGIN ASSISTANT TURN becomes the live supervisor (observes the
+# worker, surfaces every stage transition / pause-site / supervisor decision
+# / terminal block as native assistant messages in the origin transcript).
+#
+# This replaces the previous "block + spawn detached supervisor pair" behavior
+# that left the origin chat silent between launch confirmation and any future
+# user input. See docs/specs/pwt-origin-chat-live-supervisor.md (AC1).
+#
+# Backward compat (AC7): explicit shell `pwt-goal.sh --launch` (run outside a
+# Claude Code chat) still spawns the worker+supervisor pair as before. Only
+# the hook path changed.
 #
 # === FAIL-OPEN CONTRACT ===
 # This hook MUST NEVER block the user from working. On any internal error
@@ -138,118 +146,168 @@ done
 PWT_GOAL="$PROJECT_ROOT/.claude/scripts/pwt-goal.sh"
 [ -x "$PWT_GOAL" ] || exit 0
 
-# ─── Background launch ───────────────────────────────────────────────────────
-# nohup + & ensures the user's prompt is never blocked by claude --bg
-# startup latency. Log file lets the user inspect what happened.
+# ─── Foreground worker spawn (--worker-only mode) ────────────────────────────
+# We need the worker SID *before* returning so the additionalContext payload
+# can hand it to the origin assistant. `pwt-goal.sh --worker-only` runs
+# `claude --bg` synchronously and emits "worker_sid=<SID>" on stdout. The
+# whole call typically completes in <1.5s. We CANNOT background this and
+# poll a log file like the old --launch path because the hook must return
+# the SID in its response payload.
 LOG_DIR="$PROJECT_ROOT/.claude/state/pwt-launch-logs"
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 TS=$(date +%Y%m%d-%H%M%S)
 LOG_FILE="$LOG_DIR/launch-$TS-$$.log"
 
-# Spawn in background, detached from the hook's stdin/stdout.
-# PWT_PARENT_SID is read by pwt-goal.sh when CLAUDE_JOB_DIR is unset (which it
-# is here — the hook runs in the interactive session's process tree without
-# CLAUDE_JOB_DIR). This is what lets the statusline classify the spawned bg
-# session as "🛠 supervisor" instead of falling through to "👥 other".
-PWT_PARENT_SID="$PARENT_SID_FROM_HOOK" \
-    nohup "$PWT_GOAL" --launch "$PROMPT" >"$LOG_FILE" 2>&1 </dev/null &
-LAUNCH_PID=$!
-disown "$LAUNCH_PID" 2>/dev/null || true
+# Run synchronously, capture stdout + stderr. PWT_PARENT_SID lets pwt-goal.sh
+# record the chain (worker.parent_sid = origin chat sid) so the statusline
+# classifies it as "mine".
+PWT_GOAL_OUT=$(
+    PWT_PARENT_SID="$PARENT_SID_FROM_HOOK" \
+        "$PWT_GOAL" --worker-only "$PROMPT" 2>"$LOG_FILE.err" </dev/null
+)
+PWT_GOAL_RC=$?
+# Mirror everything to a log file for debugging.
+{
+    echo "=== pwt-goal --worker-only (exit $PWT_GOAL_RC) ==="
+    echo "$PWT_GOAL_OUT"
+    echo "=== stderr ==="
+    cat "$LOG_FILE.err" 2>/dev/null
+} > "$LOG_FILE" 2>/dev/null || true
+rm -f "$LOG_FILE.err" 2>/dev/null || true
 
-# ─── Poll launch log briefly for session ID ──────────────────────────────────
-# pwt-goal.sh emits "backgrounded · XXXXXXXX" once claude --bg returns.
-# Real use: poll up to 3s. Test mode (PLAN_W_TEAM_HOOK_TEST_MODE=1): 0.3s
-# (keeps the test suite fast — shim writes immediately or not at all).
-if [ "${PLAN_W_TEAM_HOOK_TEST_MODE:-}" = "1" ]; then
-    POLL_TICKS=10
-else
-    POLL_TICKS=30
-fi
-SESSION_ID=""
-for _ in $(seq 1 "$POLL_TICKS"); do
-    if [ -f "$LOG_FILE" ]; then
-        # Strip ANSI color codes before grepping
-        SESSION_ID=$(sed -E 's/\x1b\[[0-9;]*m//g' "$LOG_FILE" 2>/dev/null \
-            | grep -oE 'backgrounded · [a-f0-9]{8}' \
-            | head -1 | awk '{print $NF}' || echo "")
-        [ -n "$SESSION_ID" ] && break
-    fi
-    sleep 0.1
-done
+# Parse worker SID from machine-readable line.
+SESSION_ID=$(printf '%s\n' "$PWT_GOAL_OUT" \
+    | grep -oE '^worker_sid=[a-f0-9]{8}' \
+    | head -1 | cut -d= -f2 || echo "")
+
+# Worker spawn failed → fail open so the origin assistant gets the unmodified
+# prompt and can fall back to its skill-level routing.
+[ -z "$SESSION_ID" ] && exit 0
 
 # ─── Spawn completion watcher (macOS desktop notification on finish) ─────────
 # Skipped in test mode — the watcher polls real jobs dirs which won't exist
 # for fake session IDs and would either hang or pollute /tmp.
 WATCHER="$PROJECT_ROOT/.claude/scripts/pwt-watch.sh"
-if [ -n "$SESSION_ID" ] \
-   && [ -x "$WATCHER" ] \
-   && [ "${PLAN_W_TEAM_HOOK_TEST_MODE:-}" != "1" ]; then
+if [ -x "$WATCHER" ] && [ "${PLAN_W_TEAM_HOOK_TEST_MODE:-}" != "1" ]; then
     nohup "$WATCHER" "$SESSION_ID" >/dev/null 2>&1 </dev/null &
     disown $! 2>/dev/null || true
 fi
 
-# ─── Register spawn for retro-time cleanup ───────────────────────────────────
-# Best-effort: writes to .claude/state/plan-w-team-spawned-children-$SLUG.jsonl
-# so 07-retro.md §8j-sexies can claude-stop orphaned children. Slug derived
-# from the prompt; on miss we use "_unsourced" so the row still exists.
-REGISTER_HELPER="$PROJECT_ROOT/.claude/scripts/plan-w-team-register-spawn.sh"
-if [ -n "$SESSION_ID" ] && [ -x "$REGISTER_HELPER" ]; then
-    SLUG_GUESS=$(printf '%s' "$PROMPT" \
-        | tr '[:upper:]' '[:lower:]' \
-        | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
-        | cut -c1-64 \
-        2>/dev/null || echo "")
-    [ -z "$SLUG_GUESS" ] && SLUG_GUESS="_unsourced"
-    "$REGISTER_HELPER" "$SESSION_ID" "pwt-goal-launch" "$SLUG_GUESS" "" "plan-w-team-route-prompt.sh" \
-        >/dev/null 2>&1 || true
-fi
-
-# Emit block decision with confirmation message.
+# ─── Emit non-blocking response with supervisor protocol ─────────────────────
+# The origin assistant turn proceeds normally; additionalContext is injected
+# alongside the user's prompt with instructions to act as the live supervisor.
 PWT_MATCHED="$MATCHED_PATTERN" \
-PWT_PID="$LAUNCH_PID" \
 PWT_LOG="$LOG_FILE" \
 PWT_SID="$SESSION_ID" \
+PWT_PROMPT="$PROMPT" \
+PWT_PROJECT_ROOT="$PROJECT_ROOT" \
 python3 - <<'PYEOF' 2>/dev/null || exit 0
 import json, os
-matched = os.environ.get("PWT_MATCHED", "?")
-pid     = os.environ.get("PWT_PID", "?")
-log     = os.environ.get("PWT_LOG", "?")
-sid     = os.environ.get("PWT_SID", "").strip()
+matched      = os.environ.get("PWT_MATCHED", "?").strip()
+log          = os.environ.get("PWT_LOG", "?")
+sid          = os.environ.get("PWT_SID", "").strip()
+prompt       = os.environ.get("PWT_PROMPT", "")
+project_root = os.environ.get("PWT_PROJECT_ROOT", "")
 
-if sid:
-    sysmsg = (
-        f"🚀 Routed /plan-w-team to autonomous mode.\n"
-        f"   session: {sid}\n"
-        f"   pid:     {pid} (launcher)\n"
-        f"   log:     {log}\n\n"
-        f"Monitor commands (copy-paste):\n"
-        f"   claude agents          # list all running sessions\n"
-        f"   claude logs {sid}    # tail this session's output\n"
-        f"   claude attach {sid}  # open in current terminal\n"
-        f"   claude stop {sid}    # halt if needed\n\n"
-        f"You'll get a macOS notification when this session finishes."
-    )
-else:
-    sysmsg = (
-        f"🚀 Routed /plan-w-team to autonomous mode.\n"
-        f"   pid={pid} (launcher)\n"
-        f"   log={log}\n\n"
-        f"Session ID not yet visible (claude --bg still initializing).\n"
-        f"Find it with:\n"
-        f"   grep backgrounded {log}\n"
-        f"Then monitor with: claude logs <session-id>\n"
-        f"Or list everything: claude agents"
-    )
+# === Supervisor protocol injected into the origin assistant's context. ======
+# Written as a single multi-line string. The origin assistant reads this on
+# the same turn as the user's prompt and is expected to follow it.
+protocol = f"""=== /plan-w-team origin-chat supervisor protocol (PWT-O1) ===
+
+The user's prompt matched the natural-language /plan-w-team trigger pattern:
+    '{matched}'
+
+A background WORKER session has already been spawned to execute the
+/plan-w-team pipeline for the user's request. Your job for the remainder of
+THIS assistant turn is to act as the LIVE SUPERVISOR, surfacing every
+worker state transition as a native assistant message in this transcript.
+
+DO NOT re-invoke /plan-w-team. DO NOT call pwt-goal.sh. The worker is
+already running.
+
+Worker context:
+- Worker session ID: {sid}
+- User's literal request:
+    {prompt!r}
+- Launch log: {log}
+- Project root: {project_root}
+
+Supervisor responsibilities (perform in order, this turn):
+
+1. STATUS BLOCK (AC3): Within your next message, emit a visible status
+   block to the transcript:
+
+       🚀 /plan-w-team routed → bg worker {sid}
+          watching for stage transitions, pause-sites, supervisor decisions
+
+   This MUST appear within one assistant turn of receiving this context.
+
+2. POLLING LOOP (AC4): Observe worker state by polling, surfacing every
+   transition as an assistant message. Use these primitives:
+     - `claude agents --json` — worker liveness + stage hint
+     - `claude logs {sid} --tail 200` — worker transcript tail
+     - `{project_root}/.claude/state/plan-w-team-goal-*.json` —
+       feature-specific terminal state for the active SLUG
+     - `{project_root}/.claude/state/pwt-completion-summary-{sid}.md` —
+       written by ship/retro stages on success/halt
+
+   Cadence: poll every ~30-60s via Bash + sleep, or schedule the next poll
+   via ScheduleWakeup (preferred for runs >5min — avoids cache burn).
+   Surface every NEW stage transition, pause-site, and supervisor decision
+   to the transcript with a short status block. Do NOT echo unchanged state.
+
+3. ESCALATION (AC6): If the worker hits a hard-gate pause site
+   (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`) or logs 3
+   consecutive `confidence=low` supervisor decisions, surface it as a
+   ⚠ HALT block and STOP polling — the user must respond.
+   Note: PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 (set by --worker-only) auto-clears
+   the push-ack gate inside the worker; you'll see worker progress past it
+   without a halt — that's expected.
+
+4. TERMINAL BLOCK (AC5): When the worker reaches a terminal state
+   (SUCCESS / ESCALATION / DEAD), emit a final summary block:
+
+       ✅ /plan-w-team terminal: <SUCCESS|ESCALATION|DEAD>
+          worker {sid}
+          duration: <start→end>
+          AC verdict: <pass/fail counts from spec>
+          files changed: <stat>
+          next action: <imperative>
+
+   Also write the same content to
+   `{project_root}/.claude/state/pwt-completion-summary-{sid}.md` so the
+   existing `plan-w-completion-surface.sh` hook can archive it for the
+   user's next session.
+
+5. EXIT: After the terminal block, you are done. Do not continue polling.
+
+Hard rules:
+- NEVER edit code, configs, or specs. The worker does all implementation.
+- NEVER spawn additional bg agents.
+- NEVER push to remote — that is the worker + user's responsibility.
+- If `claude agents --json` no longer lists session {sid} for >2 polls,
+  treat it as DEAD and emit the terminal block.
+
+The `pwt-completion-summary-{sid}.md` artifact and the macOS completion
+notification are unchanged from prior surfacing work — they continue to
+fire as additional channels alongside your live transcript updates.
+
+=== end protocol ==="""
+
+sysmsg = (
+    f"🚀 /plan-w-team origin-chat supervisor active\n"
+    f"   worker:  {sid}\n"
+    f"   trigger: {matched}\n"
+    f"   log:     {log}\n\n"
+    f"The origin assistant will surface worker progress as transcript "
+    f"messages until terminal state."
+)
 
 msg = {
-    "decision": "block",
-    "reason": (
-        f"Detected /plan-w-team autonomous-run trigger pattern: '{matched.strip()}'. "
-        f"Auto-launched pwt-goal.sh --launch (pid={pid}, session={sid or '?'}) "
-        f"per skill routing rule."
-    ),
+    # NOTE: no "decision" field → prompt flows through, assistant turn runs.
+    "additionalContext": protocol,
     "systemMessage": sysmsg,
 }
 print(json.dumps(msg))
 PYEOF
-exit 2
+exit 0
