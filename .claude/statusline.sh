@@ -609,11 +609,50 @@ if [ -n "$tot_tokens" ] && [[ "$tot_tokens" =~ ^[0-9]+$ ]]; then
   fi
 fi
 
+# Line 4: /usage today breakdown — top skill/subagent/MCP by token attribution
+# from local session transcripts (~/.claude/projects/**/*.jsonl modified today).
+# Mirrors Boris's /usage interactive output: percentages can overlap because a
+# turn may invoke multiple tool categories.
+line4=""
+USAGE_BREAKDOWN_HELPER="$PWD/.claude/scripts/usage-breakdown.sh"
+if [ -x "$USAGE_BREAKDOWN_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
+  ub_json=$("$USAGE_BREAKDOWN_HELPER" 2>/dev/null)
+  if [ -n "$ub_json" ] && [ "$ub_json" != "{}" ]; then
+    # Build "🎯 Today: Skill /X N% · Agent Y N% · MCP Z N%" segment.
+    # Each row pulls the top-1 entry; if no entries, the segment is skipped.
+    parts=""
+    top_skill=$(echo "$ub_json" | jq -r '.skills[0] | "\(.name) \(.pct)"' 2>/dev/null)
+    if [ -n "$top_skill" ] && [ "$top_skill" != "null null" ]; then
+      sk_name=$(echo "$top_skill" | awk '{print $1}')
+      sk_pct=$(echo "$top_skill" | awk '{print $2}')
+      parts="$(C '38;5;117')Skill$(rst) $(C '38;5;215')/${sk_name}$(rst) ${sk_pct}%"
+    fi
+    top_agent=$(echo "$ub_json" | jq -r '.subagents[0] | "\(.name) \(.pct)"' 2>/dev/null)
+    if [ -n "$top_agent" ] && [ "$top_agent" != "null null" ]; then
+      ag_name=$(echo "$top_agent" | awk '{print $1}')
+      ag_pct=$(echo "$top_agent" | awk '{print $2}')
+      [ -n "$parts" ] && parts="$parts $(C '38;5;245')·$(rst) "
+      parts="$parts$(C '38;5;117')Agent$(rst) $(C '38;5;215')${ag_name}$(rst) ${ag_pct}%"
+    fi
+    top_mcp=$(echo "$ub_json" | jq -r '.mcp[0] | "\(.name) \(.pct)"' 2>/dev/null)
+    if [ -n "$top_mcp" ] && [ "$top_mcp" != "null null" ]; then
+      mc_name=$(echo "$top_mcp" | awk '{print $1}')
+      mc_pct=$(echo "$top_mcp" | awk '{print $2}')
+      [ -n "$parts" ] && parts="$parts $(C '38;5;245')·$(rst) "
+      parts="$parts$(C '38;5;117')MCP$(rst) $(C '38;5;215')${mc_name}$(rst) ${mc_pct}%"
+    fi
+    [ -n "$parts" ] && line4="🎯 $(C '38;5;117')Today:$(rst) $parts"
+  fi
+fi
+
 # Print lines
 if [ -n "$line2" ]; then
   printf '\n%s' "$line2"
 fi
 if [ -n "$line3" ]; then
   printf '\n%s' "$line3"
+fi
+if [ -n "$line4" ]; then
+  printf '\n%s' "$line4"
 fi
 printf '\n'
