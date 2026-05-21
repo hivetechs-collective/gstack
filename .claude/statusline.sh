@@ -567,7 +567,7 @@ except Exception:
       fi
     fi
 
-    # Build the segment: "📊 Plan: 5h 2% (resets 18:00) · 7d 11%"
+    # Build the segment: "📊 Plan: 5h 2% (resets 18:00) · 7d 11% · 👤 email (tier)"
     if [ -n "$five_hr" ]; then
       five_hr_fmt=$(printf '%.0f' "$five_hr" 2>/dev/null || echo "$five_hr")
       line2="📊 $(C '38;5;117')Plan:$(rst) $(five_color)5h ${five_hr_fmt}%$(rst)"
@@ -575,6 +575,26 @@ except Exception:
       if [ -n "$seven_d" ]; then
         seven_d_fmt=$(printf '%.0f' "$seven_d" 2>/dev/null || echo "$seven_d")
         line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;117')7d ${seven_d_fmt}%$(rst)"
+      fi
+    fi
+  fi
+fi
+
+# Append account identity to line2 so multi-account users can tell at a glance
+# which Claude account is logged in. Reads ~/.claude.json — local, no network.
+ACCOUNT_INFO_HELPER="$PWD/.claude/scripts/account-info.sh"
+if [ -x "$ACCOUNT_INFO_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
+  acct_json=$("$ACCOUNT_INFO_HELPER" 2>/dev/null)
+  if [ -n "$acct_json" ] && [ "$acct_json" != "{}" ]; then
+    acct_email=$(echo "$acct_json" | jq -r '.email // empty' 2>/dev/null)
+    acct_tier=$(echo "$acct_json" | jq -r '.tier // empty' 2>/dev/null)
+    if [ -n "$acct_email" ]; then
+      acct_seg="$(C '38;5;117')👤 ${acct_email}$(rst)"
+      [ -n "$acct_tier" ] && acct_seg="$acct_seg $(C '38;5;245')(${acct_tier})$(rst)"
+      if [ -n "$line2" ]; then
+        line2="$line2 $(C '38;5;245')·$(rst) $acct_seg"
+      else
+        line2="$acct_seg"
       fi
     fi
   fi

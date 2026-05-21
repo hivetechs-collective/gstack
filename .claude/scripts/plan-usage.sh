@@ -34,7 +34,11 @@ STATE_DIR="$PROJECT_ROOT/.claude/state"
 mkdir -p "$STATE_DIR" 2>/dev/null
 CACHE="$STATE_DIR/plan-usage-cache.json"
 
-CACHE_TTL="${PLAN_USAGE_CACHE_TTL:-60}"
+CACHE_TTL="${PLAN_USAGE_CACHE_TTL:-300}"
+# Maximum age (seconds) at which a stale cache is still preferred over `{}`.
+# Used when the API errors or rate-limits. Plan utilization changes slowly,
+# so a few-minutes-stale read is far more useful than an empty statusline.
+STALE_CACHE_MAX="${PLAN_USAGE_STALE_MAX:-1800}"
 
 # Return cache if fresh
 if [ -f "$CACHE" ]; then
@@ -83,7 +87,16 @@ import json, sys
 d = json.loads(sys.stdin.read())
 assert "five_hour" in d and "utilization" in d["five_hour"]
 ' 2>/dev/null; then
-    # Bad response — don't poison the cache, just emit {} for this turn
+    # Bad response (rate-limited, network blip, parse fail, etc).
+    # Prefer a stale cache over an empty statusline — plan utilization
+    # changes slowly, so a few-minutes-old read is still useful.
+    if [ -f "$CACHE" ]; then
+        stale_age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || stat -c %Y "$CACHE" 2>/dev/null || echo 0) ))
+        if [ "$stale_age" -lt "$STALE_CACHE_MAX" ]; then
+            cat "$CACHE"
+            exit 0
+        fi
+    fi
     echo '{}'
     exit 0
 fi
