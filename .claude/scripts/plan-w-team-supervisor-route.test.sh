@@ -6,6 +6,9 @@
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Override inherited CLAUDE_PROJECT_DIR so the wrapper writes to $STATE_DIR (the
+# path the test reads), not an inherited parent-session value pointing elsewhere.
+export CLAUDE_PROJECT_DIR="$PROJECT_ROOT"
 WRAPPER="$SCRIPT_DIR/plan-w-team-supervisor-route.sh"
 STATE_DIR="$PROJECT_ROOT/.claude/state"
 

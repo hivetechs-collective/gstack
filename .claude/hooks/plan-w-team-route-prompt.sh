@@ -150,6 +150,17 @@ for pat in \
     fi
 done
 
+# Combined trigger: ("definition of done" OR "done when") + "/plan-w-team"
+# anywhere in prompt. Documented in CLAUDE.md + skill manifest as a trigger
+# for autonomous-run intent. Restored from 1b4a64e (dropped in 904759f rewrite).
+if [ -z "$MATCHED_PATTERN" ]; then
+    if printf '%s' "$PROMPT_LC" | grep -qF "/plan-w-team"; then
+        if printf '%s' "$PROMPT_LC" | grep -qE "(definition of done|done when)"; then
+            MATCHED_PATTERN="definition-of-done+/plan-w-team"
+        fi
+    fi
+fi
+
 # No trigger → allow
 [ -z "$MATCHED_PATTERN" ] && exit 0
 

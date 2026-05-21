@@ -39,7 +39,9 @@ assert_eq() {
 }
 
 ISOLATED_LIST="tasks-isolated-$$"
-run() { CLAUDE_CODE_TASK_LIST_ID="$ISOLATED_LIST" "$QUERY" "$@" 2>/dev/null; }
+# Override CLAUDE_PROJECT_DIR so the script reads from $STATE_DIR (where the test
+# writes fixtures), not from an inherited parent-session value pointing elsewhere.
+run() { CLAUDE_PROJECT_DIR="$PROJECT_ROOT" CLAUDE_CODE_TASK_LIST_ID="$ISOLATED_LIST" "$QUERY" "$@" 2>/dev/null; }
 
 echo "U1: missing file → empty arrays / zero counts"
 cleanup
@@ -60,7 +62,7 @@ cat > "$FLEET_FILE" <<EOF
 this is not json
 {"ts":"2026-05-19T22:00:01Z","event":"spawn","slug":"$TEST_SLUG","agent_id":"AGT-2","agent_type":"builder","cwd":"/r"}
 EOF
-STDERR=$("$QUERY" summary "$TEST_SLUG" 2>&1 >/dev/null)
+STDERR=$(CLAUDE_PROJECT_DIR="$PROJECT_ROOT" "$QUERY" summary "$TEST_SLUG" 2>&1 >/dev/null)
 assert_eq "corrupt warn present" "1" "$(echo "$STDERR" | grep -c 'corrupt' || true)"
 assert_eq "corrupt rows still parsed" "2" "$(run summary "$TEST_SLUG" | jq -r '.spawned')"
 

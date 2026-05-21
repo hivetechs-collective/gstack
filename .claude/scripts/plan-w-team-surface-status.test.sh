@@ -6,6 +6,9 @@
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+# Override inherited CLAUDE_PROJECT_DIR so the helper reads from $STATE_DIR (the
+# path the test writes to), not an inherited parent-session value pointing elsewhere.
+export CLAUDE_PROJECT_DIR="$PROJECT_ROOT"
 HELPER="$SCRIPT_DIR/plan-w-team-surface-status.sh"
 STATE_DIR="$PROJECT_ROOT/.claude/state"
 
