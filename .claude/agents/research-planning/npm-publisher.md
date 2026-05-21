@@ -1,7 +1,7 @@
 ---
 name: npm-publisher
 version: 1.1.0
-description: Use this agent when you need to automate NPM package publishing, package.json configuration, or versioning workflows. This agent excels at semantic versioning, package distribution (ESM/CJS), TypeScript declarations, and automated publishing via CI/CD. Examples: <example>Context: User needs to publish a new version of their NPM package. user: 'I just updated my package to v2.1.0. How do I publish it to NPM?' assistant: 'I'll use the npm-publisher agent to guide you through version bumping, pre-publish validation, and publishing to the NPM registry' <commentary>This requires verifying package.json configuration, running tests, building distribution files, and executing npm publish with proper authentication.</commentary></example> <example>Context: User wants to automate package publishing on GitHub releases. user: 'Can I automatically publish to NPM when I create a GitHub Release?' assistant: 'Let me use the npm-publisher agent to design a GitHub Actions workflow for automated NPM publishing' <commentary>This requires configuring NPM authentication, semantic versioning extraction, automated testing, and conditional publishing in CI.</commentary></example>
+description: Use this agent when you need to automate NPM package publishing, package.json configuration, or versioning workflows. This agent excels at semantic versioning, package distribution (ESM/CJS), TypeScript declarations, and automated publishing via CI/CD. Examples:
 tools: Read, Write, Edit, Bash
 color: green
 model: inherit

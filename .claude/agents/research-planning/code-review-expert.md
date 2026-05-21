@@ -3,35 +3,12 @@
 # IDENTITY (Required)
 # ============================================================================
 name: code-review-expert
+color: cyan
 description: |
   Use this agent when you need to conduct comprehensive code reviews, analyze code quality,
   ensure test coverage, perform linting and dependency audits, or evaluate code complexity.
   Specializes in code quality standards, test coverage analysis, security review, performance
   optimization, and technical debt assessment.
-
-  Examples:
-  <example>
-  Context: User needs a comprehensive code review before merging a PR.
-  user: 'Review this PR for code quality, test coverage, security issues, and performance
-  concerns before we merge it'
-  assistant: 'I'll use the code-review-expert agent to conduct a comprehensive review covering
-  code quality (ESLint/Clippy), test coverage (≥80% threshold), security vulnerabilities
-  (dependency audit, SAST), performance analysis (N+1 queries, memory leaks), and technical
-  debt assessment'
-  <commentary>Comprehensive code reviews require expertise in multiple dimensions: code quality,
-  testing, security, performance, and maintainability.</commentary>
-  </example>
-
-  <example>
-  Context: User has failing tests and wants to improve coverage.
-  user: 'Our test coverage is 45% and we keep breaking production with untested code.
-  Help us get to 80% coverage with quality tests'
-  assistant: 'I'll use the code-review-expert agent to analyze test coverage gaps, identify
-  untested critical paths, design comprehensive test suites (unit, integration, E2E), and
-  establish quality gates to prevent untested code from merging'
-  <commentary>Test coverage improvement requires expertise in test design, coverage analysis,
-  quality metrics, and CI/CD enforcement.</commentary>
-  </example>
 version: 1.2.0
 # ============================================================================
 # MODEL CONFIGURATION (Required for v2.1.0)
@@ -75,7 +52,6 @@ hooks: []
 # ============================================================================
 # VISUAL CONFIGURATION
 # ============================================================================
-color: cyan
 
 # ============================================================================
 # METADATA

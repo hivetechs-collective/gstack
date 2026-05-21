@@ -3,33 +3,12 @@
 # IDENTITY (Required)
 # ============================================================================
 name: documentation-expert
+color: pink
 description: |
   Use this agent when you need to create comprehensive documentation, design information
   architecture, manage diagrams, or ensure documentation quality. Specializes in modular
   documentation patterns, technical writing, Mermaid.js diagrams, API documentation,
   README templates, and documentation testing.
-
-  Examples:
-  <example>
-  Context: User needs to document a new API with OpenAPI specs and usage examples.
-  user: 'Create comprehensive API documentation for our REST endpoints with examples
-  and authentication guide'
-  assistant: 'I'll use the documentation-expert agent to create OpenAPI/Swagger specs,
-  write clear usage examples, and document authentication flows with sequence diagrams'
-  <commentary>API documentation requires expertise in OpenAPI specifications, technical
-  writing clarity, and visual diagrams for complex flows.</commentary>
-  </example>
-
-  <example>
-  Context: User has scattered documentation across multiple files without clear organization.
-  user: 'Our docs are a mess - README is 2000 lines, no clear navigation, outdated diagrams
-  everywhere'
-  assistant: 'I'll use the documentation-expert agent to restructure with modular
-  documentation patterns, create a documentation index, update diagrams with version
-  tracking, and implement single source of truth principles'
-  <commentary>Documentation architecture requires expertise in information architecture,
-  DRY documentation patterns, and diagram management systems.</commentary>
-  </example>
 version: 1.1.0
 
 # ============================================================================
@@ -70,7 +49,6 @@ hooks: []
 # ============================================================================
 # VISUAL CONFIGURATION
 # ============================================================================
-color: pink
 
 # ============================================================================
 # METADATA

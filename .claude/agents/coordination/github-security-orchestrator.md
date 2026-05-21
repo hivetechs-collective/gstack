@@ -3,6 +3,7 @@
 # IDENTITY (Required)
 # ============================================================================
 name: github-security-orchestrator
+color: red
 version: 1.1.0
 description: |
   Use this agent when you need to verify GitHub repository security, audit access
@@ -11,22 +12,6 @@ description: |
   hooks, GitHub Actions, TruffleHog, Gitleaks), access control audits, and security
   posture assessment. Coordinates with @security-expert for vulnerability analysis,
   @git-expert for history cleaning, and @documentation-expert for security documentation.
-  <example>
-  Context: User wants to verify repository security status.
-  user: 'Is our repository private and secure?'
-  assistant: 'I'll use the github-security-orchestrator agent to verify privacy status, check pre-commit hooks, review GitHub Actions secret scanning, audit collaborators, and assess branch protection'
-  <commentary>Repository security requires comprehensive checks across privacy settings, secret scanning, access controls, and continuous monitoring.</commentary>
-  </example>
-  <example>
-  Context: User accidentally committed secrets.
-  user: 'I accidentally committed an API key!'
-  assistant: 'I'll use the github-security-orchestrator agent to guide immediate API key revocation, coordinate history cleaning with @git-expert, verify removal, and recommend prevention measures'
-  <commentary>Emergency secret exposure requires immediate coordinated response across multiple security domains.</commentary>
-  </example>
-
-# ============================================================================
-# MODEL CONFIGURATION (Required for v2.1.0)
-# ============================================================================
 model: opus
 
 # ============================================================================
@@ -64,7 +49,6 @@ hooks: []
 # ============================================================================
 # VISUAL CONFIGURATION
 # ============================================================================
-color: red
 
 # ============================================================================
 # METADATA

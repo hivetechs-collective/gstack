@@ -1,6 +1,6 @@
 # Claude Agent SDK Documentation Index
 
-**Last Updated**: 2025-12-22 **Total Files**: 30 documentation files (18 core +
+**Last Updated**: 2026-04-17 **Total Files**: 30+ documentation files (18 core +
 7 Skills + 2 agent config + 3 updates) **Total Content**: ~6,500 lines of
 comprehensive technical documentation **Documentation Size**: ~330KB
 
@@ -38,11 +38,11 @@ comprehensive technical documentation **Documentation Size**: ~330KB
 
 ### Agent Configuration Documentation (Updated Nov 2025)
 
-| Document                                            | Description                                | Key Topics                                                                  |
-| --------------------------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------- |
-| [Agent Metadata Format](./agent-metadata-format.md) | Complete agent configuration reference     | Frontmatter fields, color vs x-color, best practices                        |
-| [**2025-11-25 Update**](./2025-11-25-UPDATE.md)     | **LATEST**: November 2025 critical updates | **Sonnet 4.5 default, Haiku 4.5, model deprecations, SDK breaking changes** |
-| [2025-10-30 Update](./2025-10-30-UPDATE.md)         | October refresh findings                   | Breaking changes, URL verification, known issues                            |
+| Document                                            | Description                            | Key Topics                                                              |
+| --------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------- |
+| [Agent Metadata Format](./agent-metadata-format.md) | Complete agent configuration reference | Frontmatter fields, color vs x-color, best practices                    |
+| [2025-11-25 Update](./2025-11-25-UPDATE.md)         | Historical: November 2025 updates      | Sonnet 4.5 default, Haiku 4.5, model deprecations, SDK breaking changes |
+| [2025-10-30 Update](./2025-10-30-UPDATE.md)         | October refresh findings               | Breaking changes, URL verification, known issues                        |
 
 ### Feature Documentation
 
@@ -180,37 +180,39 @@ Schemas**: [TypeScript SDK](./typescript.md#tool),
 - TypeScript: `@anthropic-ai/agent-sdk` (RENAMED from claude-agent-sdk)
 - Python: `claude-agent-sdk`
 
-**BEST MODEL FOR CODING**: Claude Opus 4.5 (`claude-opus-4-5`) - **80.9%
-SWE-bench, WORLD'S BEST** **Default CLI Model**: Claude Sonnet 4.5
-(`claude-sonnet-4-5`) **Mechanical Tasks Only**: Claude Haiku 4.5
-(`claude-haiku-4-5`)
+**BRAIN TIER (deep reasoning)**: Claude Opus 4.7 (`claude-opus-4-7`) —
+orchestration, evaluation, security review **HANDS TIER (execution)**: Claude
+Opus 4.6 (`claude-opus-4-6`) — implementation, coding, file edits **Default CLI
+Model**: Claude Sonnet 4.6 (`claude-sonnet-4-6`) **Mechanical Tasks Only**:
+Claude Haiku 4.5 (`claude-haiku-4-5-20251001`)
 
-**Documentation Version**: 2025-12-22 (Updated with Hooks documentation)
-**Previous Refresh**: 2025-11-25 (Opus 4.5 release)
+**Documentation Version**: 2026-04-17 (Brain/Hands tier split, Opus 4.7
+adoption) **Previous Refresh**: 2025-12-22 (Hooks documentation)
 
-**December 2025 Update**:
+**April 2026 Update**:
 
-- 📚 **NEW**: Comprehensive Hooks documentation added
-- 🔧 **FIX**: Matcher format clarified (string, not object)
-- 📖 10 hook event types fully documented
-- ⚙️ Complete configuration examples
+- 🧠 **Brain/Hands tier split** — Opus 4.7 for reasoning-heavy roles, Opus 4.6
+  for execution (see `.claude/commands/plan-w-team.md` Model Strategy)
+- 📖 Boris Cherny's Opus 4.7 best practices adopted — front-load task spec,
+  adaptive thinking, deliberate subagent spawning
+- ⚠️ **Agent-tool constraint**: `model:` param only accepts aliases
+  (`opus`/`sonnet`/`haiku`); pin full IDs via agent-definition frontmatter
 
-**November 2025 Major Updates**:
+**Historical — November/December 2025**:
 
-- 🚀 **Claude Opus 4.5 RELEASED** (Nov 24) - Best coding model in the world!
-- 🏆 **80.9% SWE-bench** - Beats GPT-5.1, Gemini 3, and all competitors
-- 💰 **67% cheaper** than Opus 4.1 ($5/$25 vs $15/$75 per 1M tokens)
-- ⚠️ **BREAKING**: SDK system prompt no longer included by default
-- ⚠️ **DEPRECATED**: Claude 3 Sonnet, Claude 2.x models
-- 🆕 Checkpoints & rewind for safe refactoring
-- 🆕 VS Code extension (beta)
-- 🆕 Claude Code in desktop app
-- 40+ verified documentation sources
+- Claude Opus 4.5 released (Nov 24, 2025) — then-current best coding model
+- Comprehensive Hooks documentation added (Dec 2025)
+- Breaking: SDK system prompt no longer included by default
+- Deprecated: Claude 3 Sonnet, Claude 2.x models
 
-**MODEL HIERARCHY (ENFORCED)**: | Task | Model | |------|-------| | **All
-Coding** | Opus 4.5 | | **Problem Solving** | Opus 4.5 | | **Critical Thinking**
-| Opus 4.5 | | Documentation | Sonnet 4.5 | | Mechanical/Deployment | Haiku 4.5
-|
+**MODEL HIERARCHY (CURRENT)**:
+
+| Task Type                             | Tier / Model     |
+| ------------------------------------- | ---------------- |
+| Orchestration / Evaluation / Security | Brain — Opus 4.7 |
+| Coding / Architecture / Debugging     | Hands — Opus 4.6 |
+| Documentation                         | Sonnet 4.6       |
+| File ops / Builds / Log parsing       | Haiku 4.5        |
 
 ## Related Resources
 
@@ -225,21 +227,26 @@ Coding** | Opus 4.5 | | **Problem Solving** | Opus 4.5 | | **Critical Thinking**
 This documentation is regularly refreshed from official Anthropic sources. For
 refresh instructions, see [REFRESH.md](./REFRESH.md).
 
-**Latest Update (2025-11-25)** - OPUS 4.5 RELEASE:
+**Latest Update (2026-04-17)** — BRAIN/HANDS TIER SPLIT:
 
-- 🚀 **Claude Opus 4.5 RELEASED** (Nov 24, 2025) - USE FOR ALL CODING
-- 🏆 **80.9% SWE-bench** - World's best coding model
-- 💰 **$5/$25 per 1M tokens** - 67% cheaper than Opus 4.1
-- ⚠️ **SDK system prompt breaking change** - must be explicit now
-- ⚠️ **Model deprecations** - Claude 3 Sonnet, Claude 2.x no longer work
-- 🆕 Claude Code now in desktop app
-- 🆕 Checkpoints/rewind, VS Code extension
-- Total documentation: 40+ official sources + 29 markdown files
+- 🧠 Adopted Opus 4.7 / 4.6 Brain/Hands tier split across agent library
+- 📖 Incorporated Boris Cherny's Opus 4.7 best practices
+- 🔧 Fixed Agent-tool `model:` param misuse — pin via frontmatter, not tool
+  call
+- See `docs/specs/opus-4-7-adoption.md` and
+  `.claude/commands/plan-w-team/shared/opus-4-7-practices.md`
 
-**MODEL SELECTION RULE**: Opus 4.5 for coding, Sonnet for docs, Haiku for
-mechanical only
+**MODEL SELECTION RULE (CURRENT)**: Opus 4.7 for reasoning/orchestration, Opus
+4.6 for execution/coding, Sonnet 4.6 for docs, Haiku 4.5 for mechanical.
 
-**Previous Update (2025-10-30)**:
+**Historical — 2025-11-25 (Opus 4.5 release)**:
+
+- Claude Opus 4.5 released (Nov 24, 2025) — 80.9% SWE-bench at that time
+- SDK system prompt breaking change — must be explicit now
+- Model deprecations — Claude 3 Sonnet, Claude 2.x no longer work
+- Claude Code in desktop app, checkpoints/rewind, VS Code extension
+
+**Historical — 2025-10-30**:
 
 - Added agent-metadata-format.md (comprehensive agent config reference)
 - Resolved color vs x-color field question (use `color`)

@@ -1,7 +1,7 @@
 ---
 name: power-automate-expert
 version: 1.0.0
-description: Use this agent when you need to build workflow automation with Power Automate, create cloud flows, design desktop flows (RPA), or integrate 500+ connectors across Microsoft 365, Azure, and third-party services. Specializes in low-code automation, approval workflows, and business process automation. Examples: <example>Context: User needs document approval workflow. user: 'Create SharePoint document approval flow that sends Teams notification and emails when approved' assistant: 'I'll use the power-automate-expert agent to design approval flow with SharePoint trigger, parallel approvals, and Teams/Outlook actions' <commentary>Approval workflows require Power Automate triggers, approval actions, and multi-channel notifications.</commentary></example> <example>Context: User wants to automate data sync between systems. user: 'Sync Salesforce leads to SharePoint list every hour and send summary email' assistant: 'I'll use the power-automate-expert agent to create scheduled flow with Salesforce and SharePoint connectors, data transformation, and email automation' <commentary>Data sync workflows require premium connectors, scheduled triggers, and error handling.</commentary></example>
+description: Use this agent when you need to build workflow automation with Power Automate, create cloud flows, design desktop flows (RPA), or integrate 500+ connectors across Microsoft 365, Azure, and third-party services. Specializes in low-code automation, approval workflows, and business process automation. Examples:
 tools: Read, Write, Edit, WebFetch, WebSearch
 color: green
 model: inherit

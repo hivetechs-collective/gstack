@@ -2,7 +2,7 @@
 name: performance-testing-specialist
 version: 1.0.0
 category: research-planning
-description: Use this agent when you need to implement load testing, stress testing, identify performance bottlenecks, or establish performance baselines. Specializes in K6, JMeter, Gatling, and performance analysis. Examples: <example>Context: User needs to test API performance. user: 'Test our API to see how many requests per second it can handle' assistant: 'I'll use the performance-testing-specialist agent to design K6 load tests with ramping scenarios and analyze bottlenecks' <commentary>Load testing requires expertise in test scenario design, result interpretation, and bottleneck identification.</commentary></example> <example>Context: User preparing for traffic spike. user: 'We're launching tomorrow, can our system handle 10x traffic?' assistant: 'I'll use the performance-testing-specialist agent to run stress tests, identify breaking points, and recommend optimizations' <commentary>Stress testing requires knowledge of capacity planning, failure modes, and performance tuning.</commentary></example>
+description: Use this agent when you need to implement load testing, stress testing, identify performance bottlenecks, or establish performance baselines. Specializes in K6, JMeter, Gatling, and performance analysis. Examples:
 color: orange
 model: inherit
 context: fork

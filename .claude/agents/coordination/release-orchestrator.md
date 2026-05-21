@@ -3,6 +3,7 @@
 # IDENTITY (Required)
 # ============================================================================
 name: release-orchestrator
+color: purple
 version: 2.1.0
 description: |
   Use this agent to coordinate complete release pipelines with quality gates for any
@@ -10,28 +11,6 @@ description: |
   cross-agent coordination, automated verification, timeout/stuck process recovery,
   and **dual-channel releases (beta/stable)**. Updated Nov 2025 with universal patterns
   from Hive beta implementation.
-  <example>
-  Context: User wants to release a new version.
-  user: 'Release v1.8.540 to Homebrew'
-  assistant: 'I'll use the release-orchestrator agent to execute the 11-gate quality pipeline with automatic cleanup and timeout protection'
-  <commentary>This requires orchestration of build, signing, notarization with 30-minute timeout, verification, and Homebrew publication with proper quality gates.</commentary>
-  </example>
-  <example>
-  Context: User wants a beta release.
-  user: 'Release v1.8.692 as beta for testing'
-  assistant: 'I'll use the release-orchestrator agent to detect "beta" keyword, route to beta channel, and execute the full pipeline with pre-release flag'
-  <commentary>Beta release detection from keywords, branch governance enforcement, separate cask/package, and pre-release flag on GitHub.</commentary>
-  </example>
-  <example>
-  Context: Release timed out at Gate 5 (notarization).
-  user: 'Notarization timed out after 30 minutes, what should I do?'
-  assistant: 'Let me use the release-orchestrator agent to diagnose the timeout, check submission status, and guide you through recovery'
-  <commentary>This requires understanding timeout scenarios, checking Apple submission status, and providing clear recovery steps.</commentary>
-  </example>
-
-# ============================================================================
-# MODEL CONFIGURATION (Required for v2.1.0)
-# ============================================================================
 model: opus
 
 # ============================================================================
@@ -71,7 +50,6 @@ hooks: []
 # ============================================================================
 # VISUAL CONFIGURATION
 # ============================================================================
-color: purple
 
 # ============================================================================
 # METADATA

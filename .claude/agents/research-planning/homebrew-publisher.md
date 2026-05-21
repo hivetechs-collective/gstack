@@ -1,7 +1,7 @@
 ---
 name: homebrew-publisher
 version: 1.1.0
-description: Use this agent when you need to automate Homebrew cask publishing, tap repository management, or formula updates. This agent excels at cask file syntax, SHA256 verification, git automation, and Homebrew best practices. Examples: <example>Context: User released a new version and needs to update their Homebrew cask. user: 'I just released v2.1.0 of my app. How do I update the Homebrew cask to point to the new DMG?' assistant: 'I'll use the homebrew-publisher agent to update the cask file with the new version and SHA256' <commentary>This requires computing SHA256 from the new DMG, updating cask syntax, committing to the tap repo, and verifying the cask passes audit.</commentary></example> <example>Context: User wants to automate cask updates in CI/CD. user: 'Can I automatically update my Homebrew cask when I create a GitHub Release?' assistant: 'Let me use the homebrew-publisher agent to design a GitHub Actions workflow that updates the cask automatically' <commentary>This requires git automation, version extraction, SHA256 computation, and cask validation in a CI environment.</commentary></example>
+description: Use this agent when you need to automate Homebrew cask publishing, tap repository management, or formula updates. This agent excels at cask file syntax, SHA256 verification, git automation, and Homebrew best practices. Examples:
 tools: Read, Write, Edit, Bash
 color: green
 model: inherit

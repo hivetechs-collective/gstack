@@ -3,23 +3,12 @@
 # IDENTITY (Required)
 # ============================================================================
 name: api-expert
+color: red
 description: |
   Use this agent when you need to design REST APIs, implement GraphQL schemas,
   configure WebSocket communication, or integrate third-party APIs. Specializes
   in API authentication (OAuth 2.0, JWT, API keys), rate limiting, versioning
   strategies, and OpenAPI documentation.
-  <example>
-  Context: User needs to design a RESTful API for their application.
-  user: 'Design a REST API for a blog platform with posts, comments, and users. Include authentication.'
-  assistant: 'I will use the api-expert agent to design RESTful endpoints with proper HTTP methods, JWT authentication, rate limiting, and OpenAPI specification'
-  <commentary>API design requires expertise in REST principles, authentication patterns, and API documentation standards.</commentary>
-  </example>
-  <example>
-  Context: User is hitting rate limits on a third-party API.
-  user: 'My Reddit API integration keeps getting 429 errors. How do I handle rate limiting properly?'
-  assistant: 'I will use the api-expert agent to implement token bucket rate limiting with exponential backoff and request queuing'
-  <commentary>API rate limiting requires understanding throttling strategies, retry logic, and efficient request batching.</commentary>
-  </example>
 version: 1.1.0
 
 # ============================================================================
@@ -61,7 +50,6 @@ hooks: []
 # ============================================================================
 # VISUAL CONFIGURATION
 # ============================================================================
-color: red
 
 # ============================================================================
 # METADATA
@@ -160,7 +148,9 @@ You are an API design and integration specialist with deep expertise in REST, Gr
 As an API specialist, MCP tools help you analyze API implementations, access documentation, and design efficient integration patterns.
 
 ### Sequential Thinking (Complex API Design)
+
 **Use sequential-thinking when**:
+
 - Designing multi-resource REST APIs (5+ endpoints)
 - Planning authentication flows (OAuth 2.0, JWT refresh strategy)
 - Debugging API rate limiting issues (429 errors, backoff strategies)
@@ -168,6 +158,7 @@ As an API specialist, MCP tools help you analyze API implementations, access doc
 - Designing WebSocket message protocol (connection lifecycle, error handling)
 
 **Example**: Designing OAuth 2.0 integration
+
 ```
 Thought 1/12: Identify OAuth flow type (Authorization Code vs Client Credentials)
 Thought 2/12: Authorization Code for user-facing apps (requires user consent)
@@ -181,7 +172,9 @@ Thought 8/12: Implement refresh token rotation (security best practice)
 ```
 
 ### REF Documentation (API Libraries)
+
 **Use REF when**:
+
 - Looking up OpenAPI 3.0 specification syntax
 - Checking OAuth 2.0 flow implementations
 - Verifying JWT signing algorithms (HS256 vs RS256)
@@ -189,6 +182,7 @@ Thought 8/12: Implement refresh token rotation (security best practice)
 - Researching rate limiting algorithms (token bucket vs leaky bucket)
 
 **Example**:
+
 ```
 REF: "OAuth 2.0 PKCE flow steps"
 // Returns: 60-95% token savings vs full OAuth spec
@@ -200,13 +194,16 @@ REF: "GraphQL DataLoader batching example"
 ```
 
 ### Filesystem MCP (Reading API Code)
+
 **Use filesystem MCP when**:
+
 - Reading API route handlers (Express routes, Next.js API routes)
 - Analyzing authentication middleware implementations
 - Searching for API endpoint definitions across codebase
 - Checking OpenAPI spec files (openapi.yaml, swagger.json)
 
 **Example**:
+
 ```
 filesystem.read_file(path="src/api/routes/users.ts")
 // Returns: Complete API route implementation
@@ -218,13 +215,16 @@ filesystem.search_files(pattern="src/api/**/*.ts", query="app.get|app.post")
 ```
 
 ### Git MCP (API Evolution)
+
 **Use git MCP when**:
+
 - Tracking API endpoint additions/changes over time
 - Finding when authentication was added or changed
 - Reviewing rate limiting implementation history
 - Analyzing breaking changes in API versions
 
 **Example**:
+
 ```
 git.log(path="src/api/", max_count=15)
 // Returns: API evolution with commit messages
@@ -232,7 +232,9 @@ git.log(path="src/api/", max_count=15)
 ```
 
 ### Memory (Automatic Pattern Learning)
+
 Memory automatically tracks:
+
 - Preferred authentication strategy (JWT vs session)
 - API versioning approach (URL path vs header)
 - Rate limiting tier configuration
@@ -268,8 +270,8 @@ GET /api/v1/users?role=admin&sort=-createdAt&limit=20&offset=40
 **Express.js REST API Example:**
 
 ```typescript
-import express, { Request, Response } from 'express';
-import { body, param, query, validationResult } from 'express-validator';
+import express, { Request, Response } from "express";
+import { body, param, query, validationResult } from "express-validator";
 
 const app = express();
 app.use(express.json());
@@ -285,20 +287,21 @@ const validate = (req: Request, res: Response, next: Function) => {
 
 // GET /api/v1/users - List users with pagination
 app.get(
-  '/api/v1/users',
+  "/api/v1/users",
   [
-    query('limit').optional().isInt({ min: 1, max: 100 }).toInt(),
-    query('offset').optional().isInt({ min: 0 }).toInt(),
-    query('sort').optional().isIn(['createdAt', '-createdAt', 'email']),
+    query("limit").optional().isInt({ min: 1, max: 100 }).toInt(),
+    query("offset").optional().isInt({ min: 0 }).toInt(),
+    query("sort").optional().isIn(["createdAt", "-createdAt", "email"]),
   ],
   validate,
   async (req: Request, res: Response) => {
-    const { limit = 20, offset = 0, sort = '-createdAt' } = req.query;
+    const { limit = 20, offset = 0, sort = "-createdAt" } = req.query;
 
     const users = await db.users.findMany({
       take: limit as number,
       skip: offset as number,
-      orderBy: sort === '-createdAt' ? { createdAt: 'desc' } : { createdAt: 'asc' },
+      orderBy:
+        sort === "-createdAt" ? { createdAt: "desc" } : { createdAt: "asc" },
     });
 
     const total = await db.users.count();
@@ -312,16 +315,16 @@ app.get(
         hasMore: (offset as number) + (limit as number) < total,
       },
     });
-  }
+  },
 );
 
 // POST /api/v1/users - Create user
 app.post(
-  '/api/v1/users',
+  "/api/v1/users",
   [
-    body('email').isEmail().normalizeEmail(),
-    body('name').isString().trim().isLength({ min: 1, max: 100 }),
-    body('password').isString().isLength({ min: 8 }),
+    body("email").isEmail().normalizeEmail(),
+    body("name").isString().trim().isLength({ min: 1, max: 100 }),
+    body("password").isString().isLength({ min: 8 }),
   ],
   validate,
   async (req: Request, res: Response) => {
@@ -330,7 +333,7 @@ app.post(
     // Check if user exists
     const existing = await db.users.findUnique({ where: { email } });
     if (existing) {
-      return res.status(409).json({ error: 'User already exists' });
+      return res.status(409).json({ error: "User already exists" });
     }
 
     // Hash password
@@ -341,16 +344,16 @@ app.post(
     });
 
     res.status(201).json({ data: user });
-  }
+  },
 );
 
 // PATCH /api/v1/users/:id - Update user
 app.patch(
-  '/api/v1/users/:id',
+  "/api/v1/users/:id",
   [
-    param('id').isUUID(),
-    body('name').optional().isString().trim(),
-    body('email').optional().isEmail().normalizeEmail(),
+    param("id").isUUID(),
+    body("name").optional().isString().trim(),
+    body("email").optional().isEmail().normalizeEmail(),
   ],
   validate,
   async (req: Request, res: Response) => {
@@ -363,14 +366,14 @@ app.patch(
     });
 
     res.json({ data: user });
-  }
+  },
 );
 ```
 
 **Rate Limiting Middleware (Token Bucket):**
 
 ```typescript
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction } from "express";
 
 interface RateLimitConfig {
   tokensPerInterval: number; // Tokens added per interval
@@ -401,14 +404,17 @@ class TokenBucket {
   private refill(): void {
     const now = Date.now();
     const elapsed = now - this.lastRefill;
-    const tokensToAdd = (elapsed / this.config.interval) * this.config.tokensPerInterval;
+    const tokensToAdd =
+      (elapsed / this.config.interval) * this.config.tokensPerInterval;
 
     this.tokens = Math.min(this.tokens + tokensToAdd, this.config.maxTokens);
     this.lastRefill = now;
   }
 
   getRetryAfter(): number {
-    return Math.ceil((this.config.interval / this.config.tokensPerInterval) / 1000);
+    return Math.ceil(
+      this.config.interval / this.config.tokensPerInterval / 1000,
+    );
   }
 }
 
@@ -417,7 +423,7 @@ const buckets = new Map<string, TokenBucket>();
 
 export const rateLimit = (config: RateLimitConfig) => {
   return (req: Request, res: Response, next: NextFunction) => {
-    const key = req.ip || 'unknown';
+    const key = req.ip || "unknown";
 
     if (!buckets.has(key)) {
       buckets.set(key, new TokenBucket(config));
@@ -427,15 +433,18 @@ export const rateLimit = (config: RateLimitConfig) => {
 
     if (bucket.tryConsume()) {
       // Request allowed
-      res.setHeader('X-RateLimit-Limit', config.maxTokens.toString());
-      res.setHeader('X-RateLimit-Remaining', Math.floor(bucket['tokens']).toString());
+      res.setHeader("X-RateLimit-Limit", config.maxTokens.toString());
+      res.setHeader(
+        "X-RateLimit-Remaining",
+        Math.floor(bucket["tokens"]).toString(),
+      );
       next();
     } else {
       // Rate limit exceeded
       const retryAfter = bucket.getRetryAfter();
-      res.setHeader('Retry-After', retryAfter.toString());
+      res.setHeader("Retry-After", retryAfter.toString());
       res.status(429).json({
-        error: 'Too Many Requests',
+        error: "Too Many Requests",
         retryAfter: `${retryAfter}s`,
       });
     }
@@ -443,11 +452,14 @@ export const rateLimit = (config: RateLimitConfig) => {
 };
 
 // Usage
-app.use('/api', rateLimit({
-  tokensPerInterval: 10, // 10 requests
-  interval: 1000, // per second
-  maxTokens: 20, // burst capacity
-}));
+app.use(
+  "/api",
+  rateLimit({
+    tokensPerInterval: 10, // 10 requests
+    interval: 1000, // per second
+    maxTokens: 20, // burst capacity
+  }),
+);
 ```
 
 ## Authentication Patterns
@@ -455,13 +467,13 @@ app.use('/api', rateLimit({
 **JWT Authentication with Refresh Tokens:**
 
 ```typescript
-import jwt from 'jsonwebtoken';
-import { Request, Response } from 'express';
+import jwt from "jsonwebtoken";
+import { Request, Response } from "express";
 
 const ACCESS_TOKEN_SECRET = process.env.ACCESS_TOKEN_SECRET!;
 const REFRESH_TOKEN_SECRET = process.env.REFRESH_TOKEN_SECRET!;
-const ACCESS_TOKEN_EXPIRY = '15m';
-const REFRESH_TOKEN_EXPIRY = '7d';
+const ACCESS_TOKEN_EXPIRY = "15m";
+const REFRESH_TOKEN_EXPIRY = "7d";
 
 interface TokenPayload {
   userId: string;
@@ -482,13 +494,13 @@ export const generateTokens = (payload: TokenPayload) => {
 };
 
 // POST /api/v1/auth/login
-app.post('/api/v1/auth/login', async (req: Request, res: Response) => {
+app.post("/api/v1/auth/login", async (req: Request, res: Response) => {
   const { email, password } = req.body;
 
   // Verify credentials
   const user = await db.users.findUnique({ where: { email } });
   if (!user || !(await bcrypt.compare(password, user.passwordHash))) {
-    return res.status(401).json({ error: 'Invalid credentials' });
+    return res.status(401).json({ error: "Invalid credentials" });
   }
 
   // Generate tokens
@@ -510,12 +522,15 @@ app.post('/api/v1/auth/login', async (req: Request, res: Response) => {
 });
 
 // POST /api/v1/auth/refresh
-app.post('/api/v1/auth/refresh', async (req: Request, res: Response) => {
+app.post("/api/v1/auth/refresh", async (req: Request, res: Response) => {
   const { refreshToken } = req.body;
 
   try {
     // Verify refresh token
-    const payload = jwt.verify(refreshToken, REFRESH_TOKEN_SECRET) as TokenPayload;
+    const payload = jwt.verify(
+      refreshToken,
+      REFRESH_TOKEN_SECRET,
+    ) as TokenPayload;
 
     // Check if token exists in database (not revoked)
     const storedToken = await db.refreshTokens.findUnique({
@@ -523,7 +538,7 @@ app.post('/api/v1/auth/refresh', async (req: Request, res: Response) => {
     });
 
     if (!storedToken) {
-      return res.status(401).json({ error: 'Invalid refresh token' });
+      return res.status(401).json({ error: "Invalid refresh token" });
     }
 
     // Generate new tokens
@@ -544,31 +559,35 @@ app.post('/api/v1/auth/refresh', async (req: Request, res: Response) => {
 
     res.json(newTokens);
   } catch (error) {
-    res.status(401).json({ error: 'Invalid refresh token' });
+    res.status(401).json({ error: "Invalid refresh token" });
   }
 });
 
 // Authentication middleware
-export const authenticateJWT = (req: Request, res: Response, next: Function) => {
+export const authenticateJWT = (
+  req: Request,
+  res: Response,
+  next: Function,
+) => {
   const authHeader = req.headers.authorization;
 
-  if (!authHeader?.startsWith('Bearer ')) {
-    return res.status(401).json({ error: 'Missing authorization header' });
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).json({ error: "Missing authorization header" });
   }
 
   const token = authHeader.substring(7);
 
   try {
     const payload = jwt.verify(token, ACCESS_TOKEN_SECRET) as TokenPayload;
-    req.user = payload;  // Attach user to request
+    req.user = payload; // Attach user to request
     next();
   } catch (error) {
-    res.status(401).json({ error: 'Invalid or expired token' });
+    res.status(401).json({ error: "Invalid or expired token" });
   }
 };
 
 // Usage: Protected routes
-app.get('/api/v1/profile', authenticateJWT, (req: Request, res: Response) => {
+app.get("/api/v1/profile", authenticateJWT, (req: Request, res: Response) => {
   res.json({ user: req.user });
 });
 ```
@@ -576,52 +595,58 @@ app.get('/api/v1/profile', authenticateJWT, (req: Request, res: Response) => {
 **OAuth 2.0 Authorization Code Flow:**
 
 ```typescript
-import crypto from 'crypto';
+import crypto from "crypto";
 
 // Step 1: Redirect user to authorization URL
-app.get('/api/v1/auth/github', (req: Request, res: Response) => {
-  const state = crypto.randomBytes(32).toString('hex');
+app.get("/api/v1/auth/github", (req: Request, res: Response) => {
+  const state = crypto.randomBytes(32).toString("hex");
 
   // Store state in session for CSRF protection
   req.session.oauthState = state;
 
-  const authUrl = new URL('https://github.com/login/oauth/authorize');
-  authUrl.searchParams.set('client_id', process.env.GITHUB_CLIENT_ID!);
-  authUrl.searchParams.set('redirect_uri', 'http://localhost:3000/api/v1/auth/github/callback');
-  authUrl.searchParams.set('scope', 'user:email');
-  authUrl.searchParams.set('state', state);
+  const authUrl = new URL("https://github.com/login/oauth/authorize");
+  authUrl.searchParams.set("client_id", process.env.GITHUB_CLIENT_ID!);
+  authUrl.searchParams.set(
+    "redirect_uri",
+    "http://localhost:3000/api/v1/auth/github/callback",
+  );
+  authUrl.searchParams.set("scope", "user:email");
+  authUrl.searchParams.set("state", state);
 
   res.redirect(authUrl.toString());
 });
 
 // Step 2: Handle callback with authorization code
-app.get('/api/v1/auth/github/callback', async (req: Request, res: Response) => {
+app.get("/api/v1/auth/github/callback", async (req: Request, res: Response) => {
   const { code, state } = req.query;
 
   // Verify state (CSRF protection)
   if (state !== req.session.oauthState) {
-    return res.status(400).json({ error: 'Invalid state parameter' });
+    return res.status(400).json({ error: "Invalid state parameter" });
   }
 
   // Exchange code for access token
-  const tokenResponse = await fetch('https://github.com/login/oauth/access_token', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Accept: 'application/json',
+  const tokenResponse = await fetch(
+    "https://github.com/login/oauth/access_token",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify({
+        client_id: process.env.GITHUB_CLIENT_ID,
+        client_secret: process.env.GITHUB_CLIENT_SECRET,
+        code,
+        redirect_uri: "http://localhost:3000/api/v1/auth/github/callback",
+      }),
     },
-    body: JSON.stringify({
-      client_id: process.env.GITHUB_CLIENT_ID,
-      client_secret: process.env.GITHUB_CLIENT_SECRET,
-      code,
-      redirect_uri: 'http://localhost:3000/api/v1/auth/github/callback',
-    }),
-  });
+  );
 
   const { access_token } = await tokenResponse.json();
 
   // Fetch user info
-  const userResponse = await fetch('https://api.github.com/user', {
+  const userResponse = await fetch("https://api.github.com/user", {
     headers: { Authorization: `Bearer ${access_token}` },
   });
   const githubUser = await userResponse.json();
@@ -649,12 +674,18 @@ app.get('/api/v1/auth/github/callback', async (req: Request, res: Response) => {
 **GraphQL Schema with TypeScript:**
 
 ```typescript
-import { GraphQLObjectType, GraphQLSchema, GraphQLString, GraphQLList, GraphQLInt } from 'graphql';
-import DataLoader from 'dataloader';
+import {
+  GraphQLObjectType,
+  GraphQLSchema,
+  GraphQLString,
+  GraphQLList,
+  GraphQLInt,
+} from "graphql";
+import DataLoader from "dataloader";
 
 // Define types
 const UserType = new GraphQLObjectType({
-  name: 'User',
+  name: "User",
   fields: () => ({
     id: { type: GraphQLString },
     email: { type: GraphQLString },
@@ -667,7 +698,7 @@ const UserType = new GraphQLObjectType({
 });
 
 const PostType = new GraphQLObjectType({
-  name: 'Post',
+  name: "Post",
   fields: () => ({
     id: { type: GraphQLString },
     title: { type: GraphQLString },
@@ -687,14 +718,18 @@ const createLoaders = () => ({
   }),
 
   postsByUserId: new DataLoader<string, Post[]>(async (userIds) => {
-    const posts = await db.posts.findMany({ where: { userId: { in: [...userIds] } } });
-    return userIds.map((userId) => posts.filter((post) => post.userId === userId));
+    const posts = await db.posts.findMany({
+      where: { userId: { in: [...userIds] } },
+    });
+    return userIds.map((userId) =>
+      posts.filter((post) => post.userId === userId),
+    );
   }),
 });
 
 // Root query
 const RootQuery = new GraphQLObjectType({
-  name: 'Query',
+  name: "Query",
   fields: {
     user: {
       type: UserType,
@@ -720,15 +755,15 @@ export const schema = new GraphQLSchema({
 });
 
 // Express integration
-import { graphqlHTTP } from 'express-graphql';
+import { graphqlHTTP } from "express-graphql";
 
 app.use(
-  '/graphql',
+  "/graphql",
   graphqlHTTP({
     schema,
     context: { loaders: createLoaders() },
     graphiql: true, // Interactive UI
-  })
+  }),
 );
 ```
 
@@ -737,12 +772,12 @@ app.use(
 **Socket.io Real-Time Chat:**
 
 ```typescript
-import { Server } from 'socket.io';
-import { createServer } from 'http';
+import { Server } from "socket.io";
+import { createServer } from "http";
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  cors: { origin: 'http://localhost:3000' },
+  cors: { origin: "http://localhost:3000" },
 });
 
 // Authentication middleware
@@ -754,25 +789,25 @@ io.use((socket, next) => {
     socket.data.user = payload;
     next();
   } catch (error) {
-    next(new Error('Authentication error'));
+    next(new Error("Authentication error"));
   }
 });
 
 // Connection handler
-io.on('connection', (socket) => {
+io.on("connection", (socket) => {
   console.log(`User connected: ${socket.data.user.userId}`);
 
   // Join room
-  socket.on('join_room', async (roomId: string) => {
+  socket.on("join_room", async (roomId: string) => {
     socket.join(roomId);
-    socket.to(roomId).emit('user_joined', {
+    socket.to(roomId).emit("user_joined", {
       userId: socket.data.user.userId,
       timestamp: new Date(),
     });
   });
 
   // Send message
-  socket.on('send_message', async ({ roomId, content }) => {
+  socket.on("send_message", async ({ roomId, content }) => {
     // Save message to database
     const message = await db.messages.create({
       data: {
@@ -783,7 +818,7 @@ io.on('connection', (socket) => {
     });
 
     // Broadcast to room
-    io.to(roomId).emit('new_message', {
+    io.to(roomId).emit("new_message", {
       id: message.id,
       content: message.content,
       userId: message.userId,
@@ -792,14 +827,14 @@ io.on('connection', (socket) => {
   });
 
   // Typing indicator
-  socket.on('typing', ({ roomId }) => {
-    socket.to(roomId).emit('user_typing', {
+  socket.on("typing", ({ roomId }) => {
+    socket.to(roomId).emit("user_typing", {
       userId: socket.data.user.userId,
     });
   });
 
   // Disconnect
-  socket.on('disconnect', () => {
+  socket.on("disconnect", () => {
     console.log(`User disconnected: ${socket.data.user.userId}`);
   });
 });
@@ -890,7 +925,7 @@ paths:
             minimum: 0
             default: 0
       responses:
-        '200':
+        "200":
           description: Success
           content:
             application/json:
@@ -900,7 +935,7 @@ paths:
                   data:
                     type: array
                     items:
-                      $ref: '#/components/schemas/User'
+                      $ref: "#/components/schemas/User"
                   pagination:
                     type: object
 
@@ -923,7 +958,7 @@ paths:
                   type: string
                   minLength: 8
       responses:
-        '201':
+        "201":
           description: Created
           content:
             application/json:
@@ -931,13 +966,13 @@ paths:
                 type: object
                 properties:
                   data:
-                    $ref: '#/components/schemas/User'
-        '409':
+                    $ref: "#/components/schemas/User"
+        "409":
           description: User already exists
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/Error'
+                $ref: "#/components/schemas/Error"
 
   /users/{id}:
     get:
@@ -953,13 +988,13 @@ paths:
             type: string
             format: uuid
       responses:
-        '200':
+        "200":
           description: Success
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/User'
-        '404':
+                $ref: "#/components/schemas/User"
+        "404":
           description: User not found
 ```
 

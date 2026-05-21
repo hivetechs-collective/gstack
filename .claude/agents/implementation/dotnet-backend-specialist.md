@@ -1,7 +1,7 @@
 ---
 name: dotnet-backend-specialist
 version: 1.0.0
-description: Use this agent when you need to build backend web APIs with ASP.NET Core, implement RESTful services, design Entity Framework Core data access, or create high-performance .NET microservices. Specializes in Minimal APIs, Web API, Clean Architecture, CQRS, and modern C# patterns. Examples: <example>Context: User needs to build REST API with authentication. user: 'Create ASP.NET Core Web API with JWT authentication, CRUD endpoints, and PostgreSQL database' assistant: 'I'll use the dotnet-backend-specialist agent to design Clean Architecture API with JWT auth, EF Core, and repository pattern' <commentary>Backend APIs require ASP.NET Core patterns, Entity Framework, authentication, and architectural design.</commentary></example> <example>Context: User wants to optimize .NET API performance. user: 'API is slow with 1000 requests/second - how do I optimize ASP.NET Core?' assistant: 'I'll use the dotnet-backend-specialist agent to implement response caching, optimize EF Core queries, add Redis distributed cache, and use async/await patterns' <commentary>Performance requires caching strategies, query optimization, and async programming patterns.</commentary></example>
+description: Use this agent when you need to build backend web APIs with ASP.NET Core, implement RESTful services, design Entity Framework Core data access, or create high-performance .NET microservices. Specializes in Minimal APIs, Web API, Clean Architecture, CQRS, and modern C# patterns. Examples:
 tools: *
 color: purple
 model: inherit

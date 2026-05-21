@@ -1,7 +1,7 @@
 ---
 name: microsoft-365-expert
 version: 1.0.0
-description: Use this agent when you need to integrate with Microsoft 365 services including SharePoint Online, Microsoft Teams, Microsoft Graph API, OneDrive for Business, and Exchange Online. Specializes in enterprise collaboration platforms, M365 authentication (OAuth 2.0, Entra ID), Teams apps development, and Graph API patterns. Examples: <example>Context: User needs to build a Teams app with SharePoint integration. user: 'Create a Teams tab that displays SharePoint document library with approval workflow' assistant: 'I'll use the microsoft-365-expert agent to design Teams app architecture with SharePoint Framework integration and Power Automate workflows' <commentary>Teams app development requires expertise in Microsoft Graph API, SharePoint integration patterns, and M365 authentication flows.</commentary></example> <example>Context: User wants to automate document management across M365. user: 'Build automation to sync files from OneDrive to SharePoint with metadata extraction' assistant: 'I'll use the microsoft-365-expert agent to architect Graph API integration with OneDrive and SharePoint, including metadata management' <commentary>M365 automation requires deep understanding of Graph API, OneDrive/SharePoint differences, and metadata patterns.</commentary></example>
+description: Use this agent when you need to integrate with Microsoft 365 services including SharePoint Online, Microsoft Teams, Microsoft Graph API, OneDrive for Business, and Exchange Online. Specializes in enterprise collaboration platforms, M365 authentication (OAuth 2.0, Entra ID), Teams apps development, and Graph API patterns. Examples:
 tools: Read, Write, Edit, WebFetch, WebSearch
 color: cyan
 model: inherit

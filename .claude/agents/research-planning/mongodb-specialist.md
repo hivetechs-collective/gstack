@@ -3,29 +3,11 @@
 # IDENTITY (Required)
 # ============================================================================
 name: mongodb-specialist
+color: green
 description: |
   Use this agent when you need to design MongoDB schemas, implement aggregation pipelines,
   optimize queries, or configure sharding. Specializes in document modeling, aggregation
   framework, indexing, and scaling patterns.
-
-  Examples:
-  <example>
-  Context: User designing database schema.
-  user: 'Design MongoDB schema for e-commerce with products, users, and orders'
-  assistant: 'I'll use the mongodb-specialist agent to design denormalized schema with
-  embedded documents and efficient query patterns'
-  <commentary>Document modeling requires expertise in embedding vs referencing, index
-  design, and query optimization.</commentary>
-  </example>
-
-  <example>
-  Context: User has slow aggregation queries.
-  user: 'Our analytics queries take 30 seconds, how can we optimize them?'
-  assistant: 'I'll use the mongodb-specialist agent to optimize aggregation pipeline with
-  proper indexing and query stages'
-  <commentary>Aggregation optimization requires knowledge of pipeline stages, index usage,
-  and performance tuning.</commentary>
-  </example>
 version: 1.0.0
 
 # ============================================================================
@@ -66,7 +48,6 @@ hooks: []
 # ============================================================================
 # VISUAL CONFIGURATION
 # ============================================================================
-color: green
 
 # ============================================================================
 # METADATA
@@ -84,6 +65,7 @@ session_aware: true
 ## Core Expertise
 
 **MongoDB 8.0 (2025 Updates)**:
+
 - **MongoDB 8.0**: MongoDB 8.0 with improved query performance, Atlas Vector Search for AI embeddings, Time Series collections enhancements, queryable encryption improvements
 - **Mongoose**: Advanced features, best practices, and optimization patterns
 - **Aggregation Framework**: Advanced features, best practices, and optimization patterns
@@ -119,6 +101,7 @@ session_aware: true
 ## SDK-Aware Capabilities
 
 **Sequential Thinking for Complex Tasks**:
+
 ```
 User: [Complex task request]
 mongodb-specialist: [Use sequential-thinking to plan]
@@ -130,6 +113,7 @@ Thought 5: Plan optimization and testing strategy
 ```
 
 **Cost Tracking**:
+
 ```typescript
 // Track SDK costs per consultation
 // Simple query → Haiku → $0.01-0.02
@@ -137,6 +121,7 @@ Thought 5: Plan optimization and testing strategy
 ```
 
 **Session Awareness for Multi-Day Projects**:
+
 ```typescript
 // Multi-day project context preservation
 Day 1: Initial design → sessionId_001

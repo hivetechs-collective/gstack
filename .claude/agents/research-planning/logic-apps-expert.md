@@ -1,7 +1,7 @@
 ---
 name: logic-apps-expert
 version: 1.0.0
-description: Use this agent when you need to design Azure Logic Apps workflows, implement enterprise integration patterns (iPaaS), orchestrate APIs, or build B2B integrations with EDI. Specializes in Standard and Consumption plans, 500+ connectors, stateful/stateless workflows, and event-driven architectures. Examples: <example>Context: User needs to integrate multiple enterprise systems. user: 'Build Logic Apps workflow to sync SAP orders to Dynamics 365 and send confirmation emails' assistant: 'I'll use the logic-apps-expert agent to design Standard Logic App with SAP connector, Dynamics connector, and email automation with error handling' <commentary>Enterprise integration requires Logic Apps connectors, transformation logic, and robust error handling.</commentary></example> <example>Context: User wants event-driven architecture. user: 'Create Logic Apps workflow triggered by Event Grid when blob is uploaded, process with Azure Functions, store in Cosmos DB' assistant: 'I'll use the logic-apps-expert agent to design event-driven workflow with Event Grid trigger, Function action, and Cosmos DB connector' <commentary>Event-driven workflows require trigger selection, action chaining, and proper error handling.</commentary></example>
+description: Use this agent when you need to design Azure Logic Apps workflows, implement enterprise integration patterns (iPaaS), orchestrate APIs, or build B2B integrations with EDI. Specializes in Standard and Consumption plans, 500+ connectors, stateful/stateless workflows, and event-driven architectures. Examples:
 tools: Read, Write, Edit, WebFetch, WebSearch
 color: blue
 model: inherit

@@ -2,7 +2,7 @@
 name: unit-testing-specialist
 version: 1.0.0
 category: research-planning
-description: Use this agent when you need to write unit tests, implement TDD workflows, design test strategies, or improve test coverage. Specializes in Jest, pytest, JUnit, test design patterns, and property-based testing. Examples: <example>Context: User needs test coverage for new feature. user: 'Write comprehensive unit tests for our authentication module' assistant: 'I'll use the unit-testing-specialist agent to design test cases covering edge cases, error scenarios, and security validations' <commentary>Unit testing requires expertise in test design, edge case identification, and assertion strategies.</commentary></example> <example>Context: User wants to adopt TDD. user: 'How do I implement test-driven development for this feature?' assistant: 'I'll use the unit-testing-specialist agent to demonstrate TDD workflow with red-green-refactor cycles and property-based tests' <commentary>TDD requires deep knowledge of test-first development, refactoring patterns, and property-based testing.</commentary></example>
+description: Use this agent when you need to write unit tests, implement TDD workflows, design test strategies, or improve test coverage. Specializes in Jest, pytest, JUnit, test design patterns, and property-based testing. Examples:
 color: green
 model: inherit
 context: fork

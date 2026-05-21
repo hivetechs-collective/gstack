@@ -1,7 +1,7 @@
 ---
 name: python-ml-expert
 version: 1.1.0
-description: Use this agent when you need to implement machine learning models, vector databases, or Python-based AI systems. Specializes in PyTorch 2.0+, Hugging Face Transformers, ChromaDB/FAISS/Pinecone, and ONNX Runtime optimization. Examples: <example>Context: User needs to implement semantic search using embeddings. user: 'Build a semantic search system that finds similar documents using sentence embeddings' assistant: 'I'll use the python-ml-expert agent to implement this with Sentence Transformers and ChromaDB for efficient vector storage' <commentary>Semantic search requires expertise in embedding models, vector databases, and efficient similarity search algorithms.</commentary></example> <example>Context: User wants to optimize a PyTorch model for production. user: 'My PyTorch model is too slow for production. How do I optimize it with ONNX?' assistant: 'I'll use the python-ml-expert agent to convert the model to ONNX Runtime and benchmark performance improvements' <commentary>Model optimization requires deep knowledge of ONNX conversion, quantization, and runtime optimization strategies.</commentary></example>
+description: Use this agent when you need to implement machine learning models, vector databases, or Python-based AI systems. Specializes in PyTorch 2.0+, Hugging Face Transformers, ChromaDB/FAISS/Pinecone, and ONNX Runtime optimization. Examples:
 color: orange
 model: inherit
 sdk_features: [sessions, cost_tracking, tool_restrictions]

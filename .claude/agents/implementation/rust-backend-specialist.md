@@ -2,9 +2,9 @@
 name: rust-backend-specialist
 version: 1.0.0
 category: implementation
-description: Use this agent when you need to build high-performance backends with Rust, implement async APIs, optimize memory usage, or design concurrent systems. Specializes in Tokio, async/await, WebSocket servers, and zero-cost abstractions. Examples: <example>Context: User building WebSocket server. user: 'Build a WebSocket server in Rust that handles 10,000 concurrent connections' assistant: 'I'll use the rust-backend-specialist agent to implement Tokio-based WebSocket server with async message handling and connection pooling' <commentary>High-performance WebSocket servers require expertise in Tokio async runtime, connection management, and zero-copy patterns.</commentary></example> <example>Context: User converting from Node.js. user: 'Rewrite our Express API in Rust for 10x performance' assistant: 'I'll use the rust-backend-specialist agent to design Actix-web API with type-safe routes, async handlers, and optimal memory usage' <commentary>Backend migration requires knowledge of Rust web frameworks, async patterns, and performance optimization.</commentary></example>
+description: Use this agent when you need to build high-performance backends with Rust, implement async APIs, optimize memory usage, or design concurrent systems. Specializes in Tokio, async/await, WebSocket servers, and zero-cost abstractions. Examples:
 color: orange
-model: claude-opus-4-5
+model: claude-opus-4-6
 sdk_utilization: 70%
 sdk_features:
   context_management:

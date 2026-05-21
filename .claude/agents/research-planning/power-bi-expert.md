@@ -1,7 +1,7 @@
 ---
 name: power-bi-expert
 version: 1.0.0
-description: Use this agent when you need to design Power BI dashboards, write DAX formulas, create Power Query (M language) transformations, or design data models for business intelligence. Specializes in star schema design, time intelligence, row-level security, and Power BI Service administration. Examples: <example>Context: User needs to create executive dashboard with KPIs. user: 'Build Power BI dashboard showing sales trends, year-over-year growth, and regional breakdown' assistant: 'I'll use the power-bi-expert agent to design star schema, write DAX measures for time intelligence, and create interactive visualizations' <commentary>BI dashboards require expertise in data modeling, DAX formulas, and visualization best practices.</commentary></example> <example>Context: User wants to optimize Power BI performance. user: 'Power BI report is slow with 10M rows - how do I optimize?' assistant: 'I'll use the power-bi-expert agent to implement aggregations, optimize DAX measures, and design incremental refresh strategy' <commentary>Performance optimization requires understanding of aggregations, query folding, and DirectQuery patterns.</commentary></example>
+description: Use this agent when you need to design Power BI dashboards, write DAX formulas, create Power Query (M language) transformations, or design data models for business intelligence. Specializes in star schema design, time intelligence, row-level security, and Power BI Service administration. Examples:
 tools: Read, Write, Edit, WebFetch, WebSearch
 color: yellow
 model: inherit

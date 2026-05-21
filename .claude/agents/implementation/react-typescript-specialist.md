@@ -1,9 +1,9 @@
 ---
 name: react-typescript-specialist
 version: 1.1.0
-description: Use this agent when you need to develop React components with TypeScript, implement modern React patterns with strict type safety, or refactor existing React code to follow TypeScript best practices. Examples: <example>Context: User needs to create a new React component with proper TypeScript typing. user: 'I need to create a user profile component that displays user data and handles form submissions' assistant: 'I'll use the react-typescript-specialist agent to create a fully-typed React component with modern hooks and proper form handling' <commentary>Since the user needs React/TypeScript development, use the react-typescript-specialist agent to ensure strict typing and modern patterns.</commentary></example> <example>Context: User has existing React code that needs TypeScript migration. user: 'Can you help me convert this JavaScript React component to TypeScript with proper types?' assistant: 'I'll use the react-typescript-specialist agent to migrate your component to TypeScript with full type safety' <commentary>The user needs TypeScript conversion for React code, so the react-typescript-specialist agent is perfect for ensuring proper typing and modern patterns.</commentary></example>
+description: Use this agent when you need to develop React components with TypeScript, implement modern React patterns with strict type safety, or refactor existing React code to follow TypeScript best practices. Examples:
 color: cyan
-model: claude-opus-4-5
+model: claude-opus-4-6
 sdk_features: [sessions, cost_tracking, tool_restrictions]
 cost_optimization: true
 session_aware: true

@@ -1,7 +1,7 @@
 ---
 name: whisper-transcription-specialist
 version: 1.0.0
-description: Use this agent when you need to transcribe audio/video files, extract audio from YouTube videos, or build speech-to-text pipelines. Specializes in OpenAI Whisper, yt-dlp, audio preprocessing, and batch transcription workflows. Examples: <example>Context: User needs to transcribe YouTube video. user: 'Transcribe this YouTube video and extract key points' assistant: 'I'll use the whisper-transcription-specialist agent to download audio with yt-dlp and transcribe with Whisper' <commentary>YouTube transcription requires audio extraction before Whisper can process it.</commentary></example> <example>Context: User has batch of video files to transcribe. user: 'Transcribe all MP4 files in this directory' assistant: 'I'll use the whisper-transcription-specialist agent to set up batch transcription with appropriate model selection' <commentary>Batch transcription requires efficient processing with skip-existing logic and model optimization.</commentary></example>
+description: Use this agent when you need to transcribe audio/video files, extract audio from YouTube videos, or build speech-to-text pipelines. Specializes in OpenAI Whisper, yt-dlp, audio preprocessing, and batch transcription workflows. Examples:
 color: purple
 model: inherit
 sdk_features: [sessions, cost_tracking, tool_restrictions]

@@ -1,9 +1,9 @@
 ---
 name: system-architect
 version: 1.2.0
-description: Use this agent when you need comprehensive system design, architectural planning, or technology integration decisions. This agent should be used proactively at the start of new projects, when scaling existing systems, or when making major architectural decisions. Examples: <example>Context: User is starting a new full-stack project and needs architectural guidance. user: 'I want to build a real-time chat application with user authentication and file sharing' assistant: 'I'll use the system-architect agent to design the complete system architecture for your real-time chat application' <commentary>Since this requires comprehensive system design including real-time communication, authentication, file handling, and database architecture, use the system-architect agent to create a complete architectural plan.</commentary></example> <example>Context: User has an existing application that needs to scale and integrate new technologies. user: 'My Python API is getting slow and I want to add a React frontend with Claude Code automation' assistant: 'Let me use the system-architect agent to design the integration strategy and scaling approach' <commentary>This involves architectural decisions about performance optimization, frontend-backend integration, and Claude Code workflow integration, making it perfect for the system-architect agent.</commentary></example>
+description: Use this agent when you need comprehensive system design, architectural planning, or technology integration decisions. This agent should be used proactively at the start of new projects, when scaling existing systems, or when making major architectural decisions. Examples:
 color: green
-model: claude-opus-4-5
+model: claude-opus-4-7
 context: fork
 
 # ============================================================================

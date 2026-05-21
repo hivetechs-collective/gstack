@@ -3,31 +3,12 @@
 # IDENTITY (Required)
 # ============================================================================
 name: openrouter-expert
+color: purple
 description: |
   Use this agent when you need to integrate multiple AI models via OpenRouter, optimize
   costs across providers, implement fallback strategies, or design multi-model AI architectures.
   Specializes in OpenRouter API, model selection, cost optimization, and prompt engineering
   across different model families (OpenAI, Anthropic, Google, Meta).
-
-  Examples:
-  <example>
-  Context: User needs to route AI requests to different models based on cost and capability.
-  user: 'Build a chatbot that uses GPT-4 for complex queries and Llama 3 for simple ones
-  to save costs'
-  assistant: 'I'll use the openrouter-expert agent to design a routing strategy with model
-  selection based on query complexity and cost optimization'
-  <commentary>Multi-model routing requires expertise in OpenRouter API, cost analysis,
-  and model capability assessment.</commentary>
-  </example>
-
-  <example>
-  Context: User wants to implement fallback between AI providers.
-  user: 'How do I handle Claude API downtime by falling back to GPT-4?'
-  assistant: 'I'll use the openrouter-expert agent to implement a fallback pattern with
-  OpenRouter's unified API'
-  <commentary>Provider fallback requires understanding OpenRouter's error handling, model
-  availability, and graceful degradation patterns.</commentary>
-  </example>
 version: 1.2.0
 # ============================================================================
 # MODEL CONFIGURATION (Required for v2.1.0)
@@ -69,7 +50,6 @@ hooks: []
 # ============================================================================
 # VISUAL CONFIGURATION
 # ============================================================================
-color: purple
 
 # ============================================================================
 # METADATA

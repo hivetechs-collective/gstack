@@ -1,5 +1,6 @@
 ---
 name: meta-agent
+color: purple
 description: Creates new Claude Code agent definitions from documentation and specifications
 model: opus
 ---

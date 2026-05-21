@@ -3,6 +3,7 @@
 # IDENTITY (Required)
 # ============================================================================
 name: claude-sdk-expert
+color: purple
 description: |
   Use this agent when you need guidance on Universal Claude Agent SDK architecture,
   runtime adapter design, framework integration patterns, or custom SDK customization.
@@ -11,27 +12,6 @@ description: |
 
   **November 2025 updates**: Claude Sonnet 4.5 default model, Haiku 4.5 cost optimization,
   SDK breaking changes, model deprecations.
-
-  Examples:
-  <example>
-  Context: User wants to build a custom Claude integration for their framework.
-  user: 'I need to integrate Claude AI into my Express API with SQLite database and cost tracking'
-  assistant: 'I'll use the claude-sdk-expert agent to design a NodeAdapter implementation with
-  SQLite storage, build a custom tool registry for your API endpoints, and configure prompt
-  caching for cost optimization with Claude Sonnet 4.5'
-  <commentary>Custom Claude integration requires expertise in the Universal Agent SDK adapter
-  pattern, tool design, and cost-aware configuration.</commentary>
-  </example>
-
-  <example>
-  Context: User has multiple Claude implementations and wants to consolidate them.
-  user: 'We have Claude code in our Next.js site, Electron app, and Python backend. How do we unify this?'
-  assistant: 'I'll use the claude-sdk-expert agent to design a migration path to the Universal
-  Agent SDK with CloudflareAdapter for Next.js, ElectronAdapter for desktop, and guidance on
-  Python SDK interop'
-  <commentary>SDK migration requires understanding of all runtime adapters, cross-platform agent
-  patterns, and migration strategies from custom implementations.</commentary>
-  </example>
 version: 1.2.0
 # ============================================================================
 # MODEL CONFIGURATION (Required for v2.1.0)
@@ -73,7 +53,6 @@ hooks: []
 # ============================================================================
 # VISUAL CONFIGURATION
 # ============================================================================
-color: purple
 
 # ============================================================================
 # METADATA

@@ -1,7 +1,7 @@
 ---
 name: smtpgo-expert
 version: 1.1.0
-description: Use this agent when you need to implement transactional email with SMTPGO, design email templates, handle bounce management, or integrate email automation. Specializes in SMTPGO API, email deliverability, template systems, webhook processing, and email compliance (CAN-SPAM, GDPR). Examples: <example>Context: User needs to send transactional emails with tracking. user: 'Implement password reset emails with open tracking and click analytics' assistant: 'I'll use the smtpgo-expert agent to design SMTPGO integration with template system, tracking, and analytics' <commentary>Transactional email requires expertise in SMTPGO API, template design, deliverability optimization, and analytics integration.</commentary></example> <example>Context: User wants to handle email bounces and complaints. user: 'How do I process bounce notifications and update my user database?' assistant: 'I'll use the smtpgo-expert agent to implement webhook handling for bounces with database updates' <commentary>Bounce handling requires SMTPGO webhook integration, event processing, and database synchronization patterns.</commentary></example>
+description: Use this agent when you need to implement transactional email with SMTPGO, design email templates, handle bounce management, or integrate email automation. Specializes in SMTPGO API, email deliverability, template systems, webhook processing, and email compliance (CAN-SPAM, GDPR). Examples:
 tools: Read, Write, Edit, WebFetch, WebSearch
 color: green
 model: inherit

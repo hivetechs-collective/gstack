@@ -1,7 +1,7 @@
 ---
 name: remotion-specialist
 version: 1.0.0
-description: Use this agent when you need to create videos programmatically with React, build dynamic video content, or implement serverless video rendering pipelines. Specializes in Remotion framework, React video components, animations with interpolate/spring, AWS Lambda rendering, and embedded video players. Examples: <example>Context: User needs to generate personalized videos. user: 'Create a personalized welcome video that shows the user name and signup date' assistant: 'I'll use the remotion-specialist agent to build a Remotion composition with dynamic props for personalized video generation' <commentary>Personalized videos require parameterized Remotion compositions with input props.</commentary></example> <example>Context: User wants to automate video creation at scale. user: 'Generate 1000 product demo videos from our catalog data' assistant: 'I'll use the remotion-specialist agent to set up Remotion Lambda for distributed serverless rendering' <commentary>Batch video generation requires Lambda setup with parameterized renders.</commentary></example>
+description: Use this agent when you need to create videos programmatically with React, build dynamic video content, or implement serverless video rendering pipelines. Specializes in Remotion framework, React video components, animations with interpolate/spring, AWS Lambda rendering, and embedded video players. Examples:
 color: blue
 model: inherit
 sdk_features: [sessions, cost_tracking, tool_restrictions]
