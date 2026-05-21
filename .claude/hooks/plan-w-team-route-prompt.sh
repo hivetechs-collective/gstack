@@ -98,9 +98,32 @@ fi
 # 2026-05-20 (19 background agents accumulated before discovery).
 #
 # Allowing leading whitespace before "/" handles indented bootstraps.
+#
+# System-injected event prefixes (`<task-notification>`, `<system-reminder>`,
+# `<command-*>`, `<bash-*>`, `<user-prompt-submit-hook>`) are also bypassed.
+# These are NOT user prompts — they are tool-result events, command-stdout
+# wrappers, and hook-injected context that Claude Code surfaces as new turns.
+# Their bodies can echo arbitrary user content (e.g. a Monitor watcher
+# tailing pwt-launches.jsonl re-emits the original "use /plan-w-team to ..."
+# request inside its event payload). Without this guard, the route hook
+# treats the event echo as a fresh natural-language launch trigger and
+# spawns yet another worker — the recursion path observed in production on
+# 2026-05-21 (worker bf7cf4e2 spawned with a <task-notification>-prefixed
+# prompt; see docs/specs/pwt-recursion-stale-cleanup.md for the disk
+# evidence).
 TRIMMED=$(printf '%s' "$PROMPT" | sed -E 's/^[[:space:]]+//')
 case "$TRIMMED" in
     /*) exit 0 ;;
+    "<task-notification>"*) exit 0 ;;
+    "<system-reminder>"*) exit 0 ;;
+    "<command-name>"*) exit 0 ;;
+    "<command-message>"*) exit 0 ;;
+    "<command-args>"*) exit 0 ;;
+    "<local-command-stdout>"*) exit 0 ;;
+    "<local-command-stderr>"*) exit 0 ;;
+    "<bash-stdout>"*) exit 0 ;;
+    "<bash-stderr>"*) exit 0 ;;
+    "<user-prompt-submit-hook>"*) exit 0 ;;
 esac
 
 # ─── Unanchored trigger detection ────────────────────────────────────────────

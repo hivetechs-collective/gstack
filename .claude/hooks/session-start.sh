@@ -480,6 +480,17 @@ echo "📖 Commands: /init /context /blocked /safe /governance"
 echo "═══════════════════════════════════════════════════════════════"
 
 # =================================================================
+# /plan-w-team: GC stale terminal=SUCCESS goal-state files
+# =================================================================
+# Best-effort cleanup. Goal-state files from runs that completed BEFORE the
+# retro auto-cleanup landed (commit 409e265) linger on disk with
+# terminal_state="SUCCESS" until removed. Never block session start on this.
+CLEANUP_GOAL_STATES="$PROJECT_ROOT/.claude/scripts/plan-w-team-cleanup-stale-goal-states.sh"
+if [ -x "$CLEANUP_GOAL_STATES" ]; then
+    "$CLEANUP_GOAL_STATES" 2>/dev/null || true
+fi
+
+# =================================================================
 # COMPOUND: Surface learnings and auto-act on patterns
 # =================================================================
 COMPOUND_DIR="$PROJECT_ROOT/.claude/hooks/compound"

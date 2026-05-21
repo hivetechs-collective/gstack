@@ -182,9 +182,18 @@ if [ "$LAUNCH" = "1" ]; then
     # rather than a single opaque bg session. Worker's parent_sid is
     # chained to supervisor's sid so the statusline transitively pulls
     # both into the "mine" set.
-    LAUNCH_ENV=""
+    # PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1: belt-and-braces recursion kill switch.
+    # Every bg session this script spawns has the route-prompt hook disabled
+    # so it cannot re-trigger /plan-w-team routing on its own first prompt or
+    # any subsequent prompt. The slash-guard at the head of route-prompt.sh
+    # already catches `/goal …` bootstraps, but the supervisor bootstrap starts
+    # with `#` (markdown heading) and embeds the verbatim user request — which
+    # without this env var would trigger natural-language detection on the
+    # quoted "use /plan-w-team to …" inside the supervisor's own bootstrap.
+    # Observed in production 2026-05-21 (sids 0b5856d7 → 4bbb2cb8 cascade).
+    LAUNCH_ENV="PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1"
     if [ "$AUTO_PUSH" = "1" ]; then
-        LAUNCH_ENV="PLAN_W_TEAM_AUTO_APPROVE_PUSH=1"
+        LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_AUTO_APPROVE_PUSH=1"
     fi
 
     # Resolve PROJECT_ROOT to the active worktree, not the main checkout.
@@ -222,11 +231,13 @@ if [ "$LAUNCH" = "1" ]; then
         exit 1
     }
 
+    # LAUNCH_ENV always contains PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1; the bare
+    # `claude --bg` branch is unreachable but kept as a safety net.
     if [ -n "$LAUNCH_ENV" ]; then
         env $LAUNCH_ENV claude --bg "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
         LAUNCH_RC=$?
     else
-        claude --bg "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 claude --bg "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
         LAUNCH_RC=$?
     fi
 
@@ -356,9 +367,14 @@ SUPEOF
     fi
 
     # ─── Spawn SUPERVISOR ────────────────────────────────────────────────────
+    # Supervisor MUST inherit PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1: its bootstrap
+    # text starts with `#` (markdown), bypassing the slash-guard, and embeds
+    # the verbatim user request. Without this env var the supervisor's first
+    # prompt re-triggers the route hook → recursion (production incident on
+    # 2026-05-21: sid 0b5856d7 → 4bbb2cb8 → f2ec9cb9 → 7a4c658b cascade).
     SUP_OUT_FILE=$(mktemp -t pwt-goal-supervisor.XXXXXX 2>/dev/null || echo "")
     if [ -n "$SUP_OUT_FILE" ]; then
-        claude --bg "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
+        env $LAUNCH_ENV claude --bg "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
         SUP_RC=$?
         SUPERVISOR_SID=""
         if [ -s "$SUP_OUT_FILE" ]; then
@@ -372,7 +388,7 @@ SUPEOF
         SUPERVISOR_SID=""
         SUP_RC=1
         echo "WARN: mktemp failed for supervisor; spawning anyway" >&2
-        claude --bg "$SUPERVISOR_BOOTSTRAP" >&2 || true
+        env $LAUNCH_ENV claude --bg "$SUPERVISOR_BOOTSTRAP" >&2 || true
     fi
 
     if [ -n "$SUPERVISOR_SID" ]; then

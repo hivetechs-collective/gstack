@@ -1,0 +1,15 @@
+---
+id: 7ec9574a
+trigger: "when fixing bugs in bug_fixing context"
+confidence: 0.9
+domain: workflow
+scope: project
+project: claude-pattern
+created: 2026-05-21T19:23:32Z
+last_applied: 2026-05-21T19:28:31Z
+applications: 8
+evidence:
+  - "First observed in session 1779391412"
+---
+# Action
+Follow fix workflow: diagnose root cause, commit with fix: prefix, verify resolution

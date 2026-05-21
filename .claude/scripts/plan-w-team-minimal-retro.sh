@@ -100,4 +100,14 @@ else
 EOF
 fi
 
+# Stop any `claude --bg` children registered for this run. Fire-and-forget —
+# the helper is fail-open (never exits non-zero). Without this call, early-exit
+# paths (hard-gate halts, ship-gate exit-1, supervisor crashes) leave bg
+# children orphaned because the full retro stage's §8j-sexies block never runs.
+# The helper itself honors PLAN_W_TEAM_DISABLE_CHILD_CLEANUP=1.
+CLEANUP_SH="$(dirname "$0")/plan-w-team-child-cleanup.sh"
+if [ -x "$CLEANUP_SH" ]; then
+    "$CLEANUP_SH" "$SLUG" >/dev/null 2>&1 || true
+fi
+
 exit 0

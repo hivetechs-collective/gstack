@@ -234,6 +234,51 @@ run_case "arbitrary slash command passes through" 0 no \
 run_case "indented /goal bootstrap also bypassed" 0 no \
   '{"prompt":"   /goal Use /plan-w-team to do X","session_id":"x"}'
 
+# ─── System-injected event tag prefixes do NOT re-trigger routing ────────────
+# Production recursion (2026-05-21): Monitor tool re-emitted the original
+# worker request inside <task-notification> events, which the route hook
+# then matched as a fresh "use /plan-w-team to" trigger. Each system-tag
+# prefix below must short-circuit BEFORE trigger detection runs.
+#
+# Each case puts the trigger phrase INSIDE the system event payload —
+# without the guard, trigger detection would match and the shim would be
+# invoked. With the guard, the shim must remain untouched.
+run_case "<task-notification> wrapper does NOT relaunch" 0 no \
+  '{"prompt":"<task-notification>\n<summary>worker terminal: use /plan-w-team to ship X</summary>","session_id":"x"}'
+
+run_case "<system-reminder> wrapper does NOT relaunch" 0 no \
+  '{"prompt":"<system-reminder>Reminder: use /plan-w-team to keep state files tidy</system-reminder>","session_id":"x"}'
+
+run_case "<command-name> wrapper does NOT relaunch" 0 no \
+  '{"prompt":"<command-name>/goal</command-name>\n<command-args>Use /plan-w-team to do X</command-args>","session_id":"x"}'
+
+run_case "<command-message> wrapper does NOT relaunch" 0 no \
+  '{"prompt":"<command-message>goal</command-message>","session_id":"x"}'
+
+run_case "<command-args> wrapper does NOT relaunch" 0 no \
+  '{"prompt":"<command-args>Use /plan-w-team to ship Y</command-args>","session_id":"x"}'
+
+run_case "<local-command-stdout> wrapper does NOT relaunch" 0 no \
+  '{"prompt":"<local-command-stdout>Goal set: use /plan-w-team to do X</local-command-stdout>","session_id":"x"}'
+
+run_case "<local-command-stderr> wrapper does NOT relaunch" 0 no \
+  '{"prompt":"<local-command-stderr>warning: use /plan-w-team to fix bug</local-command-stderr>","session_id":"x"}'
+
+run_case "<bash-stdout> wrapper does NOT relaunch" 0 no \
+  '{"prompt":"<bash-stdout>purpose: use /plan-w-team to fix all bugs</bash-stdout>","session_id":"x"}'
+
+run_case "<bash-stderr> wrapper does NOT relaunch" 0 no \
+  '{"prompt":"<bash-stderr>error: use /plan-w-team to recover</bash-stderr>","session_id":"x"}'
+
+run_case "<user-prompt-submit-hook> wrapper does NOT relaunch" 0 no \
+  '{"prompt":"<user-prompt-submit-hook>use /plan-w-team to ship X</user-prompt-submit-hook>","session_id":"x"}'
+
+# ─── Verbatim production recursion payload (2026-05-21 bf7cf4e2) ─────────────
+# The exact <task-notification> shape that triggered the cascade. Includes
+# escaped quotes and embedded JSON, the way Monitor formats it.
+run_case "verbatim production task-notification cascade payload" 0 no \
+  '{"prompt":"<task-notification>\n<task-id>bt8vjgju5</task-id>\n<summary>Monitor event: PWT worker terminal signals (JSONL tail)</summary>\n<event>{\"purpose\":\"use /plan-w-team to fix all bugs\"}</event>\n</task-notification>","session_id":"x"}'
+
 # ─── Supervisor protocol contains required AC anchors ────────────────────────
 # AC3+AC4+AC5: the protocol must instruct the origin assistant on status block,
 # polling loop, and terminal block.

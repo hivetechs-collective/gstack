@@ -29,6 +29,16 @@ PWT_CURRENT_STAGE="retro"
 EXISTING_TRAP=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\\1/")
 MIN_RETRO_CMD=".claude/scripts/plan-w-team-minimal-retro.sh \"\$SLUG\" \"\$PWT_CURRENT_STAGE\" \"retro-early-exit-\$?\""
 trap "${EXISTING_TRAP:+${EXISTING_TRAP}; }$MIN_RETRO_CMD" EXIT
+
+# Mark the retro stage as "committed to completing". The cleanup gates in
+# §8j-ter (fleet log), §8j-quater (supervisor log + goal state), and §8j-sexies
+# (spawn registry) read this. Without the assignment those rm -f calls are
+# dead code and per-SLUG state files accumulate forever (observed 2026-05-21:
+# ~12 stale plan-w-team-spawned-children-*.jsonl files). If retro exits
+# abnormally before reaching the cleanup blocks, the EXIT trap fires
+# minimal-retro, which itself invokes child-cleanup.sh — so bg children are
+# still stopped on the early-exit path.
+RETRO_SUCCESS=1
 ```
 
 The helper is no-op when a complete retro already exists for the SLUG — `$RETRO_STATE` written by §8h or the §8j completion block takes precedence. The trap only writes when the early-exit path beats the normal completion path to disk.
@@ -568,7 +578,16 @@ fi
 # Cleanup on successful retro (mirrors §8j-ter fleet cleanup)
 if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
   rm -f "$SUP_LOG"
-  rm -f ".claude/state/plan-w-team-goal-${SLUG}.json"   # T5b goal evaluator state
+  rm -f ".claude/state/plan-w-team-goal-${SLUG}.json"   # T5b goal evaluator state (idempotent)
+
+  # Janitor pass: sweep up any OTHER terminal-state goal files left by runs
+  # that stopped before reaching their own retro (early halt, crash, mismatched
+  # SLUG). Without this, stale SUCCESS files accumulate in .claude/state/.
+  # See plan-w-team-cleanup-stale-goals.sh for the contract — fail-open,
+  # idempotent, never blocks retro completion.
+  if [ -x .claude/scripts/plan-w-team-cleanup-stale-goals.sh ]; then
+    .claude/scripts/plan-w-team-cleanup-stale-goals.sh --quiet 2>/dev/null || true
+  fi
 fi
 ```
 
