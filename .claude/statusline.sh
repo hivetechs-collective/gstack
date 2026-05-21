@@ -165,10 +165,15 @@ else
   exceeds_200k=$(echo "$input" | grep -o '"exceeds_200k_tokens"[[:space:]]*:[[:space:]]*\(true\|false\)' | sed 's/.*:[[:space:]]*\(true\|false\).*/\1/')
 fi
 
-# Use current_usage if available (more accurate from v2.0.70+)
+# Use current_usage if available (more accurate from v2.0.70+).
+# NOTE: current_usage is percent-of-auto-compact-threshold (160k), not
+# percent of model max. It can exceed 100, which is why the clamp is
+# required — without it, "100 - 114" emits "-14%" as we hit in 2026-05-20.
 if [ -n "$current_usage" ] && [[ "$current_usage" =~ ^[0-9.]+$ ]]; then
   context_used_pct=$(printf '%.0f' "$current_usage")
   context_remaining_pct=$(( 100 - context_used_pct ))
+  [ "$context_remaining_pct" -lt 0 ] && context_remaining_pct=0
+  [ "$context_remaining_pct" -gt 100 ] && context_remaining_pct=100
 
   # Set color based on remaining percentage
   if [ "$context_remaining_pct" -le 20 ]; then
@@ -218,6 +223,9 @@ if [ -n "$session_id" ] && [ "$HAS_JQ" -eq 1 ]; then
     if [ -n "$latest_tokens" ] && [ "$latest_tokens" -gt 0 ]; then
       context_used_pct=$(( latest_tokens * 100 / MAX_CONTEXT ))
       context_remaining_pct=$(( 100 - context_used_pct ))
+      # Clamp: cache_read totals can push used past 100% on long sessions
+      [ "$context_remaining_pct" -lt 0 ] && context_remaining_pct=0
+      [ "$context_remaining_pct" -gt 100 ] && context_remaining_pct=100
       
       # Set color based on remaining percentage
       if [ "$context_remaining_pct" -le 20 ]; then
@@ -338,16 +346,241 @@ if [ -n "$output_style" ] && [ "$output_style" != "null" ]; then
   printf '  🎨 %s%s%s' "$(style_color)" "$output_style" "$(rst)"
 fi
 
-# Line 2: Context and session time
-line2=""
-if [ -n "$context_pct" ]; then
-  context_bar=$(progress_bar "$context_remaining_pct" 10)
-  line2="🧠 $(context_color)Context Remaining: ${context_pct} [${context_bar}]$(rst)"
-  # Add warning indicator if exceeds 200k tokens (v1.0.88+)
-  if [ "$exceeds_200k" = "true" ]; then
-    line2="$line2 $(C '38;5;203')⚠️ >200k$(rst)"
+# ---- background agent indicator (cached 10s) ----
+# Renders an "agent dashboard" segment showing one dot per relevant bg
+# session, color-coded by STATE (not role). Idle bg agents are unusual
+# in this workflow — agents normally come up, run, and exit — so an
+# idle dot is a signal that a session is stale/orphaned and worth
+# cleaning up.
+#
+# Dot conventions:
+#   ● green  = running (status=busy)
+#   ● white  = idle (status=idle)
+#   ● red    = shutting down (status=stopping, or any non-busy/idle —
+#              forward-compat if Claude adds intermediate statuses)
+#
+# Layout:
+#   👤 main  bg  ● ● ●  (N running / M active)        — all same state
+#   👤 main  bg  ● ● ●  (1 running, 1 stopping, 1 idle) — mixed
+#
+# Sort order: supervisor → worker → other (role is not color-encoded
+# but order is preserved so the leftmost dot is the deepest in the
+# launch chain).
+#
+# Falls back to nothing when there are zero bg sessions in the project.
+if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
+  # Cache is PWD-relative (same as launches_file below) so the statusline
+  # and downstream tooling agree on a single per-project state location,
+  # regardless of where statusline.sh itself lives.
+  bg_cache="$PWD/.claude/state/bg-agents-cache.json"
+  bg_cache_age=999
+  if [ -f "$bg_cache" ]; then
+    bg_cache_age=$(( $(date +%s) - $(stat -f %m "$bg_cache" 2>/dev/null || echo 0) ))
+  fi
+  if [ "$bg_cache_age" -gt 10 ]; then
+    mkdir -p "$PWD/.claude/state" 2>/dev/null
+    claude agents --json 2>/dev/null > "$bg_cache.tmp" && mv "$bg_cache.tmp" "$bg_cache" 2>/dev/null
+  fi
+  own_sid=""
+  if [ -n "${CLAUDE_JOB_DIR:-}" ]; then
+    own_sid=$(basename "$CLAUDE_JOB_DIR")
+    # pwt-launches.jsonl stores 8-char sid prefixes; the registry's
+    # parent_sid field is also 8 chars. Truncate so equality matches.
+    # Without this, my_sids seed degenerates to just [own_sid_full]
+    # and no parent_sid row ever matches — the entire "mine" set
+    # silently collapses to nothing.
+    own_sid="${own_sid:0:8}"
+  fi
+
+  # Build set of "my-launch" sessionIds from pwt-launches.jsonl (transitive: a sid
+  # is mine if it's in the file OR its parent_sid chain reaches a sid that is)
+  # AND a role map keyed by sid prefix ("supervisor" | "worker" | absent).
+  launches_file="$PWD/.claude/state/pwt-launches.jsonl"
+  my_sids_json="[]"
+  role_map_json="{}"
+  if [ -f "$launches_file" ]; then
+    my_sids_json=$(jq -s --arg own "$own_sid" '
+      . as $entries
+      | ([$own] + [$entries[] | select(.parent_sid == $own) | .sid])
+      | unique
+      | . as $seed
+      | reduce range(0; 4) as $_ (
+          $seed;
+          . as $cur | . + [$entries[] | select(.parent_sid as $p | $cur | index($p)) | .sid] | unique
+        )
+    ' "$launches_file" 2>/dev/null || echo "[]")
+    role_map_json=$(jq -s '
+      map(select(.role) | {key: .sid, value: .role})
+      | from_entries
+    ' "$launches_file" 2>/dev/null || echo "{}")
+  fi
+
+  if [ -f "$bg_cache" ]; then
+    # Build a per-agent dashboard array:
+    #   [ {role: "supervisor"|"worker"|"other", busy: bool, sid: "abcd1234"}, ... ]
+    # Sorted: supervisor first, then worker, then other. Stable within group.
+    dashboard_json=$(jq --arg cwd "$PWD" --arg own "$own_sid" \
+                        --argjson mine "$my_sids_json" \
+                        --argjson roles "$role_map_json" '
+      [.[]
+        | select(.kind == "background")
+        | select(.cwd == $cwd or (.cwd | startswith($cwd + "/")))
+        | select(.sessionId[:8] != $own)
+        | . as $a
+        | {
+            sid: $a.sessionId[:8],
+            status: ($a.status // "idle"),
+            busy: ($a.status == "busy"),
+            role: (
+              if ($mine | index($a.sessionId[:8])) then
+                ($roles[$a.sessionId[:8]] // "worker")
+              else
+                "other"
+              end
+            )
+          }
+      ]
+      | sort_by(
+          if .role == "supervisor" then 0
+          elif .role == "worker"   then 1
+          else 2 end
+        )
+    ' "$bg_cache" 2>/dev/null || echo "[]")
+
+    total_count=$(echo "$dashboard_json" | jq 'length' 2>/dev/null || echo 0)
+    busy_count=$(echo "$dashboard_json" | jq '[.[] | select(.busy)] | length' 2>/dev/null || echo 0)
+    mine_count=$(echo "$dashboard_json" | jq '[.[] | select(.role != "other")] | length' 2>/dev/null || echo 0)
+
+    # Phase label decision:
+    #   - mine_count > 0           → "🚀 Agents Running"   (supervisor chain alive)
+    #   - mine_count == 0 AND unread summary file exists → "✅ Agents Completed"
+    #   - mine_count == 0 AND other_count > 0 → fall back to old "👤 main 👥 N other"
+    #   - all zero                  → emit nothing
+    summaries_count=0
+    if [ -d "$PWD/.claude/state" ]; then
+      summaries_count=$(find "$PWD/.claude/state" -maxdepth 1 -name 'pwt-completion-summary-*.md' 2>/dev/null | wc -l | tr -d ' ')
+    fi
+
+    # Emit the agents indicator on its own line (line 1 already has cwd +
+    # branch + model + git status — adding agents on the same line clips on
+    # narrow terminals). The leading \n breaks to a new line; 2-space indent
+    # visually subordinates it to the main statusline.
+    if [ "$total_count" != "0" ]; then
+      printf '\n  👤 %smain%s' "$(C '38;5;117')" "$(rst)"
+    fi
+
+    if [ "$total_count" != "0" ]; then
+      # Tally per-state counts (running / idle / stopping) for the trailing label.
+      # "stopping" catches any status that isn't busy or idle — forward-compat
+      # for a future explicit "stopping" status or any custom signal.
+      run_count=$(echo "$dashboard_json" | jq '[.[] | select(.status == "busy")] | length' 2>/dev/null || echo 0)
+      idle_count=$(echo "$dashboard_json" | jq '[.[] | select(.status == "idle")] | length' 2>/dev/null || echo 0)
+      stop_count=$(echo "$dashboard_json" | jq '[.[] | select(.status != "busy" and .status != "idle")] | length' 2>/dev/null || echo 0)
+
+      printf '  %sbg%s  ' "$(C '38;5;245')" "$(rst)"
+
+      # Emit one dot per agent, color = state.
+      echo "$dashboard_json" | jq -r '.[] | .status' 2>/dev/null | while read -r status; do
+        case "$status" in
+          busy) color="38;5;46"  ;; # bright green = running
+          idle) color="38;5;255" ;; # bright white = idle (unusual — stale/orphan)
+          *)    color="38;5;203" ;; # coral red    = stopping / unknown
+        esac
+        printf '%s●%s ' "$(C "$color")" "$(rst)"
+      done
+
+      # Trailing count summary. Compact form when all in one state;
+      # mixed-state breakdown otherwise.
+      label_color="$(C '38;5;245')"; label_rst="$(rst)"
+      if   [ "$run_count"  = "$total_count" ]; then
+        printf '%s(%s running)%s' "$label_color" "$total_count" "$label_rst"
+      elif [ "$idle_count" = "$total_count" ]; then
+        printf '%s(%s idle)%s' "$label_color" "$total_count" "$label_rst"
+      elif [ "$stop_count" = "$total_count" ]; then
+        printf '%s(%s stopping)%s' "$label_color" "$total_count" "$label_rst"
+      else
+        # Mixed — show non-zero buckets only
+        parts=""
+        [ "$run_count"  != "0" ] && parts="${parts}, ${run_count} running"
+        [ "$stop_count" != "0" ] && parts="${parts}, ${stop_count} stopping"
+        [ "$idle_count" != "0" ] && parts="${parts}, ${idle_count} idle"
+        parts="${parts#, }"
+        printf '%s(%s)%s' "$label_color" "$parts" "$label_rst"
+      fi
+
+      # Surface completion banner only when no bg agents remain AND a
+      # summary file is unread — handled by the elif branch below.
+    elif [ "$summaries_count" != "0" ]; then
+      printf '\n  ✅ %sAgents Completed%s — summary in chat ↓' "$(C '38;5;46')" "$(rst)"
+    fi
   fi
 fi
+
+# Line 2: Claude plan usage (5-hour + 7-day windows) + session time
+#
+# Data source: Anthropic's /api/oauth/usage endpoint — the exact data the
+# interactive `/usage` slash command shows. We don't compute it ourselves;
+# we just call the same API Claude Code calls and surface the result.
+#
+# Context-remaining was removed: it lied after auto-compact, /compact is
+# already prompted by Claude Code itself when imminent, and `/context`
+# is one keystroke when the user wants the visual grid view.
+line2=""
+PLAN_USAGE_HELPER="$PWD/.claude/scripts/plan-usage.sh"
+if [ -x "$PLAN_USAGE_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
+  plan_json=$("$PLAN_USAGE_HELPER" 2>/dev/null)
+  if [ -n "$plan_json" ] && [ "$plan_json" != "{}" ]; then
+    five_hr=$(echo "$plan_json" | jq -r '.five_hour.utilization // empty' 2>/dev/null)
+    seven_d=$(echo "$plan_json" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
+    five_hr_reset=$(echo "$plan_json" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
+
+    # Format reset time as LOCAL HH:MM. The API returns ISO-8601 in UTC;
+    # we use python3 because macOS `date -j` doesn't handle timezone-aware
+    # ISO parsing cleanly. Falls back to empty on any error.
+    reset_local=""
+    if [ -n "$five_hr_reset" ]; then
+      reset_local=$(RESET_TS="$five_hr_reset" python3 -c '
+import os
+from datetime import datetime
+try:
+    ts = os.environ.get("RESET_TS", "")
+    # Tolerate trailing Z or +HH:MM, plus fractional seconds
+    ts_clean = ts.replace("Z", "+00:00")
+    dt = datetime.fromisoformat(ts_clean)
+    # astimezone() with no arg converts UTC-aware dt → local tz
+    print(dt.astimezone().strftime("%H:%M"))
+except Exception:
+    pass
+' 2>/dev/null)
+    fi
+
+    # Color by utilization (5-hour is what matters most for active-session pressure)
+    five_color() { :; }
+    if [ -n "$five_hr" ]; then
+      five_int=$(printf '%.0f' "$five_hr" 2>/dev/null || echo 0)
+      if [ "$five_int" -ge 80 ]; then
+        five_color() { if [ "$use_color" -eq 1 ]; then printf '\033[38;5;203m'; fi; }  # coral red
+      elif [ "$five_int" -ge 50 ]; then
+        five_color() { if [ "$use_color" -eq 1 ]; then printf '\033[38;5;215m'; fi; }  # peach
+      else
+        five_color() { if [ "$use_color" -eq 1 ]; then printf '\033[38;5;158m'; fi; }  # mint green
+      fi
+    fi
+
+    # Build the segment: "📊 Plan: 5h 2% (resets 18:00) · 7d 11%"
+    if [ -n "$five_hr" ]; then
+      five_hr_fmt=$(printf '%.0f' "$five_hr" 2>/dev/null || echo "$five_hr")
+      line2="📊 $(C '38;5;117')Plan:$(rst) $(five_color)5h ${five_hr_fmt}%$(rst)"
+      [ -n "$reset_local" ] && line2="$line2 $(C '38;5;245')(resets ${reset_local})$(rst)"
+      if [ -n "$seven_d" ]; then
+        seven_d_fmt=$(printf '%.0f' "$seven_d" 2>/dev/null || echo "$seven_d")
+        line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;117')7d ${seven_d_fmt}%$(rst)"
+      fi
+    fi
+  fi
+fi
+
+# Session time still useful as a context-window proxy (long session → /compact incoming)
 if [ -n "$session_txt" ]; then
   if [ -n "$line2" ]; then
     line2="$line2  ⌛ $(session_color)${session_txt}$(rst) $(session_color)[${session_bar}]$(rst)"
@@ -355,34 +588,24 @@ if [ -n "$session_txt" ]; then
     line2="⌛ $(session_color)${session_txt}$(rst) $(session_color)[${session_bar}]$(rst)"
   fi
 fi
-if [ -z "$line2" ] && [ -z "$context_pct" ]; then
-  line2="🧠 $(context_color)Context Remaining: TBD$(rst)"
-fi
 
-# Line 3: Cost and usage analytics
+# Line 3: Usage analytics (Max-subscription-friendly)
+#
+# Dollar cost / $/h dropped: this repo's user is on Claude Max only —
+# no API spend ever. The displayed $ was always theatrical, and for
+# multi-day sessions it grew unboundedly without conveying any signal.
+#
+# What's kept: total tokens and tpm from `ccusage blocks`. Those map
+# to the 5-hour billing window which IS the real Max-subscription
+# constraint — they tell the user when they're burning quota fast
+# enough to risk hitting their 5-hour cap mid-run.
 line3=""
-if [ -n "$cost_usd" ] && [[ "$cost_usd" =~ ^[0-9.]+$ ]]; then
-  if [ -n "$cost_per_hour" ] && [[ "$cost_per_hour" =~ ^[0-9.]+$ ]]; then
-    cost_per_hour_formatted=$(printf '%.2f' "$cost_per_hour")
-    line3="💰 $(cost_color)\$$(printf '%.2f' "$cost_usd")$(rst) ($(burn_color)\$${cost_per_hour_formatted}/h$(rst))"
-  else
-    line3="💰 $(cost_color)\$$(printf '%.2f' "$cost_usd")$(rst)"
-  fi
-fi
 if [ -n "$tot_tokens" ] && [[ "$tot_tokens" =~ ^[0-9]+$ ]]; then
   if [ -n "$tpm" ] && [[ "$tpm" =~ ^[0-9.]+$ ]]; then
     tpm_formatted=$(printf '%.0f' "$tpm")
-    if [ -n "$line3" ]; then
-      line3="$line3  📊 $(usage_color)${tot_tokens} tok (${tpm_formatted} tpm)$(rst)"
-    else
-      line3="📊 $(usage_color)${tot_tokens} tok (${tpm_formatted} tpm)$(rst)"
-    fi
+    line3="📊 $(usage_color)${tot_tokens} tok (${tpm_formatted} tpm)$(rst)"
   else
-    if [ -n "$line3" ]; then
-      line3="$line3  📊 $(usage_color)${tot_tokens} tok$(rst)"
-    else
-      line3="📊 $(usage_color)${tot_tokens} tok$(rst)"
-    fi
+    line3="📊 $(usage_color)${tot_tokens} tok$(rst)"
   fi
 fi
 

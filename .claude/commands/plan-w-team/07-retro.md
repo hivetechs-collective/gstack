@@ -17,6 +17,22 @@
 
 Quantitative retrospective on the shipped work. Run automatically for features that took >2 hours of builder time, or on demand with `--retro`.
 
+## Pre-Step: Minimal-Retro-on-Exit Trap
+
+Install before any other shell work in this stage. Belt-and-braces fallback that guarantees a retro JSON exists on disk even if the retro shell flow itself dies (e.g., the lead session compacts mid-write, a `jq` failure cascades, the user `kill -9`s the run). The watcher (`pwt-watch.sh`) and the `/goal` evaluator read that JSON; without it, completion notifications degrade to "session finished" with no metrics.
+
+```bash
+SLUG="<feature-slug>"
+PWT_CURRENT_STAGE="retro"
+
+# Chain with any existing trap rather than replace it (see shared/shell-safety.md).
+EXISTING_TRAP=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\\1/")
+MIN_RETRO_CMD=".claude/scripts/plan-w-team-minimal-retro.sh \"\$SLUG\" \"\$PWT_CURRENT_STAGE\" \"retro-early-exit-\$?\""
+trap "${EXISTING_TRAP:+${EXISTING_TRAP}; }$MIN_RETRO_CMD" EXIT
+```
+
+The helper is no-op when a complete retro already exists for the SLUG — `$RETRO_STATE` written by §8h or the §8j completion block takes precedence. The trap only writes when the early-exit path beats the normal completion path to disk.
+
 ## Board Comment (Auto)
 
 Add a retro summary as the final comment on the board Issue — this closes the feature's story. Fire-and-forget.
@@ -616,6 +632,61 @@ A score <4 feeds friction log with category `goal-evaluator-quality`. Recurring 
 - The pipeline is genuinely stuck (real failures the supervisor should have escalated)
 
 Investigate by reading the most recent supervisor-actions log and the final few `status` / `summary` blocks the helper emitted.
+
+## 8j-sexies. Spawned-Children Cleanup
+
+Stop any `claude --bg` children this run spawned. Without this, autonomous launches accumulate background sessions across runs (the 2026-05-20 incident left 19 background agents alive before discovery). Fire-and-forget — failed `claude stop` calls do not block retro completion.
+
+Cleanup runs BEFORE the End-of-Stage Status Block so the `retro-complete` anchor only appears after children are stopped. The cleanup logic lives in a helper script (`.claude/scripts/plan-w-team-child-cleanup.sh`) with its own tests (`plan-w-team-child-cleanup.test.sh`).
+
+```bash
+SLUG="<feature-slug>"
+REGISTRY=".claude/state/plan-w-team-spawned-children-${SLUG}.jsonl"
+
+# Helper emits a single-line JSON document to stdout describing the run.
+# It honors PLAN_W_TEAM_DISABLE_CHILD_CLEANUP=1, tolerates missing registries
+# and malformed JSONL rows, and never exits non-zero (fail-open).
+CHILD_CLEANUP_JSON=$(.claude/scripts/plan-w-team-child-cleanup.sh "$SLUG")
+
+# Surface a one-liner for human observation. The helper's full output is
+# captured above and persisted to RETRO_STATE below.
+SKIPPED=$(printf '%s' "$CHILD_CLEANUP_JSON" | jq -r '.skipped // false')
+if [ "$SKIPPED" = "true" ]; then
+  REASON=$(printf '%s' "$CHILD_CLEANUP_JSON" | jq -r '.reason // "unknown"')
+  echo "✓ child cleanup skipped: $REASON"
+else
+  STOPPED=$(printf '%s' "$CHILD_CLEANUP_JSON" | jq -r '.stopped // 0')
+  NOOP=$(printf '%s' "$CHILD_CLEANUP_JSON" | jq -r '.noop // 0')
+  REGISTERED=$(printf '%s' "$CHILD_CLEANUP_JSON" | jq -r '.registered // 0')
+  echo "✓ child cleanup: $STOPPED stopped, $NOOP no-op (likely already finished), $REGISTERED total"
+fi
+
+# Persist into the retro JSON's quality_signals
+RETRO_STATE=".claude/state/plan-w-team-retro-${SLUG}.json"
+if [ -f "$RETRO_STATE" ]; then
+  TMP=$(mktemp "${RETRO_STATE}.tmp.XXXXXX")
+  jq --argjson cleanup "$CHILD_CLEANUP_JSON" \
+    '.quality_signals.spawned_children_cleanup = $cleanup' \
+    "$RETRO_STATE" > "$TMP" 2>/dev/null && mv "$TMP" "$RETRO_STATE" || rm -f "$TMP"
+else
+  jq -n --argjson cleanup "$CHILD_CLEANUP_JSON" \
+    '{quality_signals:{spawned_children_cleanup:$cleanup}}' \
+    > "$RETRO_STATE" 2>/dev/null || true
+fi
+
+# Cleanup the registry file on successful retro (mirrors §8j-ter / §8j-quater pattern).
+if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
+  rm -f "$REGISTRY"
+fi
+```
+
+**Kill switch:** `PLAN_W_TEAM_DISABLE_CHILD_CLEANUP=1` skips the loop entirely. Useful when:
+
+- Debugging a child session and you want to keep it alive past the parent's retro.
+- Running the retro on a SLUG whose children you've already stopped manually.
+- A `claude` CLI bug makes `claude stop` hang (escape hatch).
+
+The cleanup is intentionally fire-and-forget: a `claude stop` that fails because the child has already finished is the normal case, not an error. The retro JSON records every attempt so a forensics pass can cross-check against `claude agents` to confirm no orphans survived.
 
 ## 8j. Auto-Memory Hints (advisory)
 

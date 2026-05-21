@@ -1,0 +1,15 @@
+---
+id: 37675e50
+trigger: "when adding new features in hook_development context"
+confidence: 0.9
+domain: workflow
+scope: project
+project: claude-pattern
+created: 2026-05-20T20:56:53Z
+last_applied: 2026-05-21T00:30:56Z
+applications: 16
+evidence:
+  - "First observed in session 1779310613"
+---
+# Action
+Follow established feature patterns: commit with feat: prefix, include tests

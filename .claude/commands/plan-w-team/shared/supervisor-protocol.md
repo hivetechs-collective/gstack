@@ -134,6 +134,16 @@ For each: emit `escalation` row + `supervisor_stop` row, end turn with escalatio
 - Make hard-gate decisions itself (always escalate)
 - Override router fallback behavior (`-fallback` suffix from parse failures still flows through to user, per existing contract)
 
+### If the supervisor ever spawns a `claude --bg` child
+
+The supervisor's normal dispatch model is `Agent()` calls into the same session (subagents share the lead's conversation). It does **not** spawn new top-level sessions today. If a future extension ever does (e.g., to fan out across repos), every such spawn MUST register the child for retro-time cleanup:
+
+```bash
+.claude/scripts/plan-w-team-register-spawn.sh "$CHILD_SID" "supervisor-spawn" "$SLUG" "$PARENT_SID" "supervisor"
+```
+
+The registry is read by `07-retro.md §8j-sexies` which runs `claude stop` on each entry. Without this call, a supervisor-spawned child becomes an orphan when the parent run ends — the exact defect class the 2026-05-20 cleanup work was meant to close. See `docs/specs/plan-w-team-self-cleanup.md` and the artifact entry in `shared/state-artifacts.md`.
+
 ## Kill Switch Contract
 
 | Env var                            | Default | Effect                                                                  |
@@ -169,6 +179,14 @@ Exit 2 from the wrapper signals "fall through to Pattern A/B" — `03-execute.md
 | `shared/orchestrator-interception.md` | Notes (in §Where This Runs) that supervisor is a caller of `route_orchestrator`, not a replacement                   |
 | `shared/state-artifacts.md`           | Registers `plan-w-team-supervisor-actions-$SLUG.jsonl` as mode `handoff`                                             |
 | Future T5 `/goal` wrapper             | Evaluator reads transcript summary blocks each turn to judge progress                                                |
+
+## Parent-Child Terminal Propagation (2026-05-20)
+
+The persistent supervisor described above owns Step 3-4 dispatch within ONE `/plan-w-team` run. A separate but related case: when a parent `/goal` session delegates an entire `/plan-w-team` run to a worker via `pwt-goal.sh --launch` (which spawns `claude --bg`), the parent must learn when the worker reaches terminal.
+
+The goal-evaluator hook (`.claude/hooks/plan-w-team-goal-evaluator.sh`) handles this automatically by reading worker `goal-<SLUG>.json` state files directly — not by sniffing transcript anchors that only ever appear in the worker's own session. See `shared/goal-conditions.md` §Parent-Child Terminal Propagation for the precedence rules and fail-open contract.
+
+For supervisors that ever spawn additional `claude --bg` children (rare — supervisors normally spawn agents via the `Agent` tool, not new sessions): such a spawn MUST be registered via `.claude/scripts/plan-w-team-register-spawn.sh` so the propagation works. Without registration, the parent's goal evaluator has no record of the child and will continue to wait on transcript anchors that never arrive in its own session.
 
 ## Adding a New Event Type or Summary Field
 

@@ -184,6 +184,100 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     # evaluator never returns success, the supervisor's low-confidence streak signal
     # (state 3) is the human-attention trigger, not a wall-clock or turn fallback.
 
+    # (4) PARENT-CHILD PROPAGATION: when this goal has spawned workers (via
+    # pwt-goal.sh --launch or similar), the worker's retro-complete anchors
+    # land in the WORKER's transcript, not the parent's. Transcript-only
+    # detection therefore stalls the parent indefinitely (2026-05-20 incident:
+    # parent stalled 13 min after worker shipped).
+    #
+    # The spawned-children registry (.claude/state/plan-w-team-spawned-children-
+    # <PARENT_SLUG>.jsonl) authoritatively records which workers this run
+    # spawned. Each worker maintains its own goal state file. When every
+    # registered worker has a non-null terminal_state, propagate the
+    # worst-precedence state to the parent.
+    #
+    # Precedence (low → high severity):
+    #   SUCCESS < LOW_CONFIDENCE_STREAK < USER_ESCALATION_HALT
+    # A halted worker must halt the parent (surface to user). A clean worker
+    # satisfies parent SUCCESS. Mixed signals win toward the more severe.
+    #
+    # Fail-open: missing/corrupt worker state never falsely terminates the
+    # parent. Self-referential registry rows (slug == parent SLUG) are
+    # skipped to prevent infinite hold-open.
+    if [ -z "$TERMINAL" ]; then
+        REGISTRY="${STATE_DIR}/plan-w-team-spawned-children-${SLUG}.jsonl"
+        if [ ! -f "$REGISTRY" ] && [ "$STATE_DIR" != "$FALLBACK_STATE_DIR" ]; then
+            REGISTRY="${FALLBACK_STATE_DIR}/plan-w-team-spawned-children-${SLUG}.jsonl"
+        fi
+        if [ -f "$REGISTRY" ]; then
+            CHILD_SLUGS=$(jq -r 'select(.slug != null and .slug != "") | .slug' "$REGISTRY" 2>/dev/null \
+                | sort -u)
+            if [ -n "$CHILD_SLUGS" ]; then
+                ALL_TERMINAL=true
+                WORST_STATE=""
+                WORST_REASON=""
+                CHECKED_COUNT=0
+                while IFS= read -r CHILD_SLUG; do
+                    [ -z "$CHILD_SLUG" ] && continue
+                    # Self-reference guard: prevent infinite hold-open if a
+                    # registry row accidentally references the parent itself.
+                    [ "$CHILD_SLUG" = "$SLUG" ] && continue
+
+                    CHILD_STATE="${STATE_DIR}/plan-w-team-goal-${CHILD_SLUG}.json"
+                    if [ ! -f "$CHILD_STATE" ] && [ "$STATE_DIR" != "$FALLBACK_STATE_DIR" ]; then
+                        CHILD_STATE="${FALLBACK_STATE_DIR}/plan-w-team-goal-${CHILD_SLUG}.json"
+                    fi
+
+                    if [ ! -f "$CHILD_STATE" ]; then
+                        # Child hasn't written its goal state yet — not terminal.
+                        ALL_TERMINAL=false
+                        continue
+                    fi
+
+                    if ! jq -e . "$CHILD_STATE" >/dev/null 2>&1; then
+                        # Corrupt child state — warn and skip. Do NOT count
+                        # toward ALL_TERMINAL=false; a corrupt file would
+                        # otherwise pin the parent forever.
+                        echo "[goal-evaluator] WARN: corrupt child state at $CHILD_STATE; skipping" >&2
+                        continue
+                    fi
+
+                    CHILD_TERMINAL=$(jq -r '.terminal_state // ""' "$CHILD_STATE")
+                    if [ -z "$CHILD_TERMINAL" ]; then
+                        ALL_TERMINAL=false
+                        continue
+                    fi
+                    CHECKED_COUNT=$((CHECKED_COUNT+1))
+
+                    # Worst-precedence selection.
+                    case "$CHILD_TERMINAL" in
+                        USER_ESCALATION_HALT)
+                            WORST_STATE="USER_ESCALATION_HALT"
+                            WORST_REASON=$(jq -r '.terminal_reason // ""' "$CHILD_STATE")
+                            ;;
+                        LOW_CONFIDENCE_STREAK)
+                            if [ "$WORST_STATE" != "USER_ESCALATION_HALT" ]; then
+                                WORST_STATE="LOW_CONFIDENCE_STREAK"
+                                WORST_REASON=$(jq -r '.terminal_reason // ""' "$CHILD_STATE")
+                            fi
+                            ;;
+                        SUCCESS)
+                            if [ -z "$WORST_STATE" ]; then
+                                WORST_STATE="SUCCESS"
+                                WORST_REASON=$(jq -r '.terminal_reason // ""' "$CHILD_STATE")
+                            fi
+                            ;;
+                    esac
+                done <<< "$CHILD_SLUGS"
+
+                if [ "$ALL_TERMINAL" = "true" ] && [ "$CHECKED_COUNT" -gt 0 ] && [ -n "$WORST_STATE" ]; then
+                    TERMINAL="$WORST_STATE"
+                    REASON="parent SLUG=$SLUG: all $CHECKED_COUNT spawned worker(s) terminal; worst-precedence=$WORST_STATE; worker_reason=$WORST_REASON"
+                fi
+            fi
+        fi
+    fi
+
     if [ -n "$TERMINAL" ]; then
         # Persist terminal state
         jq --arg t "$TERMINAL" --arg r "$REASON" --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \

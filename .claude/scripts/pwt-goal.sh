@@ -153,26 +153,229 @@ line that demonstrates it.
 EOF
 
 if [ "$LAUNCH" = "1" ]; then
-    # Auto-launch: spawn a NEW background claude session with the /goal active.
-    # User watches it via `claude agents` dashboard. /goal indicator shows there.
-    # Env vars propagate to the child session.
+    # Auto-launch: spawn TWO new background claude sessions.
+    #
+    #   1. WORKER     — runs /plan-w-team for the /goal (the actual work).
+    #   2. SUPERVISOR — observer process. Watches the worker, writes a
+    #                   completion summary to .claude/state/, surfaces
+    #                   hard-gate escalations via macOS notification.
+    #                   Does NOT modify code.
+    #
+    # The two-process split makes the supervisor role VISIBLE in
+    # `claude agents` so the statusline can categorize it as
+    # "🛠 supervisor" and the user sees orchestration happening
+    # rather than a single opaque bg session. Worker's parent_sid is
+    # chained to supervisor's sid so the statusline transitively pulls
+    # both into the "mine" set.
     LAUNCH_ENV=""
     if [ "$AUTO_PUSH" = "1" ]; then
         LAUNCH_ENV="PLAN_W_TEAM_AUTO_APPROVE_PUSH=1"
     fi
 
-    echo "Launching: claude --bg \"<derived /goal>\"" >&2
+    # Resolve PROJECT_ROOT to the active worktree, not the main checkout.
+    # When CLAUDE_PROJECT_DIR is inherited from a parent process, it can point
+    # to the main repo while the user's session runs in a worktree under
+    # .claude/worktrees/. The statusline reads from $PWD's state dir, so writes
+    # must land in the same place. Preference order:
+    #   1. git rev-parse --show-toplevel (handles worktree correctly)
+    #   2. script-relative ../.. (when not in a git checkout)
+    #   3. $CLAUDE_PROJECT_DIR (last-resort fallback)
+    PROJECT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || true)
+    if [ -z "$PROJECT_ROOT" ]; then
+        PROJECT_ROOT=$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)
+    fi
+    [ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-}"
+    USER_SID="${CLAUDE_JOB_DIR:-}"
+    USER_SID="${USER_SID##*/}"
+    [ -z "$USER_SID" ] && USER_SID="${PWT_PARENT_SID:-}"
+    USER_SID="${USER_SID:0:8}"
+
+    REQUEST_SAFE=$(printf '%s' "$REQUEST" | head -c 200 | sed 's/"/\\"/g')
+
+    echo "Launching /plan-w-team autonomous run (supervisor + worker)..." >&2
     [ -n "$LAUNCH_ENV" ] && echo "  with env: $LAUNCH_ENV" >&2
-    echo "" >&2
-    echo "Monitor live state with: claude agents" >&2
-    echo "" >&2
+
+    # ─── Spawn WORKER first so we know its sid for the supervisor bootstrap ──
+    WORKER_OUT_FILE=$(mktemp -t pwt-goal-worker.XXXXXX 2>/dev/null || echo "")
+    [ -z "$WORKER_OUT_FILE" ] && {
+        echo "FATAL: mktemp failed; cannot launch" >&2
+        exit 1
+    }
 
     if [ -n "$LAUNCH_ENV" ]; then
-        env $LAUNCH_ENV claude --bg "$GOAL_TEXT"
+        env $LAUNCH_ENV claude --bg "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        LAUNCH_RC=$?
     else
-        claude --bg "$GOAL_TEXT"
+        claude --bg "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        LAUNCH_RC=$?
     fi
-    exit $?
+
+    WORKER_SID=""
+    if [ -s "$WORKER_OUT_FILE" ]; then
+        WORKER_SID=$(sed -E 's/\x1b\[[0-9;]*m//g' "$WORKER_OUT_FILE" 2>/dev/null \
+            | grep -oE 'backgrounded · [a-f0-9]{8}' \
+            | head -1 | awk '{print $NF}' || echo "")
+    fi
+    cat "$WORKER_OUT_FILE" >&2
+    rm -f "$WORKER_OUT_FILE" 2>/dev/null || true
+
+    if [ -z "$WORKER_SID" ]; then
+        echo "WARN: worker session id could not be parsed; skipping supervisor launch" >&2
+        exit "$LAUNCH_RC"
+    fi
+
+    echo "  worker session:     $WORKER_SID" >&2
+
+    # ─── Build supervisor bootstrap ─────────────────────────────────────────
+    # The supervisor is a separate claude --bg session whose ONLY purpose is
+    # observation + summary writing. It does not modify code. We keep the
+    # bootstrap narrow and deterministic so the LLM behavior is predictable.
+    #
+    # We use `read -r -d '' VAR <<'EOF' ... EOF` instead of `VAR=$(cat <<EOF ... EOF)`
+    # because bash 3.2 — Apple's /bin/bash — has a parser bug that mishandles
+    # heredocs containing single quotes or backticks when wrapped inside $(...),
+    # emitting "unexpected EOF looking for matching )". The `read -d ''` form
+    # is bash-3.2 safe (see GOAL_TEXT above for the same pattern). Quoted
+    # heredoc (<<'SUPEOF') disables expansion; placeholders are filled via
+    # bash 3.2-compatible ${var//pat/repl} parameter expansion below.
+    DATE_UTC=$(date -u +%FT%TZ)
+    read -r -d '' SUPERVISOR_BOOTSTRAP <<'SUPEOF' || true
+# /plan-w-team Outer Supervisor
+
+You are the **outer supervisor** for an autonomous /plan-w-team run. You exist as a separate bg session whose role is **observation and reporting**, not implementation.
+
+## Your worker
+
+- **Session ID:** __WORKER_SID__
+- **Goal (verbatim user request):**
+
+> __REQUEST_SAFE__
+
+- **Started:** __DATE_UTC__
+
+The worker is a separate `claude --bg` session executing /plan-w-team. It creates its own worktree during Step 3-4.
+
+## Responsibilities
+
+1. **Observe** by polling `claude agents --json` and `claude logs __WORKER_SID__ --tail 200` every ~60s. Use `until` loops or ScheduleWakeup; don't burn cache by polling too fast.
+
+2. **Wait for terminal state.** Done when ANY of:
+   - **SUCCESS:** transcript contains `stage="retro-complete"` block with `workflow_lock="done"`
+   - **ESCALATION:** a hard-gate pause site fires (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`)
+   - **LOW-CONFIDENCE:** 3 consecutive supervisor decisions log `confidence=low`
+   - **DEAD:** `claude agents --json` no longer lists session __WORKER_SID__
+
+3. **Write completion summary** to `__PROJECT_ROOT__/.claude/state/pwt-completion-summary-__WORKER_SID__.md` with sections: Outcome (SUCCESS/ESCALATION/LOW-CONFIDENCE/DEAD), Goal (verbatim above), Duration (start→end), Worktree (path or "none"), Files changed (`git -C <worktree> diff --stat HEAD~..HEAD` if applicable), AC verdict (parse `AC<N>: PASS|FAIL` lines), Highlights, Next action.
+
+4. **Update goal-state JSON** at `__PROJECT_ROOT__/.claude/state/plan-w-team-goal-<SLUG>.json`. Find by globbing `plan-w-team-goal-*.json` where `terminal_state` is null and `started_at` is within this run window. Update fields: `terminal_state` (SUCCESS / USER_ESCALATION_HALT / LOW_CONFIDENCE_STREAK / DEAD), `terminal_reason`, `terminated_at` (ISO8601), `ac_counts` ({passed, failed, total} or null), `files_touched` (from git diff --name-only or null), `next_action` (imperative string or null). Use a temp-file + rename for atomicity. Tolerate missing file — log to stderr and continue; NEVER block on this step. Markdown summary remains the primary surface.
+
+5. **Surface escalations** with a macOS notification: `osascript -e 'display notification "Hard-gate hit — see chat" with title "/plan-w-team supervisor"' || true`
+
+6. **Exit when done.** After writing the summary, your job is complete.
+
+## Hard rules
+
+- NEVER spawn additional bg agents.
+- NEVER edit code, configs, or specs.
+- NEVER call /plan-w-team yourself.
+- NEVER push to remote — that is the worker + user's responsibility.
+- If unsure what to do, write what you observed to the summary file and exit.
+
+## Start
+
+1. Confirm worker is alive: `claude agents --json | jq '.[] | select(.sessionId | startswith("__WORKER_SID__"))'`.
+2. Begin your polling loop.
+SUPEOF
+
+    # Template substitution (bash 3.2 compatible — uses ${var//pat/repl})
+    SUPERVISOR_BOOTSTRAP="${SUPERVISOR_BOOTSTRAP//__WORKER_SID__/$WORKER_SID}"
+    SUPERVISOR_BOOTSTRAP="${SUPERVISOR_BOOTSTRAP//__REQUEST_SAFE__/$REQUEST_SAFE}"
+    SUPERVISOR_BOOTSTRAP="${SUPERVISOR_BOOTSTRAP//__PROJECT_ROOT__/$PROJECT_ROOT}"
+    SUPERVISOR_BOOTSTRAP="${SUPERVISOR_BOOTSTRAP//__DATE_UTC__/$DATE_UTC}"
+
+    # Length guard: /goal's bootstrap ceiling is 4000 chars. We abort at 3800
+    # with a 200-char safety margin so a future placeholder growth doesn't
+    # trigger silent rejection (the failure mode that caused the 2026-05-20
+    # cascade — 19 background sessions accumulated before discovery).
+    SUPERVISOR_LEN=${#SUPERVISOR_BOOTSTRAP}
+    SUPERVISOR_LIMIT="${PWT_GOAL_SUPERVISOR_LIMIT:-3800}"
+    if [ "$SUPERVISOR_LEN" -gt "$SUPERVISOR_LIMIT" ]; then
+        echo "FATAL: supervisor bootstrap is $SUPERVISOR_LEN chars (limit $SUPERVISOR_LIMIT)" >&2
+        echo "  /goal rejects bootstraps over ~4000 chars. Shrink the SUPERVISOR_BOOTSTRAP" >&2
+        echo "  heredoc in pwt-goal.sh, or override PWT_GOAL_SUPERVISOR_LIMIT if you have" >&2
+        echo "  confirmed a higher /goal ceiling." >&2
+        exit 2
+    fi
+
+    # ─── Spawn SUPERVISOR ────────────────────────────────────────────────────
+    SUP_OUT_FILE=$(mktemp -t pwt-goal-supervisor.XXXXXX 2>/dev/null || echo "")
+    if [ -n "$SUP_OUT_FILE" ]; then
+        claude --bg "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
+        SUP_RC=$?
+        SUPERVISOR_SID=""
+        if [ -s "$SUP_OUT_FILE" ]; then
+            SUPERVISOR_SID=$(sed -E 's/\x1b\[[0-9;]*m//g' "$SUP_OUT_FILE" 2>/dev/null \
+                | grep -oE 'backgrounded · [a-f0-9]{8}' \
+                | head -1 | awk '{print $NF}' || echo "")
+        fi
+        cat "$SUP_OUT_FILE" >&2
+        rm -f "$SUP_OUT_FILE" 2>/dev/null || true
+    else
+        SUPERVISOR_SID=""
+        SUP_RC=1
+        echo "WARN: mktemp failed for supervisor; spawning anyway" >&2
+        claude --bg "$SUPERVISOR_BOOTSTRAP" >&2 || true
+    fi
+
+    if [ -n "$SUPERVISOR_SID" ]; then
+        echo "  supervisor session: $SUPERVISOR_SID" >&2
+    else
+        echo "WARN: supervisor session id could not be parsed; worker still running" >&2
+    fi
+    echo "" >&2
+    echo "Monitor:  claude agents" >&2
+    echo "Worker:   claude logs $WORKER_SID" >&2
+    [ -n "$SUPERVISOR_SID" ] && echo "Supervisor: claude logs $SUPERVISOR_SID" >&2
+    echo "" >&2
+
+    # ─── Register both sessions in pwt-launches.jsonl ────────────────────────
+    # SUPERVISOR_SID's parent is the user's interactive session (USER_SID).
+    # WORKER_SID's parent is SUPERVISOR_SID (so the statusline transitively
+    # pulls the worker into the "mine" set via supervisor chaining).
+    if [ -n "$PROJECT_ROOT" ] && [ -d "$PROJECT_ROOT/.claude/state" ]; then
+        REGISTRY="$PROJECT_ROOT/.claude/state/pwt-launches.jsonl"
+        NOW=$(date -u +%FT%TZ)
+        if [ -n "$SUPERVISOR_SID" ]; then
+            printf '{"sid":"%s","parent_sid":"%s","at":"%s","purpose":"%s","launched_by":"pwt-goal","role":"supervisor"}\n' \
+                "$SUPERVISOR_SID" "$USER_SID" "$NOW" "$REQUEST_SAFE" \
+                >> "$REGISTRY" 2>/dev/null || true
+            printf '{"sid":"%s","parent_sid":"%s","at":"%s","purpose":"%s","launched_by":"pwt-goal","role":"worker"}\n' \
+                "$WORKER_SID" "$SUPERVISOR_SID" "$NOW" "$REQUEST_SAFE" \
+                >> "$REGISTRY" 2>/dev/null || true
+        else
+            # Supervisor failed → record worker chained directly to user
+            printf '{"sid":"%s","parent_sid":"%s","at":"%s","purpose":"%s","launched_by":"pwt-goal","role":"worker-orphan"}\n' \
+                "$WORKER_SID" "$USER_SID" "$NOW" "$REQUEST_SAFE" \
+                >> "$REGISTRY" 2>/dev/null || true
+        fi
+    fi
+
+    # Spawned-children registry (read by 07-retro §8j-sexies cleanup) —
+    # only the WORKER goes here; the supervisor cleans itself up when the
+    # worker terminates (it's not a "spawned child" of the worker).
+    REGISTER_HELPER="$(dirname "$0")/plan-w-team-register-spawn.sh"
+    if [ -x "$REGISTER_HELPER" ]; then
+        SLUG_GUESS=$(printf '%s' "$REQUEST" \
+            | tr '[:upper:]' '[:lower:]' \
+            | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
+            | cut -c1-64 \
+            || echo "")
+        [ -z "$SLUG_GUESS" ] && SLUG_GUESS="_unsourced"
+        "$REGISTER_HELPER" "$WORKER_SID" "pwt-goal-launch" "$SLUG_GUESS" "${SUPERVISOR_SID:-}" "pwt-goal.sh" \
+            >/dev/null 2>&1 || true
+    fi
+
+    exit "$LAUNCH_RC"
 fi
 
 echo "$GOAL_TEXT"

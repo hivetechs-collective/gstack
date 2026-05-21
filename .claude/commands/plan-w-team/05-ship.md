@@ -18,6 +18,28 @@
 
 After review passes, execute the ship pipeline.
 
+## 6-0a. Minimal-Retro-on-Exit Trap (MANDATORY — install first)
+
+Every ship-gate `exit 1` below (review-findings missing, scope-lock drift, secret scan failure, test failure, coverage floor breach, push-ack missing, push-lock contention) used to terminate the run with no retro JSON on disk. `pwt-watch.sh` then degraded to a bare "session finished" notification with no context, and the `/goal` evaluator had no anchor to evaluate.
+
+Install the trap **before** any other shell work so every subsequent exit path is covered:
+
+```bash
+SLUG="<feature-slug>"
+PWT_CURRENT_STAGE="ship"
+
+# Chain with any existing trap; do not replace (see shared/shell-safety.md).
+# The minimal-retro helper is no-op when a complete retro already exists, so
+# this is safe to install even when retros do run normally.
+EXISTING_TRAP=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\\1/")
+MIN_RETRO_CMD=".claude/scripts/plan-w-team-minimal-retro.sh \"\$SLUG\" \"\$PWT_CURRENT_STAGE\" \"ship-early-exit-\$?\""
+trap "${EXISTING_TRAP:+${EXISTING_TRAP}; }$MIN_RETRO_CMD" EXIT
+```
+
+When a later gate uses `exit 1`, the trap fires the helper which writes a minimal `plan-w-team-retro-$SLUG.json` (with `"terminal_state":"EARLY_EXIT"` and `"minimal":true`). The watcher reads it and surfaces a meaningful completion summary citing the gate that blocked.
+
+Later sections of this stage (the push-lock trap chain in §6g, the PR-body cleanup in §6g) ALSO use `trap -p EXIT | sed` to chain. As long as every subsequent `trap … EXIT` follows that pattern (capture, then append), the minimal-retro writer survives intact.
+
 ## 6-0. Ship Gate: Untracked File Classification (MANDATORY)
 
 **This runs before any commit work.** Load `.claude/commands/plan-w-team/shared/untracked-hygiene.md` if you have not already — it contains the full decision matrix, IGNORE pattern guidance, the DISCARD value-carrier guard, and worked examples for the two real-world cases (parts pipeline, claude-pattern obs-\*.png).
@@ -377,10 +399,10 @@ If no coverage floor is declared, this gate is skipped (the star-rating audit ab
 
 ## 6d. Version Bump (if applicable)
 
-| Change Size       | Bump        | Decision                  |
-| ----------------- | ----------- | ------------------------- |
-| <50 lines changed | MICRO/PATCH | Auto-decided              |
-| 50+ lines changed | PATCH       | Auto-decided              |
+| Change Size       | Bump        | Decision                   |
+| ----------------- | ----------- | -------------------------- |
+| <50 lines changed | MICRO/PATCH | Auto-decided               |
+| 50+ lines changed | PATCH       | Auto-decided               |
 | New feature/API   | MINOR       | Route through orchestrator |
 | Breaking change   | MAJOR       | Route through orchestrator |
 

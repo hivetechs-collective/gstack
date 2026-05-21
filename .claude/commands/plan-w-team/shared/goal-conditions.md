@@ -145,6 +145,26 @@ The condition is well under `/goal`'s 4000 char limit.
 
 **Removed:** an earlier `TIME_OR_TURN_CAP` terminal state was deleted by design (2026-05-19). Wall-clock and turn-count termination conflated "the work is done" with "we've used our budget" — neither is a legitimate stopping signal for autonomous engineering work. The three states above are the only ways a `/plan-w-team` run reaches terminal.
 
+### Parent-Child Terminal Propagation (2026-05-20)
+
+When a `/plan-w-team` run delegates work to a worker via `pwt-goal.sh --launch` (or any other `claude --bg` spawn registered via `plan-w-team-register-spawn.sh`), the worker writes its retro-complete anchors to its OWN transcript and state files — never the parent's. Transcript-only anchor sniffing on the parent therefore stalls indefinitely (incident 2026-05-20: 13-min stall after worker shipped).
+
+The evaluator (`.claude/hooks/plan-w-team-goal-evaluator.sh`) handles this by reading worker state files directly. For each active parent goal:
+
+1. Look up the parent's spawned-children registry at `.claude/state/plan-w-team-spawned-children-<PARENT_SLUG>.jsonl`.
+2. For each unique `slug` field in the registry, read the worker's `plan-w-team-goal-<WORKER_SLUG>.json`.
+3. When every registered worker has a non-null `terminal_state`, propagate the worst-precedence state to the parent:
+
+   ```text
+   SUCCESS < LOW_CONFIDENCE_STREAK < USER_ESCALATION_HALT
+   ```
+
+   A halted worker halts the parent (must surface to user). A clean worker satisfies parent SUCCESS. Mixed signals win toward the more severe state.
+
+**Fail-open contract**: missing worker state files mark the child non-terminal (parent keeps blocking — correct). Corrupt JSON state files are skipped with a stderr warn (the corrupt file does NOT pin the parent indefinitely). Self-referential rows (registry `slug` == parent `SLUG`) are skipped to prevent infinite hold-open. Registry absent → behavior is byte-identical to pre-fix (backward compatible).
+
+This propagation is automatic — no code changes needed in stage files. As long as spawns are registered via `plan-w-team-register-spawn.sh` (already wired into `pwt-goal.sh --launch` and `plan-w-team-route-prompt.sh` per the self-cleanup work), the parent goal terminates cleanly when its workers do.
+
 The 3 hard-gate labels referenced in `USER_ESCALATION_HALT` are:
 
 - `push-ack` (Step 6 — irreversible push)
