@@ -60,6 +60,56 @@ The user's proven autonomous workflow (24+ hour runs in cleanscale) puts `/goal`
 
 See `.claude/commands/pwt-goal.md` for the derivation skill and `.claude/scripts/pwt-goal.sh` for the underlying script.
 
+## Pipeline Overview
+
+The skill is an 8-stage pipeline (Steps 0–8). The lead reads the stage file at the start of each step (unless the fast path applies — see "Fast Path" below) and executes it. Two cross-cutting concerns wrap the entire run: the **goal evaluator** (a Stop hook that fires per turn and blocks termination until terminal anchors appear) and the **supervisor** (a persistent Brain-tier agent that owns dispatch during Step 3-4 when the run uses parallel builders).
+
+```mermaid
+flowchart LR
+    subgraph PreFlight["Pre-Flight (mandatory)"]
+        Lock[Workflow lock]
+        Baseline[Untracked baseline]
+        Board[Board preflight]
+        Goal[Goal state file]
+    end
+
+    Step0([Step 0<br/>Scope Challenge])
+    Step1([Step 1<br/>Specification])
+    Step2([Step 2<br/>Task Breakdown])
+    Step34([Steps 3-4<br/>Choose & Execute])
+    Step5([Step 5<br/>Fix-First Review])
+    Step6([Step 6<br/>Ship])
+    Step7([Step 7<br/>Post-Ship Docs])
+    Step8([Step 8<br/>Retro])
+    Done([retro-complete])
+
+    PreFlight --> Step0 --> Step1 --> Step2 --> Step34 --> Step5 --> Step6 --> Step7 --> Step8 --> Done
+
+    subgraph CrossCutting["Cross-cutting"]
+        Supervisor[Supervisor<br/>persistent Brain-tier agent]
+        Evaluator[Goal Evaluator<br/>Stop hook · per-turn anchor check]
+    end
+
+    Supervisor -. owns dispatch during .-> Step34
+    Evaluator -. blocks stop until<br/>terminal anchor + ACs met .-> Done
+
+    classDef stage fill:#e3f2fd,stroke:#1565c0;
+    classDef pre fill:#fff3e0,stroke:#e65100;
+    classDef cross fill:#f3e5f5,stroke:#6a1b9a;
+    classDef terminal fill:#c8e6c9,stroke:#2e7d32;
+    class Step0,Step1,Step2,Step34,Step5,Step6,Step7,Step8 stage;
+    class PreFlight,Lock,Baseline,Board,Goal pre;
+    class CrossCutting,Supervisor,Evaluator cross;
+    class Done terminal;
+```
+
+**Reading the diagram:**
+
+- **Pre-flight** runs once per invocation. Each item is enforcing (workflow lock prevents duplicate runs on the same SLUG; baseline anchors the Step 5 ship gate; goal state file is the bridge to the evaluator hook).
+- **Steps 0–8** run in sequence. Re-entry via `--resume`, `--ship-only`, `--retro` skips to the relevant step (see Flag Routing).
+- **Supervisor** only activates when Step 3-4 chooses parallel builders. Lead-implements-directly and single-builder strategies skip the supervisor entirely.
+- **Goal Evaluator** is always-on while the goal state file exists. It blocks `Stop` until the transcript contains both the generic SUCCESS anchors (`stage="retro-complete"` + `workflow_lock="done"`) AND every feature-specific `AC<N>: PASS` line derived in Step 1 §1.5. See `shared/goal-conditions.md` for the full state machine.
+
 ## Usage
 
 ```

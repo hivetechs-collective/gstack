@@ -19,6 +19,75 @@ The supervisor is a persistent Brain-tier agent that owns Step 3-4 dispatch for 
 - **An audit-logger** via supervisor-actions JSONL
 - **A transcript-surfacer** via per-turn summary block (the contract T5 `/goal` evaluator will consume)
 
+### Process Tree & Shared Artifacts
+
+````mermaid
+flowchart TB
+    subgraph Parent["Parent session (lead)"]
+        Lead[Lead agent<br/>Brain · Opus 4.7]
+    end
+
+    subgraph SupervisorRun["Supervisor (Step 3-4 only)"]
+        Sup[Supervisor agent<br/>persistent · Brain · Opus 4.7]
+        ActionLog[(supervisor-actions<br/>JSONL audit log)]
+        Summary[/per-turn summary block<br/>fenced ```summary``` in transcript/]
+    end
+
+    subgraph Workers["Worker subagents (one per task)"]
+        W1[builder<br/>Hands · Opus 4.6]
+        W2[specialist-N<br/>Hands · pinned per agent def]
+        Wn[...up to N parallel...]
+    end
+
+    subgraph SharedState[".claude/state/ (worktree-aware)"]
+        Goal[(plan-w-team-goal-SLUG.json<br/>terminal_state · feature_specific_done_criteria)]
+        Fleet[(plan-w-team-fleet-SLUG.jsonl<br/>spawn/complete events · T3 hook writer)]
+        Intent[(plan-w-team-fleet-intent-SLUG.jsonl<br/>task_id ↔ agent_type sidecar)]
+        Children[(plan-w-team-spawned-children-SLUG.jsonl<br/>registered claude --bg children)]
+        Lock[(plan-w-team-workflow-SLUG.lock<br/>mkdir-atomic owner PID)]
+    end
+
+    subgraph Hooks["Always-on hooks"]
+        Eval[plan-w-team-goal-evaluator.sh<br/>Stop hook · reads Goal + Children]
+        Spawn[plan-w-team-register-spawn.sh<br/>writes Children on claude --bg]
+        SubHook[SubagentStart/Stop hooks<br/>write Fleet]
+    end
+
+    Lead -->|spawns once for<br/>parallel-builder runs| Sup
+    Sup -->|spawns N workers<br/>via Agent tool| Workers
+    Sup -->|emits per turn| Summary
+    Sup -->|appends events| ActionLog
+    Sup -->|reads to decide<br/>next dispatch| Fleet
+    Sup -.optional: route_orchestrator.-> Lead
+
+    Workers -.SubagentStart/Stop.-> SubHook
+    SubHook --> Fleet
+    Sup -->|writes intent before<br/>each Agent() call| Intent
+
+    Eval -.reads per turn.-> Goal
+    Eval -.aggregates worker state.-> Children
+
+    Lead -->|holds for run duration| Lock
+
+    classDef parent fill:#e3f2fd,stroke:#1565c0;
+    classDef sup fill:#fff3e0,stroke:#e65100;
+    classDef worker fill:#e8f5e9,stroke:#2e7d32;
+    classDef state fill:#f3e5f5,stroke:#6a1b9a;
+    classDef hook fill:#fce4ec,stroke:#ad1457;
+    class Lead parent;
+    class Sup,ActionLog,Summary sup;
+    class W1,W2,Wn worker;
+    class Goal,Fleet,Intent,Children,Lock state;
+    class Eval,Spawn,SubHook hook;
+````
+
+**Reading the diagram:**
+
+- The **lead** spawns the supervisor exactly once for parallel-builder runs. Lead-implements-directly and single-builder strategies skip the supervisor entirely (the lead drives workers/tasks itself).
+- The **supervisor** is the only spawner of workers during Step 3-4. Worker `SubagentStart`/`SubagentStop` hooks write fleet events automatically; the supervisor writes the intent sidecar BEFORE each `Agent()` call so the fleet log can be joined to task IDs.
+- The **goal evaluator** (Stop hook) reads both the parent's goal state file AND the spawned-children registry — workers that ship their own retro-complete state propagate up to the parent (see `Parent-Child Terminal Propagation` below).
+- `.claude/state/` paths are **worktree-aware**: `surface-status.sh` and `goal-evaluator.sh` check `$PWD/.claude/state/` first before falling back to `$CLAUDE_PROJECT_DIR/.claude/state/`. This makes background-session worktrees (`claude --bg`) safe by default.
+
 ## Supervisor-Actions JSONL Schema
 
 Path: `.claude/state/plan-w-team-supervisor-actions-<SLUG>.jsonl`

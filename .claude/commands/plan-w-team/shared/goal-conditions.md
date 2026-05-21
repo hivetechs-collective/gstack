@@ -145,6 +145,51 @@ The condition is well under `/goal`'s 4000 char limit.
 
 **Removed:** an earlier `TIME_OR_TURN_CAP` terminal state was deleted by design (2026-05-19). Wall-clock and turn-count termination conflated "the work is done" with "we've used our budget" — neither is a legitimate stopping signal for autonomous engineering work. The three states above are the only ways a `/plan-w-team` run reaches terminal.
 
+### Evaluator State Machine
+
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> Active : goal state file written\n(top-of-pipeline)
+
+    Active --> CheckAnchors : Stop hook fires\n(per Claude turn)
+
+    state CheckAnchors <<choice>>
+    CheckAnchors --> HasEscalation : pending_escalations\nnon-empty
+    CheckAnchors --> HasLowConfStreak : low_confidence_routes >= 3\nOR 3 consecutive supervisor\nlow-confidence summaries
+    CheckAnchors --> HasGenericSuccess : stage="retro-complete"\nAND workflow_lock="done"\nAND slug match
+    CheckAnchors --> Active : none of the above\n(BLOCK stop, keep running)
+
+    HasGenericSuccess --> CheckFeatureCriteria : feature_specific_done_criteria\npresent?
+
+    state CheckFeatureCriteria <<choice>>
+    CheckFeatureCriteria --> SUCCESS : array empty\n(generic anchors sufficient)
+    CheckFeatureCriteria --> ANDCheck : array non-empty
+    ANDCheck --> SUCCESS : every AC<N>.*PASS\npattern matched in transcript
+    ANDCheck --> Active : at least one AC unmet\n(BLOCK with reason citing unmet)
+
+    HasEscalation --> USER_ESCALATION_HALT
+    HasLowConfStreak --> LOW_CONFIDENCE_STREAK
+
+    SUCCESS --> [*] : terminal_state persisted\nlet Claude stop
+    USER_ESCALATION_HALT --> [*] : terminal_state persisted\nlet Claude stop · surface to user
+    LOW_CONFIDENCE_STREAK --> [*] : terminal_state persisted\nlet Claude stop · surface to user
+
+    note right of ANDCheck
+        Per-AC AND-check: marks each
+        criterion met:true · met_at:<ts>
+        the first turn its pattern fires.
+        Unmet list -> hook reason.
+    end note
+```
+
+**Reading the diagram:**
+
+- The hook is **always active** while the goal state file exists; the kill switch (`PLAN_W_TEAM_DISABLE_GOAL=1`) removes the hook from the path entirely.
+- The three terminal states are **mutually exclusive per evaluation**; precedence (USER_ESCALATION_HALT > LOW_CONFIDENCE_STREAK > SUCCESS) only matters for parent-child propagation (next section).
+- The `CheckFeatureCriteria` branch is what PWT-T5c adds on top of T5b: a non-empty `feature_specific_done_criteria` array forces an AND-check between generic anchors and every per-AC pattern before SUCCESS fires. With an empty array (or a missing field), behavior is identical to T5b — generic anchors alone fire SUCCESS.
+- "BLOCK stop" means the hook exits with `"continue": true` so Claude can't terminate; "let Claude stop" means the hook exits with `"continue": false`. The hook is the only thing standing between the run and termination — wrong hook decision = wrong run lifetime.
+
 ### Parent-Child Terminal Propagation (2026-05-20)
 
 When a `/plan-w-team` run delegates work to a worker via `pwt-goal.sh --launch` (or any other `claude --bg` spawn registered via `plan-w-team-register-spawn.sh`), the worker writes its retro-complete anchors to its OWN transcript and state files — never the parent's. Transcript-only anchor sniffing on the parent therefore stalls indefinitely (incident 2026-05-20: 13-min stall after worker shipped).
