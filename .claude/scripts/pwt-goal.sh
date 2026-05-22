@@ -193,6 +193,45 @@ EOM
     exit 2
 fi
 
+# ─── DETERMINISTIC WORKER-CASCADE GUARD (PWT-DS2) ───────────────────────────
+# If we're running INSIDE a bg worker session (PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1
+# was set by the parent pwt-goal.sh spawn), refuse to spawn another worker.
+# Workers reading their own goal text — which contains "Use /plan-w-team to..." —
+# would otherwise have their LLM trigger the manifest's routing logic and call
+# pwt-goal.sh AGAIN, creating a recursive cascade.
+#
+# Covers BOTH --launch and --worker-only paths (the LLM may pick either).
+#
+# Override: PLAN_W_TEAM_FORCE_SPAWN=1 bypasses (rare: e.g. an orchestrator
+# inside a worker that legitimately needs a sub-worker for a sub-goal).
+#
+# Caught 2026-05-22: worker 85420913's goal text contained "Use /plan-w-team to..."
+# (verbatim from pwt-goal.sh's GOAL_TEXT template). Its LLM fired the manifest's
+# Step 3b spawn path. Worker c00b9887 then called pwt-goal.sh --launch (not
+# --worker-only), bypassing PWT-DS1.
+if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-0}" = "1" ] \
+        && [ "${PLAN_W_TEAM_FORCE_SPAWN:-0}" != "1" ] \
+        && { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; }; then
+    cat >&2 <<CASCADE_GUARD
+✗ Worker-cascade refused: cannot spawn /plan-w-team from inside a worker session.
+
+  Signal: PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 is set, which means this process
+  inherited environment from a parent pwt-goal.sh bg worker spawn.
+
+  A worker's goal text contains "Use /plan-w-team to..." (verbatim). When the
+  worker's LLM reads its own goal, the trigger phrase fires the skill manifest's
+  routing logic, prompting another pwt-goal.sh call. That creates a recursive
+  cascade.
+
+  If you intentionally need a sub-worker from inside an orchestrator running
+  inside a worker, set PLAN_W_TEAM_FORCE_SPAWN=1 and retry.
+
+  Caught 2026-05-22 via worker 85420913's own LLM spawning a duplicate, and
+  worker c00b9887's --launch call producing 8cf9b873 + 752e86c4.
+CASCADE_GUARD
+    exit 4
+fi
+
 # ─── DETERMINISTIC DOUBLE-SPAWN GUARD (PWT-DS1) ─────────────────────────────
 # If the UserPromptSubmit route hook already spawned a worker for this turn,
 # refuse to spawn another. The hook writes a flag file at:
