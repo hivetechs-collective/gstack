@@ -492,11 +492,20 @@ fi
 PWT_GOAL="$PROJECT_ROOT/.claude/scripts/pwt-goal.sh"
 [ -x "$PWT_GOAL" ] || exit 0
 
-# ─── Foreground worker spawn (--worker-only mode) ────────────────────────────
+# ─── Foreground worker spawn (--supervisor-goal mode) ────────────────────────
 # We need the worker SID *before* returning so the additionalContext payload
-# can hand it to the origin assistant. `pwt-goal.sh --worker-only` runs
-# `claude --bg` synchronously and emits "worker_sid=<SID>" on stdout. The
-# whole call typically completes in <1.5s. We CANNOT background this and
+# can hand it to the origin assistant. `pwt-goal.sh --supervisor-goal` runs
+# `claude --bg` synchronously, emits "worker_sid=<SID>" on stdout, AND mirrors
+# the worker's goal-state file to the origin's .claude/state/ so the origin
+# chat receives supervisor-goal authority for this run (per the decision
+# matrix in shared/supervisor-protocol.md §Decision Matrix). This grants
+# autonomous-merge authority for CI-green non-one-way-door PRs without the
+# user needing to type `pwt-goal.sh --supervisor-goal` manually.
+#
+# Behavior is a strict superset of --worker-only: same SID emission, same
+# AUTO_PUSH=1 implication. Only addition is the origin-side mirror file.
+#
+# Whole call typically completes in <1.5s. We CANNOT background this and
 # poll a log file like the old --launch path because the hook must return
 # the SID in its response payload.
 LOG_DIR="$PROJECT_ROOT/.claude/state/pwt-launch-logs"
@@ -506,15 +515,16 @@ LOG_FILE="$LOG_DIR/launch-$TS-$$.log"
 
 # Run synchronously, capture stdout + stderr. PWT_PARENT_SID lets pwt-goal.sh
 # record the chain (worker.parent_sid = origin chat sid) so the statusline
-# classifies it as "mine".
+# classifies it as "mine" AND so the mirror file lands in the correct origin
+# .claude/state/ directory.
 PWT_GOAL_OUT=$(
     PWT_PARENT_SID="$PARENT_SID_FROM_HOOK" \
-        "$PWT_GOAL" --worker-only "$PROMPT" 2>"$LOG_FILE.err" </dev/null
+        "$PWT_GOAL" --supervisor-goal "$PROMPT" 2>"$LOG_FILE.err" </dev/null
 )
 PWT_GOAL_RC=$?
 # Mirror everything to a log file for debugging.
 {
-    echo "=== pwt-goal --worker-only (exit $PWT_GOAL_RC) ==="
+    echo "=== pwt-goal --supervisor-goal (exit $PWT_GOAL_RC) ==="
     echo "$PWT_GOAL_OUT"
     echo "=== stderr ==="
     cat "$LOG_FILE.err" 2>/dev/null
