@@ -45,6 +45,52 @@ If the route hook already fired on this turn, the Claude Code harness delivers i
 
 **History**: the original Bug 2 fix (commit `3790fca`) checked for the additionalContext marker `PWT-O1 origin-chat supervisor protocol`. That check NEVER fired because the harness drops additionalContext from UserPromptSubmit hooks. Result: every natural-language trigger produced double-spawn (hook spawn + manifest spawn). The systemMessage-based check above fires correctly because the harness DOES deliver systemMessage as a `hook_system_message` attachment.
 
+**PWT-DS1 — process-level backstop (LLM-attention is first line, flag-file is backup):** the visual marker check above is the first line of defense, but LLM-attention is not load-bearing — an origin assistant can read the marker and still call `pwt-goal.sh --worker-only` anyway (the failure mode that produced commit `c9cfcd5`). The deterministic backstop is at the process level: when the route hook spawns a worker, it writes a flag file at `.claude/state/plan-w-team-hook-spawn-<parent_sid_short>.flag` containing the worker SID, parent SID, spawn timestamp, and trigger pattern. `pwt-goal.sh --worker-only` checks for this flag at startup; if a flag from the current parent SID exists within the last 60 seconds, it refuses to spawn (exit 3 (PWT_DS1_DUPLICATE label, code returns 3)) regardless of what the manifest narrative says. The flag is registered in `shared/state-artifacts.md`.
+
+**PWT-DS2 — cascade guard (workers cannot self-multiply):** PWT-DS1 prevents the origin-chat double-spawn; PWT-DS2 prevents a different failure mode where a worker's own goal text contains `Use /plan-w-team to ...` (verbatim from the `pwt-goal.sh` template) and the worker's LLM matches the trigger pattern and calls `pwt-goal.sh` again. To stop the cascade, `pwt-goal.sh --worker-only` propagates `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1` into the worker's environment; any subsequent `pwt-goal.sh` invocation (both `--worker-only` and `--launch`) detects this env signal and exits 4 (`PWT_DS2_CASCADE`). Escape hatch for legitimate nested runs: `PLAN_W_TEAM_FORCE_SPAWN=1` (documented in stderr of the refusal). See `shared/orchestrator-interception.md` §Cascade Guard for the full diagnostic chain that prompted commit `553ab85`.
+
+```mermaid
+flowchart TD
+    A[User message in chat] --> B{Route hook classifier<br/>9 signals: imperative,<br/>slash trigger, done-when, ...}
+    B -->|imperative match| C[Hook writes spawn flag<br/>state/plan-w-team-hook-spawn-SID.flag]
+    B -->|descriptive / interrogative| Z[no-op exit 0]
+    C --> D[Hook spawns ONE worker via<br/>pwt-goal.sh --worker-only]
+    C --> E[Hook emits systemMessage<br/>🚀 /plan-w-team origin-chat supervisor active]
+    E --> F{Manifest Step 3a check<br/>scan transcript for marker}
+    F -->|marker present| G[Skip to Step 3c<br/>act as supervisor]
+    F -->|marker absent| H[Step 3b: call pwt-goal.sh]
+    H --> I{PWT-DS1 deterministic guard<br/>flag file present in last 60s?}
+    I -->|present| J[Refuse spawn → exit 3<br/>cite flag path PWT_DS1_DUPLICATE]
+    I -->|absent| K[Proceed with spawn]
+    G --> L[Exactly ONE bg worker]
+    K --> L
+
+    classDef hook fill:#fff3e0,stroke:#e65100
+    classDef guard fill:#ffebee,stroke:#c62828
+    classDef ok fill:#c8e6c9,stroke:#2e7d32
+    class B,C,E hook
+    class F,I guard
+    class L,Z ok
+```
+
+```mermaid
+flowchart TD
+    W[Worker process<br/>spawned by hook or Step 3b] --> R[Worker reads its goal text<br/>contains 'Use /plan-w-team to ...']
+    R --> M{Worker LLM matches<br/>routing trigger pattern}
+    M -->|yes| C[Worker tries to call<br/>pwt-goal.sh --worker-only]
+    C --> G{PWT-DS2 cascade guard<br/>PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 set?}
+    G -->|set| X[Refuse spawn → exit 4<br/>PWT_DS2_CASCADE<br/>stderr cites escape hatch]
+    G -->|unset| P[Proceed normally<br/>outside worker context]
+    X -.->|escape hatch| F[PLAN_W_TEAM_FORCE_SPAWN=1<br/>bypass for legitimate nested runs]
+
+    classDef worker fill:#e1f5fe,stroke:#0277bd
+    classDef guard fill:#ffebee,stroke:#c62828
+    classDef ok fill:#c8e6c9,stroke:#2e7d32
+    class W,R worker
+    class G,X guard
+    class P ok
+```
+
 #### Step 3b — Spawn worker (only if hook did not)
 
 Execute exactly this:
@@ -113,7 +159,7 @@ User typed: `Use /plan-w-team to do a realistic audit for scope drift against ad
 
 ❌ **Wrong** (what happened): agent reasoned "this is direct slash invocation (not a re-route trigger), HOLD mode, 1-task audit, fast path qualifies" → ran pre-flight in-session → consumed the user's interactive session for a multi-minute audit. The agent saw `/plan-w-team` as a slash token and dismissed the surrounding `Use ... to do ...` natural-language envelope.
 
-✅ **Right**: the message contains the substring `Use /plan-w-team to ` → Step 1 matches → run Step 3a's double-spawn guard. If the UserPromptSubmit hook already spawned the worker (PWT-O1 marker present in additionalContext), skip to Step 3c (act as live supervisor); otherwise call `Bash(.claude/scripts/pwt-goal.sh --worker-only "Use /plan-w-team to do a realistic audit ...")`, then Step 3c. Both paths land on the same single-worker + origin-chat-supervisor state.
+✅ **Right**: the message contains the substring `Use /plan-w-team to ` → Step 1 matches → run Step 3a's double-spawn guard. If the UserPromptSubmit hook already spawned the worker (`/plan-w-team origin-chat supervisor active` marker present in the turn's `hook_system_message`), skip to Step 3c (act as live supervisor); otherwise call `Bash(.claude/scripts/pwt-goal.sh --worker-only "Use /plan-w-team to do a realistic audit ...")`, then Step 3c. PWT-DS1 (process-level flag file) backstops the visual check; PWT-DS2 prevents the worker from cascading. Both paths land on the same single-worker + origin-chat-supervisor state.
 
 **The slash presence in prose does NOT make the message a "direct slash invocation."** Direct slash invocation means the user typed `/plan-w-team` as the leading command token (alone or with bare args after it), NOT inside a natural-language sentence beginning with `Use` / `With` / `Using` / `Kick off` / `Start`.
 

@@ -257,6 +257,40 @@ The goal-evaluator hook (`.claude/hooks/plan-w-team-goal-evaluator.sh`) handles 
 
 For supervisors that ever spawn additional `claude --bg` children (rare — supervisors normally spawn agents via the `Agent` tool, not new sessions): such a spawn MUST be registered via `.claude/scripts/plan-w-team-register-spawn.sh` so the propagation works. Without registration, the parent's goal evaluator has no record of the child and will continue to wait on transcript anchors that never arrive in its own session.
 
+## Origin-Chat Supervisor — systemMessage as Load-Bearing Signal (2026-05-21)
+
+The **persistent supervisor** described above is for parallel-builder runs (Step 3-4 dispatch). A different, simpler supervisor mode runs for every natural-language `/plan-w-team` trigger: the **origin-chat supervisor**, where the user's current chat session takes the supervisor role for a single bg worker spawned by the UserPromptSubmit route hook. The full inlined protocol lives in the skill manifest's "Step 3c — Act as live supervisor" block; this section documents only what makes the handoff between hook and origin chat actually work in 2.1.148+.
+
+**Load-bearing signal: `systemMessage` (not `additionalContext`)**
+
+The Claude Code harness silently drops the `additionalContext` field from UserPromptSubmit hook output. Verified 2026-05-21 in v2.1.148: 0 of 20 expected `additionalContext` deliveries arrived in the captured session JSONL near the user-prompt turn. Only `systemMessage` reaches the assistant — delivered as a `hook_system_message` attachment. Therefore the marker the manifest Step 3a check scans for MUST be a substring of the systemMessage content the hook emits, NOT a marker buried in additionalContext.
+
+The current marker the route hook emits in its `systemMessage`:
+
+```
+🚀 /plan-w-team origin-chat supervisor active
+   worker: <SID>
+   pattern: <trigger>
+   ...
+```
+
+The manifest Step 3a guard greps for the prefix `/plan-w-team origin-chat supervisor active`. If present → skip the manifest's own spawn (worker already exists); if absent → call `pwt-goal.sh --worker-only`. The full inlined Step 3c supervisor protocol is in the manifest because additionalContext (which previously carried the protocol body) is dropped.
+
+**Why this is documented as load-bearing**: the systemMessage marker is the only inter-process signal between the route hook and the assistant turn. If a future Claude Code release changes how systemMessage attachments are delivered, the origin-chat-supervisor handoff breaks silently. See `tests/skill/scenarios/imperative-nl-one-worker.bats` for the regression that catches this.
+
+**PWT-DS1 and PWT-DS2 are deterministic backstops, not replacements:**
+
+- **PWT-DS1** (process-level, mid-2026-05): even if the assistant ignores the systemMessage marker and calls `pwt-goal.sh --worker-only` anyway, the script checks `.claude/state/plan-w-team-hook-spawn-<sid>.flag` (written by the hook on successful spawn). A flag mtime-within-60s for the current parent SID → refuse spawn, exit 3 (PWT_DS1_DUPLICATE label, code returns 3). The flag-file is registered in `shared/state-artifacts.md`.
+- **PWT-DS2** (env-propagated, cascade guard): `pwt-goal.sh --worker-only` sets `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1` in the spawned worker's environment. Any subsequent `pwt-goal.sh` invocation (worker-only OR launch) inside that env refuses to spawn (exit 4 `PWT_DS2_CASCADE`). Escape hatch: `PLAN_W_TEAM_FORCE_SPAWN=1` for legitimate nested runs.
+
+**Defense-in-depth ordering** (first→last):
+
+1. **LLM attention** (systemMessage marker scan) — fastest path; correct in ~99% of cases.
+2. **PWT-DS1** flag file — process-level deterministic; catches LLM-attention misses (the case that produced commit `c9cfcd5`).
+3. **PWT-DS2** env signal — catches the cascade pattern where a worker's goal text re-triggers the routing classifier (the case that produced commit `553ab85`).
+
+This layering is intentional: the visual marker is the cheapest and most ergonomic; the flag-file is a backstop that requires no assistant cooperation; the env signal stops self-replication from inside the worker.
+
 ## Adding a New Event Type or Summary Field
 
 When extending the supervisor (e.g. for T5 integration):

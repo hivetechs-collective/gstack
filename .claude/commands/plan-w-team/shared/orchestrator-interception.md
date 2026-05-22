@@ -207,3 +207,52 @@ The 3 user-verdict sites (`push-ack`, `secret-scan-allow`,
 emits an `escalation` event and returns to the lead for user surfacing.
 See `shared/supervisor-protocol.md` for the supervisor's full delegation
 contract.
+
+## Cascade Guard (PWT-DS2)
+
+The orchestrator router and the persistent supervisor both spawn agents
+via the `Agent` tool — these are in-process subagents and DO NOT trigger
+the spawn-cascade failure mode described here. The cascade risk is
+specifically for `claude --bg` worker spawns initiated by `pwt-goal.sh`,
+where a worker's goal text contains the verbatim `Use /plan-w-team to ...`
+trigger pattern and the worker's LLM re-invokes the routing classifier.
+
+**Guard**: `pwt-goal.sh --worker-only` propagates
+`PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1` into the spawned worker's environment.
+Any later `pwt-goal.sh` invocation (`--worker-only` OR `--launch`) inside
+that env exits 4 with `PWT_DS2_CASCADE` and a stderr line citing the
+escape hatch:
+
+```
+PLAN_W_TEAM_FORCE_SPAWN=1 .claude/scripts/pwt-goal.sh --worker-only "..."
+```
+
+The escape hatch exists for legitimate nested runs (e.g. an outer
+`/plan-w-team` orchestrating a series of sub-features that each need
+their own bg worker). Default behavior is refuse-and-document; force-spawn
+is opt-in.
+
+**Diagnostic chain** (commit `553ab85`, 2026-05-21):
+
+1. Route hook fired on a user message → spawned worker A.
+2. Worker A's `/goal` text contained `"Use /plan-w-team to ..."` (the
+   verbatim template body from `pwt-goal.sh`'s GOAL_TEXT).
+3. Worker A's LLM read the goal, matched the manifest's natural-language
+   trigger pattern, and called `pwt-goal.sh --worker-only` again →
+   spawned worker B (PWT-DS1 missed this because worker A's parent SID
+   was different from the original route-hook parent).
+4. Worker B called `pwt-goal.sh --launch` (the legacy detached path).
+   PWT-DS1's check at the time was scoped to `--worker-only` paths →
+   unguarded → spawned worker C + a supervisor D.
+5. Cascade self-multiplied until the first batch was killed.
+
+PWT-DS2 closes step 3 (env signal blocks both `--worker-only` and
+`--launch` from inside any worker spawned by `pwt-goal.sh`). PWT-DS1
+flag-file backstop closes step 1 (origin-chat double-spawn). Together
+they make the spawn topology deterministic regardless of LLM behavior.
+
+**When to think about PWT-DS2 in stage files**:
+
+- Step 3-4 parallel builders: not applicable (Agent-tool spawns, not bg).
+- Stage authors writing scripts that may shell out to `pwt-goal.sh`: aware that the cascade guard fires from any process whose ancestor was a `--worker-only` spawn. If you genuinely need nested bg, set `PLAN_W_TEAM_FORCE_SPAWN=1` for that call only.
+- Supervisor agents (PWT-T4): N/A — they spawn via `Agent`, not `claude --bg`.

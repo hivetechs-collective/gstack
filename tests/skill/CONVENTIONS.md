@@ -4,6 +4,44 @@
 
 The test harness lives at `tests/skill/`. Anti-fragmentation lock-in: there is **one harness, one runner, one `make test-skill` target**. Do not add parallel runners, alternate frameworks, or "fast-only" test subsets — every variant fragments coverage and lets regressions hide.
 
+## End-to-End Testing Framework (TESTING-FRAMEWORK)
+
+```mermaid
+flowchart LR
+    Dev[Developer edits<br/>PWT script or stage file] --> Hook[.githooks/pre-commit<br/>guard for PWT-path changes]
+    Hook -->|PWT path touched| Run[tests/skill/run.sh<br/>canonical entry point]
+    Hook -->|other path| Skip[skip — exit 0]
+
+    Run --> Bootstrap[bootstrap<br/>vendored bats-core under .bats/]
+    Bootstrap --> Discover[discover .bats files]
+    Discover --> Cases[cases/*.bats<br/>unit tests per script]
+    Discover --> Scenarios[scenarios/*.bats<br/>E2E integration<br/>via harness-shim.sh]
+
+    Cases --> Bats[bats runner<br/>TAP output]
+    Scenarios --> Shim[harness-shim.sh<br/>fake Claude Code harness]
+    Shim --> Bats
+
+    Bats --> Archive[results/runs/-ts-.json<br/>+ latest.json pointer]
+    Bats --> Verdict{all pass?}
+    Verdict -->|yes| Green[exit 0 — commit proceeds]
+    Verdict -->|no| Red[exit 1 — commit blocked]
+
+    classDef dev fill:#e3f2fd,stroke:#1565c0
+    classDef hook fill:#fff3e0,stroke:#e65100
+    classDef run fill:#f3e5f5,stroke:#6a1b9a
+    classDef test fill:#e8f5e9,stroke:#2e7d32
+    classDef ok fill:#c8e6c9,stroke:#2e7d32
+    classDef bad fill:#ffebee,stroke:#c62828
+    class Dev dev
+    class Hook,Skip hook
+    class Run,Bootstrap,Discover,Bats,Archive run
+    class Cases,Scenarios,Shim test
+    class Green ok
+    class Red bad
+```
+
+**Reading the diagram:** every PWT-touching edit goes through `tests/skill/run.sh`. The pre-commit hook (`.githooks/pre-commit`) is the gate; `harness-shim.sh` is the fake harness that lets scenarios test the route hook → worker spawn → systemMessage delivery flow without spinning up real `claude --bg` processes. As of 2026-05-21 the suite is at **99 tests** (8 case files + 5 scenario files). Adding a behavior that crosses the hook ↔ /goal boundary belongs in `scenarios/`; everything else belongs in `cases/<script>.bats`.
+
 ## Layout
 
 ```
