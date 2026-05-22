@@ -358,6 +358,136 @@ AMBIPY
         ;;
 esac
 
+# ─── PARALLEL-WORKER GATE (PWG) ──────────────────────────────────────────────
+# Defense against the 2026-05-22 cleanscale incident: while a /plan-w-team
+# worker is actively running, the user types a fresh imperative trigger. The
+# classifier correctly parses it as imperative, but the user's intent is
+# ambiguous — they may want a parallel worker (different feature) OR they may
+# want to direct/cancel the existing worker. Silently spawning produces two
+# workers racing on the same files.
+#
+# Strategy: enumerate active bg /plan-w-team workers in the current project;
+# if any exist (and we're not the parent), refuse to spawn and surface a
+# disambiguation systemMessage. The origin assistant handles the reply on
+# the next turn (parallel | direct | cancel).
+#
+# Existing guards do not catch this:
+#   - PWT-DS1 flag-file is 60s scoped; long-running workers age past it.
+#   - PWT-DS2 env signal only fires inside worker processes.
+#   - Classifier is textual; the ambiguity is situational.
+#
+# Kill switch: PLAN_W_TEAM_DISABLE_PARALLEL_GATE=1 bypasses the gate
+# (proceeds with spawn even with active workers). Use for deliberate
+# parallel-feature workflows.
+#
+# Fail-open: any internal error (jq missing, claude CLI missing, malformed
+# JSON) → proceed to spawn. The gate adds friction; if state can't be
+# queried, the existing PWT-DS1 flag-file still backs up double-spawn.
+# See docs/specs/parallel-worker-gate.md.
+
+if [ "${PLAN_W_TEAM_DISABLE_PARALLEL_GATE:-}" != "1" ] \
+   && command -v claude >/dev/null 2>&1 \
+   && command -v jq >/dev/null 2>&1; then
+
+    # Resolve canonical project root (worktree-aware). Strip trailing /.git
+    # from --git-common-dir to get the main repo's working tree. Fall back to
+    # PROJECT_ROOT literal on any git failure.
+    PWG_CANON_ROOT=""
+    if PWG_GIT_COMMON=$(git -C "$PROJECT_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null); then
+        PWG_CANON_ROOT="${PWG_GIT_COMMON%/.git}"
+        PWG_CANON_ROOT="${PWG_CANON_ROOT%/.git/}"
+        # If --git-common-dir returns e.g. "/repo/.git/worktrees/foo", climb up
+        # to the parent /.git path then strip.
+        case "$PWG_GIT_COMMON" in
+            */.git/worktrees/*) PWG_CANON_ROOT="${PWG_GIT_COMMON%/.git/worktrees/*}" ;;
+        esac
+    fi
+    [ -z "$PWG_CANON_ROOT" ] && PWG_CANON_ROOT="$PROJECT_ROOT"
+
+    # Query the agents list. Run with a short timeout so a slow `claude` CLI
+    # doesn't stall every prompt.
+    PWG_AGENTS_RAW=$(claude agents --json 2>/dev/null || echo "[]")
+    if [ -z "$PWG_AGENTS_RAW" ] || ! printf '%s' "$PWG_AGENTS_RAW" | jq empty >/dev/null 2>&1; then
+        PWG_AGENTS_RAW="[]"
+    fi
+
+    # Filter for bg /plan-w-team workers in this project, excluding self.
+    # The name field is wrapped in `tostring` because some agents may have
+    # a null name. jq -c -r yields each match as a JSON object per line.
+    PWG_MATCHES=$(
+        printf '%s' "$PWG_AGENTS_RAW" | jq -c --arg root "$PWG_CANON_ROOT" --arg pself "${PARENT_SID_FROM_HOOK:0:8}" '
+            [ .[] | select(
+                .kind == "background"
+                and ((.cwd // "") | startswith($root))
+                and (((.name // "") | ascii_downcase) | (contains("/goal") or contains("/plan-w-team")))
+                and ((.sessionId // "")[0:8] != $pself)
+            ) ]
+        ' 2>/dev/null || echo "[]"
+    )
+    PWG_COUNT=$(printf '%s' "$PWG_MATCHES" | jq 'length' 2>/dev/null || echo 0)
+    [ -z "$PWG_COUNT" ] && PWG_COUNT=0
+
+    if [ "$PWG_COUNT" -gt 0 ] 2>/dev/null; then
+        # Refuse spawn. Emit disambiguation systemMessage and exit 0.
+        # Slug/stage extraction is best-effort: parse from name if present,
+        # else <unknown>. Stage is read from the goal state file if the slug
+        # is identifiable; that's a soft signal — we still always emit the SID.
+        PWG_PROJECT_ROOT="$PROJECT_ROOT" \
+        PWG_MATCHES="$PWG_MATCHES" \
+        python3 - <<'PWGPY' 2>/dev/null || exit 0
+import json, os, re, sys
+
+matches_raw = os.environ.get("PWG_MATCHES", "[]")
+project_root = os.environ.get("PWG_PROJECT_ROOT", "")
+
+try:
+    matches = json.loads(matches_raw)
+except Exception:
+    print(json.dumps({"systemMessage": "⚠ /plan-w-team parallel-worker gate: failed to parse agents fixture; spawn refused for safety."}))
+    sys.exit(0)
+
+def derive_slug(name):
+    if not name:
+        return "<unknown>"
+    m = re.search(r"slug[=:\s]+([A-Za-z0-9_\-]+)", name)
+    if m:
+        return m.group(1)
+    # heuristic: first few words after "Use /plan-w-team to"
+    m = re.search(r"/plan-w-team to ([A-Za-z0-9_\-\s]{1,40})", name, re.IGNORECASE)
+    if m:
+        words = m.group(1).strip().split()[:3]
+        if words:
+            return "-".join(w.lower() for w in words)
+    return "<unknown>"
+
+def read_stage(slug):
+    if slug == "<unknown>":
+        return "<unknown>"
+    path = os.path.join(project_root, ".claude", "state", f"plan-w-team-goal-{slug}.json")
+    try:
+        with open(path) as f:
+            data = json.load(f)
+        return data.get("terminal_state") or data.get("stage") or "in-flight"
+    except Exception:
+        return "<unknown>"
+
+lines = ["⚠ /plan-w-team workers already active in this project:"]
+for m in matches:
+    sid = (m.get("sessionId") or "")[:8] or "<unknown>"
+    slug = derive_slug(m.get("name") or "")
+    stage = read_stage(slug)
+    lines.append(f"   worker: {sid} slug: {slug} stage: {stage}")
+lines.append("Did you mean to spawn a parallel worker, or direct the existing one?")
+lines.append("Reply: parallel | direct | cancel")
+
+sysmsg = "\n".join(lines)
+print(json.dumps({"systemMessage": sysmsg}))
+PWGPY
+        exit 0
+    fi
+fi
+# ─── end PARALLEL-WORKER GATE ────────────────────────────────────────────────
+
 # ─── Locate launcher; fail open if missing ───────────────────────────────────
 PWT_GOAL="$PROJECT_ROOT/.claude/scripts/pwt-goal.sh"
 [ -x "$PWT_GOAL" ] || exit 0

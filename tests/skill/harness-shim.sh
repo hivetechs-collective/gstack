@@ -140,7 +140,10 @@ case "${1:-}" in
         # Minimal JSON listing so the supervisor protocol's polls have
         # something parseable to consume (sim-ctx scenarios don't poll,
         # but unit tests might exercise this path).
-        echo '[]'
+        # SHIM_AGENTS_JSON env (set by the parallel-worker-gate scenario) can
+        # inject a fixture so the gate sees fake active workers; defaults to []
+        # so existing scenarios that don't set it preserve current behavior.
+        printf '%s\n' "${SHIM_AGENTS_JSON:-[]}"
         exit 0
         ;;
     *)
@@ -168,6 +171,8 @@ HOOK_STDERR_FILE=$(mktemp -t pwt-shim-err-XXXXXX)
 #   PLAN_W_TEAM_DISABLE_GOAL=1        — skip goal-evaluator wiring inside hook ctx
 #   SHIM_STUB_LOG                     — where the stub records its invocations
 #   SHIM_FAKE_SID                     — overridable fake worker SID
+#   SHIM_AGENTS_JSON                  — fixture for stub `claude agents --json`
+#   PLAN_W_TEAM_DISABLE_PARALLEL_GATE — bypass the parallel-worker gate (scenario opt-in)
 # The hook embeds nested python heredocs that bash 3.2 (macOS /bin/bash) can't
 # parse. Preserve any homebrew bash prefix on PATH so the shebang resolves to
 # bash 4+ (5+ on Apple Silicon).
@@ -192,6 +197,8 @@ env -i \
     PLAN_W_TEAM_DISABLE_GOAL=1 \
     SHIM_STUB_LOG="$STUB_LOG" \
     SHIM_FAKE_SID="${SHIM_FAKE_SID:-abc12345}" \
+    SHIM_AGENTS_JSON="${SHIM_AGENTS_JSON:-[]}" \
+    PLAN_W_TEAM_DISABLE_PARALLEL_GATE="${PLAN_W_TEAM_DISABLE_PARALLEL_GATE:-}" \
     "$HOOK_PATH" <<<"$HOOK_INPUT" \
         > "$HOOK_STDOUT_FILE" 2> "$HOOK_STDERR_FILE" || HOOK_EXIT=$?
 

@@ -256,3 +256,65 @@ they make the spawn topology deterministic regardless of LLM behavior.
 - Step 3-4 parallel builders: not applicable (Agent-tool spawns, not bg).
 - Stage authors writing scripts that may shell out to `pwt-goal.sh`: aware that the cascade guard fires from any process whose ancestor was a `--worker-only` spawn. If you genuinely need nested bg, set `PLAN_W_TEAM_FORCE_SPAWN=1` for that call only.
 - Supervisor agents (PWT-T4): N/A — they spawn via `Agent`, not `claude --bg`.
+
+## Parallel Worker Gate (PWG)
+
+The route hook (`.claude/hooks/plan-w-team-route-prompt.sh`) ships a
+**worker-already-running gate** that runs after the imperative classifier
+and before the launcher invocation. It enumerates active bg `/plan-w-team`
+workers in the canonical project root via `claude agents --json` and refuses
+to spawn when one or more workers are already present, surfacing a
+disambiguation `systemMessage` instead (`Reply: parallel | direct | cancel`).
+
+**Why this gate exists** (2026-05-22 cleanscale incident — the originating
+evidence):
+
+> While a `/plan-w-team` worker was actively driving a multi-hour autonomous
+> run, the user typed a fresh imperative natural-language trigger meant to
+> redirect the existing worker. The classifier correctly parsed it as
+> imperative; the hook silently spawned a second worker. Two workers then
+> raced on the same files, producing merge conflicts and a confused
+> goal-evaluator state.
+
+The pre-existing guards (PWT-DS1 flag-file, PWT-DS2 env signal, the
+classifier itself) do not catch this failure mode:
+
+- **PWT-DS1** is 60s scoped — long-running workers age past it.
+- **PWT-DS2** only fires inside worker processes, not in the origin chat.
+- **Classifier** is textual; this ambiguity is situational, not textual.
+
+PWG closes the gap by adding a stateful "is a worker already running here?"
+check after the classifier. Greenfield use (zero workers) is unaffected.
+
+**Filter** (all must hold):
+
+| Field       | Predicate                                                    |
+| ----------- | ------------------------------------------------------------ |
+| `kind`      | `"background"`                                               |
+| `cwd`       | starts with the canonical project root (worktree-aware)      |
+| `name`      | contains `/goal` OR `/plan-w-team` (case-insensitive)        |
+| `sessionId` | first 8 chars != parent SID first 8 chars (don't self-count) |
+
+**Kill switch**: `PLAN_W_TEAM_DISABLE_PARALLEL_GATE=1` in the hook env
+bypasses the gate (proceeds with spawn even with active workers). Use for
+deliberate parallel-feature workflows where the user wants both workers
+running.
+
+**Fail-open**: any internal failure (jq missing, `claude` CLI missing,
+malformed JSON, git resolution failure) → proceed to spawn. The gate adds
+useful friction; if state can't be queried, the existing PWT-DS1 flag-file
+still backs up double-spawn at the process level.
+
+**Relationship to other guards**:
+
+| Guard   | Layer               | Catches                                        |
+| ------- | ------------------- | ---------------------------------------------- |
+| PWT-DS1 | process / flag      | Origin-chat double-spawn within 60s window     |
+| PWT-DS2 | env / worker        | Worker re-invoking pwt-goal.sh on its own goal |
+| PWG     | state / agents-list | Deliberate-restart while worker still running  |
+
+PWG, PWT-DS1, and PWT-DS2 are complementary — each closes a different
+failure mode in the spawn topology. Together they make spawn behavior
+deterministic regardless of LLM reasoning quality at any step.
+
+Full spec: `docs/specs/parallel-worker-gate.md`.
