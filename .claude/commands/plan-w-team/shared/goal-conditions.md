@@ -306,6 +306,79 @@ A goal state file without `feature_specific_done_criteria` (or with `feature_spe
 - **Spec has no AC entries** → derivation injects empty array, evaluator falls back to T5b generic-only SUCCESS.
 - **Criterion never matches** (real bug in pipeline or wrong pattern) → pipeline keeps running; eventually surfaces via `LOW_CONFIDENCE_STREAK` (supervisor noticing repeated failure) or via user interrupt. There is no time-based escape — the user is the final stop.
 
+## Chain Continuation — `next_batch_spec` (2026-05-22)
+
+Spec: `docs/specs/supervisor-protocol-autonomy.md`
+
+The goal state file optionally carries a `next_batch_spec` object. When set on retro SUCCESS, the origin-chat supervisor (Decision Matrix `AUTO-MERGE → CHAIN` branch — see `shared/supervisor-protocol.md`) spawns the next worker in a chained mission without user intervention. The chain terminates when a worker's retro does not set `next_batch_spec` (or sets it to `null`).
+
+### Schema
+
+```jsonc
+{
+  // existing T5b/T5c fields above…
+  "next_batch_spec": {
+    "request": "Add SMS delivery tracking after invoice send",
+    "type": "feature",
+    "started_from_slug": "invoice-send-autonomous",
+  },
+}
+```
+
+| Field               | Type                                                                            | Required | Purpose                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `request`           | string                                                                          | yes      | Natural-language request passed verbatim to `pwt-goal.sh --worker-only`. MUST be non-empty.                                    |
+| `type`              | string enum (`feature` \| `refactor` \| `bugfix` \| `docs`) — `feature` default | no       | Maps to `pwt-goal.sh --type`. Omit for `feature`.                                                                              |
+| `started_from_slug` | string                                                                          | yes      | Slug of the parent `/plan-w-team` run that scheduled this chain. Auditable provenance back to the original `/goal` invocation. |
+
+### When the Supervisor Reads It
+
+1. Worker reaches retro SUCCESS — `terminal_state == "SUCCESS"` persists to the worker's `plan-w-team-goal-<SLUG>.json`.
+2. Decision Matrix returns AUTO-MERGE for the worker's PR.
+3. After `gh pr merge --auto` succeeds, the supervisor re-reads the state file and checks the `next_batch_spec` field.
+4. **Present + non-null**: spawn next worker via `pwt-goal.sh --worker-only "<request>"` (with `--type <type>` if set).
+5. **Absent / null / `{}`**: mission terminates. The supervisor emits a normal terminal block and returns control to the user.
+
+### Cascade Guards (PWT-DS1 / PWT-DS2)
+
+Chained spawns are subject to the same deterministic guards as any other `pwt-goal.sh --worker-only` call:
+
+- **PWT-DS1** (process-level flag file): if `.claude/state/plan-w-team-hook-spawn-<sid>.flag` is fresh (≤60s), the spawn refuses with exit 3 (`PWT_DS1_DUPLICATE`). The supervisor SURFACES instead.
+- **PWT-DS2** (env-cascade): the chained worker inherits `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1`, so any `Use /plan-w-team to …` text in the worker's own goal cannot re-trigger the routing classifier. Subsequent `pwt-goal.sh` calls inside the worker exit 4 (`PWT_DS2_CASCADE`).
+
+These guards exist to prevent the failure modes that produced commits `c9cfcd5` (LLM-attention miss → double-spawn) and `553ab85` (worker self-replication). `next_batch_spec` chaining does not relax either guard.
+
+### Schema Compatibility
+
+`next_batch_spec` is OPTIONAL. A goal state file without the field, or with the field explicitly `null`, behaves identically to pre-2026-05-22 — the supervisor does not chain, the mission terminates on retro SUCCESS as before. This is a strict additive extension.
+
+### Failure Modes
+
+| Failure                                                  | Behavior                                                                                    |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `request` empty string or missing                        | Supervisor SURFACES with `MalformedChainSpec`; does NOT spawn                               |
+| `type` is not a recognized enum value                    | `pwt-goal.sh` rejects at parse time (exit 1); supervisor SURFACES the rejection             |
+| Chained spawn blocked by PWT-DS1                         | Supervisor SURFACES (`worker-cascade-blocked` reason)                                       |
+| Chained spawn blocked by PWT-DS2                         | Same as above — surfaces the env-cascade refusal                                            |
+| State file deleted between SUCCESS and supervisor's read | Supervisor SURFACES; treats as `next_batch_spec` absent (mission complete, but anomalously) |
+
+### Audit Trail
+
+Every chain walks back to the original `/goal` via `started_from_slug`. To trace a mission:
+
+```bash
+# Walk the chain backward from the most recently completed run
+SLUG=current-worker-slug
+while [ -f ".claude/state/plan-w-team-goal-${SLUG}.json" ]; do
+  PARENT=$(jq -r '.next_batch_spec.started_from_slug // empty' ".claude/state/plan-w-team-goal-${SLUG}.json")
+  echo "$SLUG"
+  [ -z "$PARENT" ] && break
+  SLUG="$PARENT"
+done
+```
+
+The chain is at most as deep as the user's original mission; PWT-DS2 prevents arbitrary recursion.
+
 ## Kill Switch Contract
 
 | Env var                      | Default | Effect                                                                                                |
@@ -387,4 +460,3 @@ child has no `terminal_state` written, the evaluator marks the child as
 Two-pass convergence: first pass writes child terminal, second pass allows stop.
 Backward-compatible when the field is absent (older Claude Code).
 Regression: `.claude/scripts/plan-w-team-goal-evaluator-dead-worker.test.sh` (8 cases).
-

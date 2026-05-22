@@ -291,6 +291,109 @@ The manifest Step 3a guard greps for the prefix `/plan-w-team origin-chat superv
 
 This layering is intentional: the visual marker is the cheapest and most ergonomic; the flag-file is a backstop that requires no assistant cooperation; the env signal stops self-replication from inside the worker.
 
+## Decision Matrix — Origin-Chat Supervisor Continuation (2026-05-22)
+
+Spec: `docs/specs/supervisor-protocol-autonomy.md`
+
+The origin-chat supervisor (Step 3c in the skill manifest) previously surfaced to the user on every worker terminal state, even when the outcome was reversible and CI was green. In multi-PR missions this blocks the user on input for every continuation. The Decision Matrix below tells the supervisor when it MAY auto-progress without user intervention vs. when it MUST surface.
+
+The matrix is consulted in two places:
+
+1. **On every observed worker terminal state** (the existing trigger).
+2. **On every CONTINUATION CHECK tick** (idle-detection — see §POLLING LOOP below).
+
+### Inputs
+
+| Input              | Source                                                                                                |
+| ------------------ | ----------------------------------------------------------------------------------------------------- |
+| Worker terminal    | `claude agents --json` + `plan-w-team-goal-<SLUG>.json` `terminal_state`                              |
+| PR CI status       | `gh pr list --state open --json number,statusCheckRollup,labels,isDraft --search 'head:<branch>'`     |
+| DO-NOT-MERGE label | The PR's labels array (literal label `DO NOT MERGE`)                                                  |
+| Governance surface | Diff path-glob match against `shared/governance-tags.md` (origin-chat supervisor runs the comparison) |
+| Draft flag         | The PR's `isDraft` boolean                                                                            |
+
+### Matrix
+
+| Worker terminal       | PR CI | DO-NOT-MERGE label OR governance surface? | PR draft? | Action                                                                                             |
+| --------------------- | ----- | ----------------------------------------- | --------- | -------------------------------------------------------------------------------------------------- |
+| SUCCESS               | green | no                                        | no        | **AUTO-MERGE** (`gh pr merge --auto --squash <PR>`) + chain `next_batch_spec` if set on goal state |
+| SUCCESS               | green | yes                                       | no        | **SURFACE** to user — one-way door requires explicit consent                                       |
+| SUCCESS               | red   | any                                       | no        | **SPAWN FIX-WORKER** via `pwt-goal.sh --worker-only` with goal "fix CI on PR #N: <failing checks>" |
+| SUCCESS               | any   | any                                       | yes       | **LEAVE** — user intentionally drafted the PR                                                      |
+| USER_ESCALATION_HALT  | any   | any                                       | any       | **SURFACE** — hard-gate already fired upstream                                                     |
+| LOW_CONFIDENCE_STREAK | any   | any                                       | any       | **SURFACE** — supervisor decisions are unreliable                                                  |
+| DEAD                  | any   | any                                       | any       | **SURFACE** — worker died unexpectedly                                                             |
+| no terminal yet       | any   | any                                       | any       | **POLL** — continue waiting                                                                        |
+
+### Actions, in detail
+
+- **AUTO-MERGE**: emit a status block citing the matrix row and PR number, then invoke `gh pr merge --auto --squash <PR>`. The `--auto` flag is important — GitHub waits for any required checks even if the supervisor's snapshot showed green moments earlier. Log the merge as a per-turn surface line: `✅ auto-merged PR #N (reversible, CI-green, no governance tag)`.
+- **CHAIN**: after AUTO-MERGE succeeds AND `next_batch_spec` is non-null, spawn the next worker via `pwt-goal.sh --worker-only "<request>"` (with `--type` if specified). PWT-DS1 / PWT-DS2 deterministic guards still apply — if a fresh hook flag is present or the env-cascade signal is set, the spawn refuses and the supervisor SURFACES instead.
+- **SPAWN FIX-WORKER**: spawn a focused worker whose goal is the CI failure, NOT a re-run of the original mission. The fix-worker's goal directive references the failing checks verbatim. The supervisor returns to POLL on the fix-worker; on its SUCCESS the matrix consults again on the original PR.
+- **SURFACE**: emit a `⚠ HALT` block citing the matrix row + reason, stop polling, return control to the user. The supervisor does NOT exit — it waits for user input then resumes its loop.
+- **LEAVE**: emit a one-line acknowledgment (`PR #N left as draft per user`) and continue polling other workers; the draft PR is not the supervisor's concern.
+- **POLL**: continue the normal polling cadence (no surface).
+
+### Hard Rules (revised 2026-05-22)
+
+These supersede the previous "NEVER push to remote" wording. The origin-chat supervisor must follow these unconditionally:
+
+- **NEVER merge irreversible PRs.** Irreversible = one-way door. The closed list lives in `shared/governance-tags.md`. The supervisor MUST run the diff-path comparison against that list before merging, even on PRs with no DO-NOT-MERGE label.
+- **NEVER push to remote.** The worker pushes; the supervisor only merges existing remote PRs. (`gh pr merge` operates on remote state — it does not push from the supervisor's working tree.)
+- **NEVER edit code, configs, or specs.** Implementation belongs to the worker.
+- **NEVER spawn more than one chain-worker per AUTO-MERGE.** `next_batch_spec` is consumed exactly once; the new worker carries no `next_batch_spec` of its own unless its own retro sets one (PWT-DS2 also enforces this via env-cascade).
+- **Auto-merge reversible code/test PRs within the same mission** per the Decision Matrix. Reversibility is established by (a) no DO-NOT-MERGE label, (b) no `shared/governance-tags.md` surface match, (c) CI green.
+
+### `next_batch_spec` Chaining
+
+Schema lives in `shared/goal-conditions.md` §Chain Continuation. On every AUTO-MERGE action, the supervisor re-reads the just-merged worker's `plan-w-team-goal-<SLUG>.json` to check for `next_batch_spec`. When present:
+
+1. Parse `request` (required), `type` (default `feature`), `started_from_slug` (audit).
+2. Spawn via `pwt-goal.sh --worker-only "<request>"` (with `--type <type>` if non-default).
+3. The new worker writes its OWN goal state file with a fresh slug derived from `request`.
+4. Chain terminates when a worker's retro does NOT set `next_batch_spec` (or sets it to `null`).
+
+A chain is auditable: every worker's `started_from_slug` walks back to the original `/goal` invocation.
+
+## POLLING LOOP
+
+The origin-chat supervisor's polling loop has two responsibilities per tick: (1) standard worker observation, (2) CONTINUATION CHECK (added 2026-05-22).
+
+### Standard Tick
+
+1. `claude agents --json` — confirm worker SID still listed; if absent for ≥2 ticks, treat as DEAD per matrix.
+2. `claude logs <SID> --tail 200` — scan for stage transitions and pause-site emissions.
+3. `.claude/state/plan-w-team-goal-<SLUG>.json` — read `terminal_state`; on non-null, consult Decision Matrix.
+4. `.claude/state/pwt-completion-summary-<SID>.md` — surface if ship/retro stages wrote one this tick.
+
+Cadence: ~30–60s. Use `Bash + sleep` or `ScheduleWakeup` (preferred for runs >5 min).
+
+### CONTINUATION CHECK (idle-detection)
+
+After the standard tick, additionally check:
+
+1. **User-input silence ≥ `PLAN_W_TEAM_IDLE_THRESHOLD_S` seconds** (default `300`). Measured by the transcript file's mtime:
+
+   ```bash
+   IDLE_S=$(($(date +%s) - $(stat -f %m "$CLAUDE_TRANSCRIPT_PATH" 2>/dev/null || echo "$(date +%s)")))
+   ```
+
+   (macOS `stat -f %m`; Linux `stat -c %Y`. When the transcript path is unavailable, skip CONTINUATION CHECK silently — `IdleCheckUnavailable` rescue.)
+
+2. **All registered workers terminal SUCCESS** — aggregate via `.claude/state/plan-w-team-spawned-children-<SLUG>.jsonl`. Every registered child's `plan-w-team-goal-<CHILD_SLUG>.json` must have `terminal_state == "SUCCESS"`.
+
+3. **All open PRs from this mission CI-green** — `gh pr list --state open --json number,statusCheckRollup --search 'head:<branch-prefix>'`. Every rollup must be `SUCCESS`.
+
+4. **No PR carries a `DO NOT MERGE` label** — `gh pr list --state open --json labels --search 'head:<branch-prefix>'`. Every PR's labels array must lack the literal `DO NOT MERGE` label.
+
+When ALL four conditions hold, the supervisor proceeds per the Decision Matrix on each PR as if the worker had just signaled terminal. The user does not need to type "continue" — the idle window is the consent signal.
+
+**Threshold override**: `PLAN_W_TEAM_IDLE_THRESHOLD_S=86400` effectively disables CONTINUATION CHECK (no realistic mission is idle for a day). Set to `0` to disable the silence requirement entirely (auto-progress on every tick where workers + PRs are clean — aggressive; only use when explicitly authorized).
+
+**Why mtime, not transcript-tail scan**: parsing the transcript for "last user turn" is fragile across Claude Code versions. `stat` on the transcript file is the single deterministic signal Claude Code commits to maintaining (the file is rewritten on each user turn).
+
+**Failure mode**: `stat` failure (transcript path absent, EACCES) → `IdleCheckUnavailable` → CONTINUATION CHECK skipped that tick; standard polling continues. The supervisor does not surface or block on this.
+
 ## Adding a New Event Type or Summary Field
 
 When extending the supervisor (e.g. for T5 integration):

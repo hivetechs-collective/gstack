@@ -48,6 +48,13 @@ Options:
                        (e.g. UserPromptSubmit hook injecting additionalContext
                        so the origin assistant turn observes the worker).
                        Implies --auto-push unless --no-auto-push is given.
+      --supervisor-goal  Same as --worker-only PLUS mirror the worker's goal
+                       state file to the ORIGIN repo's .claude/state/. Use when
+                       the origin chat session is itself running under /goal
+                       (multi-hour autonomous pattern): the origin's goal
+                       evaluator needs a non-null plan-w-team-goal-*.json to
+                       track the worker's progress.
+                       Mutually exclusive with --launch.
       --auto-push      Auto-approve push-ack hard-gate during the run (sets
                        PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 for child session).
                        Trades safety for autonomy — only push-ack auto-approves;
@@ -74,6 +81,7 @@ EOF
 INTERACTIVE=0
 LAUNCH=0
 WORKER_ONLY=0    # spawn only the worker bg session; caller is the supervisor
+SUPERVISOR_GOAL=0  # like --worker-only, plus mirror goal state to origin .claude/state/
 AUTO_PUSH=0      # auto-approve push-ack hard-gate during autonomous run
 TYPE="feature"
 REQUEST=""
@@ -85,6 +93,7 @@ while [ $# -gt 0 ]; do
         -i|--interactive) INTERACTIVE=1; shift ;;
         --launch) LAUNCH=1; AUTO_PUSH=1; shift ;;
         --worker-only) WORKER_ONLY=1; LAUNCH=1; AUTO_PUSH=1; shift ;;
+        --supervisor-goal) SUPERVISOR_GOAL=1; WORKER_ONLY=1; LAUNCH=1; AUTO_PUSH=1; shift ;;
         --auto-push) AUTO_PUSH=1; shift ;;
         --no-auto-push) AUTO_PUSH=0; shift ;;
         -t|--type) TYPE="$2"; shift 2 ;;
@@ -100,6 +109,15 @@ done
 if [ -z "$REQUEST" ]; then
     echo "Error: no request provided" >&2
     usage
+    exit 1
+fi
+
+# --supervisor-goal MUST imply --worker-only (set during parse) and cannot
+# coexist with the bg-supervisor mode of --launch. The parser sets both
+# WORKER_ONLY and LAUNCH so the existing --worker-only spawn path takes the
+# branch; this guard just defends against future flag-handling drift.
+if [ "$SUPERVISOR_GOAL" = "1" ] && [ "$WORKER_ONLY" != "1" ]; then
+    echo "Error: --supervisor-goal requires --worker-only semantics (cannot combine with detached --launch)" >&2
     exit 1
 fi
 
@@ -446,6 +464,48 @@ if [ "$LAUNCH" = "1" ]; then
             "$REGISTER_HELPER" "$WORKER_SID" "pwt-goal-launch" "$SLUG_GUESS" "" "pwt-goal.sh --worker-only" \
                 >/dev/null 2>&1 || true
         fi
+
+        # ─── --supervisor-goal: mirror goal state to origin .claude/state/ ────
+        # When the origin chat session itself runs under /goal, its
+        # goal-evaluator hook needs a non-null plan-w-team-goal-*.json to
+        # track progress. Without this mirror, the origin's evaluator sees
+        # no active goal and either no-ops or blocks indefinitely.
+        #
+        # Resolution order for the origin location:
+        #   1. $PWT_ORIGIN_ROOT (test-friendly override)
+        #   2. $CLAUDE_PROJECT_DIR (the chat session's project dir — the
+        #      worktree resolver above already preferred git rev-parse for
+        #      $PROJECT_ROOT; the origin is the ENCLOSING repo's main checkout)
+        #   3. Skip silently if neither is set — the worker still spawned;
+        #      this mirror is observability for the origin chat only.
+        if [ "$SUPERVISOR_GOAL" = "1" ]; then
+            ORIGIN_ROOT="${PWT_ORIGIN_ROOT:-${CLAUDE_PROJECT_DIR:-}}"
+            if [ -n "$ORIGIN_ROOT" ] && [ -d "$ORIGIN_ROOT" ]; then
+                ORIGIN_STATE_DIR="$ORIGIN_ROOT/.claude/state"
+                mkdir -p "$ORIGIN_STATE_DIR" 2>/dev/null || true
+                ORIGIN_GOAL_FILE="$ORIGIN_STATE_DIR/plan-w-team-goal-${SLUG_GUESS}.json"
+                # Write a minimal goal state file the origin's evaluator can read.
+                # feature_specific_done_criteria is left empty — origin sees the
+                # generic SUCCESS anchors (the worker writes its own per-feature
+                # criteria in its own worktree).
+                NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                cat > "$ORIGIN_GOAL_FILE" <<EOF_GOAL_MIRROR
+{
+  "slug": "${SLUG_GUESS}",
+  "started_at": "${NOW_ISO}",
+  "terminal_state": null,
+  "terminal_reason": null,
+  "worker_sid": "${WORKER_SID}",
+  "supervisor_goal_mirror": true,
+  "feature_specific_done_criteria": []
+}
+EOF_GOAL_MIRROR
+                echo "  origin goal-state:  $ORIGIN_GOAL_FILE" >&2
+            else
+                echo "WARN: --supervisor-goal: no PWT_ORIGIN_ROOT or CLAUDE_PROJECT_DIR; skipping origin mirror" >&2
+            fi
+        fi
+
         # Machine-readable stdout for the hook to parse.
         echo "worker_sid=$WORKER_SID"
         exit "$LAUNCH_RC"

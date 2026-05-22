@@ -600,6 +600,46 @@ The `Closes #N` keyword creates a bidirectional link:
 - The Issue shows which PR implements it
 - Merging the PR auto-closes the Issue and triggers the board Done workflow
 
+### Apply `DO NOT MERGE` Label on One-Way-Door Surfaces (2026-05-22)
+
+After `gh pr create`, walk the staged diff against the closed list of one-way-door surfaces in [`shared/governance-tags.md`](shared/governance-tags.md). When **any** path matches **any** glob in the catalog, the PR MUST carry the literal `DO NOT MERGE` label. When **no** path matches, the PR MUST NOT carry the label. This is the contract the origin-chat supervisor reads when deciding whether to AUTO-MERGE (`shared/supervisor-protocol.md` §Decision Matrix).
+
+```bash
+# Build glob list from shared/governance-tags.md (rough catalog — see file for full set)
+GOVERNANCE_GLOBS=(
+  '*secret-allow*' '*.secret-allow*'
+  '*/billing/*' '*/payments/*' '*stripe*' '*invoice*'
+  '*/migrations/*' '*.sql' 'apps/db/schema/*'
+  '*wrangler.toml' '*.tf' '*.tfvars' '*/cloudformation/*' '*/terraform/*' '*/k8s/*' '*/kubernetes/*'
+  '.env' '.env.*' '*/secrets/*' '*.pem' '*.key' '*.p12' '*.jks'
+)
+
+ONE_WAY=0
+ONE_WAY_HIT=""
+while IFS= read -r path; do
+  for glob in "${GOVERNANCE_GLOBS[@]}"; do
+    # shellcheck disable=SC2254  # intentional glob match
+    case "$path" in
+      $glob) ONE_WAY=1; ONE_WAY_HIT="$path (matched $glob)"; break 2 ;;
+    esac
+  done
+done < <(git diff --name-only "origin/$DEFAULT_BRANCH"..."$BRANCH")
+
+if [ "$ONE_WAY" = 1 ]; then
+  echo "✓ governance-tags hit: $ONE_WAY_HIT — applying DO NOT MERGE label"
+  gh pr edit --add-label "DO NOT MERGE" || true
+fi
+```
+
+**Rules**:
+
+- **Apply the label** the moment a one-way-door surface is detected. Do not wait for review.
+- **Do not apply the label** on reversible PRs. Reversible PRs labeled `DO NOT MERGE` block the supervisor's auto-progression and re-introduce the failure mode (every PR surfaced to user).
+- **The label is `DO NOT MERGE` literally** — case-sensitive, three words, spaces (not hyphens). The supervisor's matrix consults this exact string.
+- **Adding to or removing from the catalog requires a spec.** See `shared/governance-tags.md` §Adding a Surface.
+
+Mis-labeling — either a missing label on a one-way PR or a spurious label on a reversible PR — is a Pass 1 CRITICAL review item. The Step 5 reviewer re-runs the same `governance-globs` walk to verify.
+
 Read `shared/artifact-storage.md` for review log and streak tracking formats.
 
 ## End-of-Stage Status Block (PWT-T5)
