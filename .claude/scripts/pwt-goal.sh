@@ -226,9 +226,13 @@ if [ "$INTERACTIVE" = "1" ]; then
     done
 fi
 
-# Build the /goal command
-read -r -d '' GOAL_TEXT <<EOF || true
-/goal Use /plan-w-team to ${REQUEST}.
+# ─── Build the /goal command ────────────────────────────────────────────────
+# This is wrapped in a helper so we can rebuild after directive overflow
+# (see "Directive overflow to disk" below) without duplicating the heredoc.
+__pwt_build_goal_text() {
+    local req="$1"
+    read -r -d '' GOAL_TEXT <<EOF_GOAL_TEXT || true
+/goal Use /plan-w-team to ${req}.
 
 Pipeline is complete when ALL of:
 ${DONE_CRITERIA}${EXTRA_DONE}
@@ -243,7 +247,64 @@ There is no wall-clock or turn cap by design: keep working until one of the
 ALL-of completion conditions OR one of the halt conditions above fires.
 On stop, state which terminal condition was reached and quote the transcript
 line that demonstrates it.
-EOF
+EOF_GOAL_TEXT
+}
+
+__pwt_build_goal_text "$REQUEST"
+
+# ─── DIRECTIVE OVERFLOW TO DISK ─────────────────────────────────────────────
+# When a user's REQUEST (or the wrapped goal text) is too large for /goal's
+# 4000-char cap, persist the full REQUEST to a hash-named file under
+# .claude/state/ and replace REQUEST in the /goal text with a short pointer.
+# The worker's first action is then to Read the pointed file — no shorten/retry
+# friction, larger specs fit, durable audit trail.
+#
+# Threshold: GOAL_TEXT length > PLAN_W_TEAM_OVERFLOW_THRESHOLD (default 3000)
+# Filename:  .claude/state/plan-w-team-directive-<sha256-first-12-hex>.txt
+# Lifecycle: persisted as an audit-trail artifact (state-artifacts.md entry)
+# Idempotency: same REQUEST content → same hash → existing file reused.
+#
+# Skipped when REQUEST is the empty string (cannot reach this point — earlier
+# guard exits) or when threshold env explicitly set to a very large number.
+GOAL_BYTES=${#GOAL_TEXT}
+OVERFLOW_THRESHOLD="${PLAN_W_TEAM_OVERFLOW_THRESHOLD:-3000}"
+if [ "$GOAL_BYTES" -gt "$OVERFLOW_THRESHOLD" ]; then
+    # Resolve state-dir root. Preference: explicit override → git toplevel → PWD.
+    if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+        __pwt_overflow_root="$PWT_PROJECT_ROOT_OVERRIDE"
+    else
+        __pwt_overflow_root=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+    fi
+    __pwt_overflow_dir="$__pwt_overflow_root/.claude/state"
+    mkdir -p "$__pwt_overflow_dir" 2>/dev/null || true
+
+    # Hash the original REQUEST (pre-pointer) so idempotency depends only on
+    # the user's content, not on a pointer that itself contains a path.
+    if command -v shasum >/dev/null 2>&1; then
+        __pwt_hash=$(printf '%s' "$REQUEST" | shasum -a 256 | awk '{print substr($1,1,12)}')
+    elif command -v sha256sum >/dev/null 2>&1; then
+        __pwt_hash=$(printf '%s' "$REQUEST" | sha256sum | awk '{print substr($1,1,12)}')
+    else
+        echo "FATAL: neither shasum nor sha256sum available; cannot compute overflow hash" >&2
+        exit 5
+    fi
+
+    __pwt_overflow_file="$__pwt_overflow_dir/plan-w-team-directive-${__pwt_hash}.txt"
+
+    # Idempotent write: only write if the file doesn't already exist with the
+    # same content. We don't recompute and compare — the hash already uniquely
+    # identifies content, so "exists" implies "same content".
+    if [ ! -f "$__pwt_overflow_file" ]; then
+        printf '%s' "$REQUEST" > "$__pwt_overflow_file"
+    fi
+
+    # Replace REQUEST with the pointer text and rebuild GOAL_TEXT.
+    REQUEST="Read full directive at ${__pwt_overflow_file} and execute it as a /plan-w-team run with standard halt conditions (push-ack, secret-scan-allow, scope-unlock-for-drift, 3-consecutive low-confidence). Done conditions per the directive file."
+    __pwt_build_goal_text "$REQUEST"
+    GOAL_BYTES=${#GOAL_TEXT}
+
+    echo "INFO: directive overflow — wrote $(wc -c < "$__pwt_overflow_file" | tr -d ' ') bytes to $__pwt_overflow_file (hash=$__pwt_hash; goal now $GOAL_BYTES chars)" >&2
+fi
 
 # Enforce Anthropic's /goal 4000-char cap BEFORE spawning. Without this guard
 # the worker bg session spawns, /goal silently rejects the directive, and the
@@ -251,7 +312,6 @@ EOF
 # directive (worker SID 5fb781c2 wedged for an hour before supervisor diagnosed).
 # The supervisor heredoc has its own size guard (pwt-goal-heredoc-size.test.sh);
 # this guards the user-facing goal directive.
-GOAL_BYTES=${#GOAL_TEXT}
 GOAL_MAX="${PLAN_W_TEAM_GOAL_MAX:-4000}"
 if [ "$GOAL_BYTES" -gt "$GOAL_MAX" ]; then
     cat >&2 <<EOM
@@ -473,13 +533,29 @@ if [ "$LAUNCH" = "1" ]; then
         #
         # Resolution order for the origin location:
         #   1. $PWT_ORIGIN_ROOT (test-friendly override)
-        #   2. $CLAUDE_PROJECT_DIR (the chat session's project dir — the
-        #      worktree resolver above already preferred git rev-parse for
-        #      $PROJECT_ROOT; the origin is the ENCLOSING repo's main checkout)
-        #   3. Skip silently if neither is set — the worker still spawned;
-        #      this mirror is observability for the origin chat only.
+        #   2. $CLAUDE_PROJECT_DIR (the chat session's project dir)
+        #   3. $PWD if it is itself a git repo (handles direct invocations
+        #      from the agent's Bash tool where neither env var is set but
+        #      the script is clearly running inside a checkout — INFO log,
+        #      not WARN, since this is a legitimate fallback).
+        #   4. If none of the above, skip with a clear stderr message —
+        #      the worker still spawned; this mirror is observability for
+        #      the origin chat only.
         if [ "$SUPERVISOR_GOAL" = "1" ]; then
-            ORIGIN_ROOT="${PWT_ORIGIN_ROOT:-${CLAUDE_PROJECT_DIR:-}}"
+            ORIGIN_ROOT=""
+            ORIGIN_SOURCE=""
+            if [ -n "${PWT_ORIGIN_ROOT:-}" ]; then
+                ORIGIN_ROOT="$PWT_ORIGIN_ROOT"
+                ORIGIN_SOURCE="PWT_ORIGIN_ROOT"
+            elif [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
+                ORIGIN_ROOT="$CLAUDE_PROJECT_DIR"
+                ORIGIN_SOURCE="CLAUDE_PROJECT_DIR"
+            elif git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+                # PWD is a git checkout — safe to assume this IS the origin.
+                ORIGIN_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+                ORIGIN_SOURCE="PWD"
+            fi
+
             if [ -n "$ORIGIN_ROOT" ] && [ -d "$ORIGIN_ROOT" ]; then
                 ORIGIN_STATE_DIR="$ORIGIN_ROOT/.claude/state"
                 mkdir -p "$ORIGIN_STATE_DIR" 2>/dev/null || true
@@ -500,9 +576,13 @@ if [ "$LAUNCH" = "1" ]; then
   "feature_specific_done_criteria": []
 }
 EOF_GOAL_MIRROR
-                echo "  origin goal-state:  $ORIGIN_GOAL_FILE" >&2
+                if [ "$ORIGIN_SOURCE" = "PWD" ]; then
+                    echo "INFO: --supervisor-goal: using PWD as origin (git repo); origin goal-state: $ORIGIN_GOAL_FILE" >&2
+                else
+                    echo "  origin goal-state:  $ORIGIN_GOAL_FILE  (source: $ORIGIN_SOURCE)" >&2
+                fi
             else
-                echo "WARN: --supervisor-goal: no PWT_ORIGIN_ROOT or CLAUDE_PROJECT_DIR; skipping origin mirror" >&2
+                echo "WARN: --supervisor-goal: PWT_ORIGIN_ROOT/CLAUDE_PROJECT_DIR unset and PWD is not a git repo; skipping origin mirror" >&2
             fi
         fi
 

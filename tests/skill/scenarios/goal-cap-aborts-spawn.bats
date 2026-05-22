@@ -50,7 +50,12 @@ teardown() { teardown_sandbox; }
     skip "fixture builder produced ${#big} chars, expected >=4500"
   fi
 
-  run env PATH="$STUB_DIR:$PATH" PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX_DIR" "$PWT_GOAL" --worker-only "$big"
+  # Overflow-to-disk (2026-05-22) would otherwise intercept this case before
+  # the cap fires. We're explicitly testing the cap, so disable overflow with
+  # a sky-high threshold.
+  run env PATH="$STUB_DIR:$PATH" PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX_DIR" \
+      PLAN_W_TEAM_OVERFLOW_THRESHOLD=10000000 \
+      "$PWT_GOAL" --worker-only "$big"
   assert_failure 2
 }
 
@@ -62,7 +67,12 @@ teardown() { teardown_sandbox; }
     big+="lorem ipsum dolor sit amet consectetur adipiscing elit chunk ${i}. "
   done
 
-  run env PATH="$STUB_DIR:$PATH" PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX_DIR" "$PWT_GOAL" --worker-only "$big"
+  # Overflow-to-disk (2026-05-22) would otherwise intercept this case before
+  # the cap fires. We're explicitly testing the cap, so disable overflow with
+  # a sky-high threshold.
+  run env PATH="$STUB_DIR:$PATH" PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX_DIR" \
+      PLAN_W_TEAM_OVERFLOW_THRESHOLD=10000000 \
+      "$PWT_GOAL" --worker-only "$big"
   assert_failure 2
   assert_output_contains "4000-char runtime cap"
 }
@@ -75,7 +85,12 @@ teardown() { teardown_sandbox; }
     big+="lorem ipsum dolor sit amet consectetur adipiscing elit chunk ${i}. "
   done
 
-  run env PATH="$STUB_DIR:$PATH" PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX_DIR" "$PWT_GOAL" --worker-only "$big"
+  # Overflow-to-disk (2026-05-22) would otherwise intercept this case before
+  # the cap fires. We're explicitly testing the cap, so disable overflow with
+  # a sky-high threshold.
+  run env PATH="$STUB_DIR:$PATH" PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX_DIR" \
+      PLAN_W_TEAM_OVERFLOW_THRESHOLD=10000000 \
+      "$PWT_GOAL" --worker-only "$big"
   assert_failure 2
   # Stub log must be empty — claude was never invoked.
   if [ -s "$STUB_LOG" ]; then

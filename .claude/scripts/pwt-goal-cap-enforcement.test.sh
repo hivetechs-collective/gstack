@@ -44,17 +44,25 @@ assert_contains() {
     fi
 }
 
+# NOTE: as of 2026-05-22, pwt-goal.sh has a "directive overflow to disk"
+# feature that intercepts oversized REQUESTs BEFORE the 4000-char /goal cap.
+# To test the cap itself, disable overflow by setting the threshold absurdly
+# high. Overflow has its own test (pwt-goal-overflow.test.sh); the cap
+# remains the last-resort guard for pathologically large rendered goal text
+# (e.g. a huge DONE_CRITERIA template).
+DISABLE_OVERFLOW="PLAN_W_TEAM_OVERFLOW_THRESHOLD=10000000"
+
 echo "AC1: short directive passes (no cap violation)"
 short_req="fix a typo in README"
-out=$("$PWT_GOAL" "$short_req" 2>&1)
+out=$(env $DISABLE_OVERFLOW "$PWT_GOAL" "$short_req" 2>&1)
 rc=$?
 assert_eq "exit code is 0" "0" "$rc"
 assert_contains "output contains the /goal prefix" "/goal Use /plan-w-team to fix a typo in README" "$out"
 
 echo ""
-echo "AC2: oversized directive aborts with exit 2"
+echo "AC2: oversized directive aborts with exit 2 (overflow disabled)"
 long_req=$(python3 -c "print('lorem ipsum dolor sit amet ' * 200)")
-"$PWT_GOAL" "$long_req" >/dev/null 2>/tmp/pwt-goal-cap.err
+env $DISABLE_OVERFLOW "$PWT_GOAL" "$long_req" >/dev/null 2>/tmp/pwt-goal-cap.err
 rc=$?
 assert_eq "exit code is 2" "2" "$rc"
 err=$(cat /tmp/pwt-goal-cap.err)
@@ -64,7 +72,7 @@ assert_contains "stderr suggests shortening" "Shorten the REQUEST" "$err"
 
 echo ""
 echo "AC3: PLAN_W_TEAM_GOAL_MAX env override raises the cap"
-PLAN_W_TEAM_GOAL_MAX=100000 "$PWT_GOAL" "$long_req" >/dev/null 2>/tmp/pwt-goal-cap.err
+env $DISABLE_OVERFLOW PLAN_W_TEAM_GOAL_MAX=100000 "$PWT_GOAL" "$long_req" >/dev/null 2>/tmp/pwt-goal-cap.err
 rc=$?
 assert_eq "exit code is 0 with raised cap" "0" "$rc"
 
@@ -72,7 +80,7 @@ echo ""
 echo "AC4: directive right at the boundary (under 4000 chars) passes"
 # Skeleton overhead is ~930 chars, so a 3000-char REQUEST yields ~3930 chars total.
 boundary_req=$(python3 -c "print('x' * 3000)")
-"$PWT_GOAL" "$boundary_req" >/dev/null 2>/tmp/pwt-goal-cap.err
+env $DISABLE_OVERFLOW "$PWT_GOAL" "$boundary_req" >/dev/null 2>/tmp/pwt-goal-cap.err
 rc=$?
 # Must NOT abort with 2 (may pass with 0; minor wording variance is fine)
 if [ "$rc" = "2" ]; then
@@ -82,6 +90,23 @@ else
     echo "  ✓ exit code is not 2 at boundary (got $rc)"
     PASS=$((PASS + 1))
 fi
+
+echo ""
+echo "AC5: oversized directive WITH overflow enabled gracefully overflows to disk"
+# Same large REQUEST as AC2, but with overflow active (default threshold).
+# Behavior contract: exit 0, pointer text in goal, overflow file under
+# .claude/state/. We use a sandbox via PWT_PROJECT_ROOT_OVERRIDE so we don't
+# pollute the real repo state dir.
+ac5_sandbox=$(mktemp -d -t pwt-cap-ac5.XXXXXX)
+mkdir -p "$ac5_sandbox/.claude/state"
+PWT_PROJECT_ROOT_OVERRIDE="$ac5_sandbox" "$PWT_GOAL" "$long_req" >/tmp/pwt-goal-cap.out 2>/tmp/pwt-goal-cap.err
+rc=$?
+assert_eq "exit code is 0 with overflow enabled" "0" "$rc"
+assert_contains "goal output contains pointer text" "Read full directive at" "$(cat /tmp/pwt-goal-cap.out)"
+overflow_count=$(ls "$ac5_sandbox"/.claude/state/plan-w-team-directive-*.txt 2>/dev/null | wc -l | tr -d ' ')
+assert_eq "exactly one overflow file written" "1" "$overflow_count"
+rm -rf "$ac5_sandbox"
+rm -f /tmp/pwt-goal-cap.out
 
 echo ""
 echo "════════════════════════════════════════"
