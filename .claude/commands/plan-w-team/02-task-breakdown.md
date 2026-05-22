@@ -189,7 +189,7 @@ Classify each task's change type. These tags control which review steps run in S
 | `TESTS`    | Test files only                   | Coverage audit                       |
 | `DOCS`     | Documentation only                | Consistency check                    |
 
-## Paired Task Protocol (UI features only)
+## Paired Task Protocol (UI features)
 
 When `ui_scope_flag == true` from §0e, decompose each UI feature slice into a **paired task set**:
 
@@ -208,7 +208,80 @@ When `ui_scope_flag == true` from §0e, decompose each UI feature slice into a *
 
 **Rationale**: paired tasks preserve the red-green-refactor discipline even when builders run in parallel. `N.a` defines the testable contract before any UI code exists, which is the only robust way to prevent `N.b` from shipping untested happy paths.
 
-For non-UI tasks, proceed with the standard single-task decomposition — no pairing required.
+## Paired Task Protocol (non-UI scopes) — STE Extension
+
+The paired-task discipline also applies to **non-UI scopes that add new code**. Any task whose `scope` is in `[BACKEND, INFRASTRUCTURE, SCRIPTS, LIBRARY, API]` AND whose mode is `add` (creates new functions, classes, modules, endpoints — not `refactor`-only, not `docs`-only, not pure `config`) gets the same `N.a` (failing tests) + `N.b` (implementation) decomposition.
+
+| Task  | Role                               | Blocked by | Scope (mirrors parent task) | Agent                                                                                                                                                            |
+| ----- | ---------------------------------- | ---------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `N.a` | Write unit tests (FAILING — red)   | (none)     | `TESTS`                     | `unit-testing-specialist` — or a language-specific test specialist when available (e.g., `python-test-specialist`, `rust-test-specialist`, `go-test-specialist`) |
+| `N.b` | Implement to make N.a pass (green) | `N.a`      | original (BACKEND/INFRA/…)  | language/framework specialist matched per `shared/agent-roster.md` (e.g., `nodejs-specialist`, `rust-backend-specialist`, `fastapi-specialist`)                  |
+
+**Trigger expression** (the same shape used by all other paired-task gates):
+
+```
+ui_scope_flag == true
+  OR (scope ∈ {BACKEND, INFRASTRUCTURE, SCRIPTS, LIBRARY, API} AND mode == "add")
+```
+
+**Single-task exceptions** (no pairing):
+
+- `mode == "refactor"` — refactor-only tasks are constrained by existing tests; do not pair.
+- `mode == "docs"` — documentation-only tasks pair would be vacuous.
+- `mode == "config"` — pure config changes (env, build flags) without behavioral surface.
+- `scope == "DATABASE"` schema migrations — paired test discipline lives in Step 5 (one-way-door reviewer scrutiny) instead of N.a/N.b.
+
+**Rules** (mirror UI block):
+
+- `N.a` commits unit tests that FAIL against current main. Builder verifies failure before marking complete.
+- `N.b` cannot claim its task until `N.a` is committed and merged. `blockedBy: ["<N.a-task-id>"]` is MANDATORY.
+- `N.b` may ONLY edit the files named in its `files_touched`. No drive-by refactors.
+- Test files live next to the unit under test by repo convention (e.g., `foo.test.ts` next to `foo.ts`; `tests/test_foo.py` for pytest layout). The `N.a` builder reads existing test layout before placing new tests.
+
+**Rationale**: the test-coverage gap between UI and non-UI scope was a 2026-05 retro finding — UI features ship behind paired Playwright contracts; backend features historically ship as single tasks with "tests added later." This unifies discipline. Refactor/docs/config keep single-task decomposition because the test-first contract doesn't apply (no new behavioral surface to assert against).
+
+## Hot-Path Overlay (STE Extension)
+
+For any task touching a **hot-path file** — defined as ANY of:
+
+- file size **>1000 LOC** (raw `wc -l` on the file), OR
+- **>50 commits in the last 30 days** touching that file (`git log --since='30 days ago' --oneline -- <file> | wc -l`)
+
+Step 2 emits an additional **optional task slot** for `perf-testing-specialist` to author a benchmark. The slot is offered, not enforced: the lead can decline it for low-risk edits, accept it for performance-sensitive changes, or auto-skip when a benchmark already exists for the touched file.
+
+| Task  | Role                                            | Blocked by | Scope   | Agent                     | Required? |
+| ----- | ----------------------------------------------- | ---------- | ------- | ------------------------- | --------- |
+| `N.p` | Author or extend a micro-benchmark for the file | (none)     | `TESTS` | `perf-testing-specialist` | optional  |
+
+**Heuristic detection** (Step 2 runs once per touched file):
+
+```bash
+# snippet-lint: skip — illustrative hot-path detection
+for f in $TOUCHED_FILES; do
+  [ -f "$f" ] || continue
+  LINES=$(wc -l < "$f" 2>/dev/null || echo 0)
+  CHANGES_30D=$(git log --since="30 days ago" --oneline -- "$f" 2>/dev/null | wc -l | tr -d ' ')
+  if [ "$LINES" -gt 1000 ] || [ "$CHANGES_30D" -gt 50 ]; then
+    echo "[hot-path] $f (lines=$LINES, changes_30d=$CHANGES_30D) — emit optional N.p benchmark slot"
+  fi
+done
+```
+
+**Shallow-clone safety**: if `git log` returns empty (e.g., depth-1 CI clone), fall back to LOC-only detection. Hot-path identification must NOT block planning.
+
+**Default**: skip. The slot is emitted so the lead has the option; explicit accept moves the slot into the task list. Step 5 review treats missing benchmark on a hot-path-modifying PR as INFORMATIONAL (not CRITICAL) unless the task is also tagged `door_type: one-way`, in which case TO2 mutation testing AND a benchmark together become CRITICAL gates (see §TO2 Mutation Default-On below).
+
+## TO2 Mutation Default-On for One-Way-Door PRs (STE Extension)
+
+When ANY task in this run has `door_type: one-way`, TO2 mutation testing is **default-on** for the affected files. This is enforced (not advisory) by `04-fix-first-review.md` §Mutation-Gate and `05-ship.md` §Ship Gate — Mutation Floor.
+
+How "enforced default-on" works in practice:
+
+- Step 2 sets `mutation_required: true` in the task metadata for every task whose `door_type == one-way` AND whose files contain testable code (skip pure-doc/config one-way changes — e.g., a renamed env var).
+- Step 5 review runs the detected mutation tool (`stryker.config.{ts,js}`, `mutmut.cfg`, `pitest.xml`, etc.) on the changed files. **Mutation-survived rate >5% = CRITICAL**, blocking merge.
+- Step 6 ship gate re-asserts the mutation report exists and passes the threshold. Absence of a mutation runner on a one-way-door PR with code changes raises an INFORMATIONAL ASK to the user (offer to install or to record the gap in `.claude/state/coverage-policy.txt`).
+
+**Why this is enforced rather than opt-in**: one-way-door changes (DB schema, public API shape, data migration) are precisely the changes where "the tests passed" is least sufficient — surviving mutants reveal weak assertions. The 5% threshold matches industry consensus (Stryker default rejects below 60% mutation score; >5% survived = <95% killed). Adjust per-repo by writing a `mutation-survival-floor: <pct>` line to `.claude/state/coverage-policy.txt`.
 
 ## Dual Time Estimates
 

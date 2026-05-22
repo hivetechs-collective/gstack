@@ -304,16 +304,17 @@ To revert to single-reviewer Pass 1 globally, delete this §5b-pre block. The ex
 
 ## 5b. Pass 1 — CRITICAL (blockers, must fix before ship)
 
-| Check                      | What to Look For                                                                                                                                                                                                                                                                                                        |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| SQL safety                 | Raw string interpolation in queries, missing parameterization                                                                                                                                                                                                                                                           |
-| Race conditions            | TOCTOU (time-of-check-time-of-use) patterns, shared mutable state                                                                                                                                                                                                                                                       |
-| LLM trust boundaries       | User input passed directly to prompts without sanitization                                                                                                                                                                                                                                                              |
-| Conditional side effects   | Database writes, API calls, notifications buried in conditionals                                                                                                                                                                                                                                                        |
-| Time window safety         | Operations assuming time relationships without handling timezone, clock skew, DST                                                                                                                                                                                                                                       |
-| One-way door validation    | Extra scrutiny for tasks tagged `door_type: "one-way"`                                                                                                                                                                                                                                                                  |
-| Error handling             | Catch-all handlers, swallowed errors, missing error types from Error & Rescue Map                                                                                                                                                                                                                                       |
-| Test-harness fragmentation | **REJECT** any PR that adds a second test framework, parallel runner, or test entry-point alongside `make test-skill` / `tests/skill/run.sh` / bats. The single canonical entry-point is the only thing that makes the pre-commit gate reliable. See `docs/specs/plan-w-team-followups.md` §Anti-Fragmentation Lock-In. |
+| Check                                               | What to Look For                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SQL safety                                          | Raw string interpolation in queries, missing parameterization                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Race conditions                                     | TOCTOU (time-of-check-time-of-use) patterns, shared mutable state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| LLM trust boundaries                                | User input passed directly to prompts without sanitization                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Conditional side effects                            | Database writes, API calls, notifications buried in conditionals                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Time window safety                                  | Operations assuming time relationships without handling timezone, clock skew, DST                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| One-way door validation                             | Extra scrutiny for tasks tagged `door_type: "one-way"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| Mutation testing (TO2 default-on for one-way doors) | If ANY task in this run is tagged `door_type: one-way` with `mutation_required: true` (set by Step 2 §TO2 Mutation Default-On for One-Way-Door PRs), detect the mutation runner (`stryker.config.{ts,js,mjs}`, `mutmut.cfg`, `pitest.xml`) and run it on the touched files. **Mutation-survived rate >5% = CRITICAL**, blocking merge. Threshold override: `mutation-survival-floor: <pct>` in `.claude/state/coverage-policy.txt`. Absence of a mutation runner on a one-way-door code-changing PR raises INFORMATIONAL (offer to install or to record the gap in `.claude/state/coverage-policy.txt`). |
+| Error handling                                      | Catch-all handlers, swallowed errors, missing error types from Error & Rescue Map                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| Test-harness fragmentation                          | **REJECT** any PR that adds a second test framework, parallel runner, or test entry-point alongside `make test-skill` / `tests/skill/run.sh` / bats. The single canonical entry-point is the only thing that makes the pre-commit gate reliable. See `docs/specs/plan-w-team-followups.md` §Anti-Fragmentation Lock-In.                                                                                                                                                                                                                                                                                  |
 
 ### UI-TDD Checks (CRITICAL — UI repos only)
 
@@ -340,6 +341,66 @@ For each Pass 1 UI-TDD hit, §5d auto-fix vs ask logic applies the same way as e
 | Stale comments         | Comments that no longer match the code                                   |
 | N+1 queries            | Database queries in loops                                                |
 | Unused imports         | Imports added but not used                                               |
+
+## 5c-bis. Retroactive Test-Gap Analysis (STE Extension)
+
+After Pass 2 INFORMATIONAL completes, invoke the Brain-tier `test-gap-analyzer` agent to surface untested branches, error paths, and edge cases reachable from the touched files. The analyzer's report becomes a queue of **retroactive-coverage tasks** that run BEFORE Step 8 retro — closing test gaps the original spec missed without blocking the current ship.
+
+```bash
+# snippet-lint: skip — illustrative invocation
+SLUG="<feature-slug>"
+DIFF_FILES=$(git diff --name-only "$BASE_SHA"..HEAD)
+EXISTING_TESTS=$(git ls-files | grep -E '\.(test|spec)\.[tj]sx?$|_test\.py$|tests?/' | sort -u)
+```
+
+Invoke `test-gap-analyzer` (Brain-tier, Opus 4.7) with:
+
+- `slug` — the /plan-w-team SLUG
+- `diff_files` — paths + line ranges from the diff
+- `module_root` — for each touched file, the canonical module/package root (where siblings live)
+- `existing_tests` — paths to current test files covering the touched files
+
+The analyzer returns a structured markdown report (see `.claude/agents/research-planning/test-gap-analyzer.md` for the full output shape). Each `### G<N>` finding becomes a queued retroactive-coverage task:
+
+```typescript
+// Lead converts each finding to a TaskCreate (or appended to scope-lock as N.c entries)
+for (const finding of report.findings) {
+  TaskCreate({
+    subject: `Retroactive coverage: ${finding.file} ${finding.function} — ${finding.gap_type}`,
+    description: `Source: test-gap-analyzer for SLUG=${SLUG}, finding G${finding.id}.
+Severity: ${finding.severity}.
+Suggested test: ${finding.suggested_test}
+
+This task is QUEUED — it runs after Step 6 ship and before Step 8 retro. Do NOT block the current ship on it.`,
+    metadata: {
+      spec_path: `docs/specs/${SLUG}.md`,
+      feature_area: "retroactive-coverage",
+      scope: "TESTS",
+      effort: finding.severity === "high" ? "medium" : "low",
+      agent_type: "unit-testing-specialist",
+      slug: SLUG,
+      retroactive: true,
+      origin: "test-gap-analyzer",
+    },
+  });
+}
+```
+
+**When the analyzer is invoked**:
+
+- `findings_count > 0` AND any `severity: high` → the lead must schedule retroactive tasks before Step 8 retro. Step 8 reads `retroactive: true` task closure rate as a quality signal.
+- `findings_count > 0` with only `severity: medium|low` → the lead MAY defer to a follow-up /plan-w-team run, but must record the report path in the retro frontmatter.
+- `findings_count == 0` → no action; record "test-gap-analyzer: clean" in the Step 5 status block.
+
+**When the analyzer is NOT invoked**:
+
+- Empty diff (`--ship-only` on a no-op branch) — skip; record `test-gap-analyzer: skipped (empty-diff)`.
+- Docs-only diff (no code files touched) — skip.
+- Set `PLAN_W_TEAM_DISABLE_TEST_GAP_ANALYZER=1` as a per-run kill switch (advisory; document in the retro why).
+
+**Cost discipline**: track `test_gap_analyzer_tokens` in retro 8e. Warning threshold: >20k tokens per run. Tune by tightening the `module_root` scope (siblings-only, not transitive imports) before disabling the analyzer.
+
+**Why retroactive, not blocking**: test gaps in _existing_ (untouched-by-this-diff) sibling code are not the current PR's responsibility to fix — but they are this team's responsibility to track. Queuing them as retroactive tasks keeps Step 5 fast (no surprise re-implementation work mid-review) while preventing the gaps from being forgotten.
 
 ## 5d. Fix-First Heuristic — Classify Each Finding
 

@@ -1,15 +1,15 @@
 ---
 id: b6b877bc
 trigger: "when adding new features in agent_development context"
-confidence: 0.9
+confidence: 0.5
 domain: workflow
 scope: project
 project: claude-pattern
-created: 2026-05-21T19:05:38Z
-last_applied: 2026-05-21T22:31:31Z
-applications: 17
+created: 2026-05-22T23:56:00Z
+last_applied: null
+applications: 0
 evidence:
-  - "First observed in session 1779390338"
+  - "First observed in session 1779494160"
 ---
 # Action
 Follow established feature patterns: commit with feat: prefix, include tests

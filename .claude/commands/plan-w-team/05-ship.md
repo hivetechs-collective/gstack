@@ -395,6 +395,87 @@ fi
 
 If no coverage floor is declared, this gate is skipped (the star-rating audit above is the softer check). Declaring a floor is how a project opts in to strict coverage enforcement.
 
+### Coverage Floor Auto-Default (STE Extension — ENFORCING when no explicit policy)
+
+When the repo declares **no** coverage threshold in any of the standard locations (`package.json` `jest.coverageThreshold`, `pyproject.toml` `[tool.coverage.report] fail_under`, `Cargo.toml` `coverage_min`, etc.), the ship gate **proposes a sensible language-aware default** rather than silently skipping the floor. This closes the 2026-05 retro finding: "feature shipped at 31% coverage on a 4-year-old repo and nobody noticed."
+
+```bash
+# snippet-lint: skip — illustrative coverage-floor auto-default
+COVERAGE_POLICY=".claude/state/coverage-policy.txt"
+
+# Opt-out: any project can decline the auto-default by writing this single-line file
+if grep -qx "no-coverage-floor" "$COVERAGE_POLICY" 2>/dev/null; then
+  echo "[coverage-floor] opt-out via $COVERAGE_POLICY — skipping auto-default"
+else
+  # Detect repo maturity by oldest-commit age (full-clone) or fall back to
+  # commit-count (shallow-clone safe). Older = stricter floor.
+  if git log --reverse --format=%cd --date=unix 2>/dev/null | head -1 > /tmp/oldest-commit-epoch; then
+    OLDEST=$(cat /tmp/oldest-commit-epoch)
+    NOW=$(date +%s)
+    AGE_DAYS=$(( (NOW - OLDEST) / 86400 ))
+  else
+    # Shallow clone — assume mature; we cannot tell
+    AGE_DAYS=999
+  fi
+
+  if [ "$AGE_DAYS" -gt 180 ]; then
+    FLOOR=80
+    TIER="mature (>6mo git history)"
+  else
+    FLOOR=60
+    TIER="new (<6mo git history)"
+  fi
+
+  echo "[coverage-floor] auto-default proposed: ${FLOOR}% (${TIER}, age=${AGE_DAYS}d)"
+  echo "[coverage-floor] to opt out:       echo 'no-coverage-floor' > $COVERAGE_POLICY"
+  echo "[coverage-floor] to set explicit:  echo 'coverage-floor: <pct>' >> $COVERAGE_POLICY"
+
+  # Measure coverage (best-effort: run the most common coverage commands)
+  MEASURED_PCT=""
+  if [ -f package.json ] && grep -q '"coverage"' package.json 2>/dev/null; then
+    # npm run coverage typically emits text summary with "All files | ... | <pct> | ..."
+    MEASURED_PCT=$(npm run coverage 2>&1 | grep -E 'All files' | awk -F'|' '{print $2}' | tr -d ' ' | head -1)
+  elif [ -f Cargo.toml ] && command -v cargo-tarpaulin >/dev/null 2>&1; then
+    MEASURED_PCT=$(cargo tarpaulin --print-summary 2>&1 | grep -oE '[0-9]+\.[0-9]+%' | head -1 | tr -d '%')
+  elif [ -f pyproject.toml ] && command -v coverage >/dev/null 2>&1; then
+    coverage report 2>/dev/null
+    MEASURED_PCT=$(coverage report 2>/dev/null | tail -1 | awk '{print $NF}' | tr -d '%')
+  fi
+
+  if [ -z "$MEASURED_PCT" ]; then
+    echo "[coverage-floor] WARNING: coverage runner not detected — auto-default cannot be enforced."
+    echo "[coverage-floor]          Skipping floor check. Add a coverage runner to enable enforcement."
+    echo "[coverage-floor]          (Recorded in retro 8e under 'coverage_not_measurable: true'.)"
+  else
+    # Compare measured vs auto-default floor (round MEASURED_PCT down to int for compare)
+    MEASURED_INT="${MEASURED_PCT%.*}"
+    if [ "${MEASURED_INT:-0}" -lt "$FLOOR" ]; then
+      echo "✗ Ship gate 6c (auto-default floor): coverage ${MEASURED_PCT}% < proposed ${FLOOR}% for ${TIER} repo. Refusing to ship."
+      echo "  Either improve coverage above ${FLOOR}%, OR opt out with:"
+      echo "    echo 'no-coverage-floor' > $COVERAGE_POLICY"
+      echo "  OR declare an explicit project floor:"
+      echo "    echo 'coverage-floor: <pct>' >> $COVERAGE_POLICY"
+      exit 1
+    else
+      echo "✓ coverage ${MEASURED_PCT}% ≥ auto-default ${FLOOR}% (${TIER})"
+    fi
+  fi
+fi
+```
+
+**Why 60% / 80% as the cutoffs**:
+
+- **New repos (<6mo history)**: 60% strikes the balance between "we just started" and "we should have a unit test for every new module." Below 60%, the codebase is effectively untested.
+- **Mature repos (>6mo history)**: 80% reflects industry consensus for code that has had time to accumulate test debt — anything lower says "we are not testing, we are debugging in production." See Google SWE Book §11.7 (Test Coverage).
+
+**Why opt-out lives in `.claude/state/coverage-policy.txt`** (not in `package.json` or another project config): the auto-default is an **opinion** of `/plan-w-team`, not the repo's intrinsic policy. Keeping it out of project config files prevents it from accidentally affecting tooling that reads those files. The state file is gitignored by default (per `.gitignore` patterns set in pre-flight) so individual contributors can opt out locally without committing the decision. To make the opt-out repo-wide, the user can add the file to git deliberately.
+
+**Companion policy keys** (`.claude/state/coverage-policy.txt` accepts any of these one-line entries):
+
+- `no-coverage-floor` — opt out of the auto-default entirely.
+- `coverage-floor: <pct>` — set an explicit floor (overrides auto-default).
+- `mutation-survival-floor: <pct>` — TO2 mutation-survived threshold (default 5%, per Step 2 §TO2 Mutation Default-On for One-Way-Door PRs).
+
 **Cognitive framework**: Error budgets (Google SRE) — read `shared/cognitive-frameworks.md`.
 
 ## 6d. Version Bump (if applicable)

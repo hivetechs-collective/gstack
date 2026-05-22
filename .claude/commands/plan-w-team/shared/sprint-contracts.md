@@ -30,6 +30,12 @@ Testable assertions. Each must be verifiable by the evaluator without subjective
 - [ ] AC1: [Subject] [verb] [expected outcome]
 - [ ] AC2: [Subject] [verb] [expected outcome]
 
+**Default AC for code-modifying tasks (STE Extension)** — when the feature adds or modifies code (i.e., is not docs-only/config-only), include a `test coverage delta` AC by default:
+
+- [ ] AC<n>: Test coverage on touched files does not decrease (`coverage_delta >= 0`), and any new code paths added in this run have at least one assertion that exercises them (verified by `test-gap-analyzer` report in Step 5 having no `severity: high` findings on diff-internal branches).
+
+This default applies to BACKEND/INFRASTRUCTURE/SCRIPTS/LIBRARY/API code-adding tasks and to UI features. Omit only for: refactor-only (covered by existing tests), docs-only, and pure config tasks. Document the omission inline if needed: `<!-- coverage-delta AC omitted: docs-only -->`. The `coverage_delta` metric is computed by Step 6 (after the coverage runner emits the post-run %) against the BASE_SHA coverage %.
+
 ### Quality Rubrics
 
 Gradable criteria on a 1-5 scale. Each rubric has anchor descriptions so the evaluator scores consistently.

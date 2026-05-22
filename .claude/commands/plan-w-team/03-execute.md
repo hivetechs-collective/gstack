@@ -213,17 +213,36 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
        If file doesn't exist, Write.
 
      TEST EXECUTION (run before marking any task complete):
-     - Detect test runner once at task start using this priority order:
-       Cargo.toml [workspace] → cargo test --workspace
-       Cargo.toml (no workspace) → cargo test
-       package.json with vitest devDep → npx vitest run
-       package.json with jest devDep → npx jest
-       package.json with test script → npm test
-       pyproject.toml [tool.pytest] or conftest.py → pytest
-       *.bats files → bats <dir>
-       None of the above → skip (not an error, log test_runner: none)
-     - Run detected test command with 60-second timeout before marking
-       each task complete. If tests fail, fix and re-run.
+     - Detect test runner once at task start using this priority order
+       (run ALL detected runners — unit first, e2e/integration last):
+
+       UNIT runners (highest priority — fastest signal):
+         Cargo.toml [workspace] → cargo test --workspace
+         Cargo.toml (no workspace) → cargo test
+         package.json with vitest devDep → npx vitest run
+         package.json with jest devDep → npx jest
+         package.json with test script → npm test
+         pyproject.toml [tool.pytest] or conftest.py → pytest
+         *.bats files → bats <dir>
+
+       END-TO-END / INTEGRATION runners (run in addition to unit; slower):
+         cypress.config.{ts,js,mjs} present → npx cypress run
+         playwright.config.{ts,js,mjs} present → npx playwright test
+         tests/e2e/ directory present (without explicit cypress/playwright config) →
+           npm run test:e2e (or pnpm test:e2e / yarn test:e2e by detected manager) → fallback npx playwright test
+         *.robot files anywhere in repo → robot tests/  (Robot Framework)
+
+         None of the above → skip (not an error, log test_runner: none)
+
+     - Run unit runners FIRST and gate on their result. If unit tests pass,
+       proceed to e2e runners (they typically take 10–100× longer).
+     - Run detected unit-runner command with 60-second timeout before marking
+       each task complete. If unit tests fail, fix and re-run.
+     - E2E runners may use a higher timeout (5–10 min); the lead picks the
+       cap appropriate for the suite size.
+     - If MULTIPLE e2e configs are present (e.g., both cypress.config and
+       playwright.config), run all of them — they typically cover different
+       layers (component vs page). Do NOT pick one and skip the other.
      - If tests fail on code you didn't write, run the same tests on the
        base branch to attribute blame — pre-existing failures are not yours.
      - If no test runner detected, proceed without tests. Many repos
