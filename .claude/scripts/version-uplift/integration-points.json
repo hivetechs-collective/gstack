@@ -1,5 +1,5 @@
 {
-  "_comment": "Integration-point catalog for /plan-w-team-relevant Claude Code surfaces. Each entry: { id, description, keywords (case-insensitive substring), repo_probes (paths/grep patterns the evaluator checks for 'is this surface used?'). Updating this catalog does NOT require touching evaluate-features.sh.",
+  "_comment": "Integration-point catalog for /plan-w-team-relevant Claude Code surfaces. Each entry: { id, description, keywords (case-insensitive substring), repo_probes (paths/grep patterns the evaluator checks for 'is this surface used?'), auto_integrate_safe (whether candidate-for-adoption findings on this surface are safe to auto-adopt without human review). Defensive default: false. Set true only for additive, non-behavioral surfaces (new optional flags, new hook input fields, new opt-in features). Updating this catalog does NOT require touching evaluate-features.sh.",
   "surfaces": [
     {
       "id": "hook-event",
@@ -25,7 +25,8 @@
         "InstructionsLoaded",
         "hook event"
       ],
-      "repo_probes": [".claude/hooks/", ".claude/settings.json"]
+      "repo_probes": [".claude/hooks/", ".claude/settings.json"],
+      "auto_integrate_safe": false
     },
     {
       "id": "permission-syntax",
@@ -39,7 +40,8 @@
         "permission syntax",
         "permission mode"
       ],
-      "repo_probes": [".claude/settings.json", "CLAUDE.md"]
+      "repo_probes": [".claude/settings.json", "CLAUDE.md"],
+      "auto_integrate_safe": false
     },
     {
       "id": "model-id",
@@ -54,7 +56,8 @@
         "Haiku 4",
         "default model"
       ],
-      "repo_probes": [".claude/agents/", "CLAUDE.md"]
+      "repo_probes": [".claude/agents/", "CLAUDE.md"],
+      "auto_integrate_safe": false
     },
     {
       "id": "slash-command",
@@ -69,7 +72,8 @@
         "/bg ",
         "slash command"
       ],
-      "repo_probes": [".claude/commands/", "CLAUDE.md"]
+      "repo_probes": [".claude/commands/", "CLAUDE.md"],
+      "auto_integrate_safe": false
     },
     {
       "id": "agent-tool",
@@ -81,11 +85,12 @@
         "worktree isolation",
         "isolation: \"worktree\""
       ],
-      "repo_probes": [".claude/agents/", ".claude/commands/plan-w-team/"]
+      "repo_probes": [".claude/agents/", ".claude/commands/plan-w-team/"],
+      "auto_integrate_safe": false
     },
     {
       "id": "bg-session",
-      "description": "Background sessions and master agent dashboard",
+      "description": "Background sessions and master agent dashboard (opt-in, new optional feature)",
       "keywords": [
         "claude --bg",
         "claude agents",
@@ -93,7 +98,8 @@
         "/bg",
         "agent dashboard"
       ],
-      "repo_probes": [".claude/commands/plan-w-team/"]
+      "repo_probes": [".claude/commands/plan-w-team/"],
+      "auto_integrate_safe": true
     },
     {
       "id": "pwt-stage",
@@ -105,7 +111,8 @@
         "ship pipeline",
         "retro stage"
       ],
-      "repo_probes": [".claude/commands/plan-w-team/"]
+      "repo_probes": [".claude/commands/plan-w-team/"],
+      "auto_integrate_safe": false
     },
     {
       "id": "pwt-pause-site",
@@ -118,11 +125,12 @@
       ],
       "repo_probes": [
         ".claude/commands/plan-w-team/shared/supervisor-protocol.md"
-      ]
+      ],
+      "auto_integrate_safe": false
     },
     {
       "id": "effort-level",
-      "description": "Effort levels: --effort, $CLAUDE_EFFORT, effort.level config",
+      "description": "Effort levels: --effort, $CLAUDE_EFFORT, effort.level config (new optional flags)",
       "keywords": [
         "--effort",
         "CLAUDE_EFFORT",
@@ -130,7 +138,8 @@
         "xhigh",
         "effort level"
       ],
-      "repo_probes": [".claude/settings.json", "CLAUDE.md"]
+      "repo_probes": [".claude/settings.json", "CLAUDE.md"],
+      "auto_integrate_safe": true
     },
     {
       "id": "mcp",
@@ -141,13 +150,15 @@
         ".mcp.json",
         "MCP stdio"
       ],
-      "repo_probes": [".mcp.json", ".claude/.mcp.json"]
+      "repo_probes": [".mcp.json", ".claude/.mcp.json"],
+      "auto_integrate_safe": false
     },
     {
       "id": "tool-search",
-      "description": "Deferred tool loading via ToolSearch",
+      "description": "Deferred tool loading via ToolSearch (transparent runtime feature)",
       "keywords": ["ToolSearch", "deferred tool", "lazy-load"],
-      "repo_probes": [".claude/commands/plan-w-team/"]
+      "repo_probes": [".claude/commands/plan-w-team/"],
+      "auto_integrate_safe": true
     },
     {
       "id": "worktree-baseref",
@@ -156,11 +167,12 @@
       "repo_probes": [
         ".claude/settings.json",
         ".claude/commands/plan-w-team/03-execute.md"
-      ]
+      ],
+      "auto_integrate_safe": false
     },
     {
       "id": "scheduled-jobs",
-      "description": "CronCreate / CronDelete / scheduled remote agents",
+      "description": "CronCreate / CronDelete / scheduled remote agents (opt-in)",
       "keywords": [
         "CronCreate",
         "CronDelete",
@@ -168,11 +180,12 @@
         "scheduled remote agent",
         "routine"
       ],
-      "repo_probes": [".claude/commands/", "CLAUDE.md"]
+      "repo_probes": [".claude/commands/", "CLAUDE.md"],
+      "auto_integrate_safe": true
     },
     {
       "id": "task-tool",
-      "description": "Persistent task tools (TaskCreate/TaskList/TaskGet/TaskUpdate)",
+      "description": "Persistent task tools (TaskCreate/TaskList/TaskGet/TaskUpdate) — opt-in",
       "keywords": [
         "TaskCreate",
         "TaskList",
@@ -181,7 +194,8 @@
         "TaskStop",
         "persistent task"
       ],
-      "repo_probes": [".claude/", "CLAUDE.md"]
+      "repo_probes": [".claude/", "CLAUDE.md"],
+      "auto_integrate_safe": true
     },
     {
       "id": "agent-teams",
@@ -193,7 +207,8 @@
         "agent team",
         "shared task list"
       ],
-      "repo_probes": [".claude/commands/plan-w-team/"]
+      "repo_probes": [".claude/commands/plan-w-team/"],
+      "auto_integrate_safe": false
     }
   ]
 }

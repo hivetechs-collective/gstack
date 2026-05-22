@@ -120,6 +120,39 @@ jq -r '
     | [$s.id, .] | @tsv
 ' "$CATALOG" > "$PROBES_TSV"
 
+# Per-surface auto_integrate_safe lookup. Missing field => false (defensive).
+AUTOSAFE_TSV="$TMPDIR/autosafe.tsv"
+jq -r '
+    .surfaces[]
+    | [.id, (.auto_integrate_safe // false | tostring)] | @tsv
+' "$CATALOG" > "$AUTOSAFE_TSV"
+
+auto_safe_for_surface() {
+    awk -F'\t' -v s="$1" '$1==s{print $2; exit}' "$AUTOSAFE_TSV"
+}
+
+# Migration-risk keyword scan. Returns "true" if entry text contains any
+# of: BREAKING, deprecat, remove, replace, api change, schema, config rename,
+# env var rename. Case-insensitive on all but BREAKING (which must be uppercase
+# per Claude Code changelog convention).
+has_migration_risk() {
+    local entry="$1"
+    if printf '%s' "$entry" | grep -qE '\bBREAKING\b'; then
+        printf 'true\n'
+        return
+    fi
+    local lo
+    lo=$(printf '%s' "$entry" | tr '[:upper:]' '[:lower:]')
+    case "$lo" in
+        *deprecat*|*remove*|*replace*|*"api change"*|*schema*|*"config rename"*|*"env var rename"*)
+            printf 'true\n'
+            ;;
+        *)
+            printf 'false\n'
+            ;;
+    esac
+}
+
 # --- cache "used in repo" verdict per surface_id ---
 USED_FILE="$TMPDIR/used.tsv"
 : > "$USED_FILE"
@@ -194,8 +227,24 @@ while IFS=$'\t' read -r ver entry; do
         fi
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\n' \
-        "$ver" "$classification" "$surface" "$entry" "$rationale" >> "$REPORT_TSV"
+    # Compute auto_integrate_safe (defensive: defaults to false).
+    # Criteria for true (all must hold):
+    #   - classification == candidate-for-adoption
+    #   - surface's auto_integrate_safe field == true
+    #   - entry text contains no BREAKING/deprecat/remove/replace/migration-risk keywords
+    auto_safe="false"
+    if [ "$classification" = "candidate-for-adoption" ]; then
+        surface_safe=$(auto_safe_for_surface "$matched_id")
+        if [ "$surface_safe" = "true" ]; then
+            risk=$(has_migration_risk "$entry")
+            if [ "$risk" = "false" ]; then
+                auto_safe="true"
+            fi
+        fi
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$ver" "$classification" "$surface" "$entry" "$rationale" "$auto_safe" >> "$REPORT_TSV"
 done < "$ENTRIES_TSV"
 
 # --- emit reports ---
@@ -211,13 +260,14 @@ emit_md() {
     done
     printf '\n## Per-Entry Findings\n\n'
     cur_ver=""
-    while IFS=$'\t' read -r ver cls surface entry rationale; do
+    while IFS=$'\t' read -r ver cls surface entry rationale auto_safe; do
         if [ "$ver" != "$cur_ver" ]; then
             printf '\n### Version %s\n\n' "$ver"
             cur_ver="$ver"
         fi
         printf -- '- **[%s]** _(surface: %s)_ — %s\n' "$cls" "$surface" "$entry"
         printf '  - rationale: %s\n' "$rationale"
+        printf '  - auto_integrate_safe: %s\n' "$auto_safe"
     done < "$REPORT_TSV"
     printf '\n## Next Steps\n\n'
     printf '1. Review **candidate-for-adoption** entries — each is a candidate for a follow-up `/plan-w-team` run to adopt the surface.\n'
@@ -243,11 +293,13 @@ emit_json() {
             if (!first) printf ",";
             first=0
             # Escape backslashes then quotes for JSON safety.
-            ver=$1; cls=$2; sur=$3; ent=$4; rat=$5
+            ver=$1; cls=$2; sur=$3; ent=$4; rat=$5; safe=$6
             gsub(/\\/,"\\\\",ent); gsub(/"/,"\\\"",ent)
             gsub(/\\/,"\\\\",rat); gsub(/"/,"\\\"",rat)
-            printf "{\"version\":\"%s\",\"classification\":\"%s\",\"surface\":\"%s\",\"entry\":\"%s\",\"rationale\":\"%s\"}",
-                ver, cls, sur, ent, rat
+            # auto_integrate_safe is a bare bool ("true" | "false")
+            if (safe != "true") safe="false"
+            printf "{\"version\":\"%s\",\"classification\":\"%s\",\"surface\":\"%s\",\"entry\":\"%s\",\"rationale\":\"%s\",\"auto_integrate_safe\":%s}",
+                ver, cls, sur, ent, rat, safe
         }
         END { printf "]}\n" }
     ' "$REPORT_TSV" \

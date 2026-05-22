@@ -1,13 +1,13 @@
 ---
 id: 6e9f4a06
 trigger: "when fixing bugs in feature_development context"
-confidence: 0.5
+confidence: 0.6
 domain: workflow
 scope: project
 project: claude-pattern
 created: 2026-05-22T17:41:22Z
-last_applied: null
-applications: 0
+last_applied: 2026-05-22T17:57:02Z
+applications: 1
 evidence:
   - "First observed in session 1779471682"
 ---

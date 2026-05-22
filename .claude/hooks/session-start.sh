@@ -475,6 +475,40 @@ echo "📖 Commands: /init /context /blocked /safe /governance"
 echo "═══════════════════════════════════════════════════════════════"
 
 # =================================================================
+# VERSION-UPLIFT: Detect Claude Code CLI version change + auto-adopt
+# =================================================================
+# Best-effort, fire-and-forget. Detect emits exit 0 when version unchanged
+# (the common path — no work). When changed, it persists the new version
+# AND we write a sentinel flag so a downstream session (or the auto-launch
+# call below) can act on it. All steps swallow errors so version-uplift
+# can never block session init.
+VERSION_UPLIFT_DETECT="$PROJECT_ROOT/.claude/scripts/version-uplift/detect-version.sh"
+VERSION_UPLIFT_AUTO_LAUNCH="$PROJECT_ROOT/.claude/scripts/version-uplift/auto-launch.sh"
+VERSION_UPLIFT_PENDING_FLAG="$STATE_DIR/version-uplift-pending.flag"
+
+if [ -x "$VERSION_UPLIFT_DETECT" ]; then
+    DETECTION=$("$VERSION_UPLIFT_DETECT" 2>/dev/null || true)
+    if [ -n "$DETECTION" ] && command -v jq >/dev/null 2>&1; then
+        UPLIFT_CHANGED=$(printf '%s' "$DETECTION" | jq -r '.changed // false' 2>/dev/null || echo "false")
+        if [ "$UPLIFT_CHANGED" = "true" ]; then
+            UPLIFT_PREV=$(printf '%s' "$DETECTION" | jq -r '.previous // "null"' 2>/dev/null || echo "null")
+            UPLIFT_CUR=$(printf '%s' "$DETECTION" | jq -r '.current' 2>/dev/null || echo "")
+            mkdir -p "$STATE_DIR" 2>/dev/null || true
+            printf 'previous=%s\ncurrent=%s\ndetected_at=%s\n' \
+                "$UPLIFT_PREV" "$UPLIFT_CUR" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                > "$VERSION_UPLIFT_PENDING_FLAG" 2>/dev/null || true
+        fi
+    fi
+fi
+
+# Auto-launch the adoption /plan-w-team worker when there is a pending flag
+# AND no kill switch. The script itself is best-effort (always exits 0 on
+# error) — we double-guard with || true for paranoia.
+if [ -f "$VERSION_UPLIFT_PENDING_FLAG" ] && [ -x "$VERSION_UPLIFT_AUTO_LAUNCH" ]; then
+    "$VERSION_UPLIFT_AUTO_LAUNCH" 2>/dev/null || true
+fi
+
+# =================================================================
 # /plan-w-team: GC stale terminal=SUCCESS goal-state files
 # =================================================================
 # Best-effort cleanup. Goal-state files from runs that completed BEFORE the
