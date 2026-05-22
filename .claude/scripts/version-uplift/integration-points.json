@@ -1,0 +1,199 @@
+{
+  "_comment": "Integration-point catalog for /plan-w-team-relevant Claude Code surfaces. Each entry: { id, description, keywords (case-insensitive substring), repo_probes (paths/grep patterns the evaluator checks for 'is this surface used?'). Updating this catalog does NOT require touching evaluate-features.sh.",
+  "surfaces": [
+    {
+      "id": "hook-event",
+      "description": "Claude Code hook event types",
+      "keywords": [
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "UserPromptSubmit",
+        "Notification",
+        "SubagentStart",
+        "SubagentStop",
+        "SessionStart",
+        "SessionEnd",
+        "PreCompact",
+        "Setup hook",
+        "PermissionRequest",
+        "TeammateIdle",
+        "TaskCompleted",
+        "WorktreeCreate",
+        "WorktreeRemove",
+        "ConfigChange",
+        "InstructionsLoaded",
+        "hook event"
+      ],
+      "repo_probes": [".claude/hooks/", ".claude/settings.json"]
+    },
+    {
+      "id": "permission-syntax",
+      "description": "Permissions block syntax (Bash(*), Agent(*), wildcards)",
+      "keywords": [
+        "permission wildcard",
+        "Bash(",
+        "Agent(",
+        "Task(",
+        "allow list",
+        "permission syntax",
+        "permission mode"
+      ],
+      "repo_probes": [".claude/settings.json", "CLAUDE.md"]
+    },
+    {
+      "id": "model-id",
+      "description": "Claude model IDs and aliases",
+      "keywords": [
+        "claude-opus",
+        "claude-sonnet",
+        "claude-haiku",
+        "model alias",
+        "Opus 4",
+        "Sonnet 4",
+        "Haiku 4",
+        "default model"
+      ],
+      "repo_probes": [".claude/agents/", "CLAUDE.md"]
+    },
+    {
+      "id": "slash-command",
+      "description": "Slash commands (/goal, /loop, /btw, /batch, /simplify, /fork, /bg)",
+      "keywords": [
+        "/goal",
+        "/loop",
+        "/btw",
+        "/batch",
+        "/simplify",
+        "/fork",
+        "/bg ",
+        "slash command"
+      ],
+      "repo_probes": [".claude/commands/", "CLAUDE.md"]
+    },
+    {
+      "id": "agent-tool",
+      "description": "Subagent launcher (Agent / Task), worktree isolation, model param",
+      "keywords": [
+        "Agent tool",
+        "Task tool",
+        "subagent",
+        "worktree isolation",
+        "isolation: \"worktree\""
+      ],
+      "repo_probes": [".claude/agents/", ".claude/commands/plan-w-team/"]
+    },
+    {
+      "id": "bg-session",
+      "description": "Background sessions and master agent dashboard",
+      "keywords": [
+        "claude --bg",
+        "claude agents",
+        "background session",
+        "/bg",
+        "agent dashboard"
+      ],
+      "repo_probes": [".claude/commands/plan-w-team/"]
+    },
+    {
+      "id": "pwt-stage",
+      "description": "/plan-w-team lifecycle stages",
+      "keywords": [
+        "plan-w-team",
+        "scope challenge",
+        "fix-first review",
+        "ship pipeline",
+        "retro stage"
+      ],
+      "repo_probes": [".claude/commands/plan-w-team/"]
+    },
+    {
+      "id": "pwt-pause-site",
+      "description": "Hard-gate pause sites in /plan-w-team",
+      "keywords": [
+        "push-ack",
+        "secret-scan-allow",
+        "scope-unlock-for-drift",
+        "pause site"
+      ],
+      "repo_probes": [
+        ".claude/commands/plan-w-team/shared/supervisor-protocol.md"
+      ]
+    },
+    {
+      "id": "effort-level",
+      "description": "Effort levels: --effort, $CLAUDE_EFFORT, effort.level config",
+      "keywords": [
+        "--effort",
+        "CLAUDE_EFFORT",
+        "effort.level",
+        "xhigh",
+        "effort level"
+      ],
+      "repo_probes": [".claude/settings.json", "CLAUDE.md"]
+    },
+    {
+      "id": "mcp",
+      "description": "MCP server config and CLAUDE_PROJECT_DIR",
+      "keywords": [
+        "MCP server",
+        "CLAUDE_PROJECT_DIR",
+        ".mcp.json",
+        "MCP stdio"
+      ],
+      "repo_probes": [".mcp.json", ".claude/.mcp.json"]
+    },
+    {
+      "id": "tool-search",
+      "description": "Deferred tool loading via ToolSearch",
+      "keywords": ["ToolSearch", "deferred tool", "lazy-load"],
+      "repo_probes": [".claude/commands/plan-w-team/"]
+    },
+    {
+      "id": "worktree-baseref",
+      "description": "Worktree baseRef config (head vs fresh)",
+      "keywords": ["worktree.baseRef", "baseRef", "worktree base"],
+      "repo_probes": [
+        ".claude/settings.json",
+        ".claude/commands/plan-w-team/03-execute.md"
+      ]
+    },
+    {
+      "id": "scheduled-jobs",
+      "description": "CronCreate / CronDelete / scheduled remote agents",
+      "keywords": [
+        "CronCreate",
+        "CronDelete",
+        "CronList",
+        "scheduled remote agent",
+        "routine"
+      ],
+      "repo_probes": [".claude/commands/", "CLAUDE.md"]
+    },
+    {
+      "id": "task-tool",
+      "description": "Persistent task tools (TaskCreate/TaskList/TaskGet/TaskUpdate)",
+      "keywords": [
+        "TaskCreate",
+        "TaskList",
+        "TaskGet",
+        "TaskUpdate",
+        "TaskStop",
+        "persistent task"
+      ],
+      "repo_probes": [".claude/", "CLAUDE.md"]
+    },
+    {
+      "id": "agent-teams",
+      "description": "Agent Teams (experimental): TeamCreate, SendMessage, shared task lists",
+      "keywords": [
+        "TeamCreate",
+        "TeamDelete",
+        "SendMessage",
+        "agent team",
+        "shared task list"
+      ],
+      "repo_probes": [".claude/commands/plan-w-team/"]
+    }
+  ]
+}
