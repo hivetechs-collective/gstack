@@ -145,7 +145,7 @@ ls -la .claude/agents/ 2>/dev/null | wc -l
 ls -la .claude/commands/ 2>/dev/null | wc -l
 ls -la .claude/hooks/ 2>/dev/null
 ls -la .claude/settings.json 2>/dev/null
-ls -la fix_plan.md @AGENT.md PROMPT.md 2>/dev/null  # Ralph integration
+ls -la fix_plan.md @AGENT.md PROMPT.md 2>/dev/null  # legacy autonomous-loop artifacts (Ralph deprecated 2026-05-19)
 ```
 
 ---
@@ -232,7 +232,7 @@ Based on the scan, generate or update CLAUDE.md with the following sections:
 - **Agents**: [count] specialized agents available
 - **Commands**: [list key commands]
 - **Hooks**: [list active hooks]
-- **Ralph Integration**: [Yes/No - based on fix_plan.md detection]
+- **Autonomous Workflow**: `/plan-w-team` + `/develop` + `/loop` + `/goal` (Ralph deprecated 2026-05-19)
 
 ## Current State
 
@@ -285,7 +285,7 @@ Claude Code Integration:
 📦 [X] agents available
 🔧 [Y] commands configured
 🪝 [Z] hooks active
-🤖 Ralph: [Ready | Not configured]
+🤖 Autonomous Workflow: /plan-w-team + /develop + /loop + /goal
 
 Memory bank updated. Context ready for development.
 
@@ -298,6 +298,6 @@ Memory bank updated. Context ready for development.
 - Run `/init` at the start of each project or after major changes
 - Use `/init --update` to refresh without losing custom sections
 - Use `/init --dry-run` to preview changes
-- Integrates with Ralph workflow - ensures fix_plan.md detection
+- Detects legacy `fix_plan.md` if present (Ralph deprecated 2026-05-19; current autonomous workflows use `/plan-w-team` + `/develop` + `/loop` + `/goal`)
 - Complements `/context` command (init generates, context loads)
 ```

@@ -3275,7 +3275,7 @@ When human completes an action:
 1. Human marks `- [x]` in @human_actions.md
 2. Next sync run detects completion
 3. Blocked tasks in fix_plan.md become actionable
-4. Ralph automatically picks up newly unblocked tasks
+4. The next `/develop` or `/plan-w-team` run picks up newly unblocked tasks
 
 ### Reference Documentation
 

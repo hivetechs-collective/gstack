@@ -16,6 +16,7 @@ Manages tasks that require human intervention after all automation attempts have
 ### Default: Show Queue
 
 Display the current @human_actions.md with live statistics:
+
 - Pending actions count
 - Total blocked tasks
 - Priority breakdown (Critical/High/Medium/Low)
@@ -57,16 +58,16 @@ Display all tasks in fix_plan.md that are blocked by human actions:
 grep "^\- \[!\]" fix_plan.md
 ```
 
-## Integration with Ralph
+## Integration with the Autonomous Workflow
 
-The human action queue integrates with the development pipeline:
+The human action queue integrates with the current development pipeline (`/plan-w-team` + `/develop` + `/loop` + `/goal`; Ralph deprecated 2026-05-19):
 
-1. **Detection**: Ralph detects when a task requires human intervention
-2. **Pre-check**: Ralph MUST try automation first (CLI, Playwright, agents)
+1. **Detection**: The pipeline (or the human) detects when a task requires human intervention
+2. **Pre-check**: Automation MUST be tried first (CLI, Playwright, agents)
 3. **Escalation**: Only after automation fails, add to @human_actions.md
 4. **Blocking**: Related tasks in fix_plan.md are marked blocked
 5. **Completion**: Human marks done, blocked tasks become actionable
-6. **Resume**: Ralph automatically picks up newly unblocked tasks
+6. **Resume**: The next `/develop` or `/plan-w-team` run picks up newly unblocked tasks
 
 ## Automation First (MANDATORY)
 

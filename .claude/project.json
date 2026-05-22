@@ -28,15 +28,7 @@
   "governance": {
     "stubMaxDays": 14,
     "requireExecutiveReview": false,
-    "protectedPaths": [
-      "docs/governance/",
-      ".claude/rules/"
-    ]
-  },
-  "ralph": {
-    "callsPerHour": 50,
-    "timeoutMinutes": 45,
-    "sanityCheckInterval": 1800
+    "protectedPaths": ["docs/governance/", ".claude/rules/"]
   },
   "commands": {
     "build": "npm run build",

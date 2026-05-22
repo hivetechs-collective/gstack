@@ -71,6 +71,21 @@ fi
 # Transcript: Claude Code passes the path in the hook input
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)
 
+# Background-task liveness (added 2026-05-22 — leverages Claude Code 2.1.145 feature).
+# Hook input now includes a `background_tasks` array of currently-alive bg sessions.
+# We extract the set of active SIDs (short 8-char form) to enable DEAD-worker
+# detection in the parent-child propagation step: when a registered child has
+# NO terminal_state AND its SID is not in active SIDs, the child crashed —
+# we can propagate without stalling.
+#
+# Backward-compat: if the field is absent (older Claude Code versions),
+# ACTIVE_SIDS will be empty and the dead-worker check is skipped — preserving
+# the previous "wait forever for terminal_state" behavior.
+ACTIVE_SIDS=$(echo "$INPUT" \
+    | jq -r '.background_tasks // [] | .[] | .session_id // .sessionId // empty' 2>/dev/null \
+    | awk '{print substr($0, 1, 8)}' \
+    | sort -u)
+
 # Evaluate each active goal. If ANY hits terminal, allow stop.
 # If ALL are still pending, block stop with the most recent goal's reason.
 BLOCK_REASON=""
@@ -244,6 +259,34 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
 
                     CHILD_TERMINAL=$(jq -r '.terminal_state // ""' "$CHILD_STATE")
                     if [ -z "$CHILD_TERMINAL" ]; then
+                        # 2.1.145 DEAD-worker detection: registry has the child's SID;
+                        # if that SID is NOT in background_tasks AND the child has no
+                        # terminal_state, the worker crashed without writing retro.
+                        # Without this check, the parent stalls forever. Backward-compat:
+                        # if ACTIVE_SIDS is empty (older Claude Code), skip → preserves
+                        # original behavior of waiting for terminal_state.
+                        CHILD_SID=$(jq -r 'select(.slug == "'"$CHILD_SLUG"'") | .session_id // ""' \
+                            "$REGISTRY" 2>/dev/null | head -1 | cut -c1-8)
+                        if [ -n "$ACTIVE_SIDS" ] && [ -n "$CHILD_SID" ] \
+                           && ! echo "$ACTIVE_SIDS" | grep -qFx "$CHILD_SID"; then
+                            # Worker dead, no terminal state → treat as LOW_CONFIDENCE
+                            # so user investigates; do NOT pretend it succeeded.
+                            # ALSO persist DEAD to the child's own goal file so this
+                            # evaluator pass (and future ones) don't block on it.
+                            DEAD_REASON="DEAD — SID $CHILD_SID not in background_tasks, no terminal_state written by worker"
+                            jq --arg t "LOW_CONFIDENCE_STREAK" --arg r "$DEAD_REASON" \
+                               --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+                               '.terminal_state = $t | .terminal_reason = $r | .terminated_at = $ts' \
+                               "$CHILD_STATE" > "$CHILD_STATE.tmp" 2>/dev/null \
+                                && mv "$CHILD_STATE.tmp" "$CHILD_STATE"
+                            CHILD_TERMINAL="DEAD"
+                            CHECKED_COUNT=$((CHECKED_COUNT+1))
+                            if [ "$WORST_STATE" != "USER_ESCALATION_HALT" ]; then
+                                WORST_STATE="LOW_CONFIDENCE_STREAK"
+                                WORST_REASON="child SLUG=$CHILD_SLUG $DEAD_REASON"
+                            fi
+                            continue
+                        fi
                         ALL_TERMINAL=false
                         continue
                     fi

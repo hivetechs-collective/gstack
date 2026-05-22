@@ -72,13 +72,9 @@ get_phase_target() {
     get_config '.phase.target' 'TBD'
 }
 
-get_ralph_calls() {
-    get_config '.ralph.callsPerHour' '50'
-}
-
-get_ralph_timeout() {
-    get_config '.ralph.timeoutMinutes' '45'
-}
+# Ralph helpers removed 2026-05-22 (Ralph deprecated 2026-05-19).
+# If a legacy .claude/project.json still has a "ralph" block, it is ignored.
+# Current autonomous workflow uses /plan-w-team + /develop + /loop + /goal.
 
 get_build_command() {
     get_config '.commands.build' 'npm run build'

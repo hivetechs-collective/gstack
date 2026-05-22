@@ -366,3 +366,25 @@ The condition template is the single source of truth — never inline an alterna
 ```
 
 ```
+
+## Auto-Mode Compatibility (Claude Code 2.1.146+)
+
+Claude Code 2.1.146 changed auto-mode behavior so that `AskUserQuestion` is NO
+longer suppressed when a hook or skill explicitly relies on it. This validates
+the design of `/plan-w-team`'s hard-gate halts (`push-ack`, `secret-scan-allow`,
+`scope-unlock-for-drift`): even when a worker session runs with `auto` mode
+enabled, hitting one of these pause sites correctly surfaces an `AskUserQuestion`
+prompt back to the user instead of silently auto-approving. No code change
+required on our side — this entry confirms behavior alignment.
+
+## Background-Task DEAD-Worker Detection (Claude Code 2.1.145+)
+
+Claude Code 2.1.145 added a `background_tasks` array to the Stop/SubagentStop
+hook input. `plan-w-team-goal-evaluator.sh` reads it to detect dead spawned
+workers: when a registered child's session_id is NOT in the active set AND the
+child has no `terminal_state` written, the evaluator marks the child as
+`LOW_CONFIDENCE_STREAK` with reason "DEAD — SID not in background_tasks".
+Two-pass convergence: first pass writes child terminal, second pass allows stop.
+Backward-compatible when the field is absent (older Claude Code).
+Regression: `.claude/scripts/plan-w-team-goal-evaluator-dead-worker.test.sh` (8 cases).
+

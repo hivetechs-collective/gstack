@@ -431,10 +431,9 @@ auto_init_context() {
                 PROJECT_NAME=$(echo "$INIT_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('name',''))" 2>/dev/null)
                 PROJECT_TYPE=$(echo "$INIT_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('type',''))" 2>/dev/null)
                 AGENT_COUNT=$(echo "$INIT_OUTPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('claudeIntegration',{}).get('agentCount',0))" 2>/dev/null)
-                HAS_RALPH=$(echo "$INIT_OUTPUT" | python3 -c "import sys,json; print(str(json.load(sys.stdin).get('claudeIntegration',{}).get('hasRalph',False)).lower())" 2>/dev/null)
 
                 echo "   ✅ Context loaded: $PROJECT_NAME ($PROJECT_TYPE)"
-                echo "   📦 $AGENT_COUNT agents | 🤖 Ralph: $HAS_RALPH"
+                echo "   📦 $AGENT_COUNT agents"
 
                 # Update CLAUDE.md with auto-generated sections
                 tsx "$INIT_SCRIPT" --update >/dev/null 2>&1
@@ -460,14 +459,10 @@ if [ -f "$CONTEXT_STATE" ]; then
     PROJECT_TYPE=$(cat "$CONTEXT_STATE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('type','unknown'))" 2>/dev/null)
     AGENT_COUNT=$(cat "$CONTEXT_STATE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('claudeIntegration',{}).get('agentCount',0))" 2>/dev/null)
     COMMAND_COUNT=$(cat "$CONTEXT_STATE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('claudeIntegration',{}).get('commandCount',0))" 2>/dev/null)
-    HAS_RALPH=$(cat "$CONTEXT_STATE" | python3 -c "import sys,json; print(str(json.load(sys.stdin).get('claudeIntegration',{}).get('hasRalph',False)).lower())" 2>/dev/null)
 
     echo ""
     echo "📋 Project: $PROJECT_NAME"
     echo "📂 Type: $PROJECT_TYPE | 📦 $AGENT_COUNT agents | 🔧 $COMMAND_COUNT commands"
-    if [ "$HAS_RALPH" = "true" ]; then
-        echo "🤖 Ralph: Ready for autonomous development"
-    fi
 else
     # Fallback when no context state exists
     echo ""
