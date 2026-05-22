@@ -103,6 +103,66 @@ if [ -z "$REQUEST" ]; then
     exit 1
 fi
 
+# ─── PREAMBLE STRIP ────────────────────────────────────────────────────────
+# When a user message starts with a route-hook trigger phrase (e.g. "Use
+# /plan-w-team to ship X"), the verbatim REQUEST already contains the
+# wrapper this script is about to add. Without stripping, GOAL_TEXT becomes
+# "/goal Use /plan-w-team to use /plan-w-team to ship X" — a doubled prefix
+# that confuses the worker LLM and bloats the /goal directive.
+#
+# Strip leading whitespace, then any of the 6 known trigger phrases
+# (case-insensitive). After a trigger that does not end with "to", also
+# strip a leading "to " — so `using /plan-w-team to do X` → `do X`.
+#
+# Triggers must be tried longest-first to avoid `use /plan-w-team to`
+# being short-circuited by a substring match against a less-specific
+# trigger. We hand-order them below.
+__pwt_strip_preamble() {
+    local input="$1"
+    # Strip leading whitespace
+    local trimmed="${input#"${input%%[![:space:]]*}"}"
+    local lower
+    lower=$(printf '%s' "$trimmed" | tr '[:upper:]' '[:lower:]')
+
+    # Longest-first ordering: "now use /plan-w-team to" must be checked
+    # before "use /plan-w-team to" so the "now" prefix is consumed.
+    local triggers=(
+        'now use /plan-w-team to'
+        'start a /plan-w-team run to'
+        'kick off /plan-w-team for'
+        'use /plan-w-team to'
+        'using /plan-w-team'
+        'with /plan-w-team'
+    )
+
+    local t tlen rest
+    for t in "${triggers[@]}"; do
+        tlen=${#t}
+        if [ "${lower:0:$tlen}" = "$t" ]; then
+            rest="${trimmed:$tlen}"
+            # Strip a single leading space after the trigger if present.
+            rest="${rest#" "}"
+            # If the trigger does not already end with "to" and the
+            # remainder starts with "to " (case-insensitive), strip that too.
+            if [ "${t: -3}" != " to" ]; then
+                local rest_lower
+                rest_lower=$(printf '%s' "$rest" | tr '[:upper:]' '[:lower:]')
+                if [ "${rest_lower:0:3}" = "to " ]; then
+                    rest="${rest:3}"
+                fi
+            fi
+            printf '%s' "$rest"
+            return 0
+        fi
+    done
+    printf '%s' "$input"
+}
+REQUEST=$(__pwt_strip_preamble "$REQUEST")
+if [ -z "$REQUEST" ]; then
+    echo "Error: REQUEST is empty after stripping trigger preamble" >&2
+    exit 1
+fi
+
 # Validate type
 case "$TYPE" in
     feature|refactor|bugfix|docs) ;;
