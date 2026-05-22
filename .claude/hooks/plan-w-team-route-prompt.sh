@@ -176,6 +176,188 @@ for opt in \
     fi
 done
 
+# ─── Intent classifier (BUG 1 fix — see docs/specs/pwt-route-hook-fixes.md) ──
+# The unanchored substring match above is intentionally broad to keep
+# natural-language entry sacred (memory: feedback_pwt_routing_natural_lang_absolute).
+# But that broadness produces false positives on questions, descriptions,
+# and bug-doc references that merely mention the trigger phrase. The
+# classifier below runs POST-MATCH to distinguish imperative (LAUNCH)
+# from descriptive/interrogative (SKIP).
+#
+# Fail-closed contract: if python3 is missing or the classifier errors,
+# SKIP launch (no false positive). The user can re-phrase with an
+# explicit start-of-prompt trigger to force the launch. This inverts
+# the file-level fail-open contract for this specific decision point
+# because a false-positive launch is the documented harm we're fixing.
+#
+# If signals are ambiguous (low confidence), the hook EMITS an
+# additionalContext block explaining the ambiguity and SKIPS the launch,
+# letting the origin assistant decide how to surface it.
+if command -v python3 >/dev/null 2>&1; then
+    CLASSIFIER_OUT=$(
+        PWT_PROMPT="$PROMPT" PWT_MATCHED="$MATCHED_PATTERN" \
+        python3 - <<'CLPY' 2>/dev/null
+import os, re, sys, json
+
+prompt = os.environ.get("PWT_PROMPT", "")
+matched = os.environ.get("PWT_MATCHED", "")
+
+# Phrases that mark the matched text as DESCRIPTIVE rather than imperative
+METAPHRASES = [
+    "my idea", "my plan", "the idea is", "the plan was",
+    "the doc says", "the spec says", "the manifest says", "the manifest's",
+    "bug 1:", "bug 2:", "bug 3:", "bug n:",
+    "for example", "for instance", "e.g.", "such as",
+    "he said", "she said", "they said", "user said", "the user said",
+    "i was thinking", "we were thinking",
+    "phrase is", "substring-matches", "substring matches",
+    "literal:", "pattern:", "verbatim:",
+]
+
+# Close-range negation (must be within ~30 chars of the verb)
+NEGATIONS = [
+    "don't ", "do not ", "shouldn't ", "should not ",
+    "wouldn't ", "would not ", "won't ", "will not ", "never ",
+]
+
+# Modals that turn an imperative-looking clause into a hypothetical
+HYPOTHETICALS = ["would", "could", "should", "might", "may"]
+
+# Conditional / interrogative-conjunctive starters
+CONDITIONALS = [" if ", " whether ", " unless "]
+
+# Determiners that mark "/plan-w-team" as a noun reference, not a verb object
+DETERMINERS = ["the ", "a ", "an ", "our ", "this ", "that ", "its ", "any "]
+
+
+def is_inside_quote(s, pos):
+    """True if position pos of s falls inside a quoted span (' " or `)."""
+    in_single = in_double = in_back = False
+    i = 0
+    while i < pos and i < len(s):
+        ch = s[i]
+        if ch == "\\" and i + 1 < len(s):
+            i += 2
+            continue
+        if ch == "'" and not in_double and not in_back:
+            in_single = not in_single
+        elif ch == '"' and not in_single and not in_back:
+            in_double = not in_double
+        elif ch == "`" and not in_single and not in_double:
+            in_back = not in_back
+        i += 1
+    return in_single or in_double or in_back
+
+
+def classify(prompt, matched):
+    p_lc = prompt.lower()
+    if matched.startswith("definition-of-done"):
+        anchor = "/plan-w-team"
+    else:
+        anchor = matched.rstrip().lower()
+
+    pos = p_lc.find(anchor)
+    if pos < 0:
+        return ("low", "anchor not found in prompt")
+
+    # 1. Embedded quote → descriptive
+    if is_inside_quote(prompt, pos):
+        return ("high-descriptive", "match is inside a quoted span")
+
+    # 2. Slice the clause that contains the match
+    pre_full = p_lc[:pos]
+    last_term = max(pre_full.rfind("."), pre_full.rfind("?"),
+                    pre_full.rfind("!"), pre_full.rfind("\n"))
+    preceding = pre_full[last_term + 1:].strip() if last_term >= 0 else pre_full.strip()
+
+    # 80/40-char windows. Use pre_full (un-stripped) so trailing whitespace
+    # is preserved for word-boundary checks against patterns ending in a space.
+    recent = pre_full[-80:]
+    near = pre_full[-40:]
+
+    # 3. Metaphrase / descriptor markers
+    for m in METAPHRASES:
+        if m in recent:
+            return ("high-descriptive", "metaphrase: %r" % m)
+
+    # 4. Negation close to the verb
+    for n in NEGATIONS:
+        if n in near:
+            return ("high-descriptive", "negation: %r" % n.strip())
+
+    # 5. Hypothetical modal directly preceding the trigger verb (within 20 chars)
+    for mod in HYPOTHETICALS:
+        if re.search(r"\b" + re.escape(mod) + r"\b[^.?!]{0,20}$", near):
+            return ("high-descriptive", "hypothetical modal: %r" % mod)
+
+    # 6. Conditional / interrogative conjunction in the clause
+    pre_padded = " " + preceding + " "
+    for c in CONDITIONALS:
+        if c in pre_padded:
+            return ("high-descriptive", "conditional: %r" % c.strip())
+
+    # 7. Interrogative: '?' follows the matched anchor anywhere in the prompt
+    if "?" in prompt[pos:]:
+        return ("high-descriptive", "interrogative: '?' follows match")
+
+    # 8. Noun-reference: determiner immediately precedes "/plan-w-team"
+    # Check pre_full (not the stripped clause) so trailing space matters.
+    if anchor == "/plan-w-team":
+        for art in DETERMINERS:
+            if pre_full.endswith(art):
+                return ("high-descriptive", "noun-reference: determiner %r" % art.strip())
+
+    # 9. Default → imperative
+    return ("high-imperative", "no skip signals; imperative interpretation")
+
+
+verdict, reason = classify(prompt, matched)
+print(verdict + "\t" + reason)
+CLPY
+    )
+    CLASSIFIER_VERDICT=$(printf '%s' "$CLASSIFIER_OUT" | cut -f1)
+    CLASSIFIER_REASON=$(printf '%s' "$CLASSIFIER_OUT" | cut -f2-)
+else
+    # python3 missing → fail closed (no spawn). False positive is the harm.
+    CLASSIFIER_VERDICT="missing-python"
+    CLASSIFIER_REASON="python3 not available; skipping launch for safety"
+fi
+
+case "$CLASSIFIER_VERDICT" in
+    high-imperative)
+        # Continue to launcher. No change to existing behavior.
+        :
+        ;;
+    high-descriptive|missing-python)
+        # Skip launch. The prompt was descriptive/interrogative or the
+        # classifier could not run. Exit silently (no additionalContext —
+        # the origin assistant doesn't need to know about a phantom
+        # trigger that was correctly suppressed).
+        exit 0
+        ;;
+    low|*)
+        # Uncertain → emit additionalContext explaining the ambiguity and
+        # SKIP the launch. The origin assistant can surface it to the user.
+        PWT_CLASS_REASON="$CLASSIFIER_REASON" \
+        PWT_CLASS_MATCH="$MATCHED_PATTERN" \
+        python3 - <<'AMBIPY' 2>/dev/null || exit 0
+import json, os
+reason = os.environ.get("PWT_CLASS_REASON", "ambiguous")
+matched = os.environ.get("PWT_CLASS_MATCH", "")
+msg = (
+    "/plan-w-team route hook: ambiguous trigger.\n"
+    "The substring %r matched, but the intent classifier could not "
+    "determine if the user meant to LAUNCH or merely REFERENCE the "
+    "command (reason: %s). No worker was spawned. If you intended to "
+    "launch, re-phrase with a clear imperative (e.g., "
+    '"Use /plan-w-team to <verb> <object>") at the start of a new turn.'
+) % (matched, reason)
+print(json.dumps({"additionalContext": msg}))
+AMBIPY
+        exit 0
+        ;;
+esac
+
 # ─── Locate launcher; fail open if missing ───────────────────────────────────
 PWT_GOAL="$PROJECT_ROOT/.claude/scripts/pwt-goal.sh"
 [ -x "$PWT_GOAL" ] || exit 0

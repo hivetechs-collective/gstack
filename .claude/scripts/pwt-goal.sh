@@ -167,6 +167,32 @@ On stop, state which terminal condition was reached and quote the transcript
 line that demonstrates it.
 EOF
 
+# Enforce Anthropic's /goal 4000-char cap BEFORE spawning. Without this guard
+# the worker bg session spawns, /goal silently rejects the directive, and the
+# worker sits idle at the prompt forever — caught 2026-05-21 with a 4442-char
+# directive (worker SID 5fb781c2 wedged for an hour before supervisor diagnosed).
+# The supervisor heredoc has its own size guard (pwt-goal-heredoc-size.test.sh);
+# this guards the user-facing goal directive.
+GOAL_BYTES=${#GOAL_TEXT}
+GOAL_MAX="${PLAN_W_TEAM_GOAL_MAX:-4000}"
+if [ "$GOAL_BYTES" -gt "$GOAL_MAX" ]; then
+    cat >&2 <<EOM
+✗ /goal directive is ${GOAL_BYTES} chars — exceeds Anthropic's ${GOAL_MAX}-char runtime cap.
+
+If \`claude --bg "/goal …"\` were spawned with this text, /goal would
+silently reject it ("Goal condition is limited to ${GOAL_MAX} characters")
+and the worker would idle indefinitely.
+
+Shorten the REQUEST or DONE_CRITERIA arguments. The skeleton overhead
+(halt sites + closing note) is ~600 chars, leaving ~$((GOAL_MAX - 600))
+chars for the user-provided content.
+
+To override (e.g. when Anthropic raises the cap), set:
+  PLAN_W_TEAM_GOAL_MAX=<new-cap> ${0##*/} ...
+EOM
+    exit 2
+fi
+
 if [ "$LAUNCH" = "1" ]; then
     # Auto-launch: spawn TWO new background claude sessions.
     #

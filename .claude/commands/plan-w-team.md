@@ -32,15 +32,80 @@ Continue in-session ONLY when one of these holds:
 
 If none of the above apply, RE-CHECK Step 1. Do not default to "in-session" — the trigger phrases above were chosen precisely because they always indicate autonomous intent.
 
-### Step 3 — AUTO-LAUNCH action (when Step 1 matched)
+### Step 3 — AUTO-LAUNCH action (when Step 1 matched) — `--worker-only` + origin-chat-supervisor protocol
+
+The skill manifest Step 3 and the UserPromptSubmit route hook (`.claude/hooks/plan-w-team-route-prompt.sh`) MUST produce **exactly one** bg worker per user message, with the **originating chat acting as live supervisor**. Both paths use `pwt-goal.sh --worker-only` (NEVER `--launch` — that detached path was retired here; see BUG 2 in `docs/specs/pwt-route-hook-fixes.md`).
+
+#### Step 3a — Double-spawn guard (READ FIRST)
+
+If the route hook already fired on this turn, the Claude Code harness delivers its `systemMessage` field to your context as a `hook_system_message` attachment. The `additionalContext` field is silently dropped by the harness (confirmed 2026-05-21 in v2.1.148 — 0 of 20 expected `additionalContext` deliveries arrived; only `systemMessage` does). So the marker we check for is the systemMessage content the hook actually emits:
+
+- If you see **`🚀 /plan-w-team origin-chat supervisor active`** (or the prefix `/plan-w-team origin-chat supervisor active`) already present in this turn's context → **DO NOT call `pwt-goal.sh`**. The worker is already spawned. Extract the worker SID from the systemMessage's `worker:  <SID>` line and skip directly to "Step 3c — Act as live supervisor" below. Use the inlined supervisor protocol in Step 3c — the full additionalContext protocol is dropped by the harness, so you cannot rely on it being delivered.
+- If the marker is **NOT** present → the hook did not fire (possible reasons: classifier rejected as descriptive/interrogative, disabled via env/sentinel, hook path missing, or unusual harness). Proceed to Step 3b.
+
+**History**: the original Bug 2 fix (commit `3790fca`) checked for the additionalContext marker `PWT-O1 origin-chat supervisor protocol`. That check NEVER fired because the harness drops additionalContext from UserPromptSubmit hooks. Result: every natural-language trigger produced double-spawn (hook spawn + manifest spawn). The systemMessage-based check above fires correctly because the harness DOES deliver systemMessage as a `hook_system_message` attachment.
+
+#### Step 3b — Spawn worker (only if hook did not)
 
 Execute exactly this:
 
 ```
-Bash(.claude/scripts/pwt-goal.sh --launch "<user's literal message verbatim>")
+Bash(.claude/scripts/pwt-goal.sh --worker-only "<user's literal message verbatim>")
 ```
 
-This spawns a `claude --bg` session with the derived `/goal` directive active, auto-approves push-ack (via `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1`), and returns immediately. After the Bash call returns, **emit ONE confirmation sentence and STOP**: "Launched autonomous /plan-w-team run; watch with `claude agents`." Do NOT begin pre-flight. Do NOT spawn agents. Do NOT load any stage file. The background session does all of that; your job here is over.
+The script:
+
+- Spawns ONE `claude --bg` worker with the derived `/goal` directive.
+- Sets `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` in the worker's environment so push-ack auto-clears.
+- Emits exactly one machine-readable line on stdout: `worker_sid=<8-hex-sid>`.
+- Returns synchronously (typically <1.5s).
+
+Parse `worker_sid=<SID>` from stdout. If absent → fail open: emit one sentence explaining the launcher returned no SID, and stop (do NOT silently retry — the hook already had a chance, and the user can re-phrase).
+
+#### Step 3c — Act as live supervisor (origin-chat-supervisor protocol)
+
+The originating chat session (you) is now the live supervisor for the bg worker. This is the same protocol injected by the route hook (`shared/supervisor-protocol.md` §Parent-Child Terminal Propagation); inlined here so both entry paths produce identical behavior.
+
+Supervisor responsibilities (perform in order, this turn):
+
+1. **STATUS BLOCK** — emit a visible status block to the transcript within your next message:
+
+   ```
+   🚀 /plan-w-team routed → bg worker <SID>
+      watching for stage transitions, pause-sites, supervisor decisions
+   ```
+
+2. **POLLING LOOP** — observe worker state by polling, surfacing every NEW transition as an assistant message. Primitives:
+   - `claude agents --json` — worker liveness + stage hint
+   - `claude logs <SID> --tail 200` — worker transcript tail
+   - `.claude/state/plan-w-team-goal-*.json` — terminal state for the active SLUG
+   - `.claude/state/pwt-completion-summary-<SID>.md` — written by ship/retro stages
+
+   Cadence: poll every ~30–60s via Bash + sleep, or schedule the next poll via `ScheduleWakeup` (preferred for runs >5 min). Do not echo unchanged state.
+
+3. **ESCALATION** — if the worker hits a hard-gate pause site (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`) or logs 3 consecutive `confidence=low` supervisor decisions, surface a ⚠ HALT block and STOP polling — the user must respond. Note: `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` auto-clears `push-ack` inside the worker; expected progress past it is NOT a halt.
+
+4. **TERMINAL BLOCK** — when the worker reaches terminal (SUCCESS / ESCALATION / DEAD), emit:
+
+   ```
+   ✅ /plan-w-team terminal: <SUCCESS|ESCALATION|DEAD>
+      worker <SID>
+      duration: <start→end>
+      AC verdict: <pass/fail counts from spec>
+      files changed: <stat>
+      next action: <imperative>
+   ```
+
+   Also write the same content to `.claude/state/pwt-completion-summary-<SID>.md` for the archival hook.
+
+5. **EXIT** — after the terminal block, you are done. Do not continue polling.
+
+Hard rules:
+
+- NEVER edit code, configs, or specs in supervisor mode. The worker does all implementation.
+- NEVER spawn additional bg agents.
+- NEVER push to remote — that is the worker + user's responsibility.
+- If `claude agents --json` no longer lists the SID for >2 polls, treat it as DEAD and emit the terminal block.
 
 ### Worked failure mode (2026-05-20 cleanscale incident — DO NOT repeat)
 
@@ -48,7 +113,7 @@ User typed: `Use /plan-w-team to do a realistic audit for scope drift against ad
 
 ❌ **Wrong** (what happened): agent reasoned "this is direct slash invocation (not a re-route trigger), HOLD mode, 1-task audit, fast path qualifies" → ran pre-flight in-session → consumed the user's interactive session for a multi-minute audit. The agent saw `/plan-w-team` as a slash token and dismissed the surrounding `Use ... to do ...` natural-language envelope.
 
-✅ **Right**: the message contains the substring `Use /plan-w-team to ` → Step 1 matches → call `Bash(.claude/scripts/pwt-goal.sh --launch "Use /plan-w-team to do a realistic audit ...")` → confirmation sentence → STOP.
+✅ **Right**: the message contains the substring `Use /plan-w-team to ` → Step 1 matches → run Step 3a's double-spawn guard. If the UserPromptSubmit hook already spawned the worker (PWT-O1 marker present in additionalContext), skip to Step 3c (act as live supervisor); otherwise call `Bash(.claude/scripts/pwt-goal.sh --worker-only "Use /plan-w-team to do a realistic audit ...")`, then Step 3c. Both paths land on the same single-worker + origin-chat-supervisor state.
 
 **The slash presence in prose does NOT make the message a "direct slash invocation."** Direct slash invocation means the user typed `/plan-w-team` as the leading command token (alone or with bare args after it), NOT inside a natural-language sentence beginning with `Use` / `With` / `Using` / `Kick off` / `Start`.
 
