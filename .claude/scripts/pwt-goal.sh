@@ -193,6 +193,47 @@ EOM
     exit 2
 fi
 
+# ─── DETERMINISTIC DOUBLE-SPAWN GUARD (PWT-DS1) ─────────────────────────────
+# If the UserPromptSubmit route hook already spawned a worker for this turn,
+# refuse to spawn another. The hook writes a flag file at:
+#   .claude/state/plan-w-team-hook-spawn-<parent_sid_short>.flag
+# Flag is fresh if mtime is within 60s. Skip when --worker-only mode is NOT
+# active because direct invocations from a shell are intentional.
+#
+# Override (escape hatch): PLAN_W_TEAM_FORCE_SPAWN=1 bypasses the guard.
+# Use only if you've manually confirmed the hook's prior spawn is dead/stopped.
+if [ "$WORKER_ONLY" = "1" ] && [ "${PLAN_W_TEAM_FORCE_SPAWN:-0}" != "1" ]; then
+    GUARD_PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-${PWT_PROJECT_ROOT_OVERRIDE:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+    GUARD_DIR="$GUARD_PROJECT_ROOT/.claude/state"
+    if [ -d "$GUARD_DIR" ]; then
+        # Find any fresh hook-spawn flag (mtime within 60s)
+        FRESH_FLAG=$(find "$GUARD_DIR" -maxdepth 1 -name 'plan-w-team-hook-spawn-*.flag' -mmin -1 2>/dev/null | head -1)
+        if [ -n "$FRESH_FLAG" ]; then
+            EXISTING_WORKER=$(grep '^worker_sid=' "$FRESH_FLAG" 2>/dev/null | head -1 | cut -d= -f2)
+            EXISTING_AT=$(grep '^spawned_iso=' "$FRESH_FLAG" 2>/dev/null | head -1 | cut -d= -f2)
+            cat >&2 <<GUARD
+✗ Double-spawn refused: the route hook already spawned worker $EXISTING_WORKER
+  at $EXISTING_AT for this user turn.
+
+  Flag: $FRESH_FLAG (auto-expires after 60s)
+
+  Why this guard exists: the manifest's Step 3a check ("if you see the
+  systemMessage marker, skip Step 3b") depends on the LLM noticing the
+  marker in its context. When the LLM misses it (verified 2026-05-22),
+  it calls pwt-goal.sh --worker-only and produces a duplicate worker.
+  This guard prevents that at the process level.
+
+  If you've confirmed the prior worker is dead or you want to spawn
+  another deliberately, set PLAN_W_TEAM_FORCE_SPAWN=1 and retry.
+GUARD
+            # Still emit the existing worker SID so the caller can act as
+            # supervisor on the prior worker instead.
+            echo "worker_sid=$EXISTING_WORKER"
+            exit 3
+        fi
+    fi
+fi
+
 if [ "$LAUNCH" = "1" ]; then
     # Auto-launch: spawn TWO new background claude sessions.
     #

@@ -400,6 +400,31 @@ SESSION_ID=$(printf '%s\n' "$PWT_GOAL_OUT" \
 # prompt and can fall back to its skill-level routing.
 [ -z "$SESSION_ID" ] && exit 0
 
+# ─── DETERMINISTIC DOUBLE-SPAWN GUARD (PWT-DS1) ─────────────────────────────
+# Write a flag file recording that THIS turn's UserPromptSubmit already spawned
+# a worker. pwt-goal.sh --worker-only reads this and refuses if the flag is
+# fresh. This converts the Step 3a check from "LLM-attention-based" (origin
+# assistant must visually scan systemMessage) to "process-level" (mechanical
+# refusal at spawn time). Caught 2026-05-22: the systemMessage WAS delivered
+# (verified line 2890 of session JSONL) but the assistant missed it visually,
+# called pwt-goal.sh --worker-only, and produced a double-spawn.
+#
+# Flag is per-session (PARENT_SID) + auto-expires after 60s. Cleared by
+# the worker's first turn (best-effort) or by /plan-w-team retro.
+PARENT_SID_SHORT="${PARENT_SID_FROM_HOOK:0:8}"
+if [ -n "$PARENT_SID_SHORT" ]; then
+    FLAG_DIR="$PROJECT_ROOT/.claude/state"
+    mkdir -p "$FLAG_DIR" 2>/dev/null
+    FLAG_FILE="$FLAG_DIR/plan-w-team-hook-spawn-${PARENT_SID_SHORT}.flag"
+    cat > "$FLAG_FILE" <<FLAG
+worker_sid=$SESSION_ID
+parent_sid=$PARENT_SID_FROM_HOOK
+spawned_at=$(date +%s)
+spawned_iso=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+trigger=$MATCHED_PATTERN
+FLAG
+fi
+
 # ─── Spawn completion watcher (macOS desktop notification on finish) ─────────
 # Skipped in test mode — the watcher polls real jobs dirs which won't exist
 # for fake session IDs and would either hang or pollute /tmp.
