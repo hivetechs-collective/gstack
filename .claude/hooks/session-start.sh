@@ -477,14 +477,19 @@ echo "════════════════════════�
 # =================================================================
 # VERSION-UPLIFT: Detect Claude Code CLI version change + auto-adopt
 # =================================================================
-# Best-effort, fire-and-forget. Detect emits exit 0 when version unchanged
-# (the common path — no work). When changed, it persists the new version
-# AND we write a sentinel flag so a downstream session (or the auto-launch
-# call below) can act on it. All steps swallow errors so version-uplift
-# can never block session init.
+# Bash-only automated chain (no LLM in the loop):
+#   detect-version.sh → pending flag → uplift.sh (bg) → report → auto-launch.sh
+#
+# Best-effort fire-and-forget on every step (|| true). The chain has two
+# eventual-consistency seams: uplift.sh is backgrounded so session-start
+# latency stays low (typically <100ms; uplift completes in ~1-3s in the
+# background), and auto-launch.sh may run before uplift.sh finishes writing
+# the report — that's fine, the next session start picks it up.
 VERSION_UPLIFT_DETECT="$PROJECT_ROOT/.claude/scripts/version-uplift/detect-version.sh"
 VERSION_UPLIFT_AUTO_LAUNCH="$PROJECT_ROOT/.claude/scripts/version-uplift/auto-launch.sh"
+VERSION_UPLIFT_UPLIFT="$PROJECT_ROOT/.claude/commands/plan-w-team/version-uplift/uplift.sh"
 VERSION_UPLIFT_PENDING_FLAG="$STATE_DIR/version-uplift-pending.flag"
+VERSION_UPLIFT_LOG="$STATE_DIR/version-uplift-detection.log"
 
 if [ -x "$VERSION_UPLIFT_DETECT" ]; then
     DETECTION=$("$VERSION_UPLIFT_DETECT" 2>/dev/null || true)
@@ -497,6 +502,16 @@ if [ -x "$VERSION_UPLIFT_DETECT" ]; then
             printf 'previous=%s\ncurrent=%s\ndetected_at=%s\n' \
                 "$UPLIFT_PREV" "$UPLIFT_CUR" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
                 > "$VERSION_UPLIFT_PENDING_FLAG" 2>/dev/null || true
+
+            # Run uplift.sh in the background so the report exists for the
+            # next auto-launch invocation. Uplift composes:
+            #   detect (persist=0) → fetch --curl → evaluate → write report
+            # Logs to detection.log; never blocks session start.
+            if [ -x "$VERSION_UPLIFT_UPLIFT" ] && [ "${PLAN_W_TEAM_DISABLE_VERSION_UPLIFT_AUTO:-0}" != "1" ]; then
+                (
+                    nohup "$VERSION_UPLIFT_UPLIFT" --force >> "$VERSION_UPLIFT_LOG" 2>&1 &
+                ) 2>/dev/null || true
+            fi
         fi
     fi
 fi

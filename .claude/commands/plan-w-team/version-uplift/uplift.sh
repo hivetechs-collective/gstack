@@ -111,19 +111,26 @@ if [ -n "$CHANGELOG_FILE" ]; then
     FETCH_ARGS+=(--from-file="$CHANGELOG_FILE")
 elif [ "$ALLOW_FIXTURE" -eq 1 ]; then
     FETCH_ARGS+=(--allow-fixture)
+else
+    # No explicit source — let fetch-changelog.sh check the mirror first,
+    # then fall back to curl. The mirror path is still preferred when set;
+    # curl is the zero-LLM bash-only default for session-start automation.
+    MIRROR="${CLAUDE_PATTERN_CHANGELOG_MIRROR:-.claude/state/claude-code-changelog-mirror.md}"
+    if [ ! -f "$MIRROR" ]; then
+        FETCH_ARGS+=(--curl)
+    fi
 fi
 
-if ! "$FETCH" "${FETCH_ARGS[@]}"; then
-    rc=$?
+rc=0
+"$FETCH" "${FETCH_ARGS[@]}" || rc=$?
+if [ "$rc" -ne 0 ]; then
     if [ "$rc" -eq 2 ]; then
         log "uplift: no changelog source available."
         log "  Hints:"
         log "    - pass --changelog-file=PATH to use a local changelog file"
         log "    - pass --allow-fixture to use the bundled test fixture"
         log "    - or set \$CLAUDE_PATTERN_CHANGELOG_MIRROR to a mirror path"
-        log ""
-        log "  When invoked via the skill, the orchestrator (agent) can fetch"
-        log "  the changelog via WebFetch and pass it back via --changelog-file."
+        log "    - curl fetch was attempted (auto when no mirror) and failed"
         exit 4
     fi
     exit "$rc"

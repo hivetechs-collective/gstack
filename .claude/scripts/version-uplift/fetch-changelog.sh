@@ -4,20 +4,31 @@
 # Tries sources in this order:
 #   1. Local mirror at $CLAUDE_PATTERN_CHANGELOG_MIRROR or
 #      .claude/state/claude-code-changelog-mirror.md (if present)
-#   2. Bundled fixture at tests/version-uplift/fixtures/changelog-fixture.md
+#   2. Direct fetch from GitHub via curl (when --curl is passed). Hits
+#      $CHANGELOG_URL (default: raw.githubusercontent.com/anthropics/
+#      claude-code/main/CHANGELOG.md). Follows redirects (-L), retries once
+#      on transient failure with a 2s sleep, exits 2 on hard failure.
+#      This is the path the session-start.sh hook uses for zero-LLM
+#      automation — curl is bash-native, WebFetch is agent-only.
+#   3. Bundled fixture at tests/version-uplift/fixtures/changelog-fixture.md
 #      (only when --allow-fixture is passed; used by tests + offline runs)
 #
-# The script intentionally avoids inline WebFetch calls — WebFetch is a tool
-# only available to the agent, not to shell scripts. The orchestrator
-# (uplift.sh) is responsible for invoking WebFetch via the agent layer when
-# no local mirror is present, then passing the captured content here via
-# --from-stdin or --from-file.
+# Design rationale (2026-05-22): the original script declared it
+# "intentionally avoids inline WebFetch calls" because WebFetch is an agent
+# tool. That assumption needlessly broke the session-start automation chain:
+# detect-version.sh would fire, write the pending flag, and then nothing
+# could fetch the changelog because no LLM was in the loop. curl is
+# available in every shell on every platform Claude Code targets — the
+# assumption that we needed an agent to do HTTP was wrong.
 #
 # Flags:
 #   --from=VERSION         Lower bound (exclusive); null means "earliest".
 #   --to=VERSION           Upper bound (inclusive); required.
 #   --from-file=PATH       Read raw changelog from PATH instead of mirror.
 #   --from-stdin           Read raw changelog from stdin.
+#   --curl                 Fetch from $CHANGELOG_URL via curl -L (follows
+#                          redirects, single retry on transient failure).
+#   --curl-url=URL         Override the curl source URL (testing).
 #   --allow-fixture        Fall back to bundled fixture when no other source.
 #   --output=PATH          Write structured JSON to PATH (default: stdout).
 #   --format=json|md       Output format (default json).
@@ -45,6 +56,8 @@ FROM="null"
 TO=""
 FROM_FILE=""
 FROM_STDIN=0
+USE_CURL=0
+CURL_URL="https://raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md"
 ALLOW_FIXTURE=0
 OUTPUT=""
 FORMAT="json"
@@ -55,11 +68,13 @@ for arg in "$@"; do
         --to=*) TO="${arg#*=}" ;;
         --from-file=*) FROM_FILE="${arg#*=}" ;;
         --from-stdin) FROM_STDIN=1 ;;
+        --curl) USE_CURL=1 ;;
+        --curl-url=*) CURL_URL="${arg#*=}"; USE_CURL=1 ;;
         --allow-fixture) ALLOW_FIXTURE=1 ;;
         --output=*) OUTPUT="${arg#*=}" ;;
         --format=*) FORMAT="${arg#*=}" ;;
         --help|-h)
-            sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
@@ -78,6 +93,26 @@ fi
 SOURCE=""
 RAW=""
 
+# curl_fetch URL → echoes body on stdout; returns 0 on success, non-zero on
+# hard failure. Retries once on transient errors with 2s sleep. Uses -L to
+# follow 301/307 redirects. Sets reasonable timeouts so a stuck connection
+# can never block session start indefinitely.
+curl_fetch() {
+    local url="$1"
+    local attempt
+    for attempt in 1 2; do
+        # -fsSL: fail on HTTP error, silent, show errors, follow redirects.
+        # --connect-timeout 5: hard-cap the TCP handshake.
+        # --max-time 20: hard-cap the whole transfer (changelog is ~50KB).
+        if curl -fsSL --connect-timeout 5 --max-time 20 "$url" 2>/dev/null; then
+            return 0
+        fi
+        # Transient — sleep and retry once. Skip sleep after second attempt.
+        [ "$attempt" -eq 1 ] && sleep 2
+    done
+    return 1
+}
+
 if [ "$FROM_STDIN" -eq 1 ]; then
     RAW=$(cat)
     SOURCE="stdin"
@@ -88,6 +123,16 @@ elif [ -n "$FROM_FILE" ]; then
     fi
     RAW=$(cat "$FROM_FILE")
     SOURCE="file"
+elif [ "$USE_CURL" -eq 1 ]; then
+    if ! command -v curl >/dev/null 2>&1; then
+        echo "fetch-changelog.sh: --curl requested but curl not in PATH" >&2
+        exit 2
+    fi
+    if ! RAW=$(curl_fetch "$CURL_URL"); then
+        echo "fetch-changelog.sh: curl fetch failed for $CURL_URL (after retry)" >&2
+        exit 2
+    fi
+    SOURCE="curl"
 else
     MIRROR="${CLAUDE_PATTERN_CHANGELOG_MIRROR:-.claude/state/claude-code-changelog-mirror.md}"
     if [ -f "$MIRROR" ]; then
@@ -99,7 +144,7 @@ else
         SOURCE="fixture"
     else
         echo "fetch-changelog.sh: no changelog source available" >&2
-        echo "  hint: pass --from-file=PATH, --from-stdin, --allow-fixture," >&2
+        echo "  hint: pass --from-file=PATH, --from-stdin, --curl, --allow-fixture," >&2
         echo "        or set \$CLAUDE_PATTERN_CHANGELOG_MIRROR" >&2
         exit 2
     fi
