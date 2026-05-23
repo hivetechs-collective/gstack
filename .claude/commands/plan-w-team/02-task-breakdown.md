@@ -240,6 +240,54 @@ ui_scope_flag == true
 
 **Rationale**: the test-coverage gap between UI and non-UI scope was a 2026-05 retro finding — UI features ship behind paired Playwright contracts; backend features historically ship as single tasks with "tests added later." This unifies discipline. Refactor/docs/config keep single-task decomposition because the test-first contract doesn't apply (no new behavioral surface to assert against).
 
+## Paired Task Protocol (security review) — Security Review Extension
+
+In addition to the test-pairing rules above, **security-sensitive code-adding tasks** receive a paired `N.s` security-review task. The trigger condition expands the STE paired-task gate with a security-surface check:
+
+```
+scope ∈ {BACKEND, INFRASTRUCTURE, SCRIPTS, LIBRARY, API}
+AND mode == "add"
+AND ( files_touched intersects security-relevant surfaces (auth/secret/input-validation/injection/deserialization/crypto/SSRF/XSS)
+      OR files_touched intersects any glob in shared/governance-tags.md
+      OR files_touched intersects any OWASP category glob in shared/owasp-top10-mapping.md )
+```
+
+| Task  | Role                                                       | Blocked by | Scope (mirrors parent task) | Agent             |
+| ----- | ---------------------------------------------------------- | ---------- | --------------------------- | ----------------- |
+| `N.s` | Security review against the implemented N.b surface output | `N.b`      | `TESTS` (review-pass)       | `security-expert` |
+
+**Security-relevant surface globs** (the same list that drives OWASP attribution in `shared/owasp-top10-mapping.md`):
+
+```
+**/auth/**, **/login*, **/session*, **/jwt*, **/oauth*, **/mfa*,           # A07 Auth
+**/secret*, **/key*, **/credential*, **/.env*,                              # A05/A08 Secrets
+**/validate*, **/sanitize*, **/input*,                                      # A03 Injection / A05 Misconfig
+**/sql*, **/query*, **/db.ts, **/db.py,                                     # A03 SQL injection
+**/deserialize*, **/parse*, **/marshal*,                                    # A08 Deserialization
+**/crypto*, **/hash*, **/encrypt*, **/cipher*, **/sign*,                    # A02 Crypto
+**/fetch*, **/request*, **/proxy*, **/url*, **/http*, **/webhook*,          # A10 SSRF
+**/render*, **/template*, **/html*,                                         # A03 XSS
+**/rbac/**, **/permission*, **/policies/**, **/acl*                         # A01 Access Control
+```
+
+**Rules** (mirror UI and STE non-UI paired-task blocks):
+
+- `N.s` runs `security-expert` against the implemented `N.b` output. `blockedBy: ["<N.b-task-id>"]` is MANDATORY — security review evaluates the implemented code, not a spec.
+- `N.s` consumes `shared/owasp-top10-mapping.md` to attribute findings to OWASP Top 10 categories and to determine which security tiers (per `shared/security-tiers.md`) must show evidence at ship.
+- `N.s` may add or extend security tests (input-validation cases, auth-boundary assertions, injection-payload coverage). It may NOT change `N.b` production code without re-routing through the orchestrator (`security-fix-vs-defer` decision).
+- Test files for `N.s` live alongside their `N.a` counterparts (e.g., `foo.security.test.ts` next to `foo.test.ts`; `tests/security/test_foo.py` for pytest layouts).
+
+**Single-task exceptions** (no `N.s` pairing — same exclusions as STE):
+
+- `mode == "refactor"` — refactor changes are constrained by existing security tests; do not pair.
+- `mode == "docs"` — documentation has no security surface.
+- `mode == "config"` UNLESS the config touches `**/.env*` / secret wiring (A05 misconfiguration surface) — config touching credentials gets a `N.s`.
+- `scope == "DATABASE"` schema migrations — security review (RLS, GRANT, column-level encryption) lives in Step 5 one-way-door reviewer scrutiny instead of `N.s`.
+
+**Rationale**: the security-rigor gap between UI/non-UI tests and security review was the parallel finding to the 2026-05 STE retro — UI features ship behind paired Playwright contracts; non-UI features (post-STE) ship behind paired unit tests; but **security** review for code touching auth, secrets, injection paths, etc. remained ad-hoc. This block closes that gap. The surface globs above are deliberately the same set used by the OWASP map so forward-scoping (`N.s` emission) and retroactive analysis (`security-gap-analyzer` at Step 5) agree on what counts as a "security-relevant" file.
+
+**Cost discipline**: `N.s` is a review pass, not a re-implementation. If `security-expert` finds high-severity issues, the orchestrator routes the fix-vs-defer decision through `pass-2-ask` (see `04-fix-first-review.md`) rather than letting `N.s` rewrite `N.b`.
+
 ## Hot-Path Overlay (STE Extension)
 
 For any task touching a **hot-path file** — defined as ANY of:

@@ -478,6 +478,74 @@ fi
 
 **Cognitive framework**: Error budgets (Google SRE) — read `shared/cognitive-frameworks.md`.
 
+## 6c-bis. Security Tier Gate (Security Review Extension — ENFORCING when no explicit policy)
+
+After the coverage-floor gate, the ship gate consults `.claude/state/security-policy.txt` to determine the active security tier set. If no policy is declared, it **proposes a sensible baseline** (T1+T3+T4) and adds overlays for repo size and user-facing surfaces. This closes the security-rigor gap that the §6c-bis coverage gate closed for test coverage: a feature touching auth/secrets/injection paths should not silently ship without lint scan, dep-audit, and secret-scan evidence.
+
+Tier definitions live in `shared/security-tiers.md`. OWASP file-pattern attribution lives in `shared/owasp-top10-mapping.md`. Both are consulted; this block only enforces the ledger.
+
+```bash
+# snippet-lint: skip — illustrative security-floor auto-default
+SECURITY_POLICY=".claude/state/security-policy.txt"
+
+# Opt-out: any project can decline the auto-default by writing this single-line file
+if grep -qx "no-security-floor" "$SECURITY_POLICY" 2>/dev/null; then
+  echo "[security-floor] opt-out via $SECURITY_POLICY — skipping auto-default"
+elif grep -qE "^security-tiers:" "$SECURITY_POLICY" 2>/dev/null; then
+  EXPLICIT=$(grep -E "^security-tiers:" "$SECURITY_POLICY" | sed 's/^security-tiers:[ ]*//')
+  echo "[security-floor] explicit policy: ${EXPLICIT}"
+  REQUIRED_TIERS="$EXPLICIT"
+else
+  # Detect repo size + user-facing surfaces for auto-overlays
+  LOC=$(git ls-files | xargs wc -l 2>/dev/null | tail -1 | awk '{print $1}' || echo 0)
+  USER_FACING=0
+  if git ls-files | grep -qE '(^|/)(routes|api|pages/api|app/api)(/|$)'; then
+    USER_FACING=1
+  fi
+
+  REQUIRED_TIERS="T1,T3,T4"  # SecBaseline always-on
+  TIER_PROFILE="SecBaseline"
+  if [ "${LOC:-0}" -gt 5000 ]; then
+    REQUIRED_TIERS="${REQUIRED_TIERS},T2"
+    TIER_PROFILE="SecStandard"
+  fi
+  if [ "$USER_FACING" = 1 ]; then
+    REQUIRED_TIERS="${REQUIRED_TIERS},TO1"
+    TIER_PROFILE="SecHardened"
+  fi
+
+  echo "[security-floor] auto-default proposed: ${REQUIRED_TIERS} (${TIER_PROFILE}, LOC=${LOC}, user_facing=${USER_FACING})"
+  echo "[security-floor] to opt out:       echo 'no-security-floor' > $SECURITY_POLICY"
+  echo "[security-floor] to set explicit:  echo 'security-tiers: T1,T3,T4' >> $SECURITY_POLICY"
+fi
+
+# Verify each required tier has evidence in the Security Tier Evidence Ledger
+# (the ledger format lives in shared/security-tiers.md). For each required tier,
+# the ledger row must be ✅ (passed) or 🚫 (deliberately-skipped with justification).
+# A ❌ or ⏳ row on a required tier blocks ship.
+#
+# In practice the lead runs the active runners and writes evidence rows; this
+# block re-asserts they exist before push.
+```
+
+### Companion policy keys
+
+`.claude/state/security-policy.txt` accepts any of these one-line entries (joinable; order does not matter):
+
+- `no-security-floor` — opt out of the auto-default entirely. NOT recommended; the baseline T1+T3+T4 is cheap.
+- `security-tiers: T1,T3,T4` — explicit tier set. Overrides the auto-default. Comma-separated, no spaces around commas.
+- `mandatory-owasp: A01,A02,A03,A07` — explicit Top-10 categories required regardless of file-pattern triggers. Useful for repos with implicit threat models (e.g., "this is a public API; A01+A03+A07 always required even if globs don't match this PR's diff").
+- `enable-to1` — opt-in flag for TO1 (OWASP ZAP baseline). Required because ZAP is heavyweight; ship gate will not auto-add TO1 without this acknowledgement even if user-facing surfaces are detected.
+- `enable-to2` — opt-in flag for TO2 (fuzz testing). Same reason as `enable-to1`.
+
+### Why opt-out lives in `.claude/state/security-policy.txt`
+
+Same rationale as `coverage-policy.txt` (per §6c-bis Coverage Floor Auto-Default): the auto-default is an **opinion** of `/plan-w-team`, not the repo's intrinsic policy. Keeping it out of `package.json` / `Cargo.toml` etc. prevents the auto-default from accidentally affecting tooling that reads those files. The state file is gitignored by default so individual contributors can opt out locally without committing the decision. To make the opt-out repo-wide, the user can add the file to git deliberately.
+
+### Cognitive framework
+
+This gate borrows from the Bow-tie risk model (see `shared/cognitive-frameworks.md`): T1+T3+T4 covers the most common preventive controls (input-side defenses + dependency hygiene + secret leak prevention); T2 SAST + TO1 ZAP are the detective controls that catch what slipped past the preventive layer.
+
 ## 6d. Version Bump (if applicable)
 
 | Change Size       | Bump        | Decision                   |

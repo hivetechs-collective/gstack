@@ -402,6 +402,75 @@ This task is QUEUED — it runs after Step 6 ship and before Step 8 retro. Do NO
 
 **Why retroactive, not blocking**: test gaps in _existing_ (untouched-by-this-diff) sibling code are not the current PR's responsibility to fix — but they are this team's responsibility to track. Queuing them as retroactive tasks keeps Step 5 fast (no surprise re-implementation work mid-review) while preventing the gaps from being forgotten.
 
+## 5d-bis. Retroactive Security-Gap Analysis (Security Review Extension)
+
+After §5c-bis test-gap analysis completes, invoke the Brain-tier `security-gap-analyzer` agent to surface missing security tests in the diff's touched files and adjacent module siblings. The analyzer's report becomes a queue of **retroactive-security-coverage tasks** (`N.t`) that run BEFORE Step 8 retro — closing security gaps the original spec missed without blocking the current ship.
+
+```bash
+# snippet-lint: skip — illustrative invocation
+SLUG="<feature-slug>"
+DIFF_FILES=$(git diff --name-only "$BASE_SHA"..HEAD)
+# Heuristic: existing security tests have "security", "auth", "injection",
+# "xss", "csrf", "ssrf", or "crypto" in their filename or parent directory.
+EXISTING_SEC_TESTS=$(git ls-files | grep -E '(security|auth|injection|xss|csrf|ssrf|crypto).*(\.test\.|\.spec\.|_test\.)' | sort -u)
+OWASP_MAP=".claude/commands/plan-w-team/shared/owasp-top10-mapping.md"
+```
+
+Invoke `security-gap-analyzer` (Brain-tier, Opus 4.7) with:
+
+- `slug` — the /plan-w-team SLUG
+- `diff_files` — paths + line ranges from the diff
+- `module_root` — for each touched file, the canonical module/package root (where siblings live)
+- `existing_tests` — paths to current security-related test files
+- `owasp_map_path` — `.claude/commands/plan-w-team/shared/owasp-top10-mapping.md`
+
+The analyzer returns a structured markdown report (see `.claude/agents/research-planning/security-gap-analyzer.md` for the full output shape). Each `### G<N>` finding becomes a queued retroactive-security-coverage task assigned to `security-expert`:
+
+```typescript
+// Lead converts each finding to a TaskCreate (or appended to scope-lock as N.t entries)
+for (const finding of report.findings) {
+  TaskCreate({
+    subject: `Retroactive security coverage: ${finding.file} ${finding.function} — ${finding.gap_type}`,
+    description: `Source: security-gap-analyzer for SLUG=${SLUG}, finding G${finding.id}.
+OWASP: ${finding.owasp_category}.
+Tier(s) required: ${finding.tier}.
+Severity: ${finding.severity}.
+Suggested test: ${finding.suggested_test}
+
+This task is QUEUED — it runs after Step 6 ship and before Step 8 retro. Do NOT block the current ship on it.`,
+    metadata: {
+      spec_path: `docs/specs/${SLUG}.md`,
+      feature_area: "retroactive-security-coverage",
+      scope: "TESTS",
+      effort: finding.severity === "high" ? "medium" : "low",
+      agent_type: "security-expert",
+      slug: SLUG,
+      retroactive: true,
+      origin: "security-gap-analyzer",
+      owasp_category: finding.owasp_category,
+      security_tier: finding.tier,
+    },
+  });
+}
+```
+
+**When the analyzer is invoked**:
+
+- `findings_count > 0` AND any `severity: high` → the lead must schedule retroactive `N.t` tasks before Step 8 retro. Step 8 reads `retroactive: true` task closure rate as a quality signal AND tracks per-OWASP-category gap counts.
+- `findings_count > 0` with only `severity: medium|low` → the lead MAY defer to a follow-up /plan-w-team run, but must record the report path in the retro frontmatter.
+- `findings_count == 0` → no action; record "security-gap-analyzer: clean" in the Step 5 status block.
+
+**When the analyzer is NOT invoked**:
+
+- Empty diff (`--ship-only` on a no-op branch) — skip; record `security-gap-analyzer: skipped (empty-diff)`.
+- Docs-only diff (no code files touched) — skip.
+- Diff touches NO files matching any OWASP category in `shared/owasp-top10-mapping.md` — skip; record `security-gap-analyzer: skipped (no-security-surfaces)`.
+- Set `PLAN_W_TEAM_DISABLE_SECURITY_GAP_ANALYZER=1` as a per-run kill switch (advisory; document in the retro why).
+
+**Cost discipline**: track `security_gap_analyzer_tokens` in retro 8e. Warning threshold: >20k tokens per run (same threshold as `test_gap_analyzer_tokens`). Tune by tightening the `module_root` scope (siblings-only, not transitive imports) before disabling the analyzer.
+
+**Why retroactive, not blocking**: security gaps in _existing_ (untouched-by-this-diff) sibling code are not the current PR's responsibility to fix — but they are this team's responsibility to track. Queuing them as retroactive `N.t` tasks keeps Step 5 fast (no surprise re-implementation work mid-review) while preventing security gaps from being forgotten. High-severity gaps in the diff's _own_ touched files DO block ship — those are flagged as Pass 1 CRITICAL findings before this retroactive pass runs.
+
 ## 5d. Fix-First Heuristic — Classify Each Finding
 
 | Classification | Action                         | Examples                                                                                                                                                                       |
