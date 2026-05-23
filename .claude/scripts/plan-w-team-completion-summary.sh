@@ -169,6 +169,29 @@ STARTED_AT=""
 if [ -f "$GOAL_FILE" ]; then
   STARTED_AT=$(jq -r '.started_at // empty' "$GOAL_FILE" 2>/dev/null || echo "")
 fi
+
+# -----------------------------------------------------------------------------
+# Skill version + commit SHA — recorded by pwt-goal.sh at spawn time.
+# Prefer the goal-state JSON (set by --supervisor-goal mirror); fall back to
+# the spawn-time sidecar (always written by pwt-goal.sh for all spawn paths).
+# Degrades silently to "unknown" so retros for pre-versioning runs still ship.
+# -----------------------------------------------------------------------------
+SKILL_VERSION=""
+SKILL_COMMIT_SHA=""
+if [ -f "$GOAL_FILE" ] && command -v jq >/dev/null 2>&1; then
+  SKILL_VERSION=$(jq -r '.skill_version // empty' "$GOAL_FILE" 2>/dev/null || echo "")
+  SKILL_COMMIT_SHA=$(jq -r '.skill_commit_sha // empty' "$GOAL_FILE" 2>/dev/null || echo "")
+fi
+SKILL_VERSION_SIDECAR="${STATE_DIR}/plan-w-team-skill-version-${SLUG}.json"
+if [ -z "$SKILL_VERSION" ] && [ -f "$SKILL_VERSION_SIDECAR" ] && command -v jq >/dev/null 2>&1; then
+  SKILL_VERSION=$(jq -r '.skill_version // empty' "$SKILL_VERSION_SIDECAR" 2>/dev/null || echo "")
+fi
+if [ -z "$SKILL_COMMIT_SHA" ] && [ -f "$SKILL_VERSION_SIDECAR" ] && command -v jq >/dev/null 2>&1; then
+  SKILL_COMMIT_SHA=$(jq -r '.skill_commit_sha // empty' "$SKILL_VERSION_SIDECAR" 2>/dev/null || echo "")
+fi
+[ -z "$SKILL_VERSION" ] && SKILL_VERSION="unknown"
+[ -z "$SKILL_COMMIT_SHA" ] && SKILL_COMMIT_SHA="unknown"
+
 ENDED_AT="$GENERATED_AT"
 ELAPSED_SECONDS=0
 if [ -n "$STARTED_AT" ]; then
@@ -286,6 +309,8 @@ if command -v jq >/dev/null 2>&1; then
     --arg slug "$SLUG" \
     --arg generated_at "$GENERATED_AT" \
     --arg writer_version "$WRITER_VERSION" \
+    --arg skill_version "$SKILL_VERSION" \
+    --arg skill_commit_sha "$SKILL_COMMIT_SHA" \
     --arg spec_path "$SPEC_PATH" \
     --arg ac_snapshot_path "$AC_SNAPSHOT" \
     --arg transcript_path "${TRANSCRIPT:-}" \
@@ -313,6 +338,8 @@ if command -v jq >/dev/null 2>&1; then
       slug: $slug,
       generated_at: $generated_at,
       writer_version: $writer_version,
+      skill_version: $skill_version,
+      skill_commit_sha: $skill_commit_sha,
       spec_path: $spec_path,
       ac_snapshot_path: $ac_snapshot_path,
       transcript_path: $transcript_path,
@@ -379,6 +406,7 @@ cat > "$MD_OUT" <<EOF
 
 - **Generated:** ${GENERATED_AT}
 - **Writer version:** ${WRITER_VERSION}
+- **Skill version:** ${SKILL_VERSION} (commit \`${SKILL_COMMIT_SHA}\`)
 - **Spec:** \`${SPEC_PATH}\`
 - **Transcript:** \`${TRANSCRIPT:-(not found — discovery fell through)}\`
 

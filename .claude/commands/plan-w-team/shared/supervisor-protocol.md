@@ -543,6 +543,63 @@ esac
 
 See `docs/specs/pwt-cross-repo-fair-share.md` for the full design and AC catalog.
 
+### CAPACITY & CONFLICT ANALYSIS (per-batch file-overlap)
+
+CAPACITY CHECK gates on machine RAM. FAIR SHARE CHECK gates on cross-repo fairness. Neither catches the third dimension: **inter-task file overlap within a single repo's spawn batch**. A repo with capacity for 4 parallel workers and 4 pending tasks can still produce merge-conflict churn if 3 of the 4 tasks all touch `shared/supervisor-protocol.md`. CAPACITY & CONFLICT ANALYSIS gates on that.
+
+**When it runs**: immediately after FAIR SHARE CHECK has reported SPAWN_OK and the supervisor has ≥2 queued tasks ready to spawn in the next batch. For a single queued task, this step is a no-op (no peer to conflict with).
+
+**The check**:
+
+```bash
+.claude/scripts/pwt-conflict-detector.sh "$QUEUED_DIRECTIVE_1" "$QUEUED_DIRECTIVE_2" ... > "$CD_OUT"
+
+LARGEST_PARALLEL_SAFE_GROUP=$(grep -oE '"parallel_safe_groups": *\[[^]]*\]' "$CD_OUT" \
+    | head -1 \
+    | grep -oE '\[[^]]*\]' \
+    | tail -n +2 \
+    | awk -F',' '{print NF}' \
+    | sort -rn \
+    | head -1)
+# LARGEST_PARALLEL_SAFE_GROUP is the size of the biggest set of tasks that can run
+# in parallel without file-overlap conflicts. Tasks within the same group must
+# be serial; tasks across different groups are parallel-safe.
+
+RAM_CAPACITY=$(printf '%s' "$RAM_JSON" \
+    | grep -oE '"capacity_for_new_sessions": *[0-9]+' \
+    | sed -E 's/.*: *//')
+FAIR_SHARE_HEADROOM=$(( MY_REPO_ALLOWED_MAX - MY_REPO_CURRENT ))
+
+# Compose the three gates into a single batch-size recommendation.
+RECOMMENDED_BATCH=$LARGEST_PARALLEL_SAFE_GROUP
+[ "$RAM_CAPACITY"        -lt "$RECOMMENDED_BATCH" ] && RECOMMENDED_BATCH=$RAM_CAPACITY
+[ "$FAIR_SHARE_HEADROOM" -lt "$RECOMMENDED_BATCH" ] && RECOMMENDED_BATCH=$FAIR_SHARE_HEADROOM
+[ "$RECOMMENDED_BATCH"   -lt 1 ] && RECOMMENDED_BATCH=1
+```
+
+**Composition rule**: `recommended_batch = min(largest_parallel_safe_group, ram_capacity, fair_share_headroom)`. The smallest of the three caps wins. The supervisor authorizes that many spawns this tick; the remaining queued tasks wait for the next batch.
+
+**Why three gates and not one**: each gate measures an orthogonal property:
+
+- `ram-budget.sh` ↔ machine-wide memory ceiling (process-level)
+- `pwt-fair-share.sh` ↔ cross-repo fairness (claims-registry-level)
+- `pwt-conflict-detector.sh` ↔ intra-repo file-overlap (directive-level)
+
+A worker can be RAM-safe, fair-share-safe, AND still race another worker on `shared/supervisor-protocol.md`. The detector is the only gate that reads the actual task content.
+
+**Hard rules** (mirror CAPACITY CHECK and FAIR SHARE CHECK):
+
+- The supervisor does NOT bypass conflict-detector verdicts; serialized groups stay serial within a batch.
+- The supervisor does NOT modify the detector's grouping output to force more parallelism. If the largest parallel-safe group is smaller than RAM allows, the limiting factor is conflict-detector; that's the honest signal.
+
+**Surface format**: when CAPACITY & CONFLICT ANALYSIS bounds the batch, the supervisor's per-turn summary block records `conflict_groups: <N>` (count of distinct parallel-safe groups) and `recommended_batch: <K>`. If conflict is the binding constraint (smaller than `ram_capacity` and `fair_share_headroom`), additionally log `parallelism_bound_by: conflict-detector` so retro can identify how often file-overlap is the throughput bottleneck. A healthy run touching unrelated files should rarely show this; a run editing shared infrastructure is expected to.
+
+**Failure mode**: detector script missing, unreadable, or returns `parallel_safe_groups: []` for nonempty input → treat as fail-open advisory; supervisor falls back to `recommended_batch = min(ram_capacity, fair_share_headroom)` and logs `conflict_detector: unavailable` once per batch decision.
+
+**Unknown-scope handling**: tasks whose directive mentions no recognized path patterns appear in `tasks_with_unknown_scope`. They are treated as parallel-safe (own group) but flagged so the supervisor can surface `unknown_scope_tasks: <N>` to retro — high counts suggest directives need stricter file-touch listings.
+
+See `docs/specs/task-conflict-detector.md` for the full design, algorithm, and AC catalog.
+
 ## Adding a New Event Type or Summary Field
 
 When extending the supervisor (e.g. for T5 integration):

@@ -5,11 +5,11 @@ confidence: 0.5
 domain: workflow
 scope: project
 project: claude-pattern
-created: 2026-05-23T02:14:56Z
+created: 2026-05-23T02:43:30Z
 last_applied: null
 applications: 0
 evidence:
-  - "First observed in session 1779502496"
+  - "First observed in session 1779504210"
 ---
 # Action
 Follow established feature patterns: commit with feat: prefix, include tests

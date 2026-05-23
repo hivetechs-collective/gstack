@@ -233,6 +233,83 @@ __pwt_safe_slug() {
     printf '%s-%s\n' "$body" "$hash"
 }
 
+# ─── SKILL VERSION + COMMIT SHA ─────────────────────────────────────────────
+# Captures which /plan-w-team release produced this run so any bug surfaced
+# after the fact can be traced back to the exact skill version. Recorded into
+# the run's goal-state JSON + a sidecar file across all spawn paths
+# (--launch, --worker-only, --supervisor-goal).
+#
+# VERSION lives at .claude/commands/plan-w-team/VERSION (semver, one line).
+# COMMIT_SHA is the short SHA of the current HEAD of the repo containing this
+# script. In a worktree we still want the worktree's HEAD (post-pwt-version-tracking
+# branch), not origin/main, so we use `git -C <script-dir>` rather than git from
+# PWD.
+#
+# Both values gracefully degrade to "unknown" if their source is missing.
+__pwt_resolve_skill_version() {
+    local version_file="$(dirname "$0")/../commands/plan-w-team/VERSION"
+    if [ -f "$version_file" ]; then
+        head -1 "$version_file" 2>/dev/null | tr -d '[:space:]' || echo "unknown"
+    else
+        echo "unknown"
+    fi
+}
+
+__pwt_resolve_skill_commit_sha() {
+    local script_dir
+    script_dir=$(cd "$(dirname "$0")" 2>/dev/null && pwd)
+    if [ -n "$script_dir" ]; then
+        git -C "$script_dir" rev-parse --short HEAD 2>/dev/null || echo "unknown"
+    else
+        echo "unknown"
+    fi
+}
+
+# Cached at process start so every write within this invocation uses the same
+# values (even if HEAD moves mid-run, which would be pathological but possible).
+SKILL_VERSION=$(__pwt_resolve_skill_version)
+SKILL_COMMIT_SHA=$(__pwt_resolve_skill_commit_sha)
+export PWT_SKILL_VERSION="$SKILL_VERSION"
+export PWT_SKILL_COMMIT_SHA="$SKILL_COMMIT_SHA"
+
+# Write the spawn-time skill-version sidecar to the origin's .claude/state/.
+# Called from the spawn flow once SLUG_GUESS and the origin-root resolution
+# have produced a valid target directory.
+#
+# Args:
+#   $1 = state directory (must exist)
+#   $2 = slug
+#   $3 = spawn path label ("launch" | "worker-only" | "supervisor-goal")
+# Always exits 0 — never fail the spawn over a sidecar write.
+__pwt_write_skill_version_sidecar() {
+    local state_dir="${1:-}"
+    local slug="${2:-}"
+    local spawn_path="${3:-unknown}"
+    [ -z "$state_dir" ] && return 0
+    [ -z "$slug" ] && return 0
+    [ -d "$state_dir" ] || return 0
+    local sidecar="${state_dir}/plan-w-team-skill-version-${slug}.json"
+    local now
+    now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    # Use jq if available for proper escaping; else fall back to printf with
+    # minimal escaping (these fields are all controlled values).
+    if command -v jq >/dev/null 2>&1; then
+        jq -n \
+            --arg slug "$slug" \
+            --arg skill_version "$SKILL_VERSION" \
+            --arg skill_commit_sha "$SKILL_COMMIT_SHA" \
+            --arg recorded_at "$now" \
+            --arg spawn_path "$spawn_path" \
+            '{slug:$slug, skill_version:$skill_version, skill_commit_sha:$skill_commit_sha, recorded_at:$recorded_at, spawn_path:$spawn_path}' \
+            > "$sidecar" 2>/dev/null || true
+    else
+        printf '{"slug":"%s","skill_version":"%s","skill_commit_sha":"%s","recorded_at":"%s","spawn_path":"%s"}\n' \
+            "$slug" "$SKILL_VERSION" "$SKILL_COMMIT_SHA" "$now" "$spawn_path" \
+            > "$sidecar" 2>/dev/null || true
+    fi
+    return 0
+}
+
 # Validate type
 case "$TYPE" in
     feature|refactor|bugfix|docs) ;;
@@ -663,6 +740,31 @@ if [ "$LAUNCH" = "1" ]; then
 
     echo "  worker session:     $WORKER_SID" >&2
 
+    # ─── Compute SLUG once (used by sidecar + registry + supervisor mirror) ───
+    # Slug derivation goes through __pwt_safe_slug so multi-line / long
+    # ORIGINAL_REQUEST values cannot overflow NAME_MAX or embed newlines into
+    # downstream filenames. Idempotent (same REQUEST → same slug); guarantees
+    # non-empty output. See docs/specs/supervisor-mirror-lifecycle.md.
+    SLUG_GUESS=$(__pwt_safe_slug "$ORIGINAL_REQUEST")
+
+    # ─── Write skill-version sidecar (all spawn paths) ────────────────────────
+    # Captures which /plan-w-team release produced this run for bug-tracing.
+    # Lives at $PROJECT_ROOT/.claude/state/plan-w-team-skill-version-<SLUG>.json
+    # The supervisor-mirror block (below, --supervisor-goal only) also writes
+    # this to the resolved ORIGIN repo; that's intentional double-write since
+    # PROJECT_ROOT and ORIGIN can diverge when invoked from a worktree.
+    if [ -n "$PROJECT_ROOT" ] && [ -d "$PROJECT_ROOT" ]; then
+        mkdir -p "$PROJECT_ROOT/.claude/state" 2>/dev/null || true
+        if [ "$SUPERVISOR_GOAL" = "1" ]; then
+            __PWT_SPAWN_LABEL="supervisor-goal"
+        elif [ "$WORKER_ONLY" = "1" ]; then
+            __PWT_SPAWN_LABEL="worker-only"
+        else
+            __PWT_SPAWN_LABEL="launch"
+        fi
+        __pwt_write_skill_version_sidecar "$PROJECT_ROOT/.claude/state" "$SLUG_GUESS" "$__PWT_SPAWN_LABEL"
+    fi
+
     # ─── Register claim in shared cross-repo registry (PWT-RAM2) ──────────────
     # The claim lets pwt-fair-share.sh on other machines/repos see this worker's
     # RAM occupancy. Removed by the retro cleanup hook (or supervisor sweep
@@ -701,11 +803,7 @@ if [ "$LAUNCH" = "1" ]; then
         fi
         REGISTER_HELPER="$(dirname "$0")/plan-w-team-register-spawn.sh"
         if [ -x "$REGISTER_HELPER" ]; then
-            # Slug derivation goes through __pwt_safe_slug so multi-line /
-            # long ORIGINAL_REQUEST values cannot overflow NAME_MAX or embed
-            # newlines into downstream filenames. Idempotent (same REQUEST →
-            # same slug); guarantees non-empty output.
-            SLUG_GUESS=$(__pwt_safe_slug "$ORIGINAL_REQUEST")
+            # SLUG_GUESS computed earlier (once) via __pwt_safe_slug.
             "$REGISTER_HELPER" "$WORKER_SID" "pwt-goal-launch" "$SLUG_GUESS" "" "pwt-goal.sh --worker-only" \
                 >/dev/null 2>&1 || true
         fi
@@ -758,9 +856,13 @@ if [ "$LAUNCH" = "1" ]; then
   "terminal_reason": null,
   "worker_sid": "${WORKER_SID}",
   "supervisor_goal_mirror": true,
+  "skill_version": "${SKILL_VERSION}",
+  "skill_commit_sha": "${SKILL_COMMIT_SHA}",
   "feature_specific_done_criteria": []
 }
 EOF_GOAL_MIRROR
+                # Write the per-spawn skill-version sidecar alongside the mirror.
+                __pwt_write_skill_version_sidecar "$ORIGIN_STATE_DIR" "$SLUG_GUESS" "supervisor-goal"
                 if [ "$ORIGIN_SOURCE" = "PWD" ]; then
                     echo "INFO: --supervisor-goal: using PWD as origin (git repo); origin goal-state: $ORIGIN_GOAL_FILE" >&2
                 else
