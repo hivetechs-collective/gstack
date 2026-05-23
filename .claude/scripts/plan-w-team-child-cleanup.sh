@@ -137,6 +137,14 @@ while IFS= read -r row; do
         TOTAL_NOOP=$((TOTAL_NOOP + 1))
     fi
 
+    # PWT-RAM2: drop the cross-repo fair-share claim for this sid, regardless
+    # of whether `claude stop` succeeded. Idempotent — if the row was never
+    # added (e.g. claim helper missing at spawn time) the remove is a no-op.
+    CLAIM_HELPER_PATH="$(dirname "$0")/pwt-ram-claim.sh"
+    if [ -x "$CLAIM_HELPER_PATH" ]; then
+        "$CLAIM_HELPER_PATH" remove "$SID" >/dev/null 2>&1 || true
+    fi
+
     ATTEMPTS_JSON=$(printf '%s' "$ATTEMPTS_JSON" | jq -c \
         --arg sid "$SID" \
         --arg purpose "$PURPOSE" \

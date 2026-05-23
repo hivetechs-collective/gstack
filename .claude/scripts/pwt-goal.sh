@@ -516,6 +516,63 @@ RAM_GATE
     fi
 fi
 
+# ─── FAIR-SHARE GATE (PWT-RAM2) ─────────────────────────────────────────────
+# Refuses to spawn when this repo is at/above its fair share AND another repo
+# has demand. Runs AFTER the RAM gate (which checks aggregate capacity), so we
+# only get here if the machine has room. The fair-share gate just ensures
+# room is divided fairly across repos with demand.
+#
+# Bypass: PWT_RUN_PRIORITY=critical
+# Default: normal (fair-share applies)
+# Yield-first: background (yields under any contention)
+#
+# Override: PLAN_W_TEAM_DISABLE_FAIR_SHARE=1 bypasses entirely.
+#
+# See shared/supervisor-protocol.md §FAIR SHARE CHECK.
+if [ "${PLAN_W_TEAM_DISABLE_FAIR_SHARE:-0}" != "1" ] \
+        && { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
+    FAIR_SHARE_SCRIPT="$(dirname "$0")/pwt-fair-share.sh"
+    if [ -x "$FAIR_SHARE_SCRIPT" ]; then
+        FS_JSON=$("$FAIR_SHARE_SCRIPT" 2>/dev/null || echo "")
+        if [ -n "$FS_JSON" ]; then
+            FS_RECO=$(printf '%s' "$FS_JSON" \
+                | grep -oE '"recommendation": *"[^"]*"' \
+                | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+            if [ -n "$FS_RECO" ] \
+                    && [ "$FS_RECO" != "SPAWN_OK" ] \
+                    && [ "$FS_RECO" != "NO_CAPACITY" ]; then
+                # NO_CAPACITY would also have been caught by the RAM gate; if we
+                # got past RAM and the fair-share script reports NO_CAPACITY,
+                # treat it as a fail-open advisory (don't double-refuse).
+                MY_REPO_J=$(printf '%s' "$FS_JSON" | grep -oE '"my_repo": *"[^"]*"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+                MY_CURRENT_J=$(printf '%s' "$FS_JSON" | grep -oE '"my_repo_current": *[0-9]+' | head -1 | sed -E 's/.*: *//')
+                MY_ALLOWED_J=$(printf '%s' "$FS_JSON" | grep -oE '"my_repo_allowed_max": *[^,}]*' | head -1 | sed -E 's/.*: *//' | tr -d ' ')
+                FAIR_J=$(printf '%s' "$FS_JSON" | grep -oE '"fair_share_per_repo": *[^,}]*' | head -1 | sed -E 's/.*: *//' | tr -d ' ')
+                NACTIVE_J=$(printf '%s' "$FS_JSON" | grep -oE '"n_active_repos": *[0-9]+' | head -1 | sed -E 's/.*: *//')
+                REPOS_LINE=$(printf '%s' "$FS_JSON" | grep -oE '"repos_with_active_workers": *\{[^}]*\}' | head -1 | sed -E 's/^"repos_with_active_workers": *//')
+                cat >&2 <<FAIR_SHARE_GATE
+✗ Fair-share gate refused: $FS_RECO
+
+  my_repo=$MY_REPO_J
+  my_repo_current=$MY_CURRENT_J / fair_share=$FAIR_J (n_active_repos=$NACTIVE_J)
+  active workers: $REPOS_LINE
+
+  Spawning would push this repo above its fair share of machine capacity.
+  Another repo on this machine is at or below its share — yielding gives
+  it room to spawn.
+
+  Bypass (use only if this repo's run is genuinely time-critical):
+    PWT_RUN_PRIORITY=critical $0 $REQUEST
+
+  Disable fair-share entirely (not recommended):
+    PLAN_W_TEAM_DISABLE_FAIR_SHARE=1
+FAIR_SHARE_GATE
+                exit 6
+            fi
+        fi
+    fi
+fi
+
 if [ "$LAUNCH" = "1" ]; then
     # Auto-launch: spawn TWO new background claude sessions.
     #
@@ -605,6 +662,30 @@ if [ "$LAUNCH" = "1" ]; then
     fi
 
     echo "  worker session:     $WORKER_SID" >&2
+
+    # ─── Register claim in shared cross-repo registry (PWT-RAM2) ──────────────
+    # The claim lets pwt-fair-share.sh on other machines/repos see this worker's
+    # RAM occupancy. Removed by the retro cleanup hook (or supervisor sweep
+    # when idle).
+    CLAIM_HELPER="$(dirname "$0")/pwt-ram-claim.sh"
+    if [ -x "$CLAIM_HELPER" ]; then
+        # Resolve this repo's name from worktree-aware git toplevel.
+        CLAIM_REPO=""
+        CLAIM_TOP=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+        if [ -n "$CLAIM_TOP" ]; then
+            case "$CLAIM_TOP" in
+                */.claude/worktrees/*)
+                    CLAIM_REPO=$(basename "$(printf '%s' "$CLAIM_TOP" | sed -E 's|/.claude/worktrees/.*$||')")
+                    ;;
+                *)
+                    CLAIM_REPO=$(basename "$CLAIM_TOP")
+                    ;;
+            esac
+        fi
+        [ -z "$CLAIM_REPO" ] && CLAIM_REPO=$(basename "$PROJECT_ROOT" 2>/dev/null || basename "$PWD")
+        CLAIM_PRI="${PWT_RUN_PRIORITY:-normal}"
+        "$CLAIM_HELPER" add "$CLAIM_REPO" "$WORKER_SID" "$CLAIM_PRI" >/dev/null 2>&1 || true
+    fi
 
     # ─── --worker-only: emit SID on stdout and exit (no bg supervisor) ────────
     # In this mode the CALLER (UserPromptSubmit hook → origin assistant) acts

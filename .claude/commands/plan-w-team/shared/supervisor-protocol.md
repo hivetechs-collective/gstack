@@ -473,6 +473,76 @@ esac
 
 See `shared/ram-budget.md` for the capacity model, defaults, override env, and tuning guidance.
 
+### FAIR SHARE CHECK (cross-repo allocation)
+
+CAPACITY CHECK ensures the host has RAM for another worker. FAIR SHARE CHECK ensures that RAM is divided fairly across repos with demand. Without it, a single repo running parallel /plan-w-team workers can monopolize machine capacity and starve other repos — the 2026-05-22 cleanscale incident that motivated PWT-RAM2.
+
+**When it runs**: immediately after CAPACITY CHECK reports SPAWN_OK, and before the supervisor authorizes any new `pwt-goal.sh` invocation. If CAPACITY CHECK refused, FAIR SHARE is moot (no spawn is happening either way).
+
+**The registry**: `~/.claude/state/pwt-ram-claims.jsonl` (override via `PWT_RAM_CLAIMS_REGISTRY`). One JSONL line per active worker:
+
+```json
+{
+  "repo": "<name>",
+  "sid": "<8hex>",
+  "started_at": "<iso8601>",
+  "estimated_gb": 1.8,
+  "priority": "normal"
+}
+```
+
+The registry is cross-repo and machine-wide — every `pwt-goal.sh --launch` and `--worker-only` invocation on this machine appends a row regardless of which repo the worker belongs to.
+
+**Lifecycle**:
+
+- **Add**: `pwt-goal.sh` appends a row after `claude --bg` returns a parsed SID.
+- **Remove**: `plan-w-team-child-cleanup.sh` calls `pwt-ram-claim.sh remove <sid>` after `claude stop` (idempotent — no-op if the row wasn't there).
+- **Sweep**: the supervisor calls `pwt-ram-claim.sh sweep` at the start of FAIR SHARE CHECK so claims for workers whose transcript mtime is older than `PWT_FAIR_SHARE_IDLE_THRESHOLD` (default 300s = 5min) are dropped. This recovers capacity when a worker died without running the cleanup hook (crash, kill, OOM).
+
+**The check**:
+
+```bash
+.claude/scripts/pwt-ram-claim.sh sweep
+FS_JSON=$(.claude/scripts/pwt-fair-share.sh 2>/dev/null)
+FS_RECO=$(printf '%s' "$FS_JSON" \
+    | grep -oE '"recommendation": *"[^"]*"' \
+    | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+
+case "$FS_RECO" in
+    SPAWN_OK|"")             # proceed
+        ;;
+    AT_FAIR_SHARE)
+        # All repos are at exact share; spawning would push this repo over,
+        # but no specific peer is underserved. Hold for backpressure or yield
+        # if priority=background.
+        ;;
+    YIELD_TO_OTHER_REPO)
+        # Another repo is below its share. Hold this batch; the peer is
+        # likely about to spawn and the registry will rebalance.
+        ;;
+esac
+```
+
+**Allocation math**: `fair_share_per_repo = max(1, machine_capacity / n_active_repos)`, where `n_active_repos` counts repos in the registry plus the asker (if not already present) — so a new repo never gets 0 share just because everyone else got there first. `machine_capacity = remaining_capacity_from_ram_budget + currently_claimed_workers` (total slots, not just free slots).
+
+**Priority signals** (`PWT_RUN_PRIORITY` env, propagated to the worker via the claim row):
+
+- `critical` — bypasses fair-share entirely; only `NO_CAPACITY` (which CAPACITY CHECK already caught) can block. Use sparingly: every critical bypass directly degrades fairness for peers.
+- `normal` (default) — subject to fair-share. Refused on `YIELD_TO_OTHER_REPO` and `AT_FAIR_SHARE`.
+- `background` — yields first under ANY contention (`n_total_active >= machine_capacity`). Use for background catch-up batches that should never compete with foreground work.
+
+**Hard rules** (mirror CAPACITY CHECK):
+
+- The supervisor does NOT bypass the fair-share gate. Refusals surface a status block citing the verdict and wait.
+- The supervisor does NOT modify `PLAN_W_TEAM_DISABLE_FAIR_SHARE` — that override is reserved for the operator.
+- The supervisor does NOT escalate `YIELD_TO_OTHER_REPO` as a hard-gate halt. It is reactive backpressure; the next tick may clear it (the underserved peer spawned, dropped a claim, or terminated).
+
+**Surface format**: when FAIR SHARE CHECK refuses, the supervisor's per-turn summary records `fair_share: YIELD_TO_OTHER_REPO` (or `AT_FAIR_SHARE`) alongside the standard fields. Retro reads these to compute time spent yielding to peers — a healthy run should have `fair_share` deferrals < 10% of total ticks.
+
+**Failure mode**: registry missing or unreadable → fair-share script emits `recommendation: null` (fail-open advisory); supervisor proceeds as if SPAWN_OK. The gate is advisory, not load-bearing for correctness.
+
+See `docs/specs/pwt-cross-repo-fair-share.md` for the full design and AC catalog.
+
 ## Adding a New Event Type or Summary Field
 
 When extending the supervisor (e.g. for T5 integration):

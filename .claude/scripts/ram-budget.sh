@@ -97,6 +97,20 @@ count_bg_sessions() {
         echo "${RAM_BUDGET_STUB_BG_COUNT}"
         return
     fi
+
+    # PWT-RAM2: the shared cross-repo claims registry is authoritative for
+    # machine-wide RAM accounting. If present and readable, count its rows;
+    # otherwise fall back to `claude agents --json` (which only sees the
+    # current shell's bg sessions and misses workers spawned from other repos).
+    local registry="${PWT_RAM_CLAIMS_REGISTRY:-$HOME/.claude/state/pwt-ram-claims.jsonl}"
+    if [ -r "$registry" ]; then
+        local n
+        n=$(grep -c '"sid":"' "$registry" 2>/dev/null || echo 0)
+        [[ "$n" =~ ^[0-9]+$ ]] || n=0
+        echo "$n"
+        return
+    fi
+
     if ! command -v claude >/dev/null 2>&1; then
         echo 0
         return
