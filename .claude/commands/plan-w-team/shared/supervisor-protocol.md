@@ -438,6 +438,41 @@ When ALL four conditions hold, the supervisor proceeds per the Decision Matrix o
 
 **Failure mode**: `stat` failure (transcript path absent, EACCES) → `IdleCheckUnavailable` → CONTINUATION CHECK skipped that tick; standard polling continues. The supervisor does not surface or block on this.
 
+### CAPACITY CHECK (RAM-aware spawn gating)
+
+When CONTINUATION CHECK is about to authorize a new batch (or when the supervisor itself is the entity considering a `pwt-goal.sh` invocation for the next batch), it MUST consult `.claude/scripts/ram-budget.sh` BEFORE spawning. This is the same gate `pwt-goal.sh` applies at its own entry point (PWT-RAM1), surfaced one layer up so the supervisor can hold and re-poll rather than discovering the refusal mid-spawn.
+
+```bash
+RAM_JSON=$(.claude/scripts/ram-budget.sh 2>/dev/null)
+RAM_ACTION=$(printf '%s' "$RAM_JSON" \
+    | grep -oE '"recommended_action": *"[^"]*"' \
+    | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+
+case "$RAM_ACTION" in
+    SPAWN_OK|"")    # SPAWN_OK or fail-open (null) → proceed
+        ;;
+    AT_CAPACITY|REDUCE_PARALLEL)
+        # Surface AT_CAPACITY to the transcript; hold the batch decision
+        # until either (a) a peer terminates and frees RAM, or (b) the
+        # operator manually overrides via PLAN_W_TEAM_DISABLE_RAM_GATE=1.
+        # DO NOT spawn. DO NOT silently retry. Continue polling so the
+        # user sees why no new batch is starting.
+        ;;
+esac
+```
+
+**Hard rules** (mirror the existing supervisor "never does" list in §Delegation Contract):
+
+- The supervisor does NOT bypass the gate. If the gate refuses, the supervisor surfaces a status block citing the verdict and waits.
+- The supervisor does NOT modify `PLAN_W_TEAM_DISABLE_RAM_GATE` — that override is reserved for the operator.
+- The supervisor does NOT escalate AT_CAPACITY as a hard-gate halt. It is a transient backpressure signal, not a failure. The next CAPACITY CHECK tick may clear it (a peer session terminates, free memory recovers).
+
+**Surface format**: when CAPACITY CHECK refuses to authorize a batch, the supervisor's per-turn summary block records `ram_gate: AT_CAPACITY` (or `REDUCE_PARALLEL`) alongside the standard summary fields. Retro reads these counts to compute the "stalled-on-RAM" duration as a quality signal.
+
+**Why this lives in the supervisor and not only in pwt-goal.sh**: `pwt-goal.sh` is the last-line process-level guard, but it refuses with exit 5. By the time exit 5 fires, the supervisor has already committed to the spawn intent — wasting an LLM turn on a refused operation. Putting the check in the POLLING LOOP defers the spawn decision until budget exists, which is the user's stated optimization: _maximize parallel without exceeding RAM_.
+
+See `shared/ram-budget.md` for the capacity model, defaults, override env, and tuning guidance.
+
 ## Adding a New Event Type or Summary Field
 
 When extending the supervisor (e.g. for T5 integration):

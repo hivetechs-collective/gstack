@@ -418,6 +418,59 @@ GUARD
     fi
 fi
 
+# ─── RAM CAPACITY GATE (PWT-RAM1) ────────────────────────────────────────────
+# Refuses to spawn another bg session when host RAM is below the safety
+# threshold. Catches OOM scenarios before they happen: each Claude Code bg
+# session costs ~1.5–2 GB resident, and parallel /plan-w-team runs can
+# OOM-kill each other on workstations.
+#
+# Reads .claude/scripts/ram-budget.sh; refuses on AT_CAPACITY or REDUCE_PARALLEL.
+# Soft errors (missing script, unsupported platform, recommended_action=null)
+# fall through to spawn — the gate is advisory, not load-bearing for correctness.
+#
+# Override: PLAN_W_TEAM_DISABLE_RAM_GATE=1 bypasses entirely.
+# Tune: RAM_BUDGET_SESSION_COST_GB and RAM_BUDGET_SAFETY_FACTOR are forwarded
+#       to ram-budget.sh via inherited environment.
+#
+# See shared/ram-budget.md for the capacity model and tuning guidance.
+if [ "${PLAN_W_TEAM_DISABLE_RAM_GATE:-0}" != "1" ] \
+        && { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
+    RAM_BUDGET_SCRIPT="$(dirname "$0")/ram-budget.sh"
+    if [ -x "$RAM_BUDGET_SCRIPT" ]; then
+        RAM_JSON=$("$RAM_BUDGET_SCRIPT" 2>/dev/null || echo "")
+        if [ -n "$RAM_JSON" ]; then
+            RAM_ACTION=$(printf '%s' "$RAM_JSON" \
+                | grep -oE '"recommended_action": *"[^"]*"' \
+                | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+            # Refuse only on explicit non-OK actions. SPAWN_OK or empty/null → fall through.
+            if [ -n "$RAM_ACTION" ] && [ "$RAM_ACTION" != "SPAWN_OK" ]; then
+                FREE_GB=$(printf '%s' "$RAM_JSON"   | grep -oE '"free_gb": *[^,}]*'           | head -1 | sed -E 's/.*: *//')
+                BG_COUNT=$(printf '%s' "$RAM_JSON"  | grep -oE '"bg_session_count": *[0-9]+'  | head -1 | sed -E 's/.*: *//')
+                EST_COST=$(printf '%s' "$RAM_JSON"  | grep -oE '"estimated_session_cost_gb": *[0-9.]+' | head -1 | sed -E 's/.*: *//')
+                CAPACITY=$(printf '%s' "$RAM_JSON"  | grep -oE '"capacity_for_new_sessions": *[^,}]*' | head -1 | sed -E 's/.*: *//')
+                cat >&2 <<RAM_GATE
+✗ RAM gate refused: $RAM_ACTION
+
+  free_gb=$FREE_GB
+  bg_session_count=$BG_COUNT (each ~${EST_COST}GB)
+  capacity_for_new_sessions=$CAPACITY
+
+  Spawning another bg session would risk exceeding host RAM and OOM-kill
+  the running sessions. Stop or wait for an existing session to terminate.
+
+  Override (use only if you have manually confirmed available RAM):
+    PLAN_W_TEAM_DISABLE_RAM_GATE=1
+
+  Tune the model (see shared/ram-budget.md):
+    RAM_BUDGET_SESSION_COST_GB=<gb>     # default 1.8
+    RAM_BUDGET_SAFETY_FACTOR=<n>        # default 1.5
+RAM_GATE
+                exit 5
+            fi
+        fi
+    fi
+fi
+
 if [ "$LAUNCH" = "1" ]; then
     # Auto-launch: spawn TWO new background claude sessions.
     #
