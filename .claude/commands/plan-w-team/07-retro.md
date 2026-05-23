@@ -745,6 +745,54 @@ The skill cannot reliably know what is or isn't already in memory — the `~/.cl
 
 This sub-step adds zero state files and no enforcement gates. It is pure prose appended to the retro section.
 
+## 8k. Completion Summary Emission
+
+Immediately before the terminal status block, emit the **completion summary** — a structured record of what this run accomplished. The summary aggregates AC PASS/FAIL roll-up, files changed (git diff --stat), commits authored, tests added/modified, ship-readiness verdict, total wall-clock duration, and the **spec-compliance holistic check**. Together these are the canonical archival record of the run.
+
+```bash
+.claude/scripts/plan-w-team-completion-summary.sh "$SLUG"
+```
+
+The writer:
+
+1. Reads the AC snapshot at `.claude/state/plan-w-team-ac-snapshot-${SLUG}.md` for the **declared** AC list (frozen at Step 1 §1.5; not the live spec).
+2. Discovers the worker transcript via `$CLAUDE_TRANSCRIPT_PATH` → `$CLAUDE_PROJECT_DIR/*.jsonl` (last 24h) → `~/.claude/projects/*/*.jsonl` (last 24h) heuristic.
+3. Scans the transcript for `AC<N>: PASS` and `AC<N>: FAIL` verdicts (strict format — see `docs/specs/reporting-holistic-check.md` for why looser patterns produce false positives).
+4. Computes the **holistic check** outcome (one of `HOLISTIC_CHECK_PASS|FAIL|SKIPPED|UNKNOWN`) and emits the literal anchor in the markdown summary.
+5. Reads `git log` + `git diff --shortstat` for files-changed / commits / line-deltas relative to the worktree base.
+6. Counts test files modified by extension/path patterns (`.test.*`, `.spec.*`, `.bats`, `_test.go`, `_test.py`).
+7. Writes two artifacts atomically:
+   - `.claude/state/plan-w-team-completion-${SLUG}.json` (machine-readable, schema versioned via `writer_version`).
+   - `.claude/state/plan-w-team-completion-${SLUG}.md` (human-readable; `## Spec Compliance Check` section contains the literal `HOLISTIC_CHECK_*` anchor for downstream grep).
+
+### Why this runs before retro-complete
+
+The summary must appear in the same transcript window as the `stage="retro-complete"` anchor so the run record is self-contained: anyone reading the transcript or grepping the goal-evaluator's window sees both. Placing it after retro-complete would orphan the summary (the `/goal` evaluator would have already cleared the goal state).
+
+### Safety contract
+
+The writer follows the universal `R10` rule for /plan-w-team observability scripts: **never fail the retro**. On any internal error (missing transcript, malformed snapshot, jq unavailable), the writer emits a degraded stub JSON + markdown with `HOLISTIC_CHECK_UNKNOWN` and exits 0. Only a missing SLUG argument (caller-bug) produces a non-zero exit (`2`).
+
+### Kill switch
+
+`PLAN_W_TEAM_DISABLE_COMPLETION_SUMMARY=1` skips the writer entirely. Useful when:
+
+- Iterating on retro-stage behavior and the summary's transcript scan churns noise.
+- Recovering from a writer regression that produces malformed output (the artifacts can be regenerated later with the next /plan-w-team run on the SLUG).
+
+```bash
+if [ "${PLAN_W_TEAM_DISABLE_COMPLETION_SUMMARY:-}" != "1" ]; then
+  .claude/scripts/plan-w-team-completion-summary.sh "$SLUG" || true
+fi
+```
+
+### Spec compliance & downstream consumers
+
+The completion-summary doc's `## Spec Compliance Check` section is the run's **retrospective** of the same contract enforced live by the `/goal` evaluator's `feature_specific_done_criteria` (Step 1 §1.5 / `shared/goal-conditions.md` §Feature-Specific Done Criteria). The evaluator gates the SUCCESS terminal state _while the run is in flight_; the holistic check audits the same coverage _after the fact_ for the archival record. Any future audit/dashboard tooling that wants to query "what did this run actually accomplish" reads the JSON; any human reading a single run looks at the markdown.
+
+Full design: `docs/specs/reporting-holistic-check.md`.
+Writer spec: `docs/specs/retro-completion-summary.md`.
+
 ## End-of-Stage Status Block (PWT-T5)
 
 The final action of the retro stage emits the terminal status block — its presence with `stage="retro-complete"` and `workflow_lock="done"` is the SUCCESS anchor the `/goal` evaluator's terminal condition looks for (see `shared/goal-conditions.md` §Terminal-State Reference).

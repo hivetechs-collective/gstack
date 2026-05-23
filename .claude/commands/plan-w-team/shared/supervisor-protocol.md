@@ -343,6 +343,48 @@ These supersede the previous "NEVER push to remote" wording. The origin-chat sup
 - **NEVER edit code, configs, or specs.** Implementation belongs to the worker.
 - **NEVER spawn more than one chain-worker per AUTO-MERGE.** `next_batch_spec` is consumed exactly once; the new worker carries no `next_batch_spec` of its own unless its own retro sets one (PWT-DS2 also enforces this via env-cascade).
 - **Auto-merge reversible code/test PRs within the same mission** per the Decision Matrix. Reversibility is established by (a) no DO-NOT-MERGE label, (b) no `shared/governance-tags.md` surface match, (c) CI green.
+- **NEVER `gh pr merge --admin` on a repo with GitHub Actions required checks** unless the deterministic merge-gate (`.claude/scripts/supervisor-merge-gate.sh`) returned `recommended_action=ADMIN_MERGE` for the PR. `--admin` bypasses required checks; on repos where GitHub Actions IS the required check, this skips CI. Use `--auto` instead and let GitHub wait for checks. The gate's `ci_mode` field is the authoritative input for this rule. See §CI-Aware Action Hierarchy below.
+
+### CI-Aware Action Hierarchy (2026-05-22 — supersedes the simpler matrix above)
+
+The Decision Matrix above tells the supervisor WHEN to act (worker terminal + PR state). The hierarchy below tells the supervisor HOW to act (which `gh pr merge` flag, or whether to surface). It is implemented by `.claude/scripts/supervisor-merge-gate.sh` — the supervisor MUST invoke the script before any merge action and use its `recommended_action` field rather than re-deriving the decision from raw inputs.
+
+**Originating evidence**: cleanscale incident 2026-05-22 — supervisor used `gh pr merge --admin --squash $PR` to clear a DO-NOT-MERGE-labeled PR. On cleanscale (local-Makefile-only CI), this was functionally equivalent to `--auto`. On a typical SaaS repo with GitHub Actions required checks, this would have bypassed CI without operator consent. The hierarchy makes the supervisor's choice deterministic and CI-aware.
+
+Spec: `docs/specs/supervisor-merge-enforcement.md`. Script: `.claude/scripts/supervisor-merge-gate.sh`.
+
+| Row | `governance_surfaces_matched` | `has_do_not_merge_label` | `ci_mode`        | `recommended_action` | Rationale                                                                                          |
+| --- | ----------------------------- | ------------------------ | ---------------- | -------------------- | -------------------------------------------------------------------------------------------------- |
+| 1   | non-empty                     | (any)                    | (any)            | `SURFACE_TO_USER`    | One-way door — explicit human consent always required.                                             |
+| 2   | empty                         | `true`                   | `local-makefile` | `ADMIN_MERGE`        | Supervisor-reviewer pattern: worker added the label as precaution; supervisor IS the human review. |
+| 3   | empty                         | `true`                   | `github-actions` | `SURFACE_TO_USER`    | Real CI required-checks need a real human to authorize bypass. NEVER `--admin` here.               |
+| 4   | empty                         | `true`                   | `none`           | `SURFACE_TO_USER`    | Conservative — unknown CI posture defaults to user.                                                |
+| 5   | empty                         | `false`                  | `github-actions` | `AUTO_MERGE`         | `gh pr merge --auto --squash` — GitHub waits for required checks.                                  |
+| 6   | empty                         | `false`                  | `local-makefile` | `ADMIN_MERGE`        | `gh pr merge --admin --squash` — no `--auto` target exists; local CI passed pre-push.              |
+| 7   | empty                         | `false`                  | `none`           | `ADMIN_MERGE`        | `gh pr merge --admin --squash` — no CI to wait on.                                                 |
+
+**`ci_mode` detection** (script-level heuristic, NOT a `gh api` round-trip):
+
+- `github-actions`: any `.github/workflows/*.y*ml` defines a `pull_request:` trigger.
+- `local-makefile`: `Makefile` at repo root has a `test` / `test-skill` / `check` / `lint` target AND no qualifying workflow exists.
+- `none`: neither holds.
+
+**How the supervisor uses the gate**:
+
+```bash
+GATE=$(.claude/scripts/supervisor-merge-gate.sh "$PR_NUMBER")
+ACTION=$(echo "$GATE" | jq -r '.recommended_action')
+case "$ACTION" in
+  AUTO_MERGE)         gh pr merge --auto  --squash "$PR_NUMBER" ;;
+  ADMIN_MERGE)        gh pr merge --admin --squash "$PR_NUMBER" ;;
+  SURFACE_TO_USER)    # emit ⚠ HALT block citing $(echo "$GATE" | jq -r '.rationale')
+                      ;;
+esac
+```
+
+The gate fails-closed: on any `gh` or parse error, `recommended_action=SURFACE_TO_USER` with a `rationale` describing the failure. The supervisor never has to interpret "the gate script failed" — it reads `recommended_action` and acts.
+
+**Why the matrix is doc + script, not just script**: prose in this file is the source of truth for human reviewers and retros; the script encodes the same hierarchy mechanically. If the two ever drift, the prose wins (and the script is updated to match in a follow-up). The regression scenario at `tests/skill/scenarios/supervisor-merge-gate-governance.bats` covers the rows the script must implement.
 
 ### `next_batch_spec` Chaining
 

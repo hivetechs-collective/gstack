@@ -789,6 +789,35 @@ fi
 
 Mis-labeling — either a missing label on a one-way PR or a spurious label on a reversible PR — is a Pass 1 CRITICAL review item. The Step 5 reviewer re-runs the same `governance-globs` walk to verify.
 
+#### Worker Label Policy (2026-05-22 — clarified)
+
+The `DO NOT MERGE` label has exactly two legitimate worker uses. Any other use is a Pass 1 CRITICAL review item.
+
+1. **One-way-door surface match** (the rule above). Worker detected a path matching `shared/governance-tags.md` in its diff; label MUST be applied; the supervisor's `.claude/scripts/supervisor-merge-gate.sh` will return `recommended_action=SURFACE_TO_USER` regardless of CI mode (matrix row 1).
+
+2. **Supervisor-reviewer pattern** — worker explicitly delegates final review to the supervisor (the human-equivalent reviewer in autonomous-run mode). When using this pattern, the worker MUST:
+   - Apply the `DO NOT MERGE` label, AND
+   - Add a comment to the PR body explicitly stating the delegation. Format:
+     ```
+     <!-- supervisor-reviewer-delegation: <one-sentence reason> -->
+     ```
+     Example: `<!-- supervisor-reviewer-delegation: worker is uncertain whether ESLint config change affects downstream repos; defer to supervisor judgement -->`
+
+The supervisor's merge-gate uses these signals via the matrix:
+
+- **Worker case 1 (one-way door)** → gate returns `SURFACE_TO_USER` regardless of supervisor action (matrix row 1).
+- **Worker case 2 (delegation, local-makefile CI)** → gate returns `ADMIN_MERGE` (matrix row 2 — supervisor IS the reviewer).
+- **Worker case 2 (delegation, github-actions CI)** → gate returns `SURFACE_TO_USER` (matrix row 3 — a real human is needed to bypass required checks).
+
+**Forbidden uses** of `DO NOT MERGE` (worker MUST NOT apply the label for these):
+
+- "I'm not confident about this code" — that is a review request, not a one-way door. Open the PR without the label; Pass 1/2 review handles it.
+- "This is a big PR" — size alone is not a one-way door.
+- "This touches user-facing surfaces" — those surfaces are reversible unless they appear in `shared/governance-tags.md`.
+- "Just in case" — labels carry merge-gate cost; never apply speculatively.
+
+The Step 5 reviewer enforces this by checking, for any PR carrying `DO NOT MERGE`: either a governance-tag surface matched in the diff, OR a `supervisor-reviewer-delegation:` HTML comment exists in the PR body. Neither present → CRITICAL.
+
 Read `shared/artifact-storage.md` for review log and streak tracking formats.
 
 ## End-of-Stage Status Block (PWT-T5)
