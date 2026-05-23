@@ -414,6 +414,14 @@ if [ "${PLAN_W_TEAM_DISABLE_PARALLEL_GATE:-}" != "1" ] \
     # Filter for bg /plan-w-team workers in this project, excluding self.
     # The name field is wrapped in `tostring` because some agents may have
     # a null name. jq -c -r yields each match as a JSON object per line.
+    #
+    # NO STATUS FILTER BY DESIGN (parallel-worker-gate-idle-counted, 2026-05-22):
+    # An idle worker (terminal SUCCESS, still alive in `claude agents --json`)
+    # has the SAME conflict surface as a busy one — it owns the same SLUG,
+    # workflow lock, baseline file, and worktree. The only valid exclusion is
+    # "completely gone from claude agents --json", which is satisfied
+    # implicitly by iterating only what the listing returns. The projection
+    # below preserves `status` for display in the disambiguation message.
     PWG_MATCHES=$(
         printf '%s' "$PWG_AGENTS_RAW" | jq -c --arg root "$PWG_CANON_ROOT" --arg pself "${PARENT_SID_FROM_HOOK:0:8}" '
             [ .[] | select(
@@ -421,7 +429,7 @@ if [ "${PLAN_W_TEAM_DISABLE_PARALLEL_GATE:-}" != "1" ] \
                 and ((.cwd // "") | startswith($root))
                 and (((.name // "") | ascii_downcase) | (contains("/goal") or contains("/plan-w-team")))
                 and ((.sessionId // "")[0:8] != $pself)
-            ) ]
+            ) | {sessionId, name, cwd, kind, status: (.status // "unknown")} ]
         ' 2>/dev/null || echo "[]"
     )
     PWG_COUNT=$(printf '%s' "$PWG_MATCHES" | jq 'length' 2>/dev/null || echo 0)
@@ -476,7 +484,9 @@ for m in matches:
     sid = (m.get("sessionId") or "")[:8] or "<unknown>"
     slug = derive_slug(m.get("name") or "")
     stage = read_stage(slug)
-    lines.append(f"   worker: {sid} slug: {slug} stage: {stage}")
+    status = m.get("status") or "unknown"
+    lines.append(f"   worker: {sid} slug: {slug} stage: {stage} status: {status}")
+lines.append("(idle workers still own the same SLUG/lock/baseline as busy workers — both count.)")
 lines.append("Did you mean to spawn a parallel worker, or direct the existing one?")
 lines.append("Reply: parallel | direct | cancel")
 
