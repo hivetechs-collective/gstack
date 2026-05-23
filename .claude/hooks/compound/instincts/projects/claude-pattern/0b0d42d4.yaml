@@ -1,13 +1,13 @@
 ---
 id: 0b0d42d4
 trigger: "when fixing bugs in agent_development context"
-confidence: 0.6
+confidence: 0.7
 domain: workflow
 scope: project
 project: claude-pattern
 created: 2026-05-23T02:43:30Z
-last_applied: 2026-05-23T03:11:23Z
-applications: 1
+last_applied: 2026-05-23T03:13:53Z
+applications: 2
 evidence:
   - "First observed in session 1779504210"
 ---
