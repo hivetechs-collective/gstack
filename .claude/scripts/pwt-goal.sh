@@ -188,6 +188,51 @@ fi
 # of slugs that describe the actual feature. See docs/specs/supervisor-mirror-lifecycle.md.
 ORIGINAL_REQUEST="$REQUEST"
 
+# ─── SAFE SLUG DERIVATION ──────────────────────────────────────────────────
+# Production failure (2026-05-23): launching --supervisor-goal with 2700+ char
+# directives produced 'File name too long' on the supervisor mirror file and
+# spawned-children-registry filename. Root cause: ad-hoc `tr | sed | cut -c1-64`
+# pipeline truncated PER-LINE and let embedded newlines through, yielding
+# multi-line slugs that violated OS NAME_MAX (255 bytes) and the no-newline
+# constraint when interpolated into a filename.
+#
+# This helper sanitizes a REQUEST string into a filesystem-safe slug:
+#   1. Replace newlines/tabs with spaces, collapse multi-spaces
+#   2. Strip leading/trailing whitespace
+#   3. Lowercase
+#   4. Replace any non-[a-z0-9-] run with a single hyphen
+#   5. Collapse hyphen runs; trim leading/trailing hyphens
+#   6. Truncate combined body to 80 characters
+#   7. Append "-<8-char-sha256>" of the FULL ORIGINAL request so that two
+#      distinct long inputs sharing an 80-char prefix still differ.
+#
+# Output is bounded: 80 (body) + 1 (sep) + 8 (hash) = 89 chars. Plus typical
+# ".jsonl" = 94 chars, comfortably under NAME_MAX.
+#
+# Empty / whitespace-only / non-ASCII-only inputs fall back to a deterministic
+# "_unsourced-<hash>" so callers never see an empty slug.
+#
+# See docs/specs/pwt-goal-safe-slug.md and docs/specs/supervisor-mirror-lifecycle.md.
+__pwt_safe_slug() {
+    local request="${1:-}"
+    local body
+    body=$(printf '%s' "$request" \
+        | tr '\n\t' '  ' \
+        | tr -s ' ' \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+        | tr '[:upper:]' '[:lower:]' \
+        | sed -E 's/[^a-z0-9-]+/-/g; s/-+/-/g; s/^-+//; s/-+$//' \
+        | cut -c1-80 \
+        | sed -E 's/-+$//')   # re-trim if cut left a trailing hyphen
+    if [ -z "$body" ]; then
+        body="_unsourced"
+    fi
+    local hash
+    hash=$(printf '%s' "$request" | shasum -a 256 2>/dev/null | cut -c1-8)
+    [ -z "$hash" ] && hash="00000000"
+    printf '%s-%s\n' "$body" "$hash"
+}
+
 # Validate type
 case "$TYPE" in
     feature|refactor|bugfix|docs) ;;
@@ -575,15 +620,11 @@ if [ "$LAUNCH" = "1" ]; then
         fi
         REGISTER_HELPER="$(dirname "$0")/plan-w-team-register-spawn.sh"
         if [ -x "$REGISTER_HELPER" ]; then
-            # Derive slug from the ORIGINAL_REQUEST (pre-overflow) so the slug
-            # describes the actual feature, not the "Read full directive at ..."
-            # overflow pointer. Idempotent: same REQUEST → same slug.
-            SLUG_GUESS=$(printf '%s' "$ORIGINAL_REQUEST" \
-                | tr '[:upper:]' '[:lower:]' \
-                | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
-                | cut -c1-64 \
-                || echo "")
-            [ -z "$SLUG_GUESS" ] && SLUG_GUESS="_unsourced"
+            # Slug derivation goes through __pwt_safe_slug so multi-line /
+            # long ORIGINAL_REQUEST values cannot overflow NAME_MAX or embed
+            # newlines into downstream filenames. Idempotent (same REQUEST →
+            # same slug); guarantees non-empty output.
+            SLUG_GUESS=$(__pwt_safe_slug "$ORIGINAL_REQUEST")
             "$REGISTER_HELPER" "$WORKER_SID" "pwt-goal-launch" "$SLUG_GUESS" "" "pwt-goal.sh --worker-only" \
                 >/dev/null 2>&1 || true
         fi
@@ -824,13 +865,9 @@ SUPEOF
     # worker terminates (it's not a "spawned child" of the worker).
     REGISTER_HELPER="$(dirname "$0")/plan-w-team-register-spawn.sh"
     if [ -x "$REGISTER_HELPER" ]; then
-        # Derive slug from ORIGINAL_REQUEST (see slug derivation note above).
-        SLUG_GUESS=$(printf '%s' "$ORIGINAL_REQUEST" \
-            | tr '[:upper:]' '[:lower:]' \
-            | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
-            | cut -c1-64 \
-            || echo "")
-        [ -z "$SLUG_GUESS" ] && SLUG_GUESS="_unsourced"
+        # Slug derivation goes through __pwt_safe_slug — see helper definition
+        # near top of file. Idempotent + filesystem-safe + non-empty by contract.
+        SLUG_GUESS=$(__pwt_safe_slug "$ORIGINAL_REQUEST")
         "$REGISTER_HELPER" "$WORKER_SID" "pwt-goal-launch" "$SLUG_GUESS" "${SUPERVISOR_SID:-}" "pwt-goal.sh" \
             >/dev/null 2>&1 || true
     fi
