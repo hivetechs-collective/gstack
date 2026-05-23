@@ -1,13 +1,13 @@
 ---
 id: b6b877bc
 trigger: "when adding new features in agent_development context"
-confidence: 0.5
+confidence: 0.6
 domain: workflow
 scope: project
 project: claude-pattern
 created: 2026-05-23T02:43:30Z
-last_applied: null
-applications: 0
+last_applied: 2026-05-23T03:11:23Z
+applications: 1
 evidence:
   - "First observed in session 1779504210"
 ---

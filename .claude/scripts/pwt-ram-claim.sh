@@ -1,8 +1,10 @@
 #!/bin/bash
 # pwt-ram-claim — manage the cross-repo spawn-claims registry.
 #
-# The registry is a JSONL file at ~/.claude/state/pwt-ram-claims.jsonl (override
-# via PWT_RAM_CLAIMS_REGISTRY). Each line is a worker claim:
+# The registry is a JSONL file at ~/.claude/state/pwt-ram-claims.jsonl.
+# Override the path with PWT_RAM_CLAIMS_PATH (canonical) or
+# PWT_RAM_CLAIMS_REGISTRY (legacy alias, back-compat). Each line is a worker
+# claim:
 #
 #   {"repo":"<name>","sid":"<8hex>","started_at":"<iso8601>","estimated_gb":1.8,"priority":"normal"}
 #
@@ -25,7 +27,11 @@
 
 set -u
 
-REGISTRY="${PWT_RAM_CLAIMS_REGISTRY:-$HOME/.claude/state/pwt-ram-claims.jsonl}"
+# Env precedence: PWT_RAM_CLAIMS_PATH (canonical) > PWT_RAM_CLAIMS_REGISTRY
+# (legacy alias) > default ~/.claude/state/pwt-ram-claims.jsonl. The two env
+# names are equivalent; PWT_RAM_CLAIMS_PATH is the name new code and tests
+# should use.
+REGISTRY="${PWT_RAM_CLAIMS_PATH:-${PWT_RAM_CLAIMS_REGISTRY:-$HOME/.claude/state/pwt-ram-claims.jsonl}}"
 LOCK_DIR="${REGISTRY}.lock"
 IDLE_THRESHOLD="${PWT_FAIR_SHARE_IDLE_THRESHOLD:-300}"
 [[ "$IDLE_THRESHOLD" =~ ^[0-9]+$ ]] || IDLE_THRESHOLD=300

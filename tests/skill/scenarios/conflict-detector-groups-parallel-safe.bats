@@ -21,6 +21,7 @@ setup() {
     # Isolate registry — even though detector doesn't touch it, integration
     # paths might. Belt-and-braces.
     REG_TMP=$(mktemp -t conflict-e2e-reg.XXXXXX)
+    export PWT_RAM_CLAIMS_PATH="$REG_TMP"
     export PWT_RAM_CLAIMS_REGISTRY="$REG_TMP"
 
     # Build three directives.

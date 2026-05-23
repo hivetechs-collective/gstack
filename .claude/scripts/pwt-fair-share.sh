@@ -33,7 +33,9 @@
 #
 # Environment:
 #   PWT_RUN_PRIORITY              critical | normal (default) | background
-#   PWT_FAIR_SHARE_REGISTRY       path override (default ~/.claude/state/pwt-ram-claims.jsonl)
+#   PWT_RAM_CLAIMS_PATH           registry path (canonical; new name)
+#   PWT_RAM_CLAIMS_REGISTRY       legacy alias for the registry path
+#   PWT_FAIR_SHARE_REGISTRY       legacy fair-share alias (default ~/.claude/state/pwt-ram-claims.jsonl)
 #   PWT_FAIR_SHARE_MY_REPO        my repo name (default: basename of git toplevel)
 #   PWT_FAIR_SHARE_CAPACITY       machine capacity override (default: derived from ram-budget.sh)
 #   PWT_FAIR_SHARE_IDLE_THRESHOLD seconds of transcript silence before a claim is
@@ -67,7 +69,27 @@ esac
 IDLE_THRESHOLD="${PWT_FAIR_SHARE_IDLE_THRESHOLD:-300}"
 [[ "$IDLE_THRESHOLD" =~ ^[0-9]+$ ]] || IDLE_THRESHOLD=300
 
-REGISTRY="${PWT_FAIR_SHARE_STUB_REGISTRY:-${PWT_FAIR_SHARE_REGISTRY:-$HOME/.claude/state/pwt-ram-claims.jsonl}}"
+# Env precedence (high → low):
+#   1. PWT_FAIR_SHARE_STUB_REGISTRY  test-only stub (highest precedence — overrides everything)
+#   2. PWT_RAM_CLAIMS_PATH           canonical user-facing override (preferred)
+#   3. PWT_RAM_CLAIMS_REGISTRY       legacy alias (back-compat with older tests / scripts)
+#   4. PWT_FAIR_SHARE_REGISTRY       legacy fair-share-specific alias (back-compat)
+#   5. $HOME/.claude/state/pwt-ram-claims.jsonl   default
+REGISTRY="${PWT_FAIR_SHARE_STUB_REGISTRY:-${PWT_RAM_CLAIMS_PATH:-${PWT_RAM_CLAIMS_REGISTRY:-${PWT_FAIR_SHARE_REGISTRY:-$HOME/.claude/state/pwt-ram-claims.jsonl}}}}"
+
+# Auto-invoke registry cleanup (best-effort): remove orphan SIDs and
+# test-pattern repo entries before evaluating fair-share. Failure is non-fatal
+# — fair-share still proceeds with whatever the registry contains.
+# Disabled when PWT_FAIR_SHARE_DISABLE_AUTO_CLEANUP=1 (used by bats tests that
+# seed synthetic fake-SID entries which would otherwise be classified as
+# orphans and removed).
+if [ "${PWT_FAIR_SHARE_DISABLE_AUTO_CLEANUP:-0}" != "1" ]; then
+    __pwt_fs_cleanup="$(dirname "$0")/pwt-claims-cleanup.sh"
+    if [ -x "$__pwt_fs_cleanup" ]; then
+        "$__pwt_fs_cleanup" --quiet 2>/dev/null || true
+    fi
+    unset __pwt_fs_cleanup
+fi
 
 # Resolve my_repo name
 MY_REPO="${PWT_FAIR_SHARE_MY_REPO:-}"

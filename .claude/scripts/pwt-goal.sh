@@ -697,6 +697,33 @@ if [ "$LAUNCH" = "1" ]; then
         fi
         [ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-}"
     fi
+
+    # Resolve absolute path to the claude binary once via locate-claude.sh.
+    # Without this, bare `claude --bg` fails with "env: claude: No such file
+    # or directory" when the harness-inherited $PATH lacks the install dir
+    # (e.g. /Users/$USER/.local/bin). Production incident 2026-05-23.
+    #
+    # Resolution order:
+    #   1. $PROJECT_ROOT/.claude/scripts/locate-claude.sh
+    #   2. $(dirname "$0")/locate-claude.sh   (script-sibling — useful in worktrees)
+    #   3. fallback: bare "claude" (preserves pre-refactor behavior when the
+    #      helper isn't yet synced into a consumer repo or test sandbox)
+    __locate_claude() {
+        local locator
+        for locator in \
+            "$PROJECT_ROOT/.claude/scripts/locate-claude.sh" \
+            "$(dirname "$0")/locate-claude.sh"; do
+            if [ -x "$locator" ]; then
+                "$locator" && return 0
+            fi
+        done
+        # Graceful fallback: helper missing → use bare 'claude' which the shell
+        # will resolve via $PATH. This preserves the pre-2026-05-23 behavior
+        # so consumer repos that haven't synced the helper still work.
+        echo "claude"
+    }
+    CLAUDE_BIN=$(__locate_claude)
+
     USER_SID="${CLAUDE_JOB_DIR:-}"
     USER_SID="${USER_SID##*/}"
     [ -z "$USER_SID" ] && USER_SID="${PWT_PARENT_SID:-}"
@@ -716,11 +743,13 @@ if [ "$LAUNCH" = "1" ]; then
 
     # LAUNCH_ENV always contains PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1; the bare
     # `claude --bg` branch is unreachable but kept as a safety net.
+    # Use $CLAUDE_BIN (resolved via locate-claude.sh) to avoid PATH-dependent
+    # "env: claude: No such file or directory" failures.
     if [ -n "$LAUNCH_ENV" ]; then
-        env $LAUNCH_ENV claude --bg "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
         LAUNCH_RC=$?
     else
-        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 claude --bg "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 "$CLAUDE_BIN" --bg "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
         LAUNCH_RC=$?
     fi
 
@@ -993,7 +1022,7 @@ SUPEOF
     # 2026-05-21: sid 0b5856d7 → 4bbb2cb8 → f2ec9cb9 → 7a4c658b cascade).
     SUP_OUT_FILE=$(mktemp -t pwt-goal-supervisor.XXXXXX 2>/dev/null || echo "")
     if [ -n "$SUP_OUT_FILE" ]; then
-        env $LAUNCH_ENV claude --bg "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
         SUP_RC=$?
         SUPERVISOR_SID=""
         if [ -s "$SUP_OUT_FILE" ]; then
@@ -1007,7 +1036,7 @@ SUPEOF
         SUPERVISOR_SID=""
         SUP_RC=1
         echo "WARN: mktemp failed for supervisor; spawning anyway" >&2
-        env $LAUNCH_ENV claude --bg "$SUPERVISOR_BOOTSTRAP" >&2 || true
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg "$SUPERVISOR_BOOTSTRAP" >&2 || true
     fi
 
     if [ -n "$SUPERVISOR_SID" ]; then

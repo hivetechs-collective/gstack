@@ -385,8 +385,22 @@ esac
 # queried, the existing PWT-DS1 flag-file still backs up double-spawn.
 # See docs/specs/parallel-worker-gate.md.
 
+# Resolve absolute path to the claude binary up front via locate-claude.sh
+# so the PWG gate works even when the hook's inherited PATH lacks the install
+# dir. Fallback cascade:
+#   1. $PROJECT_ROOT/.claude/scripts/locate-claude.sh
+#   2. command -v claude (PATH lookup — preserves pre-2026-05-23 behavior)
+PWG_LOCATE="$PROJECT_ROOT/.claude/scripts/locate-claude.sh"
+PWG_CLAUDE_BIN=""
+if [ -x "$PWG_LOCATE" ]; then
+    PWG_CLAUDE_BIN=$("$PWG_LOCATE" 2>/dev/null) || PWG_CLAUDE_BIN=""
+fi
+if [ -z "$PWG_CLAUDE_BIN" ] && command -v claude >/dev/null 2>&1; then
+    PWG_CLAUDE_BIN="claude"
+fi
+
 if [ "${PLAN_W_TEAM_DISABLE_PARALLEL_GATE:-}" != "1" ] \
-   && command -v claude >/dev/null 2>&1 \
+   && [ -n "$PWG_CLAUDE_BIN" ] \
    && command -v jq >/dev/null 2>&1; then
 
     # Resolve canonical project root (worktree-aware). Strip trailing /.git
@@ -404,9 +418,9 @@ if [ "${PLAN_W_TEAM_DISABLE_PARALLEL_GATE:-}" != "1" ] \
     fi
     [ -z "$PWG_CANON_ROOT" ] && PWG_CANON_ROOT="$PROJECT_ROOT"
 
-    # Query the agents list. Run with a short timeout so a slow `claude` CLI
-    # doesn't stall every prompt.
-    PWG_AGENTS_RAW=$(claude agents --json 2>/dev/null || echo "[]")
+    # Query the agents list. Use the resolved $PWG_CLAUDE_BIN so the call
+    # works under harness-inherited environments where $PATH is stripped.
+    PWG_AGENTS_RAW=$("$PWG_CLAUDE_BIN" agents --json 2>/dev/null || echo "[]")
     if [ -z "$PWG_AGENTS_RAW" ] || ! printf '%s' "$PWG_AGENTS_RAW" | jq empty >/dev/null 2>&1; then
         PWG_AGENTS_RAW="[]"
     fi

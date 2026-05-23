@@ -26,6 +26,14 @@ sandbox() {
   SANDBOX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/plan-w-team-test.XXXXXX")"
   export SANDBOX_DIR
   cd "$SANDBOX_DIR"
+
+  # Test isolation for the cross-repo RAM claims registry. Without this, any
+  # test that invokes pwt-goal.sh, pwt-ram-claim.sh, pwt-fair-share.sh, or
+  # ram-budget.sh would read/write the production registry at
+  # ~/.claude/state/pwt-ram-claims.jsonl, leaving orphan rows that cause
+  # AT_FAIR_SHARE refusals in subsequent real spawns.
+  # See docs/specs/pwt-test-isolation-fair-share.md.
+  export PWT_RAM_CLAIMS_PATH="$SANDBOX_DIR/test-claims.jsonl"
 }
 
 teardown_sandbox() {
@@ -41,6 +49,7 @@ teardown_sandbox() {
     esac
   fi
   unset SANDBOX_DIR
+  unset PWT_RAM_CLAIMS_PATH
 }
 
 # Initialize a tiny git repo inside the sandbox. Several scripts under test

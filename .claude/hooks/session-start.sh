@@ -11,6 +11,18 @@ COMPACT_LOG="$STATE_DIR/compact-log.txt"
 HOOKS_DIR="$PROJECT_ROOT/.claude/hooks"
 UTILS_DIR="$PROJECT_ROOT/.claude/hooks/utils"
 
+# Resolve and export CLAUDE_BIN so transitively-spawned subscripts (e.g.
+# .claude/scripts/version-uplift/detect-version.sh, which calls
+# `claude --version`) don't fail with "env: claude: No such file or directory"
+# when the hook's inherited $PATH lacks the install dir. The helper is
+# best-effort; if it fails, CLAUDE_BIN stays unset and subscripts fall back
+# to bare `claude` (the pre-2026-05-23 behavior).
+LOCATE_CLAUDE="$PROJECT_ROOT/.claude/scripts/locate-claude.sh"
+if [ -x "$LOCATE_CLAUDE" ]; then
+    CLAUDE_BIN="$("$LOCATE_CLAUDE" 2>/dev/null)" || CLAUDE_BIN=""
+    [ -n "$CLAUDE_BIN" ] && export CLAUDE_BIN
+fi
+
 # =================================================================
 # CMUX: Auto-rename workspace tab to repo name (like tmux rename-window)
 #

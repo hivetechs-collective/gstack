@@ -102,7 +102,9 @@ count_bg_sessions() {
     # machine-wide RAM accounting. If present and readable, count its rows;
     # otherwise fall back to `claude agents --json` (which only sees the
     # current shell's bg sessions and misses workers spawned from other repos).
-    local registry="${PWT_RAM_CLAIMS_REGISTRY:-$HOME/.claude/state/pwt-ram-claims.jsonl}"
+    # Env precedence: PWT_RAM_CLAIMS_PATH (canonical) > PWT_RAM_CLAIMS_REGISTRY
+    # (legacy alias) > default ~/.claude/state/pwt-ram-claims.jsonl.
+    local registry="${PWT_RAM_CLAIMS_PATH:-${PWT_RAM_CLAIMS_REGISTRY:-$HOME/.claude/state/pwt-ram-claims.jsonl}}"
     if [ -r "$registry" ]; then
         local n
         n=$(grep -c '"sid":"' "$registry" 2>/dev/null || echo 0)

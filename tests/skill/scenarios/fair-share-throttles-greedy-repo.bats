@@ -24,11 +24,17 @@ FAIR_SHARE_SCRIPT="${BATS_TEST_DIRNAME%/tests/skill/scenarios}/.claude/scripts/p
 CLAIM_SCRIPT="${BATS_TEST_DIRNAME%/tests/skill/scenarios}/.claude/scripts/pwt-ram-claim.sh"
 
 setup() {
-    # Isolated registry per test
+    # Isolated registry per test — set all three env names so the script's
+    # precedence chain lands on the temp path regardless of which is checked.
+    # See docs/specs/pwt-test-isolation-fair-share.md for env precedence.
     REG_TMP=$(mktemp)
-    export PWT_FAIR_SHARE_STUB_REGISTRY="$REG_TMP"
+    export PWT_RAM_CLAIMS_PATH="$REG_TMP"
     export PWT_RAM_CLAIMS_REGISTRY="$REG_TMP"
+    export PWT_FAIR_SHARE_STUB_REGISTRY="$REG_TMP"
     export PWT_FAIR_SHARE_IDLE_THRESHOLD=0  # disable idle filter for deterministic tests
+    # Disable auto-cleanup so seeded fake-SID entries survive (they would
+    # otherwise be classified as orphans and removed before the test runs).
+    export PWT_FAIR_SHARE_DISABLE_AUTO_CLEANUP=1
 }
 
 teardown() {

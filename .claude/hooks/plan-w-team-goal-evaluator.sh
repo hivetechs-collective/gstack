@@ -33,6 +33,17 @@ PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 FALLBACK_STATE_DIR="$PROJECT_ROOT/.claude/state"
 PWD_STATE_DIR="$PWD/.claude/state"
 
+# Resolve and export CLAUDE_BIN so any helper script this hook invokes
+# (or transitively spawns) can call claude without PATH lookup failures.
+# The evaluator itself does not currently shell out to claude, but future
+# helpers (e.g. supervisor-mirror lifecycle hooks, child-cleanup) will
+# inherit a resolved $CLAUDE_BIN. Best-effort: missing helper = silent no-op.
+LOCATE_CLAUDE="$PROJECT_ROOT/.claude/scripts/locate-claude.sh"
+if [ -x "$LOCATE_CLAUDE" ]; then
+    CLAUDE_BIN="$("$LOCATE_CLAUDE" 2>/dev/null)" || CLAUDE_BIN=""
+    [ -n "$CLAUDE_BIN" ] && export CLAUDE_BIN
+fi
+
 # Worktree-aware state lookup: check $PWD/.claude/state first (the case when
 # /plan-w-team is running in a worktree), fall back to project root. We
 # aggregate goal files from both locations so the evaluator catches active

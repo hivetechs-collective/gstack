@@ -219,8 +219,98 @@ title=$(assert_max_len "$title" 256 "issue title")
   (~65k chars on comments and issue bodies); truncate with a warning so we
   surface the issue rather than silently hitting an API error.
 
+## Binary discovery
+
+PATH-based discovery of CLI binaries is fragile in subshells. When a hook or
+script runs under the Claude Code harness, its inherited `$PATH` may not
+include the install dir of binaries it depends on (most importantly the
+`claude` CLI itself — installed at `/Users/$USER/.local/bin/claude` by the
+official Claude Code installer). The symptom is identical for every consumer:
+
+```
+env: claude: No such file or directory
+```
+
+This is the failure mode behind the production incident on 2026-05-23 where
+`pwt-goal.sh` failed to spawn the worker bg session because the agent's Bash
+tool subshell did not have `/Users/$USER/.local/bin` on PATH. Every direct
+`claude --bg` / `claude agents` / `claude stop` / `claude --version` call in
+the codebase has the same exposure if invoked from a PATH-stripped subshell.
+
+### The fix: `.claude/scripts/locate-claude.sh`
+
+The helper resolves an absolute path to the claude binary, tried in this
+order:
+
+1. `command -v claude` — honors caller-installed PATH overrides and test stubs.
+2. `/Users/$USER/.local/bin/claude` — official installer default on macOS.
+3. `/opt/homebrew/bin/claude` — Homebrew on Apple Silicon.
+4. `/usr/local/bin/claude` — Homebrew on Intel / general `/usr/local`.
+5. `$HOME/.npm-global/bin/claude` — npm global install without sudo.
+
+Contract: stdout is the absolute path (exit 0) or empty + clear stderr
+enumeration of every searched location (exit 1). POSIX `sh`, no bashisms.
+Tested by `.claude/scripts/locate-claude.test.sh` (TC1–TC4 + EC1/EC3).
+
+### Usage patterns
+
+**Pattern A — short-lived script (`pwt-goal.sh`)**: define a helper that
+resolves once at the top of the launch block, then reuse:
+
+```bash
+__locate_claude() {
+    local locator="$PROJECT_ROOT/.claude/scripts/locate-claude.sh"
+    [ -x "$locator" ] || { echo "FATAL: locate-claude.sh missing" >&2; exit 127; }
+    "$locator" || { echo "FATAL: locate-claude.sh exited non-zero" >&2; exit 127; }
+}
+CLAUDE_BIN=$(__locate_claude) || exit $?
+
+env $LAUNCH_ENV "$CLAUDE_BIN" --bg "$GOAL_TEXT"
+```
+
+**Pattern B — long-lived hook (`session-start.sh`, `goal-evaluator.sh`)**:
+resolve once and export `CLAUDE_BIN` so transitively-spawned subscripts
+inherit a resolved path:
+
+```bash
+LOCATE_CLAUDE="$PROJECT_ROOT/.claude/scripts/locate-claude.sh"
+if [ -x "$LOCATE_CLAUDE" ]; then
+    CLAUDE_BIN="$("$LOCATE_CLAUDE" 2>/dev/null)" || CLAUDE_BIN=""
+    [ -n "$CLAUDE_BIN" ] && export CLAUDE_BIN
+fi
+```
+
+Downstream scripts then prefer `"${CLAUDE_BIN:-claude}"` to inherit the
+resolved path when running under the hook, and fall back to bare `claude`
+when invoked standalone with a normal PATH.
+
+**Pattern C — graceful gate (`plan-w-team-route-prompt.sh` PWG)**: when a
+block is best-effort and should degrade silently if claude can't be found,
+use the helper output as a gate condition rather than failing hard:
+
+```bash
+PWG_LOCATE="$PROJECT_ROOT/.claude/scripts/locate-claude.sh"
+PWG_CLAUDE_BIN=""
+if [ -x "$PWG_LOCATE" ]; then
+    PWG_CLAUDE_BIN=$("$PWG_LOCATE" 2>/dev/null) || PWG_CLAUDE_BIN=""
+fi
+if [ -n "$PWG_CLAUDE_BIN" ]; then
+    PWG_AGENTS_RAW=$("$PWG_CLAUDE_BIN" agents --json 2>/dev/null || echo "[]")
+fi
+```
+
+### Why not just `command -v claude`?
+
+`command -v` only consults `$PATH`. If the inheriting subshell's PATH doesn't
+include the install dir, `command -v claude` returns nothing — and code that
+guards a block with `if command -v claude` silently skips the work it was
+meant to do. The helper is preferred because it cascades through known
+install locations regardless of PATH state.
+
 ## Further Reading
 
 - `shared/board-integration.md` — how board.sh is invoked from stage files
 - `shared/untracked-hygiene.md` — ship-gate rules, including staged-work safety
 - `scripts/board.sh` — reference implementation of all patterns above
+- `.claude/scripts/locate-claude.sh` — claude-binary discovery helper
+- `docs/specs/locate-claude-binary.md` — spec for the helper + refactor
