@@ -366,6 +366,8 @@ The origin-chat supervisor's polling loop has two responsibilities per tick: (1)
 3. `.claude/state/plan-w-team-goal-<SLUG>.json` — read `terminal_state`; on non-null, consult Decision Matrix.
 4. `.claude/state/pwt-completion-summary-<SID>.md` — surface if ship/retro stages wrote one this tick.
 
+**Auto-terminate of origin mirror (2026-05-22)**: The origin chat's mirror goal-state file (`.claude/state/plan-w-team-goal-<SLUG>.json`, written by `pwt-goal.sh --supervisor-goal`) **auto-terminates on worker retro** — no manual `jq` intervention needed. Mechanism: `pwt-goal.sh --supervisor-goal` registers the mirror in the spawned-children registry as `type=supervisor_mirror`; on worker retro, `07-retro §8j-sexies → child-cleanup.sh` patches the mirror to SUCCESS. If the worker dies without retro, the goal-evaluator hook's DEAD-detection branch patches the mirror to LOW_CONFIDENCE_STREAK. See `docs/specs/supervisor-mirror-lifecycle.md`.
+
 Cadence: ~30–60s. Use `Bash + sleep` or `ScheduleWakeup` (preferred for runs >5 min).
 
 ### CONTINUATION CHECK (idle-detection)

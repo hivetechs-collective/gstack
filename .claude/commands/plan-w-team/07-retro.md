@@ -656,7 +656,9 @@ Investigate by reading the most recent supervisor-actions log and the final few 
 
 Stop any `claude --bg` children this run spawned. Without this, autonomous launches accumulate background sessions across runs (the 2026-05-20 incident left 19 background agents alive before discovery). Fire-and-forget — failed `claude stop` calls do not block retro completion.
 
-Cleanup runs BEFORE the End-of-Stage Status Block so the `retro-complete` anchor only appears after children are stopped. The cleanup logic lives in a helper script (`.claude/scripts/plan-w-team-child-cleanup.sh`) with its own tests (`plan-w-team-child-cleanup.test.sh`).
+Cleanup runs BEFORE the End-of-Stage Status Block so the `retro-complete` anchor only appears after children are stopped. The cleanup logic lives in a helper script (`.claude/scripts/plan-w-team-child-cleanup.sh`) with its own tests (`plan-w-team-child-cleanup.test.sh`, plus `plan-w-team-child-cleanup-supervisor-mirror.test.sh` for the mirror branch).
+
+**Supervisor-mirror handling**: registry rows with `type=supervisor_mirror` represent origin-chat mirror goal-state files written by `pwt-goal.sh --supervisor-goal`. Cleanup detects these rows and jq-patches the mirror file at the row's `path` field with `terminal_state=SUCCESS`, `terminal_reason="auto-synced from worker retro"`, `terminated_at=<ISO8601>` — instead of invoking `claude stop`. This closes the lifecycle gap where the mirror previously stayed `terminal_state=null` forever after the worker shipped. See `docs/specs/supervisor-mirror-lifecycle.md`.
 
 ```bash
 SLUG="<feature-slug>"

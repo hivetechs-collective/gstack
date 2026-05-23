@@ -318,6 +318,52 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
                     REASON="parent SLUG=$SLUG: all $CHECKED_COUNT spawned worker(s) terminal; worst-precedence=$WORST_STATE; worker_reason=$WORST_REASON"
                 fi
             fi
+
+            # (5) SUPERVISOR-MIRROR DEAD PROPAGATION: when a spawned-child
+            # registry row has type=supervisor_mirror, its `path` field points
+            # at an origin-side mirror goal-state file. If the worker's SID
+            # (registry session_id) is NOT in background_tasks AND the mirror
+            # is still non-terminal, the worker crashed without retro AND
+            # without writing terminal_state to its OWN goal file. We must
+            # propagate DEAD into the mirror so the origin chat's evaluator
+            # stops waiting. See docs/specs/supervisor-mirror-lifecycle.md.
+            #
+            # This is a pure side-effect sweep — it does NOT modify the
+            # current goal's TERMINAL/REASON. The patched mirror is itself
+            # one of the GOAL_FILES iterated on subsequent evaluator passes
+            # (via plan-w-team-goal-*.json glob), so its newly-set
+            # terminal_state surfaces through normal EXISTING_TERMINAL.
+            #
+            # Backward-compat: when ACTIVE_SIDS is empty (older Claude Code
+            # without background_tasks hook input), skip to preserve original
+            # behavior — no mirror patches without authoritative liveness data.
+            if [ -n "$ACTIVE_SIDS" ]; then
+                while IFS= read -r MIRROR_ROW; do
+                    [ -z "$MIRROR_ROW" ] && continue
+                    MIRROR_PATH=$(printf '%s' "$MIRROR_ROW" | jq -r '.path // ""' 2>/dev/null)
+                    MIRROR_SID=$(printf '%s' "$MIRROR_ROW" | jq -r '.session_id // ""' 2>/dev/null \
+                        | cut -c1-8)
+                    [ -z "$MIRROR_PATH" ] && continue
+                    [ ! -f "$MIRROR_PATH" ] && continue
+                    [ -z "$MIRROR_SID" ] && continue
+
+                    MIRROR_EXISTING=$(jq -r '.terminal_state // ""' "$MIRROR_PATH" 2>/dev/null || echo "")
+                    [ -n "$MIRROR_EXISTING" ] && continue
+
+                    if ! echo "$ACTIVE_SIDS" | grep -qFx "$MIRROR_SID"; then
+                        # Worker dead AND mirror non-terminal → propagate
+                        # LOW_CONFIDENCE_STREAK so origin investigates.
+                        MIRROR_DEAD_REASON="DEAD — supervisor_mirror worker SID $MIRROR_SID not in background_tasks, no terminal_state written by worker"
+                        jq --arg t "LOW_CONFIDENCE_STREAK" --arg r "$MIRROR_DEAD_REASON" \
+                           --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+                           '.terminal_state = $t | .terminal_reason = $r | .terminated_at = $ts' \
+                           "$MIRROR_PATH" > "$MIRROR_PATH.tmp" 2>/dev/null \
+                            && mv "$MIRROR_PATH.tmp" "$MIRROR_PATH" \
+                            || rm -f "$MIRROR_PATH.tmp" 2>/dev/null
+                        echo "[goal-evaluator] supervisor_mirror DEAD propagation: patched $MIRROR_PATH (worker $MIRROR_SID)" >&2
+                    fi
+                done < <(jq -c 'select(.type == "supervisor_mirror")' "$REGISTRY" 2>/dev/null)
+            fi
         fi
     fi
 

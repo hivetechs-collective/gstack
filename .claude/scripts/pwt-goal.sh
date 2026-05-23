@@ -181,6 +181,13 @@ if [ -z "$REQUEST" ]; then
     exit 1
 fi
 
+# Preserve the user's original directive content. The overflow path below
+# rewrites $REQUEST to a "Read full directive at ..." pointer; without this
+# snapshot, downstream slug derivation would produce useless slugs like
+# "read-full-directive-at-users-veronelazio-developer-private-claud" instead
+# of slugs that describe the actual feature. See docs/specs/supervisor-mirror-lifecycle.md.
+ORIGINAL_REQUEST="$REQUEST"
+
 # Validate type
 case "$TYPE" in
     feature|refactor|bugfix|docs) ;;
@@ -515,7 +522,10 @@ if [ "$LAUNCH" = "1" ]; then
         fi
         REGISTER_HELPER="$(dirname "$0")/plan-w-team-register-spawn.sh"
         if [ -x "$REGISTER_HELPER" ]; then
-            SLUG_GUESS=$(printf '%s' "$REQUEST" \
+            # Derive slug from the ORIGINAL_REQUEST (pre-overflow) so the slug
+            # describes the actual feature, not the "Read full directive at ..."
+            # overflow pointer. Idempotent: same REQUEST → same slug.
+            SLUG_GUESS=$(printf '%s' "$ORIGINAL_REQUEST" \
                 | tr '[:upper:]' '[:lower:]' \
                 | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
                 | cut -c1-64 \
@@ -580,6 +590,32 @@ EOF_GOAL_MIRROR
                     echo "INFO: --supervisor-goal: using PWD as origin (git repo); origin goal-state: $ORIGIN_GOAL_FILE" >&2
                 else
                     echo "  origin goal-state:  $ORIGIN_GOAL_FILE  (source: $ORIGIN_SOURCE)" >&2
+                fi
+
+                # Register the mirror in the worker's spawned-children registry
+                # so the retro cleanup contract auto-terminates the mirror
+                # (07-retro §8j-sexies → plan-w-team-child-cleanup.sh) and the
+                # goal-evaluator hook can propagate DEAD when the worker dies.
+                # The row is distinguishable by type=supervisor_mirror; existing
+                # rows without 'type' continue to be treated as worker entries.
+                # See docs/specs/supervisor-mirror-lifecycle.md.
+                ORIGIN_REGISTRY="$ORIGIN_STATE_DIR/plan-w-team-spawned-children-${SLUG_GUESS}.jsonl"
+                MIRROR_REG_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+                if command -v jq >/dev/null 2>&1; then
+                    MIRROR_ROW=$(jq -cn \
+                        --arg ts "$MIRROR_REG_TS" \
+                        --arg session_id "$WORKER_SID" \
+                        --arg parent_session_id "${USER_SID:-}" \
+                        --arg purpose "pwt-goal-launch" \
+                        --arg slug "$SLUG_GUESS" \
+                        --arg spawned_by "pwt-goal.sh --supervisor-goal" \
+                        --arg path "$ORIGIN_GOAL_FILE" \
+                        --arg type "supervisor_mirror" \
+                        '{ts:$ts, session_id:$session_id, parent_session_id:$parent_session_id, purpose:$purpose, slug:$slug, spawned_by:$spawned_by, type:$type, path:$path}' \
+                        2>/dev/null) || MIRROR_ROW=""
+                    if [ -n "$MIRROR_ROW" ]; then
+                        printf '%s\n' "$MIRROR_ROW" >> "$ORIGIN_REGISTRY" 2>/dev/null || true
+                    fi
                 fi
             else
                 echo "WARN: --supervisor-goal: PWT_ORIGIN_ROOT/CLAUDE_PROJECT_DIR unset and PWD is not a git repo; skipping origin mirror" >&2
@@ -735,7 +771,8 @@ SUPEOF
     # worker terminates (it's not a "spawned child" of the worker).
     REGISTER_HELPER="$(dirname "$0")/plan-w-team-register-spawn.sh"
     if [ -x "$REGISTER_HELPER" ]; then
-        SLUG_GUESS=$(printf '%s' "$REQUEST" \
+        # Derive slug from ORIGINAL_REQUEST (see slug derivation note above).
+        SLUG_GUESS=$(printf '%s' "$ORIGINAL_REQUEST" \
             | tr '[:upper:]' '[:lower:]' \
             | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//' \
             | cut -c1-64 \
