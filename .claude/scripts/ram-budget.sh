@@ -118,8 +118,20 @@ count_bg_sessions() {
         return
     fi
     # Try claude agents --json; tolerate any failure.
-    local json
-    json=$(claude agents --json 2>/dev/null) || { echo 0; return; }
+    #
+    # RAM accounting intentionally uses `claude-agents-extended.sh --bg-only`
+    # (or the raw `claude agents --json` if the wrapper isn't present yet).
+    # Subagents are ~50MB each; bg sessions are 250-400MB. Counting subagents
+    # in the headroom check would falsely refuse spawns at a fraction of the
+    # actual budget — they're a different scale of resource. The wrapper's
+    # subagent augmentation is for visibility (statusline + supervisor polling),
+    # not RAM accounting.
+    local json wrapper="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/claude-agents-extended.sh"
+    if [ -x "$wrapper" ]; then
+        json=$("$wrapper" --bg-only 2>/dev/null) || { echo 0; return; }
+    else
+        json=$(claude agents --json 2>/dev/null) || { echo 0; return; }
+    fi
     [ -z "$json" ] && { echo 0; return; }
     # Prefer jq if available, else grep-count.
     if command -v jq >/dev/null 2>&1; then

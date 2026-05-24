@@ -379,7 +379,17 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
   fi
   if [ "$bg_cache_age" -gt 10 ]; then
     mkdir -p "$PWD/.claude/state" 2>/dev/null
-    claude agents --json 2>/dev/null > "$bg_cache.tmp" && mv "$bg_cache.tmp" "$bg_cache" 2>/dev/null
+    # Use the extended wrapper so Agent-tool subagents (kind: "subagent") appear
+    # alongside `claude agents --json` output (kind: "background" / "interactive").
+    # The wrapper degrades gracefully when the script is missing (e.g., on a
+    # consumer repo that hasn't synced yet) — fall back to raw `claude agents`.
+    _STATUSLINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    _EXT_WRAPPER="$_STATUSLINE_DIR/scripts/claude-agents-extended.sh"
+    if [ -x "$_EXT_WRAPPER" ]; then
+      "$_EXT_WRAPPER" 2>/dev/null > "$bg_cache.tmp" && mv "$bg_cache.tmp" "$bg_cache" 2>/dev/null
+    else
+      claude agents --json 2>/dev/null > "$bg_cache.tmp" && mv "$bg_cache.tmp" "$bg_cache" 2>/dev/null
+    fi
   fi
   own_sid=""
   if [ -n "${CLAUDE_JOB_DIR:-}" ]; then
@@ -416,7 +426,7 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
   fi
 
   if [ -f "$bg_cache" ]; then
-    # Build a per-agent dashboard array:
+    # Build the bg-bucket dashboard array (kind: "background"):
     #   [ {role: "supervisor"|"worker"|"other", busy: bool, sid: "abcd1234"}, ... ]
     # Sorted: supervisor first, then worker, then other. Stable within group.
     dashboard_json=$(jq --arg cwd "$PWD" --arg own "$own_sid" \
@@ -447,9 +457,29 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
         )
     ' "$bg_cache" 2>/dev/null || echo "[]")
 
-    total_count=$(echo "$dashboard_json" | jq 'length' 2>/dev/null || echo 0)
-    busy_count=$(echo "$dashboard_json" | jq '[.[] | select(.busy)] | length' 2>/dev/null || echo 0)
+    # Build the sub-bucket dashboard array (kind: "subagent" — emitted by
+    # claude-agents-extended.sh from ~/.claude/projects/*/subagents/agent-*.jsonl).
+    # Subagents are always "mine" (sidechain children of the current session),
+    # so the role-filter isn't applied here; the cwd filter is the only gate.
+    sub_dashboard_json=$(jq --arg cwd "$PWD" '
+      [.[]
+        | select(.kind == "subagent")
+        | select(.cwd == $cwd or (.cwd | startswith($cwd + "/")))
+        | {
+            sid:    ((.agentId // .sessionId // "")[:8]),
+            status: (.status // "busy"),
+            busy:   ((.status // "busy") == "busy"),
+            role:   "worker"
+          }
+      ]
+    ' "$bg_cache" 2>/dev/null || echo "[]")
+
+    bg_total=$(echo "$dashboard_json"     | jq 'length' 2>/dev/null || echo 0)
+    sub_total=$(echo "$sub_dashboard_json" | jq 'length' 2>/dev/null || echo 0)
+    total_count=$(( bg_total + sub_total ))
     mine_count=$(echo "$dashboard_json" | jq '[.[] | select(.role != "other")] | length' 2>/dev/null || echo 0)
+    # Subagents are always "mine" by definition.
+    mine_count=$(( mine_count + sub_total ))
 
     # Phase label decision:
     #   - mine_count > 0           → "🚀 Agents Running"   (supervisor chain alive)
@@ -461,26 +491,21 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
       summaries_count=$(find "$PWD/.claude/state" -maxdepth 1 -name 'pwt-completion-summary-*.md' 2>/dev/null | wc -l | tr -d ' ')
     fi
 
-    # Emit the agents indicator on its own line (line 1 already has cwd +
-    # branch + model + git status — adding agents on the same line clips on
-    # narrow terminals). The leading \n breaks to a new line; 2-space indent
-    # visually subordinates it to the main statusline.
-    if [ "$total_count" != "0" ]; then
-      printf '\n  👤 %smain%s' "$(C '38;5;117')" "$(rst)"
-    fi
+    # Render one bucket: dots + trailing count summary.
+    # Args: <label> <bucket-json>
+    _render_bucket() {
+      local label="$1" bucket="$2"
+      local b_total b_run b_idle b_stop
+      b_total=$(echo "$bucket" | jq 'length' 2>/dev/null || echo 0)
+      [ "$b_total" = "0" ] && return
+      b_run=$(echo  "$bucket" | jq '[.[] | select(.status == "busy")] | length' 2>/dev/null || echo 0)
+      b_idle=$(echo "$bucket" | jq '[.[] | select(.status == "idle")] | length' 2>/dev/null || echo 0)
+      b_stop=$(echo "$bucket" | jq '[.[] | select(.status != "busy" and .status != "idle")] | length' 2>/dev/null || echo 0)
 
-    if [ "$total_count" != "0" ]; then
-      # Tally per-state counts (running / idle / stopping) for the trailing label.
-      # "stopping" catches any status that isn't busy or idle — forward-compat
-      # for a future explicit "stopping" status or any custom signal.
-      run_count=$(echo "$dashboard_json" | jq '[.[] | select(.status == "busy")] | length' 2>/dev/null || echo 0)
-      idle_count=$(echo "$dashboard_json" | jq '[.[] | select(.status == "idle")] | length' 2>/dev/null || echo 0)
-      stop_count=$(echo "$dashboard_json" | jq '[.[] | select(.status != "busy" and .status != "idle")] | length' 2>/dev/null || echo 0)
+      printf '  %s%s%s  ' "$(C '38;5;245')" "$label" "$(rst)"
 
-      printf '  %sbg%s  ' "$(C '38;5;245')" "$(rst)"
-
-      # Emit one dot per agent, color = state.
-      echo "$dashboard_json" | jq -r '.[] | .status' 2>/dev/null | while read -r status; do
+      # One dot per agent, color = state.
+      echo "$bucket" | jq -r '.[] | .status' 2>/dev/null | while read -r status; do
         case "$status" in
           busy) color="38;5;46"  ;; # bright green = running
           idle) color="38;5;255" ;; # bright white = idle (unusual — stale/orphan)
@@ -489,27 +514,31 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
         printf '%s●%s ' "$(C "$color")" "$(rst)"
       done
 
-      # Trailing count summary. Compact form when all in one state;
-      # mixed-state breakdown otherwise.
-      label_color="$(C '38;5;245')"; label_rst="$(rst)"
-      if   [ "$run_count"  = "$total_count" ]; then
-        printf '%s(%s running)%s' "$label_color" "$total_count" "$label_rst"
-      elif [ "$idle_count" = "$total_count" ]; then
-        printf '%s(%s idle)%s' "$label_color" "$total_count" "$label_rst"
-      elif [ "$stop_count" = "$total_count" ]; then
-        printf '%s(%s stopping)%s' "$label_color" "$total_count" "$label_rst"
+      local label_color="$(C '38;5;245')" label_rst="$(rst)"
+      if   [ "$b_run"  = "$b_total" ]; then
+        printf '%s(%s running)%s' "$label_color" "$b_total" "$label_rst"
+      elif [ "$b_idle" = "$b_total" ]; then
+        printf '%s(%s idle)%s' "$label_color" "$b_total" "$label_rst"
+      elif [ "$b_stop" = "$b_total" ]; then
+        printf '%s(%s stopping)%s' "$label_color" "$b_total" "$label_rst"
       else
-        # Mixed — show non-zero buckets only
-        parts=""
-        [ "$run_count"  != "0" ] && parts="${parts}, ${run_count} running"
-        [ "$stop_count" != "0" ] && parts="${parts}, ${stop_count} stopping"
-        [ "$idle_count" != "0" ] && parts="${parts}, ${idle_count} idle"
+        local parts=""
+        [ "$b_run"  != "0" ] && parts="${parts}, ${b_run} running"
+        [ "$b_stop" != "0" ] && parts="${parts}, ${b_stop} stopping"
+        [ "$b_idle" != "0" ] && parts="${parts}, ${b_idle} idle"
         parts="${parts#, }"
         printf '%s(%s)%s' "$label_color" "$parts" "$label_rst"
       fi
+    }
 
-      # Surface completion banner only when no bg agents remain AND a
-      # summary file is unread — handled by the elif branch below.
+    # Emit the agents indicator on its own line (line 1 already has cwd +
+    # branch + model + git status — adding agents on the same line clips on
+    # narrow terminals). The leading \n breaks to a new line; 2-space indent
+    # visually subordinates it to the main statusline.
+    if [ "$total_count" != "0" ]; then
+      printf '\n  👤 %smain%s' "$(C '38;5;117')" "$(rst)"
+      _render_bucket "bg"  "$dashboard_json"
+      _render_bucket "sub" "$sub_dashboard_json"
     elif [ "$summaries_count" != "0" ]; then
       printf '\n  ✅ %sAgents Completed%s — summary in chat ↓' "$(C '38;5;46')" "$(rst)"
     fi

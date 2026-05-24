@@ -649,7 +649,10 @@ Supervisor responsibilities (perform in order, this turn):
 
 2. POLLING LOOP (AC4): Observe worker state by polling, surfacing every
    transition as an assistant message. Use these primitives:
-     - `claude agents --json` — worker liveness + stage hint
+     - `./.claude/scripts/claude-agents-extended.sh` (with `claude agents
+       --json` as fallback) — worker liveness + stage hint. The extended
+       wrapper also surfaces Agent-tool subagents (kind: "subagent") so a
+       worker fanning out via the Agent tool stays visible during polling.
      - `claude logs {sid} --tail 200` — worker transcript tail
      - `{project_root}/.claude/state/plan-w-team-goal-*.json` —
        feature-specific terminal state for the active SLUG
@@ -690,8 +693,8 @@ Hard rules:
 - NEVER edit code, configs, or specs. The worker does all implementation.
 - NEVER spawn additional bg agents.
 - NEVER push to remote — that is the worker + user's responsibility.
-- If `claude agents --json` no longer lists session {sid} for >2 polls,
-  treat it as DEAD and emit the terminal block.
+- If the extended wrapper (or `claude agents --json` fallback) no longer
+  lists session {sid} for >2 polls, treat it as DEAD and emit the terminal block.
 
 The `pwt-completion-summary-{sid}.md` artifact and the macOS completion
 notification are unchanged from prior surfacing work — they continue to

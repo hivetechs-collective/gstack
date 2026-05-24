@@ -964,13 +964,13 @@ The worker is a separate `claude --bg` session executing /plan-w-team. It create
 
 ## Responsibilities
 
-1. **Observe** by polling `claude agents --json` and `claude logs __WORKER_SID__ --tail 200` every ~60s. Use `until` loops or ScheduleWakeup; don't burn cache by polling too fast.
+1. **Observe** by polling `./.claude/scripts/claude-agents-extended.sh` (or `claude agents --json` as fallback) and `claude logs __WORKER_SID__ --tail 200` every ~60s. The extended wrapper includes Agent-tool subagents (kind: "subagent") so a worker fanning out via the Agent tool stays visible. Use `until` loops or ScheduleWakeup; don't burn cache by polling too fast.
 
 2. **Wait for terminal state.** Done when ANY of:
    - **SUCCESS:** transcript contains `stage="retro-complete"` block with `workflow_lock="done"`
    - **ESCALATION:** a hard-gate pause site fires (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`)
    - **LOW-CONFIDENCE:** 3 consecutive supervisor decisions log `confidence=low`
-   - **DEAD:** `claude agents --json` no longer lists session __WORKER_SID__
+   - **DEAD:** the extended wrapper (or `claude agents --json` fallback) no longer lists session __WORKER_SID__
 
 3. **Write completion summary** to `__PROJECT_ROOT__/.claude/state/pwt-completion-summary-__WORKER_SID__.md` with sections: Outcome (SUCCESS/ESCALATION/LOW-CONFIDENCE/DEAD), Goal (verbatim above), Duration (start→end), Worktree (path or "none"), Files changed (`git -C <worktree> diff --stat HEAD~..HEAD` if applicable), AC verdict (parse `AC<N>: PASS|FAIL` lines), Highlights, Next action.
 
@@ -990,7 +990,7 @@ The worker is a separate `claude --bg` session executing /plan-w-team. It create
 
 ## Start
 
-1. Confirm worker is alive: `claude agents --json | jq '.[] | select(.sessionId | startswith("__WORKER_SID__"))'`.
+1. Confirm worker is alive: `./.claude/scripts/claude-agents-extended.sh | jq '.[] | select(.sessionId | startswith("__WORKER_SID__"))'` (falls back to `claude agents --json` if the wrapper is missing).
 2. Begin your polling loop.
 SUPEOF
 
