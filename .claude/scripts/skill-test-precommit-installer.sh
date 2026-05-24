@@ -109,8 +109,17 @@ shell_block() {
 $SENTINEL_START
 # Auto-installed by .claude/scripts/skill-test-precommit-installer.sh
 # Runs /plan-w-team skill E2E scenarios when relevant paths change.
-# Skip cleanly when the runner is missing (e.g., template repo without sync).
-if [ -x "$RUNNER" ]; then
+#
+# Two-layer guard:
+#   (1) Runner present and executable — protects template repos pre-sync.
+#   (2) bats binary present at tests/skill/.bats/bin/bats — protects sync
+#       TARGET repos where the runner script was synced in but the bats
+#       framework + scenario fixtures were not (sync only copies .claude/,
+#       not tests/). The skill source-of-truth repo (claude-pattern) has
+#       both. Without this guard, every sync commit in a consumer repo
+#       triggers the runner, which then fails with "bats not bootstrapped"
+#       and blocks the commit — a sync-tooling false positive.
+if [ -x "$RUNNER" ] && [ -x "tests/skill/.bats/bin/bats" ]; then
     CHANGED=\$(git diff --cached --name-only 2>/dev/null)
     if printf '%s\n' "\$CHANGED" | grep -qE '^\.claude/(commands/plan-w-team|hooks/plan-w-team-|scripts/pwt-goal|scripts/plan-w-team-)'; then
         echo "→ /plan-w-team skill paths touched — running E2E scenarios..."
