@@ -247,6 +247,40 @@ Stage labels in use:
 
 The supervisor's per-turn summary block (fenced as `summary` not `status`) is documented in `shared/supervisor-protocol.md` §Turn-End Summary Block Contract.
 
+### Transcript-storage detection (escaped quotes) — 2026-05-25
+
+The evaluator detects the three terminal signals by scanning the transcript
+JSONL. Claude Code stores assistant/user/tool message content as
+**JSON-encoded strings**, so a status block emitted as assistant text lands on
+disk with escaped quotes — `\"stage\":\"retro-complete\"` — not raw quotes. The
+original detector used `grep -F '"stage":"retro-complete"'`, which can never
+match the escaped form, causing **false-negative** terminal detection that
+trapped autonomous runs (cleanscale hard-gate escalation incident).
+
+The hook now decodes each transcript entry with `jq` (`decode_transcript`) and
+matches against the UNESCAPED text, OR'd with the raw transcript tail for
+backward-compat. Recognized shapes:
+
+- assistant `.message.content[].text` (escaped quotes)
+- `tool_result.content` as a string OR a `[{type:text,text}]` array
+- string-form user `.message.content`
+- `tool_use.input` objects (flattened to compact JSON)
+- fenced ` ```json ` blocks inside any of the above
+- raw direct-write form (unescaped) — still matched via the raw corpus
+
+Each decoded entry becomes ONE logical line (newlines collapsed), so a status
+block's keys colocate — preserving the "same status block / ±5 lines of the
+slug anchor" proximity defense against documentation text that merely quotes
+the pattern strings.
+
+**Debug env var**: set `PWT_GOAL_EVALUATOR_DEBUG=1` (or pass `--debug`) to make
+the hook print, to stderr, which detector ran and what matched/didn't — the
+diagnostic window for any future false-negative. stdout stays the pure
+`{"decision":"block",...}` contract.
+
+Regression coverage: `tests/skill/scenarios/goal-evaluator-escaped-quotes.bats`
+(+ fixtures under `tests/skill/scenarios/fixtures/goal-evaluator-escaped-quotes/`).
+
 ## Feature-Specific Done Criteria (PWT-T5c)
 
 The goal state file optionally carries a `feature_specific_done_criteria` array that extends the SUCCESS terminal condition. Generic anchors alone are insufficient when this array is non-empty — every criterion in it must ALSO appear in the transcript before SUCCESS fires.
@@ -384,6 +418,7 @@ The chain is at most as deep as the user's original mission; PWT-DS2 prevents ar
 | Env var                      | Default | Effect                                                                                                |
 | ---------------------------- | ------- | ----------------------------------------------------------------------------------------------------- |
 | `PLAN_W_TEAM_DISABLE_GOAL=1` | unset   | Skip top-of-pipeline `/goal` open entirely; pipeline runs as today (lead-driven turn-by-turn polling) |
+| `PWT_GOAL_EVALUATOR_DEBUG=1` | unset   | Evaluator prints per-detector diagnostics to stderr (which signal ran, what matched). Also `--debug`. |
 
 The kill switch only affects the `/goal` invocation in the skill md. The `plan-w-team-surface-status.sh` helper is unaffected — it remains observability infrastructure (status blocks still appear in the transcript whether or not `/goal` is active).
 

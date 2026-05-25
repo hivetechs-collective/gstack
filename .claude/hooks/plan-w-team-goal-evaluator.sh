@@ -7,10 +7,13 @@
 # reached a terminal state.
 #
 # Why deterministic instead of Haiku-based: every terminal-state anchor in
-# shared/goal-conditions.md is concrete enough to detect via grep against
-# the transcript. No LLM judgment needed, no eval hallucination, no tokens.
+# shared/goal-conditions.md is concrete enough to detect by jq-decoding the
+# transcript JSONL (assistant text, tool_result, user content — escaped or
+# raw) and pattern-matching the unescaped payloads. No LLM judgment needed,
+# no eval hallucination, no tokens.
 #
-# Spec: docs/specs/pwt-t5b-goal-evaluator.md (this file's spec)
+# Spec: docs/specs/pwt-t5-goal-wrapper.md (origin design);
+#       docs/specs/pwt-evaluator-escaped-quotes.md (escaped-quote transcript detection)
 # State file: .claude/state/plan-w-team-goal-<SLUG>.json
 # Kill switch: PLAN_W_TEAM_DISABLE_GOAL=1 → exit 0 (let stop proceed normally)
 # Block cap: default 8; set CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=200 in shell env
@@ -21,8 +24,22 @@ set -u
 # Always read stdin (hook contract)
 INPUT=$(cat 2>/dev/null || echo '{}')
 
+# Debug mode — emit structured diagnostics to stderr explaining WHY the hook
+# decided terminal / not-terminal (which detector ran, what it matched). Enable
+# via env PWT_GOAL_EVALUATOR_DEBUG=1 OR the --debug CLI flag (any position).
+# This is the only window into the hook when it false-negatives — keep it
+# informative. All debug output goes to stderr so the stdout JSON decision
+# contract is never polluted.
+PWT_DEBUG=0
+[ "${PWT_GOAL_EVALUATOR_DEBUG:-}" = "1" ] && PWT_DEBUG=1
+case " $* " in *" --debug "*) PWT_DEBUG=1 ;; esac
+dbg() { [ "$PWT_DEBUG" = "1" ] && echo "[goal-evaluator:debug] $*" >&2 || true; }
+
 # Kill switch — skip goal evaluation entirely
-[ "${PLAN_W_TEAM_DISABLE_GOAL:-}" = "1" ] && exit 0
+if [ "${PLAN_W_TEAM_DISABLE_GOAL:-}" = "1" ]; then
+    dbg "kill switch PLAN_W_TEAM_DISABLE_GOAL=1 → allow stop"
+    exit 0
+fi
 
 # stop_hook_active protection — if Claude Code already overrode us, don't fight
 if [ "$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
@@ -82,6 +99,76 @@ fi
 # Transcript: Claude Code passes the path in the hook input
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)
 
+# ── Transcript decoder ──────────────────────────────────────────────────────
+# THE FIX (2026-05-25): Claude Code stores assistant/user/tool message content
+# as JSON-encoded strings inside the transcript JSONL. A status block emitted
+# as assistant text therefore lands on disk with ESCAPED quotes:
+#     ...,"text":"{\"stage\":\"retro-complete\",\"slug\":\"x\"}"
+# The previous detectors ran `grep -F '"stage":"retro-complete"'` against the
+# raw transcript file, which can NEVER match the escaped form — so valid
+# terminal signals were silently rejected (false-negative), trapping
+# autonomous runs (cleanscale hard-gate escalation incident, 2026-05-25).
+#
+# Approach A (implemented): parse each transcript entry with jq, extract every
+# candidate text payload — assistant `.message.content[].text`, tool_result
+# `.content` (string OR nested {type:text,text} array), and string-form user
+# `.message.content` — and emit ONE decoded line per transcript entry with the
+# quotes UNESCAPED by jq's own string decoding. Detectors then match against
+# this decoded corpus. Because all keys of a single status block live in one
+# entry's text payload, "same decoded line" is the faithful translation of the
+# original "±5 lines of the slug anchor" proximity intent.
+#
+# Approach B (REJECTED): just add a second grep for the escaped variant
+# `\"stage\":\"retro-complete\"`. Rejected because escaping is context-
+# dependent and unbounded: double-encoding (`\\\"`) occurs when a status block
+# is quoted inside another JSON string (tool input echoing an assistant
+# message, nested tool_result arrays); fenced ```json blocks add their own
+# layer; and matching literal backslash-quote sequences across the raw file
+# also defeats the slug-anchor proximity defense (the anchor and the trigger
+# can land on different physical lines after `tail`). jq decoding collapses ALL
+# escape layers to canonical text in one pass and keeps each status block on a
+# single logical line — Approach B would need a new grep per escape depth and
+# still miss the array/double-encoded cases.
+#
+# Backward-compat: the RAW transcript tail is retained as a second corpus and
+# OR'd into every detector, so transcripts that happened to carry raw-form
+# patterns (direct file-write emission paths) are still detected. The fix ADDS
+# escaped-form detection; it does not remove raw-form detection.
+#
+# Fail-safe: malformed JSONL lines are skipped by `jq -R 'fromjson? // empty'`
+# so a corrupt transcript never crashes the hook (exits non-terminal cleanly).
+decode_transcript() {
+    # $1 = transcript file. Emits one decoded text line per parseable entry.
+    local file="$1"
+    [ -n "$file" ] && [ -f "$file" ] || return 0
+    tail -500 "$file" 2>/dev/null \
+        | jq -R 'fromjson? // empty' 2>/dev/null \
+        | jq -r '
+            ( .message.content? // empty ) as $c
+            | if   ($c | type) == "string" then $c
+              elif ($c | type) == "array" then
+                [ $c[]
+                  | if   (.type? == "text")        then (.text // "")
+                    elif (.type? == "tool_result") then
+                      ( if   (.content | type) == "string" then .content
+                        elif (.content | type) == "array"  then
+                          ([ .content[] | (.text? // "") ] | join(" "))
+                        else "" end )
+                    elif (.type? == "tool_use")    then
+                      # Tool input may carry a status block (e.g. a Write of a
+                      # state file). Flatten the input object back to compact
+                      # JSON so its keys are matchable on this same line.
+                      ( (.input // {}) | tostring )
+                    else "" end
+                ] | join("  ")
+              else "" end
+            # Collapse newlines so a multi-line status block stays on ONE
+            # decoded line — preserves the "same status block" proximity model.
+            | gsub("[\r\n]+"; " ")
+            | select(length > 0)
+        ' 2>/dev/null
+}
+
 # Background-task liveness (added 2026-05-22 — leverages Claude Code 2.1.145 feature).
 # Hook input now includes a `background_tasks` array of currently-alive bg sessions.
 # We extract the set of active SIDs (short 8-char form) to enable DEAD-worker
@@ -114,16 +201,37 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     EXISTING_TERMINAL=$(jq -r '.terminal_state // ""' "$GOAL_FILE")
 
     # Already marked terminal in a previous turn → allow stop
+    # (Backward-compat escape hatch: a user/agent can write terminal_state
+    # directly into the goal state file to force a graceful halt — this is the
+    # documented workaround the cleanscale agent used before this fix.)
     if [ -n "$EXISTING_TERMINAL" ]; then
+        dbg "SLUG=$SLUG already terminal_state=$EXISTING_TERMINAL (state-file short-circuit) → allowing stop"
         ANY_TERMINAL=true
         continue
     fi
 
-    # Read recent transcript lines (last ~500) for anchor detection
+    # Read recent transcript lines (last ~500) for anchor detection.
+    #
+    # SCAN is the union of two corpora:
+    #   RAW     — the literal transcript tail (backward-compat: catches raw-form
+    #             status blocks emitted via direct file-write paths).
+    #   DECODED — jq-decoded text payloads, one per transcript entry, with
+    #             escaped quotes unescaped (the FIX: catches status blocks
+    #             stored inside assistant/user/tool message strings).
+    #
+    # Detectors match against SCAN so BOTH forms are detected. The slug-anchor
+    # proximity defense is preserved because each DECODED entry is one logical
+    # line — a status block's keys (stage/workflow_lock/slug, or
+    # pending_escalations+slug, or low_confidence_routes+slug) all colocate on
+    # that single line, so "same line" == "same status block".
     if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ]; then
-        RECENT=$(tail -500 "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
+        RAW=$(tail -500 "$TRANSCRIPT_PATH" 2>/dev/null || echo "")
+        DECODED=$(decode_transcript "$TRANSCRIPT_PATH")
+        RECENT=$(printf '%s\n%s\n' "$RAW" "$DECODED")
+        dbg "SLUG=$SLUG transcript=$TRANSCRIPT_PATH raw_lines=$(printf '%s' "$RAW" | grep -c '' || echo 0) decoded_lines=$(printf '%s' "$DECODED" | grep -c '' || echo 0)"
     else
         RECENT=""
+        dbg "SLUG=$SLUG no transcript path (TRANSCRIPT_PATH='$TRANSCRIPT_PATH') — transcript detectors will be no-ops"
     fi
 
     TERMINAL=""
@@ -133,12 +241,33 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     # PWT-T5b dogfood fix (2026-05-20): also require slug match to prevent
     # false positives from documentation/example text that mentions the
     # anchor strings. The status block always includes "slug":"<this-SLUG>".
-    SLUG_ANCHOR="\"slug\":\"${SLUG}\""
-    if echo "$RECENT" | grep -F '"stage":"retro-complete"' >/dev/null 2>&1 \
-       && echo "$RECENT" | grep -F '"workflow_lock":"done"' >/dev/null 2>&1 \
-       && echo "$RECENT" | grep -F "$SLUG_ANCHOR" >/dev/null 2>&1; then
+    #
+    # 2026-05-25 escaped-quote fix: all three anchors must colocate on the SAME
+    # decoded line. Because decode_transcript emits one logical line per
+    # transcript entry (newlines collapsed), a genuine status block's three
+    # keys land together. Requiring same-line co-occurrence is the faithful
+    # translation of "same status block" and is strictly stronger than the old
+    # anywhere-in-corpus check — it prevents a documentation example that
+    # mentions stage=retro-complete in one entry and this slug in an unrelated
+    # entry from falsely combining into a SUCCESS.
+    #
+    # 2026-05-25 spacing fix: surface-status.sh emits PRETTY-PRINTED JSON
+    # (`"stage": "retro-complete"` — colon-SPACE), and decode_transcript only
+    # collapses newlines (not inner spacing), so the decoded block keeps the
+    # `": "` form. A fixed-string grep for the compact `"stage":"retro-complete"`
+    # never matched the real block — the very signal the retro emits. We use
+    # space-tolerant ERE (`"key"[[:space:]]*:[[:space:]]*"val"`) which matches
+    # BOTH compact (direct-write/tool-input) AND pretty-printed (status helper)
+    # forms. The SLUG is safe-slugged (kebab `[a-z0-9-]`), so it carries no ERE
+    # metacharacters.
+    SLUG_RE="\"slug\"[[:space:]]*:[[:space:]]*\"${SLUG}\""
+    if printf '%s\n' "$RECENT" \
+         | grep -E '"stage"[[:space:]]*:[[:space:]]*"retro-complete"' \
+         | grep -E '"workflow_lock"[[:space:]]*:[[:space:]]*"done"' \
+         | grep -E "$SLUG_RE" >/dev/null 2>&1; then
         TERMINAL="SUCCESS"
         REASON="retro-complete status block emitted with workflow_lock=done for slug=$SLUG"
+        dbg "(1) SUCCESS matched: stage=retro-complete + workflow_lock=done + slug=$SLUG colocated on one decoded line"
 
         # PWT-T5c: AND-check feature-specific done criteria
         CRITERIA_LEN=$(jq '.feature_specific_done_criteria // [] | length' "$GOAL_FILE")
@@ -174,34 +303,58 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         fi
     fi
 
+    if [ -z "$TERMINAL" ]; then
+        dbg "(1) SUCCESS not matched: needed stage=retro-complete + workflow_lock=done + slug=$SLUG colocated on one decoded line"
+    fi
+
     # (2) USER_ESCALATION_HALT: pending_escalations contains a hard-gate label
     # Slug-match defense: the status/summary block including the escalation MUST
     # carry "slug":"<SLUG>" within the same ~10 lines, otherwise the match is
     # likely from documentation text mentioning the site name.
+    #
+    # 2026-05-25 escaped-quote fix: $RECENT now includes the jq-decoded corpus,
+    # so an escalation block emitted as escaped assistant text is matched. The
+    # ±5-line window remains correct for both corpora: in DECODED text the
+    # pending_escalations array and slug colocate on ONE line (well inside the
+    # window); in RAW text a multi-line status block stays inside ±5 lines.
     if [ -z "$TERMINAL" ]; then
         for SITE in push-ack secret-scan-allow scope-unlock-for-drift; do
             # grep -B/-A scope: any pending_escalations line referencing $SITE
             # must have $SLUG within 10 lines (status block size).
-            if echo "$RECENT" | grep -B5 -A5 -E "\"pending_escalations\":\[[^]]*\"$SITE\"" \
-                | grep -F "\"slug\":\"$SLUG\"" >/dev/null 2>&1; then
+            # Space-tolerant (2026-05-25): pretty-printed blocks render
+            # `"pending_escalations": [ "push-ack" ]` with spaces; match both
+            # compact and spaced via [[:space:]]* around colon and bracket.
+            if echo "$RECENT" | grep -B5 -A5 -E "\"pending_escalations\"[[:space:]]*:[[:space:]]*\[[^]]*\"$SITE\"" \
+                | grep -E "\"slug\"[[:space:]]*:[[:space:]]*\"$SLUG\"" >/dev/null 2>&1; then
                 TERMINAL="USER_ESCALATION_HALT"
                 REASON="hard-gate site '$SITE' in pending_escalations for slug=$SLUG — user must respond"
+                dbg "(2) USER_ESCALATION_HALT matched: site=$SITE in pending_escalations within ±5 lines of slug=$SLUG"
                 break
             fi
         done
+        [ -z "$TERMINAL" ] && dbg "(2) USER_ESCALATION_HALT not matched: no hard-gate site (push-ack/secret-scan-allow/scope-unlock-for-drift) in pending_escalations within ±5 lines of slug=$SLUG"
     fi
 
     # (3) LOW_CONFIDENCE_STREAK: status block reports low_confidence_routes >= 3
     # Slug-match defense: extract low_confidence_routes values only from
     # transcript regions where this slug appears within ±5 lines.
+    #
+    # 2026-05-25 escaped-quote fix: same union-corpus + ±5-line-window
+    # rationale as (2). Decoded lines colocate slug + low_confidence_routes.
     if [ -z "$TERMINAL" ]; then
+        # Space-tolerant (2026-05-25): match both `"low_confidence_routes":N`
+        # (compact) and `"low_confidence_routes": N` (pretty-printed). Extract
+        # the trailing integer regardless of the colon spacing.
         MAX_LOW=$(echo "$RECENT" \
-            | grep -B5 -A5 -F "\"slug\":\"$SLUG\"" \
-            | grep -oE '"low_confidence_routes":[0-9]+' \
+            | grep -B5 -A5 -E "\"slug\"[[:space:]]*:[[:space:]]*\"$SLUG\"" \
+            | grep -oE '"low_confidence_routes"[[:space:]]*:[[:space:]]*[0-9]+' \
             | grep -oE '[0-9]+$' | sort -n | tail -1)
         if [ -n "$MAX_LOW" ] && [ "$MAX_LOW" -ge 3 ]; then
             TERMINAL="LOW_CONFIDENCE_STREAK"
             REASON="low_confidence_routes=$MAX_LOW (≥3 — supervisor confidence threshold breached)"
+            dbg "(3) LOW_CONFIDENCE_STREAK matched: low_confidence_routes=$MAX_LOW within ±5 lines of slug=$SLUG"
+        else
+            dbg "(3) LOW_CONFIDENCE_STREAK not matched: max low_confidence_routes near slug=$SLUG = ${MAX_LOW:-none} (need ≥3)"
         fi
     fi
 
@@ -393,6 +546,7 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         else
             BLOCK_REASON="/plan-w-team SLUG=$SLUG not yet terminal. Continue pipeline. Need ONE of: status block with stage=retro-complete + workflow_lock=done; pending_escalations containing a hard-gate site (push-ack/secret-scan-allow/scope-unlock-for-drift); low_confidence_routes>=3."
         fi
+        dbg "SLUG=$SLUG NOT terminal → blocking stop. reason=$BLOCK_REASON"
     fi
 done
 

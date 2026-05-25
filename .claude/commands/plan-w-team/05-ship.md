@@ -820,6 +820,30 @@ The Step 5 reviewer enforces this by checking, for any PR carrying `DO NOT MERGE
 
 Read `shared/artifact-storage.md` for review log and streak tracking formats.
 
+## 6h. Post-Merge Worktree Cleanup (supervisor-only)
+
+When the worker's feature branch has been **merged to the default branch on the parent repo** (clean merge, ship-readiness gate PASS), the supervisor — NOT the worker — reclaims the worker's worktree + branch. The supervisor has the right context: it knows the merge happened and that the worktree is now post-merge garbage.
+
+This step fires ONLY on a clean merge. **Skip cleanup (preserve the worktree)** when any of these hold — the worktree is still needed or its state is unsafe to touch:
+
+- Step 5 review returned FAIL.
+- A hard-gate halt is active (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`).
+- 3-consecutive low-confidence escalation fired.
+- The worktree has uncommitted changes, or a live `claude` session still has it as cwd (the helper re-asserts both invariants and safe-skips).
+- The PR was opened but NOT yet merged (the common `DO NOT MERGE` flow) — cleanup waits until the actual merge.
+
+```bash
+# Supervisor runs this after confirming the merge landed on the default branch.
+# WORKTREE_PATH + BRANCH are the worker's, recorded in the run's fleet JSONL.
+if [ -x .claude/scripts/plan-w-team-worktree-on-merge.sh ]; then
+  ON_MERGE_JSON=$(.claude/scripts/plan-w-team-worktree-on-merge.sh \
+      "$WORKTREE_PATH" "$BRANCH" "$SLUG" 2>/dev/null || echo '{}')
+  echo "✓ post-merge cleanup: $(printf '%s' "$ON_MERGE_JSON" | jq -r '.reason // "n/a"' 2>/dev/null)"
+fi
+```
+
+The helper enforces every safety invariant itself (containment to `.claude/worktrees/`, uncommitted check, in-use check, idempotency) and returns `skipped:true` with a `safe-skip:*` reason rather than failing when a guard trips — so wiring it unconditionally on the PASS path is safe. Repo-wide accumulated-debt sweeps are the weekly launchd GC, not this per-merge step. Full contract: `docs/operations/worktree-lifecycle.md`. Kill switch: `PWT_WORKTREE_ON_MERGE_DISABLE=1`.
+
 ## End-of-Stage Status Block (PWT-T5)
 
 At the end of this stage, emit a status block for the `/goal` evaluator. This is a one-line invocation; the helper handles all field population (workflow lock, supervisor log, fleet log, escalations).

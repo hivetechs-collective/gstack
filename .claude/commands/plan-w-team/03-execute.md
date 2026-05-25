@@ -422,6 +422,80 @@ When the lead implements directly (Multi-Session Feature Detection path), the le
 | Before fix-first agents | Re-record `BASE_SHA=$(git rev-parse HEAD)`       | Fix agents must branch from post-merge state, not original base |
 | End of pipeline         | `git worktree prune` to catch any stragglers     | Clean slate for next run                                        |
 
+### Dependency-Tree Sharing at Worktree-Create (Layer 2 disk-hygiene)
+
+A freshly created worktree that runs `pnpm install` / `cargo build` / `uv sync`
+re-materializes its entire dependency tree from scratch — cleanscale measured
+~2.2 GB per worktree, dominated by `node_modules`. Across 20+ active worktrees
+this becomes 40-60+ GB of avoidable disk pressure. To eliminate it, the new
+worktree shares dependency trees from the **main** repo per-tech-stack:
+
+| Stack                   | Mechanism                                                                                    |
+| ----------------------- | -------------------------------------------------------------------------------------------- |
+| pnpm/npm/yarn/bun       | symlink `node_modules/` (root + every workspace package)                                     |
+| cargo                   | set `[build] target-dir` → main's `target/` in `.cargo/config.toml` (merge, never overwrite) |
+| uv / poetry / pip-tools | symlink `.venv/` when the in-project convention is present                                   |
+| mix                     | symlink `deps/` and `_build/`                                                                |
+| composer                | symlink `vendor/`                                                                            |
+| bundler                 | symlink `vendor/bundle/` when configured for in-project path                                 |
+| maven / gradle / go     | NO-OP (already shared via `~/.m2` / `~/.gradle` / GOPATH)                                    |
+
+**How it fires:** the same fail-open shim (`.claude/hooks/worktree-deps-share.sh`)
+runs on two post-create events, both carrying `cwd`:
+
+- **`SubagentStart`** — a worktree-isolated Agent-tool subagent begins (the
+  standard parallel-builder path). `cwd` is the subagent's worktree. Zero lead
+  action required.
+- **`SessionStart`** — a top-level session launched directly into a worktree via
+  `claude --worktree` / `claude --bg --worktree`. `cwd` is that worktree;
+  redundant `compact`/`clear` re-fires are skipped via the `source` field.
+
+In both cases a session whose `cwd` is the main repo no-ops. It resolves main via
+`git worktree list` and invokes the engine. (It is deliberately NOT a
+`WorktreeCreate` hook: that event _replaces_ git worktree creation and must echo
+the new path, with any non-zero exit failing creation — the wrong shape for a
+post-create deps shim.)
+
+> **Coverage gap to know:** a `pwt-goal` `claude --bg` **lead** starts in the
+> _main_ repo and creates its worktree mid-session, so its `SessionStart` `cwd`
+> is main (no-op). That lead's deps-sharing relies on its worktree-isolated
+> subagent builders (`SubagentStart`) or the **manual invocation** below when the
+> lead works in a worktree it made itself. (Headless `claude -p` does not fire
+> `SessionStart` at all.)
+
+**Manual invocation** (lead-implements-directly, or to preview):
+
+```bash
+# Apply sharing into a worktree (auto strategy = lockfile-hash-gated share)
+.claude/scripts/worktree-deps-share.sh --worktree <path> --main "$(git rev-parse --show-toplevel)"
+
+# Preview only, machine-readable
+.claude/scripts/worktree-deps-share.sh --worktree <path> --main <main> --dry-run --json
+```
+
+**Safety (built in, non-negotiable):**
+
+- **Lockfile-divergence guard** — before sharing a stack, the engine hashes the
+  worktree's lockfile and compares it to main's. On mismatch (the worktree
+  intends to bump deps) it **isolates that stack only**; other stacks still
+  share. Per-stack hashes are recorded in
+  `.claude/state/worktree-deps-hash-<slug>.json` so a later run can detect when
+  the policy must flip share→isolate.
+- **Never clobbers real content** — an existing real (non-symlink) deps dir is
+  left alone (skip) unless `--force` is passed.
+- **Idempotent** — re-running on an already-shared worktree is a no-op.
+
+**Per-feature opt-out** (surface in the directive when a feature will bump deps):
+
+| Env var                                       | Effect                                                         |
+| --------------------------------------------- | -------------------------------------------------------------- |
+| `WORKTREE_DEPS_STRATEGY=share\|isolate\|auto` | `auto` (default) = lockfile-gated; `isolate` skips all sharing |
+| `WORKTREE_DEPS_DISABLE_STACKS=pnpm,cargo`     | force-isolate the named stacks, share the rest                 |
+| `WORKTREE_DEPS_SHARE_DISABLE=1`               | hard kill switch — the SubagentStart/SessionStart hook no-ops  |
+
+See `docs/operations/worktree-deps-sharing.md` for the full stack matrix,
+divergence-guard rationale, and troubleshooting.
+
 ### Context Budget Awareness
 
 Large parallel builds consume lead context fast. Mitigate:

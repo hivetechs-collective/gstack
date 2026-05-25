@@ -29,7 +29,16 @@
 set -uo pipefail
 
 INPUT=$(cat 2>/dev/null || echo "")
-COMMAND=$(echo "$INPUT" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/' || echo "")
+# Extract the Bash command robustly. The PreToolUse payload nests it under
+# .tool_input.command. A plain grep for "command" truncates at the first
+# ESCAPED quote (\") inside `git commit -m "..."`, dropping the message and
+# silently defaulting every bump to PATCH (so feat: never became MINOR). Parse
+# with jq; fall back to the (lossy) grep only when jq is unavailable.
+if command -v jq >/dev/null 2>&1; then
+    COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // .command // empty' 2>/dev/null)
+else
+    COMMAND=$(echo "$INPUT" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/' || echo "")
+fi
 
 # Only fire on `git commit` (not amend, not other git verbs).
 if ! echo "$COMMAND" | grep -qE '\bgit[[:space:]]+commit\b'; then
@@ -68,28 +77,30 @@ if echo "$STAGED" | grep -q '^\.claude/commands/plan-w-team/VERSION$'; then
     exit 0
 fi
 
-# Extract commit message: -m flag (short form) or -F file path (long form).
-# Falls back to .git/COMMIT_EDITMSG if both are absent (interactive commit).
-COMMIT_MSG=""
-if echo "$COMMAND" | grep -qE '\-m[[:space:]]'; then
-    COMMIT_MSG=$(echo "$COMMAND" | sed -n "s/.*-m[[:space:]]*['\"]\\([^'\"]*\\)['\"].*/\\1/p")
-    [ -z "$COMMIT_MSG" ] && COMMIT_MSG=$(echo "$COMMAND" | sed -n 's/.*-m[[:space:]]*\([^[:space:]]*\).*/\1/p')
-fi
-if [ -z "$COMMIT_MSG" ] && echo "$COMMAND" | grep -qE '\-F[[:space:]]'; then
-    MSG_FILE=$(echo "$COMMAND" | sed -n 's/.*-F[[:space:]]*\([^[:space:]]*\).*/\1/p')
-    [ -f "$MSG_FILE" ] && COMMIT_MSG=$(cat "$MSG_FILE" 2>/dev/null || echo "")
-fi
-if [ -z "$COMMIT_MSG" ] && [ -f "$PROJECT_ROOT/.git/COMMIT_EDITMSG" ]; then
-    COMMIT_MSG=$(cat "$PROJECT_ROOT/.git/COMMIT_EDITMSG" 2>/dev/null || echo "")
+# Build the text to classify. COMMAND is now fully unescaped (jq), so a
+# `-m "feat(scope): ..."` subject is intact. Prefer an explicit -F message file
+# or the interactive COMMIT_EDITMSG when there's no inline -m.
+CLASSIFY_TEXT="$COMMAND"
+case "$COMMAND" in
+    *" -F "*)
+        MSG_FILE="${COMMAND#* -F }"; MSG_FILE="${MSG_FILE%% *}"
+        [ -f "$MSG_FILE" ] && CLASSIFY_TEXT=$(cat "$MSG_FILE" 2>/dev/null || echo "$COMMAND")
+        ;;
+esac
+if [ "$CLASSIFY_TEXT" = "$COMMAND" ] && ! printf '%s' "$COMMAND" | grep -qE "\-m[[:space:]\"']"; then
+    # No inline -m and no -F → interactive commit; classify the prepared message.
+    [ -f "$PROJECT_ROOT/.git/COMMIT_EDITMSG" ] && CLASSIFY_TEXT=$(cat "$PROJECT_ROOT/.git/COMMIT_EDITMSG" 2>/dev/null || echo "$COMMAND")
 fi
 
-# Classify bump kind. Default PATCH (conservative — never silently MAJOR).
+# Classify bump kind from the FIRST conventional-commit token in the text.
+# Default PATCH (conservative — never silently MAJOR).
 BUMP="patch"
-if echo "$COMMIT_MSG" | grep -qE 'BREAKING[ _-]CHANGE|^[a-z]+(\([^)]+\))?!:'; then
+PREFIX=$(printf '%s' "$CLASSIFY_TEXT" | grep -oiE '(feat|fix|docs|chore|refactor|test|perf|style|build|ci)(\([^)]*\))?!?:' | head -1)
+if printf '%s' "$CLASSIFY_TEXT" | grep -q 'BREAKING[ _-]CHANGE' || printf '%s' "$PREFIX" | grep -q '!:'; then
     BUMP="major"
-elif echo "$COMMIT_MSG" | grep -qE '^feat(\([^)]+\))?:'; then
+elif printf '%s' "$PREFIX" | grep -qiE '^feat'; then
     BUMP="minor"
-elif echo "$COMMIT_MSG" | grep -qE '^(fix|docs|chore|refactor|test|perf|style|build|ci)(\([^)]+\))?:'; then
+elif printf '%s' "$PREFIX" | grep -qiE '^(fix|docs|chore|refactor|test|perf|style|build|ci)'; then
     BUMP="patch"
 fi
 

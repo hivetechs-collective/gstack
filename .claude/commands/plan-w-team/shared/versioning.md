@@ -73,3 +73,14 @@ The hook only bumps when the commit touches:
 State-only commits, hook tweaks unrelated to `/plan-w-team`, test infra, or
 unrelated repo changes do **not** bump the version — bumping should reflect a
 change in the skill's observable behavior.
+
+The hook reads the commit command via `jq` (`.tool_input.command`) so escaped
+quotes in `git commit -m "..."` don't truncate the message and misclassify the
+bump kind — a regression that pinned VERSION at 1.0.0 until 1.1.0. It is
+test-covered by `.claude/hooks/pre-commit-pwt-version-bump.test.sh`.
+
+## Releasing
+
+Run `.claude/hooks/pre-commit-pwt-version-bump.test.sh` after touching the hook,
+and confirm the resulting `VERSION` matches the bump kind before pushing.
+

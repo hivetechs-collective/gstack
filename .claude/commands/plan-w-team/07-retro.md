@@ -709,6 +709,43 @@ fi
 
 The cleanup is intentionally fire-and-forget: a `claude stop` that fails because the child has already finished is the normal case, not an error. The retro JSON records every attempt so a forensics pass can cross-check against `claude agents` to confirm no orphans survived.
 
+## 8j-septies. Worktree + Companion-Process Cleanup
+
+`§8j-sexies` stops the bg child _sessions_; this block reclaims the _filesystem + processes_ they leave behind. Without it, every run leaves an `agent-<sid>/` worktree dir (node_modules and all) plus a `pane-display.py` spinner and `pwt-watch.sh` watcher running indefinitely — the disk-hygiene gap that motivated `docs/operations/worktree-lifecycle.md`. Runs fire-and-forget; nothing here blocks the `retro-complete` anchor.
+
+This sweep is scoped to THIS run's subagents (`--scope subagents-of-current-run`) plus a companion-process pass. The repo-wide accumulated-debt sweep is the weekly launchd job, not the retro.
+
+```bash
+SLUG="<feature-slug>"
+
+# 1. Subagent worktrees of THIS run (safety invariants enforced inside the GC:
+#    never touches uncommitted / in-use / non-.claude-worktrees paths).
+if [ -x .claude/scripts/plan-w-team-worktree-gc.sh ]; then
+  WT_GC_JSON=$(.claude/scripts/plan-w-team-worktree-gc.sh \
+      --scope subagents-of-current-run --execute --json 2>/dev/null || echo '{}')
+  WT_REMOVED=$(printf '%s' "$WT_GC_JSON" | jq -r '.totals.removed // 0' 2>/dev/null || echo 0)
+  echo "✓ worktree GC (subagents-of-this-run): $WT_REMOVED removed"
+fi
+
+# 2. Orphan companion processes (pane-display.py spinners + pwt-watch.sh watchers).
+if [ -x .claude/scripts/plan-w-team-companion-gc.sh ]; then
+  COMP_GC_JSON=$(.claude/scripts/plan-w-team-companion-gc.sh --execute --json 2>/dev/null || echo '{}')
+  COMP_KILLED=$(printf '%s' "$COMP_GC_JSON" | jq -r '.totals.killed // 0' 2>/dev/null || echo 0)
+  echo "✓ companion GC: $COMP_KILLED orphan processes reaped"
+fi
+
+# Persist both into the retro JSON's quality_signals (advisory, never fatal).
+RETRO_STATE=".claude/state/plan-w-team-retro-${SLUG}.json"
+if [ -f "$RETRO_STATE" ] && command -v jq >/dev/null 2>&1; then
+  TMP=$(mktemp "${RETRO_STATE}.tmp.XXXXXX")
+  jq --argjson wt "${WT_GC_JSON:-{}}" --argjson comp "${COMP_GC_JSON:-{}}" \
+    '.quality_signals.worktree_gc = $wt | .quality_signals.companion_gc = $comp' \
+    "$RETRO_STATE" > "$TMP" 2>/dev/null && mv "$TMP" "$RETRO_STATE" || rm -f "$TMP"
+fi
+```
+
+**Kill switches:** `PWT_WORKTREE_GC_DISABLE=1` and `PWT_COMPANION_GC_DISABLE=1` each no-op their respective sweep. Both default ON. See `docs/operations/worktree-lifecycle.md` for the full lifecycle contract, the per-merge cleanup path (`§Step 6 ship`), and how to install the weekly accumulated-debt GC.
+
 ## 8j. Auto-Memory Hints (advisory)
 
 Claude Code 2.1.x ships **Auto Memory** — a per-project memory store at `~/.claude/projects/<project>/memory/` that Claude's memory module manages on its own. The module reads conversation context and decides what's worth persisting. /plan-w-team does **not** write to memory files directly — Claude owns that decision.

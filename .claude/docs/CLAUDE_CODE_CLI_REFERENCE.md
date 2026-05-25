@@ -374,27 +374,39 @@ Hooks tie deterministic code to specific moments in Claude Code's lifecycle.
 
 ### Hook Events
 
-| Event                | Matcher    | When                               | Can Block    |
-| -------------------- | ---------- | ---------------------------------- | ------------ |
-| `PreToolUse`         | Tool name  | Before tool execution              | Yes (exit 2) |
-| `PostToolUse`        | Tool name  | After tool execution               | No           |
-| `UserPromptSubmit`   | -          | Before processing user input       | Yes (exit 2) |
-| `Notification`       | -          | When Claude sends alerts           | No           |
-| `Stop`               | -          | When response finishes             | No           |
-| `SubagentStart`      | Agent name | When subagent begins               | No           |
-| `SubagentStop`       | Agent name | When subagent completes            | No           |
-| `SessionStart`       | -          | Session initialization             | No           |
-| `SessionEnd`         | -          | Session termination                | No           |
-| `PreCompact`         | -          | Before auto-compaction             | No           |
-| `Setup`              | -          | With `--init`/`--maintenance`      | No           |
-| `PermissionRequest`  | Tool name  | Permission dialog shown            | Yes          |
-| `TeammateIdle`       | -          | When a teammate goes idle          | No           |
-| `TaskCompleted`      | -          | When a task is marked completed    | No           |
-| `WorktreeCreate`     | -          | When a git worktree is created     | No           |
-| `WorktreeRemove`     | -          | When a git worktree is removed     | No           |
-| `ConfigChange`       | -          | When settings/config changes       | No           |
-| `PostToolUseFailure` | Tool name  | After tool execution fails         | No           |
-| `InstructionsLoaded` | -          | When instructions/rules are loaded | No           |
+| Event                | Matcher    | When                                        | Can Block    |
+| -------------------- | ---------- | ------------------------------------------- | ------------ |
+| `PreToolUse`         | Tool name  | Before tool execution                       | Yes (exit 2) |
+| `PostToolUse`        | Tool name  | After tool execution                        | No           |
+| `UserPromptSubmit`   | -          | Before processing user input                | Yes (exit 2) |
+| `Notification`       | -          | When Claude sends alerts                    | No           |
+| `Stop`               | -          | When response finishes                      | No           |
+| `SubagentStart`      | Agent name | When subagent begins                        | No           |
+| `SubagentStop`       | Agent name | When subagent completes                     | No           |
+| `SessionStart`       | -          | Session initialization                      | No           |
+| `SessionEnd`         | -          | Session termination                         | No           |
+| `PreCompact`         | -          | Before auto-compaction                      | No           |
+| `Setup`              | -          | With `--init`/`--maintenance`               | No           |
+| `PermissionRequest`  | Tool name  | Permission dialog shown                     | Yes          |
+| `TeammateIdle`       | -          | When a teammate goes idle                   | No           |
+| `TaskCompleted`      | -          | When a task is marked completed             | No           |
+| `WorktreeCreate`     | -          | _Replaces_ git worktree creation (see note) | Yes\*        |
+| `WorktreeRemove`     | -          | When a git worktree is removed              | No           |
+| `ConfigChange`       | -          | When settings/config changes                | No           |
+| `PostToolUseFailure` | Tool name  | After tool execution fails                  | No           |
+| `InstructionsLoaded` | -          | When instructions/rules are loaded          | No           |
+
+> **⚠️ `WorktreeCreate` is a creation _provider_, not a notification.** It fires
+> **before** the worktree directory exists (when an Agent uses `isolation:"worktree"`
+> or `--worktree`) and _replaces_ default git behavior: a command hook must **create
+> the worktree and `echo` its path to stdout**; an HTTP hook returns
+> `hookSpecificOutput.worktreePath`. **Any non-zero exit — or no path — fails worktree
+> creation.** Its payload has `{session_id, transcript_path, cwd (=main repo), name,
+hook_event_name}` and contains **no worktree path**. Do **not** register a passive
+> "post-create setup" shim here — it will break every worktree-isolated agent. For
+> post-create work (the worktree exists, `cwd` = the worktree), use **`SubagentStart`**
+> (payload adds `agent_id`, `agent_type`; observability-only, cannot block). Verified
+> empirically on CLI 2.1.150, 2026-05-25.
 
 ### Hook Configuration
 

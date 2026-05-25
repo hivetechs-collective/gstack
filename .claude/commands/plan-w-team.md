@@ -542,6 +542,8 @@ Each builder runs in its own git worktree, providing a complete isolated copy of
 
 This replaces the old file assignment protocol. There is no need for `assigned_files` metadata or exclusive file ownership.
 
+**Worktree disk hygiene**: worktrees are throwaway and reclaimed automatically — per-merge at Step 6 ship (§6h), per-subagent via the `SubagentStop` hook, per-run at Step 8 retro (§8j-septies), and repo-wide via a weekly launchd GC. The `plan-w-team-worktree-gc.sh` classifier (SAFE-PRUNE-MERGED / SAFE-PRUNE-IDLE / UNSAFE-KEEP / ORPHAN-ASK) and the companion-process GC (`pane-display.py` / `pwt-watch.sh` orphans) share strict safety invariants and default to dry-run. Full contract: [`docs/operations/worktree-lifecycle.md`](../../docs/operations/worktree-lifecycle.md).
+
 ## Session Awareness
 
 When 3+ concurrent `/plan-w-team` sessions are detected (check for multiple active teams via TaskList), enable **re-grounding mode**: every question to the user includes:

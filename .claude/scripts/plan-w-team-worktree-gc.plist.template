@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  plan-w-team-worktree-gc.plist.template — weekly disk-hygiene GC (macOS launchd)
+
+  Runs BOTH the worktree GC and the companion-process GC once a week with safe
+  defaults (orphans are PRESERVED — the orphans-ok flag is NOT passed),
+  reclaiming post-merge
+  worktree dirs + orphan pane-display.py / pwt-watch.sh processes that
+  accumulate between /plan-w-team runs.
+
+  ── INSTALL ──────────────────────────────────────────────────────────────
+  1. Copy + substitute the two placeholders:
+       __REPO_PATH__   absolute path to the repo (e.g. /Users/you/Developer/Private/cleanscale)
+       __LABEL__       reverse-DNS unique label (e.g. io.cleanrev.pwt-worktree-gc)
+
+       sed -e "s|__REPO_PATH__|$PWD|g" \
+           -e "s|__LABEL__|io.cleanrev.pwt-worktree-gc|g" \
+           .claude/scripts/plan-w-team-worktree-gc.plist.template \
+         > ~/Library/LaunchAgents/io.cleanrev.pwt-worktree-gc.plist
+
+  2. Load it:
+       launchctl load  ~/Library/LaunchAgents/io.cleanrev.pwt-worktree-gc.plist
+       launchctl start io.cleanrev.pwt-worktree-gc       # run once now to verify
+
+  3. Inspect logs:
+       cat /tmp/pwt-worktree-gc.out  /tmp/pwt-worktree-gc.err
+
+  ── UNINSTALL ────────────────────────────────────────────────────────────
+       launchctl unload ~/Library/LaunchAgents/io.cleanrev.pwt-worktree-gc.plist
+       rm ~/Library/LaunchAgents/io.cleanrev.pwt-worktree-gc.plist
+
+  Schedule: Sundays at 03:00 local. Adjust StartCalendarInterval below.
+
+  SAFETY: this template intentionally does NOT pass the orphans-ok flag, so
+  ORPHAN-ASK worktrees (unmerged local-only work) are never auto-deleted by
+  the cron. Run the GC manually with that flag to reclaim those after review.
+  Linux/systemd users: translate to a systemd .timer + .service unit running
+  the same two ExecStart commands.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__LABEL__</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <!-- worktree GC (merged + idle, orphans preserved) then companion GC -->
+        <string>cd "__REPO_PATH__" &amp;&amp; .claude/scripts/plan-w-team-worktree-gc.sh --execute --json &amp;&amp; .claude/scripts/plan-w-team-companion-gc.sh --execute --json</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key><integer>0</integer>
+        <key>Hour</key><integer>3</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/pwt-worktree-gc.out</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/pwt-worktree-gc.err</string>
+
+    <!-- Keep the GC low-priority; it is never time-sensitive. -->
+    <key>Nice</key>
+    <integer>10</integer>
+    <key>ProcessType</key>
+    <string>Background</string>
+</dict>
+</plist>
