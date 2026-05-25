@@ -21,6 +21,33 @@ Entries are newest-first.
 
 ---
 
+## [1.1.1] — 2026-05-25
+
+PATCH — test-reliability + test-suite-coverage fixes from the 2026-05-25 complexity audit
+(`docs/operations/pwt-complexity-audit-2026-05.md`). No product behavior changed; the audit
+confirmed the bats suite green (328/328) and the routing/spawn cascade guards correct. The
+fixes repair stale/fragile TESTS that had bit-rotted undetected because they ran outside the
+canonical runner.
+
+- `fix`: **route-prompt-recursion test env isolation** — the test invoked the hook without
+  the kill-switch but never `unset` the ambient `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE`, so it
+  spuriously failed inside any pwt worker session. Now scrubs ambient kill-switch vars.
+- `fix`: **route-prompt-supervisor-env test counts only `--bg` spawns** — `pwt-goal.sh`
+  legitimately added a `claude agents --json` capacity probe; the test counted _all_
+  `claude` calls and miscounted. Added a `bg_only` filter.
+- `fix`: **tests/route-prompt `--supervisor-goal` flag** — the hook evolved from
+  `--worker-only` to the superset `--supervisor-goal`; the test's `shim_received_worker_only`
+  now accepts either.
+- `test`: **`run.sh` now runs the `.claude/{scripts,hooks}/*.test.sh` corpus** as a unified
+  Phase 2 (one canonical runner for ALL tests; per-test timeout; folded into exit code +
+  JSON archive). Closes the orphaned-test gap that let the above rot undetected.
+
+See the audit report for findings F1 (`$CLAUDE_PROJECT_DIR` cross-repo leak), F4 (dormant
+`.githooks/pre-commit` test guard), and F5 (`--worker-only`→`--supervisor-goal` doc drift),
+which are surfaced as recommendations.
+
+---
+
 ## [1.1.0] — 2026-05-25 (e9443cc)
 
 MINOR — consolidates the additive skill-surface work landed 2026-05-23 → 2026-05-25.

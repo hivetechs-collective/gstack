@@ -37,6 +37,17 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK="$SCRIPT_DIR/plan-w-team-route-prompt.sh"
 
+# Test isolation: this test runs the route hook WITHOUT the kill-switch in
+# Test A to prove the bypass reproduces. If this test is invoked from inside a
+# /plan-w-team worker/supervisor session, the ambient environment already
+# carries PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 (and AUTO_APPROVE_PUSH=1), which
+# would leak into the inline-env hook invocation below and make Test A's hook
+# honor the kill-switch — a spurious failure that has nothing to do with the
+# product. Scrub both vars up front so Test A controls the env explicitly.
+# (The companion plan-w-team-route-prompt-supervisor-env.test.sh does the same.)
+unset PLAN_W_TEAM_DISABLE_PROMPT_ROUTE
+unset PLAN_W_TEAM_AUTO_APPROVE_PUSH
+
 PASS=0
 FAIL=0
 assert() {

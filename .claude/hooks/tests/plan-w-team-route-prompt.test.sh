@@ -58,8 +58,15 @@ shim_was_invoked() {
 }
 
 shim_received_worker_only() {
+    # The hook spawns a single foreground-supervised worker. It may pass either
+    # --worker-only OR --supervisor-goal: the latter is a strict SUPERSET of the
+    # former (sets WORKER_ONLY=1 plus an origin goal-state mirror — see
+    # pwt-goal.sh "--supervisor-goal ... Same as --worker-only PLUS ..."). The
+    # origin-chat live-supervisor path (route-prompt.sh "Foreground worker spawn
+    # (--supervisor-goal mode)") now uses --supervisor-goal. Both satisfy this
+    # test's intent: a worker-only spawn (NOT a detached --launch). Accept either.
     [ -f "$SANDBOX/.claude/state/shim-args.txt" ] && \
-        grep -qF -- "--worker-only" "$SANDBOX/.claude/state/shim-args.txt"
+        grep -qE -- '--worker-only|--supervisor-goal' "$SANDBOX/.claude/state/shim-args.txt"
 }
 
 run_case() {

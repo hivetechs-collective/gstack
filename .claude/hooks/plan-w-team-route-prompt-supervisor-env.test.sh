@@ -72,6 +72,23 @@ trap cleanup EXIT
 # tacking on an extra "0" line that would corrupt comparisons.
 count() { grep -c "$1" "$2" 2>/dev/null || true; }
 
+# Emit only the capture blocks whose `argv:` line contains `--bg`. pwt-goal.sh
+# makes a non-spawning `claude agents --json` capacity/RAM probe BEFORE the real
+# `claude --bg` worker spawn; that probe records its own block in the capture.
+# This test is about how many WORKERS are spawned and what env they carry, so we
+# scope all counts to `--bg` blocks. Without this, the capacity probe inflates
+# the invocation count (worker-only saw 2 instead of 1) and contributes an
+# env=UNSET line, both spurious. Each block is: `---`, `argv: …`, then the env
+# lines, terminated by the next `---` (or EOF).
+bg_only() {
+    awk '
+        function flush() { if (isbg) printf "%s", buf; buf=""; isbg=0 }
+        /^---$/            { flush(); buf=$0 ORS; next }
+        { buf = buf $0 ORS; if ($1=="argv:" && index($0,"--bg")) isbg=1 }
+        END                { flush() }
+    ' "$1"
+}
+
 # Unset env vars that might leak from the test runner's own environment
 # (e.g., if this test runs inside a session that itself set
 # PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 via --launch up the chain).
@@ -88,19 +105,20 @@ PATH="$STUB_BIN:$PATH" \
     "$PWT_GOAL" --launch "test request for supervisor env regression" \
     >/dev/null 2>&1
 
-INVOCATIONS=$(count '^---$' "$CAPTURE")
+bg_only "$CAPTURE" > "$CAPTURE.bg"
+INVOCATIONS=$(count '^---$' "$CAPTURE.bg")
 assert "two claude --bg invocations (worker + supervisor)" "2" "$INVOCATIONS"
 
 # Both invocations must show the kill-switch env var.
-UNSET_COUNT=$(count 'PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=UNSET' "$CAPTURE")
-SET_COUNT=$(count 'PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1' "$CAPTURE")
+UNSET_COUNT=$(count 'PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=UNSET' "$CAPTURE.bg")
+SET_COUNT=$(count 'PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1' "$CAPTURE.bg")
 assert "neither invocation has UNSET env var" "0" "$UNSET_COUNT"
 assert "both invocations have env var = 1" "2" "$SET_COUNT"
 
 # ─── Test 2: --launch implies --auto-push (AUTO_PUSH=1 also set) ─────────────
 echo
 echo "Test 2: --launch also sets PLAN_W_TEAM_AUTO_APPROVE_PUSH=1"
-AUTOPUSH_SET=$(count 'PLAN_W_TEAM_AUTO_APPROVE_PUSH=1' "$CAPTURE")
+AUTOPUSH_SET=$(count 'PLAN_W_TEAM_AUTO_APPROVE_PUSH=1' "$CAPTURE.bg")
 assert "AUTO_PUSH=1 on both invocations" "2" "$AUTOPUSH_SET"
 
 # ─── Test 3: --launch --no-auto-push — kill-switch still set ─────────────────
@@ -116,7 +134,8 @@ PATH="$STUB_BIN:$PATH" \
     env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE -u PLAN_W_TEAM_AUTO_APPROVE_PUSH \
     "$PWT_GOAL" --launch --no-auto-push "no-push test" \
     >/dev/null 2>&1
-SET_COUNT=$(count 'PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1' "$CAPTURE")
+bg_only "$CAPTURE" > "$CAPTURE.bg"
+SET_COUNT=$(count 'PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1' "$CAPTURE.bg")
 assert "kill-switch still set (=1) on both" "2" "$SET_COUNT"
 
 # ─── Test 4: --worker-only — single claude --bg call, env var present ────────
@@ -129,8 +148,9 @@ PATH="$STUB_BIN:$PATH" \
     env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE -u PLAN_W_TEAM_AUTO_APPROVE_PUSH \
     "$PWT_GOAL" --worker-only "worker-only env test" \
     >/dev/null 2>&1
-INVOCATIONS=$(count '^---$' "$CAPTURE")
-SET_COUNT=$(count 'PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1' "$CAPTURE")
+bg_only "$CAPTURE" > "$CAPTURE.bg"
+INVOCATIONS=$(count '^---$' "$CAPTURE.bg")
+SET_COUNT=$(count 'PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1' "$CAPTURE.bg")
 assert "one claude --bg invocation (worker only)" "1" "$INVOCATIONS"
 assert "the invocation has env var = 1" "1" "$SET_COUNT"
 
