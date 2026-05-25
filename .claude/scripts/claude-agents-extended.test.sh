@@ -98,14 +98,25 @@ assert_jq "1 background kind"  '[.[] | select(.kind=="background")] | length' "$
 assert_jq "1 subagent kind"    '[.[] | select(.kind=="subagent")] | length'   "$out" "1"
 rm -rf "$TMP"
 
-# Test 4: completed subagent excluded via parent tool_use_result.
+# Test 4: parent transcript tool_use_result does NOT cause false-positive
+# terminal detection for active subagents.
+#
+# Pre-fix bug: Claude Code 2.1.x async Agent calls emit a tool_result
+# IMMEDIATELY upon launch ("Async agent launched successfully"). The old
+# wrapper treated any tool_result for the agent's toolUseId as completion,
+# wrongly marking every async subagent as terminal seconds after spawn.
+# Terminal detection is now mtime-based (active subagents append to JSONL
+# every turn; quiescence past FRESHNESS_SEC == done-or-stuck → exclude).
 echo ""
-echo "[4] completed subagent excluded via parent transcript"
+echo "[4] active subagent NOT excluded by parent transcript tool_result"
 TMP=$(mktemp -d)
-make_subagent "$TMP" "proj1" "sid-done" "a3333333333333333" "/home/x" "done task"
-mark_completed "$TMP" "proj1" "sid-done" "a3333333333333333"
+make_subagent "$TMP" "proj1" "sid-active" "a3333333333333333" "/home/x" "active task"
+# Simulate the launch-ack tool_result that Claude Code emits immediately
+# for async subagents — this MUST NOT mark the subagent as terminal.
+mark_completed "$TMP" "proj1" "sid-active" "a3333333333333333"
 out=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER")
-assert_jq "length == 0"        '. | length'               "$out" "0"
+assert_jq "still emitted"          '. | length'                              "$out" "1"
+assert_jq "agentId preserved"      '.[0].agentId'                            "$out" "a3333333333333333"
 rm -rf "$TMP"
 
 # Test 5: stale-by-mtime exclusion.
@@ -222,6 +233,75 @@ else
   no "exit 0 when claude fails but subagents present" "exit was non-zero"
 fi
 rm -rf "$TMP" "$FAKEDIR"
+
+# Test 13: .meta.json sidecar (Claude Code 2.1.150+) populates agentType,
+# description, worktreePath, toolUseId fields.
+echo ""
+echo "[13] .meta.json sidecar populates agentType + description + worktreePath"
+TMP=$(mktemp -d)
+make_subagent "$TMP" "proj1" "sid-meta" "ad111111111111111" "/home/x" "fallback desc"
+cat > "$TMP/proj1/sid-meta/subagents/agent-ad111111111111111.meta.json" <<'EOF'
+{"agentType":"react-native-specialist","description":"Fix Metro deps","worktreePath":"/wt/agent-ad111","toolUseId":"toolu_meta_test"}
+EOF
+out=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER")
+assert_jq "agentType from meta"     '.[0].subagentType'  "$out" "react-native-specialist"
+assert_jq "description from meta"   '.[0].description'   "$out" "Fix Metro deps"
+assert_jq "worktreePath surfaced"   '.[0].worktreePath'  "$out" "/wt/agent-ad111"
+assert_jq "toolUseId surfaced"      '.[0].toolUseId'     "$out" "toolu_meta_test"
+rm -rf "$TMP"
+
+# Test 14: startedAt is ms-epoch NUMBER, not ISO string — matches base shape.
+echo ""
+echo "[14] startedAt emitted as ms-epoch number (matches base entries)"
+TMP=$(mktemp -d)
+make_subagent "$TMP" "proj1" "sid-ts" "ae111111111111111" "/home/x" "ts task"
+out=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER")
+assert_jq "startedAt is number"     '.[0].startedAt | type'  "$out" "number"
+# 2026-05-23T10:00:00Z → 1779530400000 ms
+assert_jq "correct epoch ms"        '.[0].startedAt'         "$out" "1779530400000"
+rm -rf "$TMP"
+
+# Test 15: parent_cwd resolution scans multiple transcript lines, skipping
+# null-cwd "last-prompt" markers that appear at the top of 2.1.150 transcripts.
+echo ""
+echo "[15] parent_cwd resolved from later transcript lines (null cwd skipped)"
+TMP=$(mktemp -d)
+make_subagent "$TMP" "proj1" "sid-pcwd" "af111111111111111" "/sub/wt" "task"
+# Parent transcript: first 3 lines have null cwd (e.g. last-prompt markers),
+# then a normal line with the real cwd.
+cat > "$TMP/proj1/sid-pcwd.jsonl" <<'EOF'
+{"type":"last-prompt","cwd":null}
+{"type":"summary","cwd":null}
+{"type":"queue-operation","cwd":null}
+{"type":"user","cwd":"/parent/dir","message":{"role":"user","content":"hi"}}
+EOF
+out=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER")
+assert_jq "cwd from parent line 4"  '.[0].cwd'  "$out" "/parent/dir"
+rm -rf "$TMP"
+
+# Test 16: --cwd filter is BIDIRECTIONAL. A subagent whose parent's cwd is
+# /repo should match when filter is /repo/apps/mobile (user cd'd deeper),
+# AND when filter is /repo (filter is at parent's level), AND when filter
+# is /repo/.claude/worktrees/agent-X (matches worktreePath).
+echo ""
+echo "[16] --cwd filter bidirectional (parent above OR below filter)"
+TMP=$(mktemp -d)
+make_subagent "$TMP" "proj1" "sid-bid" "ab111111111111111" "/sub/wt" "task"
+cat > "$TMP/proj1/sid-bid.jsonl" <<'EOF'
+{"type":"user","cwd":"/repo","message":{"role":"user","content":"hi"}}
+EOF
+cat > "$TMP/proj1/sid-bid/subagents/agent-ab111111111111111.meta.json" <<'EOF'
+{"agentType":"general-purpose","description":"d","worktreePath":"/repo/.claude/worktrees/agent-ab111","toolUseId":"toolu_bid"}
+EOF
+out_below=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER" --cwd /repo/apps/mobile)
+out_at=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER" --cwd /repo)
+out_wt=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER" --cwd /repo/.claude/worktrees/agent-ab111)
+out_unrelated=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER" --cwd /elsewhere)
+assert_jq "user cd'd into subdir"   '. | length'  "$out_below" "1"
+assert_jq "filter at parent level"  '. | length'  "$out_at"    "1"
+assert_jq "filter matches worktree" '. | length'  "$out_wt"    "1"
+assert_jq "unrelated filter excludes" '. | length' "$out_unrelated" "0"
+rm -rf "$TMP"
 
 # ── summary ───────────────────────────────────────────────────────────────────
 echo ""

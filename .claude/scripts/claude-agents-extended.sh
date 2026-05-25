@@ -34,11 +34,13 @@
 #       "parentSessionId": "<uuid>",
 #       "sessionId": "<agentId>",
 #       "agentId": "<agentId>",
-#       "cwd": "<parent cwd>",
+#       "cwd": "<parent session's cwd — what statusline filters on>",
+#       "worktreePath": "<subagent's per-agent worktree, from .meta.json>",
 #       "status": "busy",
-#       "startedAt": "<ISO8601 from first JSONL line>",
-#       "description": "<truncated 200 chars>",
-#       "subagentType": "<inferred or 'general-purpose'>"
+#       "startedAt": <ms-epoch number, matches base entries>,
+#       "description": "<from .meta.json or first message, truncated 200 chars>",
+#       "subagentType": "<from .meta.json agentType or 'general-purpose'>",
+#       "toolUseId": "<from .meta.json — enables precise terminal detection>"
 #     }
 #
 # Exit: 0 always (advisory tool — failures fall through to empty/base output).
@@ -141,99 +143,147 @@ if [ -n "$candidates" ]; then
     [ -z "$subagent_file" ] && continue
     [ -f "$subagent_file" ] || continue
 
-    # mtime freshness check
+    # Derive path components.
+    #   .../<project>/<parent-sid>/subagents/agent-<agentId>.jsonl
+    sub_dir=$(dirname "$subagent_file")                  # .../<parent-sid>/subagents
+    parent_dir=$(dirname "$sub_dir")                     # .../<parent-sid>
+    parent_sid=$(basename "$parent_dir")
+    parent_transcript="${parent_dir}.jsonl"
+    file_base=$(basename "$subagent_file")
+    agent_id="${file_base#agent-}"
+    agent_id="${agent_id%.jsonl}"
+    meta_file="${sub_dir}/agent-${agent_id}.meta.json"
+
+    # Claude Code 2.1.150 ships an .meta.json sidecar per subagent with
+    # agentType, description, worktreePath, toolUseId. Prefer those over
+    # parsing the JSONL — meta is stable, JSONL first-line is verbose prompt.
+    meta_agent_type=""
+    meta_description=""
+    meta_worktree=""
+    meta_tool_use_id=""
+    if [ -f "$meta_file" ]; then
+      meta_agent_type=$(jq -r '.agentType // ""' "$meta_file" 2>/dev/null)
+      meta_description=$(jq -r '.description // ""' "$meta_file" 2>/dev/null)
+      meta_worktree=$(jq -r '.worktreePath // ""' "$meta_file" 2>/dev/null)
+      meta_tool_use_id=$(jq -r '.toolUseId // ""' "$meta_file" 2>/dev/null)
+    fi
+
+    # When no meta is available, validate that the JSONL first line is
+    # parseable as a JSON object. Without meta AND with malformed JSONL,
+    # we have no usable identity for the subagent — skip rather than emit
+    # a half-empty record.
+    if [ -z "$meta_agent_type" ] && [ -z "$meta_description" ]; then
+      if ! head -n 1 "$subagent_file" 2>/dev/null | jq -e 'type == "object"' >/dev/null 2>&1; then
+        continue
+      fi
+    fi
+
+    # Terminal-state check: mtime is the authoritative signal. Active
+    # subagents append to their JSONL on every assistant turn / tool call /
+    # tool result, so a quiescent file (no writes in FRESHNESS_SEC) means
+    # the subagent is either done or stuck — both reasons to exclude.
+    #
+    # Why NOT use parent transcript tool_result matching: Claude Code 2.1.x
+    # async Agent tool calls emit a tool_result IMMEDIATELY upon launch with
+    # content "Async agent launched successfully." The real completion
+    # arrives later via task-notification, with no standard marker tying it
+    # back to the toolUseId. Using tool_result presence as terminal signal
+    # would mark every async subagent as terminal seconds after spawn.
     file_mtime=$(stat -f %m "$subagent_file" 2>/dev/null || stat -c %Y "$subagent_file" 2>/dev/null || echo 0)
     age=$(( now_epoch - file_mtime ))
     if [ "$age" -gt "$FRESHNESS_SEC" ]; then
       continue
     fi
 
-    # Derive path components.
-    #   .../<project>/<parent-sid>/subagents/agent-<agentId>.jsonl
-    sub_dir=$(dirname "$subagent_file")                  # .../<parent-sid>/subagents
-    parent_dir=$(dirname "$sub_dir")                     # .../<parent-sid>
-    parent_sid=$(basename "$parent_dir")
-    project_dir=$(dirname "$parent_dir")                 # .../<project>
-    parent_transcript="${parent_dir}.jsonl"
-    file_base=$(basename "$subagent_file")
-    agent_id="${file_base#agent-}"
-    agent_id="${agent_id%.jsonl}"
-
-    # Parse first JSONL line (the launch event). Tolerate malformed lines.
-    first_line=$(head -n 1 "$subagent_file" 2>/dev/null)
-    if [ -z "$first_line" ]; then
-      continue
-    fi
-
-    # Extract fields with jq, defaulting if the line is malformed or missing keys.
-    parsed=$(printf '%s' "$first_line" | jq -c '
-      . as $l
-      | {
-          cwd:          ($l.cwd // ""),
-          startedAt:    ($l.timestamp // ""),
-          sessionKind:  ($l.sessionKind // "bg"),
-          description:  (
-            ($l.message.content // "")
-            | if type == "string" then . else (tostring) end
-            | .[0:200]
-          )
-        }
-    ' 2>/dev/null) || continue
-
-    [ -z "$parsed" ] && continue
-
-    # cwd filter (if --cwd given)
-    if [ -n "$FILTER_CWD" ]; then
-      sub_cwd=$(printf '%s' "$parsed" | jq -r '.cwd // ""' 2>/dev/null)
-      case "$sub_cwd" in
-        "$FILTER_CWD"|"$FILTER_CWD"/*) : ;;  # match
-        *) continue ;;
-      esac
-    fi
-
-    # Terminal-state check: scan parent transcript for an event with
-    # .toolUseResult.agentId == <agentId> AND .toolUseResult.status == "completed".
-    # If the parent transcript is missing/unreadable, fall back to mtime-only
-    # freshness (entry is "busy" if within window — conservative).
-    is_terminal=0
+    # Parent's cwd is the canonical cwd for filter matching — that's where
+    # the user IS interactively. The session-start "last-prompt" line has
+    # cwd=null in 2.1.150; scan up to 100 lines to find the first non-null
+    # cwd from the actual conversation. The subagent's own worktree is
+    # exposed separately as worktreePath.
+    parent_cwd=""
     if [ -f "$parent_transcript" ]; then
-      # grep first to avoid jq-ing the whole transcript (could be huge).
-      # Then validate with jq to avoid false-positives on the agentId appearing
-      # incidentally inside other content.
-      if grep -F -q "$agent_id" "$parent_transcript" 2>/dev/null; then
-        if grep -F "$agent_id" "$parent_transcript" 2>/dev/null \
-            | jq -e --arg aid "$agent_id" '
-                select(type == "object")
-                | select(.toolUseResult.agentId == $aid)
-                | select(.toolUseResult.status == "completed")
-              ' >/dev/null 2>&1; then
-          is_terminal=1
-        fi
-      fi
+      parent_cwd=$(head -n 100 "$parent_transcript" 2>/dev/null \
+        | jq -r 'select(.cwd != null and .cwd != "") | .cwd' 2>/dev/null \
+        | head -n 1)
+    fi
+    # Fallback: read subagent's own JSONL first line for cwd.
+    if [ -z "$parent_cwd" ]; then
+      parent_cwd=$(head -n 1 "$subagent_file" 2>/dev/null \
+        | jq -r '.cwd // ""' 2>/dev/null)
     fi
 
-    if [ "$is_terminal" -eq 1 ]; then
-      continue
+    # cwd filter (if --cwd given): match if ANY of the following is true,
+    # because a user cd'd into a subdir of the parent's startup cwd still
+    # owns those subagents, and equally a subagent's per-agent worktree
+    # may be the only path matching:
+    #   - parent's cwd is under FILTER_CWD (subagent of a child session)
+    #   - FILTER_CWD is under parent's cwd (user cd'd into a subdir)
+    #   - subagent's worktree is under FILTER_CWD
+    if [ -n "$FILTER_CWD" ]; then
+      match=0
+      case "$parent_cwd" in
+        "$FILTER_CWD"|"$FILTER_CWD"/*) match=1 ;;
+      esac
+      case "$FILTER_CWD" in
+        "$parent_cwd"|"$parent_cwd"/*) [ -n "$parent_cwd" ] && match=1 ;;
+      esac
+      case "$meta_worktree" in
+        "$FILTER_CWD"|"$FILTER_CWD"/*) match=1 ;;
+      esac
+      [ "$match" -eq 0 ] && continue
     fi
 
-    # Emit the merged entry.
-    entry=$(printf '%s' "$parsed" | jq -c \
+    # Description fallback: if no meta, take first 200 chars of first message.
+    description="$meta_description"
+    if [ -z "$description" ]; then
+      description=$(head -n 1 "$subagent_file" 2>/dev/null | jq -r '
+        (.message.content // "")
+        | if type == "string" then . else (tostring) end
+        | .[0:200]
+      ' 2>/dev/null)
+    fi
+
+    # startedAt as ms-epoch NUMBER to match base entries' shape. Prefer the
+    # JSONL first-line timestamp (ISO string) → convert. Fall back to file
+    # mtime in ms.
+    started_at_iso=$(head -n 1 "$subagent_file" 2>/dev/null \
+      | jq -r '.timestamp // ""' 2>/dev/null)
+    started_at_ms=""
+    if [ -n "$started_at_iso" ]; then
+      started_at_ms=$(jq -nr --arg ts "$started_at_iso" '
+        try ($ts | fromdateiso8601 * 1000 | floor) catch null
+      ' 2>/dev/null)
+    fi
+    [ -z "$started_at_ms" ] || [ "$started_at_ms" = "null" ] && started_at_ms=$(( file_mtime * 1000 ))
+
+    subagent_type="${meta_agent_type:-general-purpose}"
+
+    # Emit. cwd is parent's cwd (matches statusline.sh filter); worktreePath
+    # is the per-subagent worktree where it actually runs.
+    entry=$(jq -nc \
       --arg kind "subagent" \
       --arg parentSessionId "$parent_sid" \
       --arg sessionId "$agent_id" \
       --arg agentId "$agent_id" \
+      --arg cwd "$parent_cwd" \
+      --arg worktreePath "$meta_worktree" \
       --arg status "busy" \
-      --arg subagentType "general-purpose" '
+      --argjson startedAt "${started_at_ms:-0}" \
+      --arg description "$description" \
+      --arg subagentType "$subagent_type" \
+      --arg toolUseId "$meta_tool_use_id" '
       {
         kind:            $kind,
         parentSessionId: $parentSessionId,
         sessionId:       $sessionId,
         agentId:         $agentId,
-        cwd:             .cwd,
+        cwd:             $cwd,
+        worktreePath:    $worktreePath,
         status:          $status,
-        startedAt:       .startedAt,
-        description:     .description,
-        subagentType:    $subagentType
+        startedAt:       $startedAt,
+        description:     $description,
+        subagentType:    $subagentType,
+        toolUseId:       $toolUseId
       }
     ' 2>/dev/null) || continue
 
