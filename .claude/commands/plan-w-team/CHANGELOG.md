@@ -21,6 +21,41 @@ Entries are newest-first.
 
 ---
 
+## [1.2.0] — 2026-05-25
+
+MINOR — objective-progress supervisor self-check (anti-stall + anti-drift),
+generalized from cleanscale's `scripts/ops/supervisor-progress-check.sh` and
+made portable to any repo. Additive; pre-bump worker sessions keep functioning.
+
+- `feat`: **`supervisor-progress-check.sh`** — a generic STEP-0 supervisor
+  self-check that runs FIRST in every polling tick. Snapshots objective,
+  user-verifiable metrics (branch commit count, AC-PASS count from the run's
+  spec roll-up, open-PR count), diffs against the prior tick in
+  `.claude/state/supervisor-progress.json`, and emits PROGRESSING / IN-FLIGHT
+  (recent `agent-*` worktree mtime guard) / BACKLOG-CLEAR / STALLED /
+  STALLED-UNKNOWN / `🔴 STALL-ALERT`. `STALL_THRESHOLD` (default 2) consecutive
+  flat ticks with backlog > 0 → exit 2: the supervisor MUST spawn the next
+  backlog item or escalate a hard-gate — idling is a hard error, never a valid
+  tick. Anti-drift: the backlog anchor is the run's OWN failing spec ACs (never
+  improvise off-target). Portable (no repo-specific metric paths; metrics derive
+  from the run's git + spec/transcript), bash-3.2 compatible, python JSON parse
+  (never grep-on-JSON). 13-case test suite incl. the bash-3.2 runtime guard.
+- `feat`: **`shared/supervisor-protocol.md` §Step 0**, wired ahead of the
+  Standard Tick and the user-silence CONTINUATION CHECK (complements, does not
+  duplicate it). Encodes the durable rule: _a monitoring-only tick is a failure
+  while backlog > 0; progress is measured objectively, not self-reported._
+  Explicitly notes that an `AT_CAPACITY` RAM verdict / "perceived ceiling" does
+  not license indefinite idling — sustained flat ticks escalate.
+- `chore`: synced into `sync-to-project.sh` allowlist (+ dry-run preview);
+  allowlist symmetry verified.
+
+Note: the unified `run.sh` surfaces a pre-existing non-hermetic flake in
+`pwt-claims-cleanup.test.sh` (its `legacy`/`real-repo` cases read live
+`claude agents` state rather than a mock) — unrelated to this change (fails
+identically with it stashed); tracked as a separate test-isolation follow-up.
+
+---
+
 ## [1.1.1] — 2026-05-25
 
 PATCH — test-reliability + test-suite-coverage fixes from the 2026-05-25 complexity audit

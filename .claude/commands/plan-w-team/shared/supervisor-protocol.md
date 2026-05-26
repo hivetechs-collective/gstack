@@ -399,7 +399,40 @@ A chain is auditable: every worker's `started_from_slug` walks back to the origi
 
 ## POLLING LOOP
 
-The origin-chat supervisor's polling loop has two responsibilities per tick: (1) standard worker observation, (2) CONTINUATION CHECK (added 2026-05-22).
+The origin-chat supervisor's polling loop has three responsibilities per tick, in order: (0) PROGRESS CHECK (added 2026-05-25), (1) standard worker observation, (2) CONTINUATION CHECK (added 2026-05-22).
+
+### Step 0: Progress Check (anti-stall + anti-drift) — runs FIRST, every tick
+
+> **Durable rule:** A monitoring-only tick is a **FAILURE while the backlog is > 0.** Progress is measured **objectively** (real metrics moved), never self-reported. Watching the worker and writing `"goal_progress": "progressing"` is NOT progress if nothing landed. "Memory pressure", a "perceived ceiling", or an `AT_CAPACITY` RAM verdict do **not** license indefinite idling — if they block progress for `STALL_THRESHOLD` ticks, that is a STALL to escalate, not a state to sit in.
+
+Before anything else, run the mechanical self-check:
+
+```bash
+.claude/scripts/supervisor-progress-check.sh --threshold "${STALL_THRESHOLD:-2}"
+# (auto-detects the run's AC snapshot under .claude/state/ for the backlog anchor;
+#  pass --spec / --transcript explicitly if the run stores them elsewhere)
+```
+
+It snapshots objective, user-verifiable metrics (branch commit count, AC-PASS
+count from the run's spec roll-up, open-PR count), diffs them against the prior
+tick in `.claude/state/supervisor-progress.json`, and emits a verdict:
+
+| Verdict                       | Meaning                                           | Supervisor action                                                                                             |
+| ----------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `PROGRESSING`                 | a metric moved                                    | continue normal tick                                                                                          |
+| `IN-FLIGHT`                   | an `agent-*` worktree touched < 30 min ago        | continue; work is cooking                                                                                     |
+| `BACKLOG-CLEAR`               | all known ACs pass                                | continue toward ship/retro                                                                                    |
+| `STALLED` / `STALLED-UNKNOWN` | no movement (streak < threshold, or no AC source) | continue but on notice                                                                                        |
+| `🔴 STALL-ALERT` (exit 2)     | `STALL_THRESHOLD` flat ticks, backlog > 0         | **MUST act this tick: spawn the next backlog item OR escalate a hard-gate to the user. Idling is forbidden.** |
+
+**Anti-drift anchor:** the run's own backlog is the locked target list — the
+Step-1 spec ACs still failing + Step-2 tasks not yet done. On `STALL-ALERT` the
+supervisor pulls its next item **only** from there; it never improvises
+off-target work to manufacture motion.
+
+This **complements** the CONTINUATION CHECK below (which keys on user-input
+silence). Step 0 keys on objective work-progress — a supervisor can be inside
+the idle window yet still failing because nothing is landing; Step 0 catches that.
 
 ### Standard Tick
 
