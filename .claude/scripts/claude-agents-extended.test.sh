@@ -303,6 +303,32 @@ assert_jq "filter matches worktree" '. | length'  "$out_wt"    "1"
 assert_jq "unrelated filter excludes" '. | length' "$out_unrelated" "0"
 rm -rf "$TMP"
 
+# ── retry on transient-empty `claude agents --json` ───────────────────────────
+# `claude agents --json` is intermittently empty-but-exit-0 under load; a single
+# empty would freeze the statusline on a stale cache. The wrapper must retry.
+# Shim a fake `claude` on PATH that returns "" on call 1, a valid array after.
+RT=$(mktemp -d)
+cat > "$RT/claude" <<'SH'
+#!/bin/bash
+c="$RT_COUNTER"; n=$(cat "$c" 2>/dev/null || echo 0); n=$((n+1)); echo "$n" > "$c"
+[ "$n" -lt 2 ] && { printf ''; exit 0; }
+printf '[{"sessionId":"r1","kind":"background","status":"busy","cwd":"/x"}]'
+SH
+chmod +x "$RT/claude"
+export RT_COUNTER="$RT/cnt"; : > "$RT_COUNTER"
+out_retry=$(PATH="$RT:$PATH" CLAUDE_AGENTS_RETRY=3 "$WRAPPER" --bg-only 2>/dev/null)
+assert_jq "retry recovers transient-empty (length)" '. | length' "$out_retry" "1"
+assert_jq "retry recovers transient-empty (status)" '.[0].status' "$out_retry" "busy"
+# And: persistent empty (all tries empty) → degrades to [] without hanging.
+cat > "$RT/claude" <<'SH'
+#!/bin/bash
+printf ''
+SH
+chmod +x "$RT/claude"
+out_allempty=$(PATH="$RT:$PATH" CLAUDE_AGENTS_RETRY=2 "$WRAPPER" --bg-only 2>/dev/null)
+assert_jq "persistent-empty degrades to []" '. | length' "$out_allempty" "0"
+rm -rf "$RT"
+
 # ── summary ───────────────────────────────────────────────────────────────────
 echo ""
 echo "Results: $(green "$PASS passed"), $(if [ "$FAIL" -gt 0 ]; then red "$FAIL failed"; else echo "0 failed"; fi)"

@@ -79,10 +79,32 @@ if [ -n "${CLAUDE_AGENTS_RAW:-}" ]; then
 elif [ "${CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE:-}" = "1" ]; then
   base_json="[]"
 elif command -v claude >/dev/null 2>&1; then
-  if ! base_json=$(claude agents --json 2>/dev/null); then
-    base_json="[]"
-    base_ok=0
-  fi
+  # `claude agents --json` is intermittently empty-but-exit-0 under load (many
+  # live sessions + frequent statusline polling during a /plan-w-team run). A
+  # single empty response would freeze the statusline on a stale cache snapshot
+  # (refresh only commits on a valid wrapper run), so the display stops
+  # reflecting the active run. Retry a few times — consecutive calls recover
+  # almost immediately. A "valid" try is non-empty AND a JSON array (when jq is
+  # present); without jq, non-empty is accepted (the no-jq path emits verbatim).
+  base_json=""
+  base_ok=0
+  _tries="${CLAUDE_AGENTS_RETRY:-3}"
+  _n=0
+  while [ "$_n" -lt "$_tries" ]; do
+    _n=$((_n + 1))
+    _out=$(claude agents --json 2>/dev/null) || _out=""
+    if [ -n "$_out" ]; then
+      if command -v jq >/dev/null 2>&1; then
+        if printf '%s' "$_out" | jq -e 'type == "array"' >/dev/null 2>&1; then
+          base_json="$_out"; base_ok=1; break
+        fi
+      else
+        base_json="$_out"; base_ok=1; break
+      fi
+    fi
+    [ "$_n" -lt "$_tries" ] && sleep 0.3
+  done
+  [ "$base_ok" -eq 1 ] || base_json="[]"
 else
   base_json="[]"
   base_ok=0
