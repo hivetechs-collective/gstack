@@ -24,6 +24,12 @@
 
 set -u
 
+# Test isolation (rule 1a — isolate shared state): neutralize machine-capacity
+# gates so spawn-logic assertions do not flake on a busy machine or inside a
+# worker session. Mirrors pwt-goal-launch.test.sh / pwt-goal-worker-only.test.sh.
+export PLAN_W_TEAM_DISABLE_FAIR_SHARE=1
+export PLAN_W_TEAM_DISABLE_RAM_GATE=1
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$SCRIPT_DIR/pwt-goal.sh"
 

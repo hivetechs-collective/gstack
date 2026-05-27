@@ -17,6 +17,68 @@
 
 After builders complete, worktrees are merged, and the evaluator loop (Step 4b) has run, perform a two-pass review on the full diff.
 
+## 5-0. Fix-Immediately, Never Defer (ENFORCING — governs every pass)
+
+This rule governs the entire review/ship/retro lifecycle, not just this stage. It
+codifies the memory `feedback_fix_defects_and_flaky_immediately`.
+
+**A worker MUST fix any flagged issue — a real defect OR a flaky test — immediately,
+and may NEVER advance past a red or a merely-"noted" screen/check.** "Noted and move
+on" is not an allowed disposition for a defect or a flaky test.
+
+The required sequence for every flagged defect/flaky item is:
+
+```
+fix → deploy (apply the fix) → retest → verify GREEN → note (record what was fixed)
+```
+
+The `note` step is the LAST step (a record of the completed fix), never a substitute
+for it. A finding logged as "noted" with no preceding fix→retest→GREEN is a process
+violation that the supervisor reverses at the next check-in (see
+`shared/supervisor-protocol.md` §Fix-Now Audit).
+
+### Real defects
+
+Any behavior bug, broken test, type error, lint error, failed assertion, or off-policy
+drift (e.g. a GitHub-Actions build/deploy path — see `shared/no-github-actions.md`) is a
+real defect. Fix it now via the sequence above. Do not defer to "a follow-up task" and
+do not advance the pipeline while it is red.
+
+### Flaky tests — repair by removing non-determinism
+
+A flaky test is fixed by **removing the source of non-determinism**, never by masking it:
+
+| Source of non-determinism                             | Correct repair                                        |
+| ----------------------------------------------------- | ----------------------------------------------------- |
+| Live network / DB / clock-dependent vendor call       | Mock or stub the live dependency                      |
+| Unpinned random seed / `Date.now()` / `Math.random()` | Pin the seed; inject a fixed clock                    |
+| Shared mutable state across tests                     | Isolate state (fresh fixture per test, reset between) |
+| Ordering / race between async steps                   | Await the actual condition, not a sleep               |
+
+**FORBIDDEN flaky "fixes"** (these mask non-determinism, they do not remove it):
+
+- Loosening or deleting an assertion so the test passes more often.
+- Adding a retry wrapper / `--retries` / re-run-until-green.
+- Adding `.skip` / `xfail` / commenting the test out.
+- Widening a timeout to paper over a race.
+
+A repaired flaky test MUST pass **repeatedly (100/100 runs)** before it is considered
+fixed. Record the 100/100 evidence in the fix note.
+
+### Red-gate bypass — narrow, proven, and queued
+
+A red gate may be bypassed ONLY after proving the failure is **pre-existing AND
+non-deterministic**, via:
+
+```
+git stash → run the gate on clean main → observe the identical failure → git stash pop
+```
+
+If (and only if) the same failure reproduces on untouched main, it is pre-existing and
+may be bypassed for THIS run — but it is **queued for immediate repair** (record it as a
+fix-now item, not a permanent "known flaky" exception). A failure that does NOT reproduce
+on clean main was introduced by this run and MUST be fixed now (no bypass).
+
 ## Board Update (Auto)
 
 Move the feature card to Review and add a review summary comment. Fire-and-forget — failures must NOT block the review.
@@ -332,6 +394,12 @@ Runs only when `.claude/qa-profile.json` exists in the target repo. Each check b
 For each Pass 1 UI-TDD hit, §5d auto-fix vs ask logic applies the same way as existing Pass 1 checks: two-way doors (e.g., renaming a testid, extracting an inline locator into a page object) → auto-fix via Hands-tier subagent; one-way doors or ambiguous cases (e.g., skipped paired task with merged implementation) → ASK user.
 
 ## 5c. Pass 2 — INFORMATIONAL (fix or note, not blockers)
+
+> **Scope of "note" (per §5-0):** "fix or note" applies only to genuine _informational_
+> items — subjective style, design opinions, nice-to-haves. A **real defect** (broken
+> test, failed assertion, type/lint error, off-policy drift) or a **flaky test** surfaced
+> in Pass 2 is NOT note-eligible: it escalates to fix-now under §5-0 (fix→deploy→retest→
+> verify-GREEN→note). You may not advance with such an item merely "noted".
 
 | Check                  | What to Look For                                                         |
 | ---------------------- | ------------------------------------------------------------------------ |

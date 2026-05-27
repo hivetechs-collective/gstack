@@ -106,12 +106,29 @@ git diff --stat "$(jq -r '.base_ref' /tmp/retro-${SLUG}.json)...HEAD"
 
 ## 8c. Quality Signals
 
-| Signal                               | Threshold | Meaning                            |
-| ------------------------------------ | --------- | ---------------------------------- |
-| Fix ratio >50%                       | Warning   | Review process may have gaps       |
-| WTF-likelihood hit >20% during build | Note      | Builder struggled, investigate why |
-| >3 reverts during build              | Warning   | Spec may have been unclear         |
-| Hotspot with >10 changes             | Note      | Consider refactoring this file     |
+| Signal                                      | Threshold | Meaning                                                     |
+| ------------------------------------------- | --------- | ----------------------------------------------------------- |
+| Fix ratio >50%                              | Warning   | Review process may have gaps                                |
+| WTF-likelihood hit >20% during build        | Note      | Builder struggled, investigate why                          |
+| >3 reverts during build                     | Warning   | Spec may have been unclear                                  |
+| Hotspot with >10 changes                    | Note      | Consider refactoring this file                              |
+| Any defect/flaky logged "noted" (not fixed) | **Fail**  | Fix-immediately rule violated (§5-0) — see audit below      |
+| GH-Actions build/deploy path introduced     | **Fail**  | No-GH-Actions rule violated (`shared/no-github-actions.md`) |
+
+### Fix-Immediately Compliance Audit (ENFORCING — per §5-0)
+
+Verify the run honored the fix-immediately rule (memory
+`feedback_fix_defects_and_flaky_immediately`). Scan the run's review findings and
+supervisor log for any defect or flaky test that was logged as merely **"noted"** without
+a completed fix→retest→verify-GREEN. Each such item is a **Fail** signal — the rule is
+that a defect/flaky is fixed now, never deferred or note-and-advanced.
+
+Also confirm no flaky test was "fixed" by the forbidden means (loosened assertion, retry
+wrapper, `.skip`/`xfail`, widened timeout). A flaky repair that did not remove the source
+of non-determinism (and pass 100/100) is a Fail.
+
+A Fail here means the workflow shipped against its own governance — record it as a retro
+finding and a memory candidate (§8j) so the next run tightens enforcement.
 
 ## 8d. Streak Tracking
 

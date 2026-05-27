@@ -77,6 +77,7 @@ authoritative record of the spawn intent.
 ## Query Subcommand Reference
 
 ```bash
+# snippet-lint: skip — illustrative usage line; <subcommand>/<slug> are placeholders, not bash
 .claude/scripts/plan-w-team-fleet-query.sh <subcommand> <slug>
 ```
 

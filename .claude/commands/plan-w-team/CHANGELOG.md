@@ -21,6 +21,56 @@ Entries are newest-first.
 
 ---
 
+## [1.3.1] — 2026-05-27
+
+PATCH — close the double-spawn gap that the 1.3.0 run itself triggered (req4; the
+autonomous run shipped reqs 1–3 but skipped this late-appended one, so it was
+completed by hand per the fix-immediately rule).
+
+- `fix`: **PWT-DS1 double-spawn guard now covers the `--launch` path**, not just
+  `--worker-only`. Root cause (2026-05-27): the UserPromptSubmit route hook
+  auto-spawns via `--supervisor-goal` (worker-only semantics) and writes the
+  hook-spawn flag; the assistant then also ran `pwt-goal.sh --launch` in the same
+  turn, and the old `WORKER_ONLY=1`-only guard let the detached `--launch`
+  through → duplicate run (route-created `b3578658` vs manual `48adde90`) clobbering
+  the same skill files. Guard condition extended to `{ --worker-only OR --launch }`.
+  Safe: the route hook calls pwt-goal BEFORE writing its flag, so the hook's own
+  spawn never self-trips.
+- `fix`: freshness window widened 60s → `PWT_DOUBLE_SPAWN_WINDOW_MIN` (default 3 min)
+  so it spans a full assistant turn between the route-hook spawn and a same-turn
+  manual call. A stale flag (older than the window) still does NOT block a
+  legitimate later run; `PLAN_W_TEAM_FORCE_SPAWN=1` remains the escape hatch.
+- `test`: new `pwt-goal-double-spawn-guard.test.sh` (12 assertions): fresh-flag +
+  `--launch`/`--worker-only` → refused (exit 3, zero spawns, emits existing
+  worker_sid); no-flag and stale-flag → not blocked; FORCE_SPAWN bypasses.
+
+---
+
+## [1.3.0] — 2026-05-27
+
+MINOR — three coupled development/testing governance rules baked into the skill, plus a
+shipped local-CI Makefile template. Codifies memories
+`feedback_fix_defects_and_flaky_immediately` and `project_no_github_actions` into the
+skill so they propagate to every consumer repo instead of living only in per-machine
+memory.
+
+- `feat`: **Fix-Immediately, Never Defer** (`04-fix-first-review.md` §5-0, enforced at
+  `05-ship.md` ship gate and audited at `07-retro.md` §8c + `shared/supervisor-protocol.md`
+  Fix-Now Audit). A worker MUST fix any real defect OR flaky test immediately
+  (fix→deploy→retest→verify-GREEN→note) and may NEVER advance past a red or merely-"noted"
+  item. Flaky tests are repaired by removing non-determinism (mock/stub/pin/isolate, 100/100),
+  never by loosening assertions, retries, `.skip`, or widened timeouts. A red gate is
+  bypassed only after a stash→run→identical-failure proof of pre-existing non-determinism,
+  and even then queued for immediate repair.
+- `feat`: **No GitHub Actions for build/CI/deploy** governance rule
+  (`shared/no-github-actions.md`, referenced by the `05-ship.md` §6b-bis drift gate). The
+  canonical path is the local Makefile + admin-squash-merge; a GH-Actions build/deploy path
+  is off-policy drift treated as a defect. The `ci-alert.yml.template` observer is EXEMPT.
+- `feat`: **Ship the local Makefile with the skill** — `scripts/Makefile.template`
+  (toolchain-agnostic `ci`/`test` + `merge` admin-squash + `deploy`) added to the
+  `sync-to-project.sh` allowlist (mirroring `ci-alert.yml.template`), so every synced repo
+  inherits the local build/merge/deploy path that prevents GH-Actions drift.
+
 ## [1.2.1] — 2026-05-27
 
 PATCH — fix the worktree-cleanup defect that let `.claude/worktrees/` grow to

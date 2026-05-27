@@ -367,6 +367,51 @@ fi
 
 If the browse binary is available and any task has `scope: "FRONTEND"`, read `shared/browser-qa.md` for browser smoke test instructions. **Browser smoke tests are also gates** — a non-zero exit code from the browse binary blocks the ship.
 
+### Fix-Immediately at the ship gate (ENFORCING — per §5-0)
+
+The ship gate enforces the fix-immediately rule (`04-fix-first-review.md` §5-0,
+memory `feedback_fix_defects_and_flaky_immediately`): **the ship MUST NOT advance past
+a red gate or a merely-"noted" defect/flaky item.**
+
+- A red test/coverage/security/lint gate is fixed now (fix→deploy→retest→verify-GREEN→note)
+  — never shipped around. The only exception is a failure **proven pre-existing AND
+  non-deterministic** via `git stash → run on clean main → identical failure → stash pop`,
+  and even then it is queued for immediate repair, not accepted permanently.
+- A flaky test encountered here is repaired by removing non-determinism (mock/stub live
+  deps, pin seeds/clock, isolate shared state) and must pass 100/100 — never loosened,
+  retried, or `.skip`-ed (the forbidden list in §5-0 applies verbatim).
+- Re-read the persisted review findings (§6a): if any defect/flaky was logged as merely
+  "noted" without a completed fix, the ship gate refuses — return it to fix-now first.
+
+## 6b-bis. No-GitHub-Actions Drift Gate (ENFORCING)
+
+GitHub Actions MUST NOT be introduced as a build/CI/deploy path — the canonical path is
+the local Makefile + admin-squash-merge (`scripts/Makefile.template`). Full rule and the
+exemption list: `shared/no-github-actions.md`. A new GH-Actions build/deploy path in this
+run's diff is **off-policy drift treated as a defect** (fix it now per §5-0), not a
+"noted" item.
+
+```bash
+# Flag NEW .github/workflows/*.yml in this run's diff that run build/test/deploy steps.
+# Exempt observers (ci-alert.yml.template, board-auto-add.yml) and pure manual-dispatch
+# infra-bootstrap workflows are NOT build/deploy paths — see shared/no-github-actions.md.
+NEW_WF=$(git diff --name-only --diff-filter=A "origin/${BASE:-main}...HEAD" 2>/dev/null \
+  | grep -E '^\.github/workflows/.*\.ya?ml$' \
+  | grep -vE '(ci-alert|board-auto-add)' || true)
+if [ -n "$NEW_WF" ]; then
+  echo "⚠ no-gh-actions gate: new workflow file(s) introduced this run:"
+  echo "$NEW_WF" | sed 's/^/    /'
+  echo "  If any runs build/test/lint or a deploy step, it is off-policy drift —"
+  echo "  move the gate to the local Makefile path (or .github/workflows-disabled/) and"
+  echo "  fix now per §5-0. Observer/alerting-only workflows are exempt; confirm before shipping."
+fi
+```
+
+This gate is a defect detector, not a hard stop on every workflow file: an
+alerting/observer or deliberately-retained manual-dispatch workflow is exempt (apply the
+`shared/no-github-actions.md` test — does it build/test/deploy on push/PR/schedule?). A
+build/deploy workflow is a defect to fix now.
+
 ## 6c. Test Coverage Audit
 
 Rate test quality with stars, not just percentages:

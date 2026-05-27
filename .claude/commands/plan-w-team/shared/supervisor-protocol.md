@@ -440,6 +440,29 @@ the idle window yet still failing because nothing is landing; Step 0 catches tha
 2. `claude logs <SID> --tail 200` — scan for stage transitions and pause-site emissions.
 3. `.claude/state/plan-w-team-goal-<SLUG>.json` — read `terminal_state`; on non-null, consult Decision Matrix.
 4. `.claude/state/pwt-completion-summary-<SID>.md` — surface if ship/retro stages wrote one this tick.
+5. **Fix-Now Audit** — scan the tick's worker log + persisted review findings for any defect or flaky test logged as merely **"noted"** (or a flaky "fixed" by loosen/retry/`.skip`/timeout-widen). See Fix-Now Audit below.
+
+### Fix-Now Audit (ENFORCING — every check-in)
+
+The supervisor verifies at **every** check-in that the worker is honoring the
+fix-immediately rule (`04-fix-first-review.md` §5-0, memory
+`feedback_fix_defects_and_flaky_immediately`):
+
+- **No defect/flaky logged as merely "noted".** A real defect (failed test, type/lint
+  error, broken assertion) or a flaky test recorded as "noted" with no completed
+  fix→retest→verify-GREEN is a violation. The supervisor **pushes it back to fix-now**
+  before the worker proceeds — either by surfacing a corrective instruction to the worker
+  (`SendMessage`/log) or, if the worker has the local-CI path, directing it through
+  fix→deploy→retest→GREEN. It does NOT let the run advance with the item merely noted.
+- **No masked flaky.** A flaky "fixed" by loosening an assertion, adding a retry,
+  `.skip`/`xfail`, or widening a timeout did not remove the non-determinism — the
+  supervisor rejects it and requires a real repair (mock/stub/pin/isolate, 100/100).
+- **No GH-Actions build/deploy drift.** A new `.github/workflows/*.yml` build/deploy path
+  (non-exempt per `shared/no-github-actions.md`) is a defect — push it back to fix-now.
+
+This is a verification responsibility, not a fix responsibility: the supervisor never
+edits code itself (see Hard Rules), it directs the worker to fix now and blocks
+advancement until the item is GREEN, not "noted".
 
 **Auto-terminate of origin mirror (2026-05-22)**: The origin chat's mirror goal-state file (`.claude/state/plan-w-team-goal-<SLUG>.json`, written by `pwt-goal.sh --supervisor-goal`) **auto-terminates on worker retro** — no manual `jq` intervention needed. Mechanism: `pwt-goal.sh --supervisor-goal` registers the mirror in the spawned-children registry as `type=supervisor_mirror`; on worker retro, `07-retro §8j-sexies → child-cleanup.sh` patches the mirror to SUCCESS. If the worker dies without retro, the goal-evaluator hook's DEAD-detection branch patches the mirror to LOW_CONFIDENCE_STREAK. See `docs/specs/supervisor-mirror-lifecycle.md`.
 

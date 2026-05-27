@@ -503,17 +503,28 @@ fi
 # If the UserPromptSubmit route hook already spawned a worker for this turn,
 # refuse to spawn another. The hook writes a flag file at:
 #   .claude/state/plan-w-team-hook-spawn-<parent_sid_short>.flag
-# Flag is fresh if mtime is within 60s. Skip when --worker-only mode is NOT
-# active because direct invocations from a shell are intentional.
+# Flag is fresh if its mtime is within PWT_DOUBLE_SPAWN_WINDOW_MIN minutes
+# (default 3 — generous enough to span a full assistant turn between the
+# route-hook spawn and a same-turn manual invocation).
+#
+# Covers BOTH --worker-only AND --launch. The --launch gap was the root cause of
+# the 2026-05-27 double-spawn: the route hook spawns via --supervisor-goal
+# (worker-only semantics) and writes the flag, then the assistant ALSO ran
+# `pwt-goal.sh --launch` in the same turn — the old `WORKER_ONLY=1`-only guard
+# let that detached --launch through, producing a duplicate run (route-created
+# b3578658 vs manual 48adde90) that clobbered the same skill files. Extending to
+# --launch closes it. (Safe: the route hook calls pwt-goal BEFORE writing the
+# flag, so the hook's own spawn never trips this; only later calls do.)
 #
 # Override (escape hatch): PLAN_W_TEAM_FORCE_SPAWN=1 bypasses the guard.
 # Use only if you've manually confirmed the hook's prior spawn is dead/stopped.
-if [ "$WORKER_ONLY" = "1" ] && [ "${PLAN_W_TEAM_FORCE_SPAWN:-0}" != "1" ]; then
+if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; } && [ "${PLAN_W_TEAM_FORCE_SPAWN:-0}" != "1" ]; then
     GUARD_PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-${PWT_PROJECT_ROOT_OVERRIDE:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
     GUARD_DIR="$GUARD_PROJECT_ROOT/.claude/state"
     if [ -d "$GUARD_DIR" ]; then
-        # Find any fresh hook-spawn flag (mtime within 60s)
-        FRESH_FLAG=$(find "$GUARD_DIR" -maxdepth 1 -name 'plan-w-team-hook-spawn-*.flag' -mmin -1 2>/dev/null | head -1)
+        # Find any hook-spawn flag fresh within the double-spawn window.
+        DS_WINDOW_MIN="${PWT_DOUBLE_SPAWN_WINDOW_MIN:-3}"
+        FRESH_FLAG=$(find "$GUARD_DIR" -maxdepth 1 -name 'plan-w-team-hook-spawn-*.flag' -mmin "-${DS_WINDOW_MIN}" 2>/dev/null | head -1)
         if [ -n "$FRESH_FLAG" ]; then
             EXISTING_WORKER=$(grep '^worker_sid=' "$FRESH_FLAG" 2>/dev/null | head -1 | cut -d= -f2)
             EXISTING_AT=$(grep '^spawned_iso=' "$FRESH_FLAG" 2>/dev/null | head -1 | cut -d= -f2)
@@ -525,9 +536,11 @@ if [ "$WORKER_ONLY" = "1" ] && [ "${PLAN_W_TEAM_FORCE_SPAWN:-0}" != "1" ]; then
 
   Why this guard exists: the manifest's Step 3a check ("if you see the
   systemMessage marker, skip Step 3b") depends on the LLM noticing the
-  marker in its context. When the LLM misses it (verified 2026-05-22),
-  it calls pwt-goal.sh --worker-only and produces a duplicate worker.
-  This guard prevents that at the process level.
+  marker in its context. When the LLM misses it, it calls pwt-goal.sh
+  (--worker-only OR --launch) and produces a duplicate worker — verified
+  2026-05-22 (--worker-only cascade) and 2026-05-27 (--launch double-spawn:
+  route-created run + manual --launch clobbering the same files). This
+  guard prevents both at the process level.
 
   If you've confirmed the prior worker is dead or you want to spawn
   another deliberately, set PLAN_W_TEAM_FORCE_SPAWN=1 and retry.
