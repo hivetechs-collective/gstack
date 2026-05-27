@@ -720,8 +720,12 @@ SLUG="<feature-slug>"
 
 # 1. Subagent worktrees of THIS run (safety invariants enforced inside the GC:
 #    never touches uncommitted / in-use / non-.claude-worktrees paths).
+#    PWT_WORKTREE_GC_IGNORE_LOCKS=1: the run is over, so any lock still held by
+#    one of this run's own subagents is stale (its SubagentStop unlock was
+#    missed). Real uncommitted work and genuinely-live sessions are still kept —
+#    only the orphaned lock signal is disregarded for this scoped sweep.
 if [ -x .claude/scripts/plan-w-team-worktree-gc.sh ]; then
-  WT_GC_JSON=$(.claude/scripts/plan-w-team-worktree-gc.sh \
+  WT_GC_JSON=$(PWT_WORKTREE_GC_IGNORE_LOCKS=1 .claude/scripts/plan-w-team-worktree-gc.sh \
       --scope subagents-of-current-run --execute --json 2>/dev/null || echo '{}')
   WT_REMOVED=$(printf '%s' "$WT_GC_JSON" | jq -r '.totals.removed // 0' 2>/dev/null || echo 0)
   echo "✓ worktree GC (subagents-of-this-run): $WT_REMOVED removed"

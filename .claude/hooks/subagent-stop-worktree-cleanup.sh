@@ -47,6 +47,18 @@ SCRIPTS="$SCRIPT_DIR/../scripts"
 GC="$SCRIPTS/plan-w-team-worktree-gc.sh"
 COMPANION="$SCRIPTS/plan-w-team-companion-gc.sh"
 
+# 0. Release this subagent's worktree lock. Claude Code locks the worktree for
+#    the subagent's lifetime; the subagent is now stopping, so its lock is by
+#    definition stale. Releasing it here is the source-side fix for stale-lock
+#    accumulation — it lets the on-merge / retro / periodic GC reclaim this
+#    worktree later instead of reading the orphaned lock as "in-use" forever.
+#    The GC's own stale-lock heuristic is the backstop if this unlock is missed.
+REPO_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." 2>/dev/null && pwd)}"
+WT_DIR="$REPO_ROOT/.claude/worktrees/agent-$AGENT_ID"
+if [ -d "$WT_DIR" ]; then
+    git -C "$REPO_ROOT" worktree unlock "$WT_DIR" >/dev/null 2>&1 || true
+fi
+
 # 1. Sweep the subagent's worktree (scope=subagent guards everything else).
 if [ -x "$GC" ]; then
     "$GC" --scope subagent --sid "$AGENT_ID" --execute >/dev/null 2>&1 || true

@@ -42,9 +42,15 @@ new_repo() {
     git -C "$root" config user.email t@t.t
     git -C "$root" config user.name t
     echo "seed" > "$root/seed.txt"
-    git -C "$root" add seed.txt
+    # Track .claude/state/ as a non-empty dir so worktrees inherit it and runtime
+    # churn surfaces with its full path ("?? .claude/state/<file>" or
+    # " M .claude/state/<file>") rather than a single collapsed "?? .claude/"
+    # entry. Mirrors real repos and is required by the ignore-path dirty tests.
+    mkdir -p "$root/.claude/state"
+    echo "keep" > "$root/.claude/state/.gitkeep"
+    git -C "$root" add seed.txt .claude/state/.gitkeep
     git -C "$root" commit -qm "seed"
-    mkdir -p "$root/.claude/worktrees" "$root/.claude/state"
+    mkdir -p "$root/.claude/worktrees"
     echo "$root"
 }
 
@@ -347,6 +353,80 @@ if [ -x /bin/bash ] && /bin/bash --version 2>/dev/null | head -1 | grep -q 'vers
 else
     echo "  ⊘ skipped (no bash 3.2 at /bin/bash — not the regression-risk host)"
 fi
+
+# ── Test 17: ignore-path dirty — churn confined to .claude/state/ is "clean" ─
+# Runtime hooks rewrite .claude/state/* into every worktree. A merged worktree
+# dirty ONLY in those paths must still be reclaimable (Change C, 2026-05).
+echo "[17] dirty only in .claude/state/ → treated clean → SAFE-PRUNE-MERGED"
+R=$(new_repo); make_nogh "$R"
+WT=$(add_worktree "$R" "statedirty-feat" merge)
+mkdir -p "$WT/.claude/state"
+echo '{"cache":1}' > "$WT/.claude/state/bg-agents-cache.json"   # transient churn
+JSON=$(run_gc "$R" --json)
+assert_eq "state-only-dirty merged → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" statedirty-feat)"
+assert_eq "state-only-dirty uncommitted flag false" "false" "$(field_of "$JSON" statedirty-feat uncommitted)"
+
+# ── Test 18: ignore-path dirty — a REAL edit alongside state churn still blocks ─
+echo "[18] real edit + state churn → UNSAFE-KEEP (real work protected)"
+R=$(new_repo); make_nogh "$R"
+WT=$(add_worktree "$R" "realdirty-feat" merge)
+mkdir -p "$WT/.claude/state"
+echo '{"cache":1}' > "$WT/.claude/state/bg-agents-cache.json"   # ignored
+echo "genuine work" > "$WT/important.txt"                        # NOT ignored
+JSON=$(run_gc "$R" --json)
+assert_eq "real-edit merged → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" realdirty-feat)"
+assert_eq "real-edit uncommitted flag true" "true" "$(field_of "$JSON" realdirty-feat uncommitted)"
+
+# Helper: run GC WITHOUT ignoring locks (exercises stale-lock logic). Still uses
+# TEST_MODE=1 so the live-session scan is empty — lock liveness comes only from
+# commit recency. gh stub (passed via PATH) supplies merged-ness.
+run_gc_locks() {
+    local root="$1" ghdir="$2"; shift 2
+    ( cd "$root" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+      PATH="$root/$ghdir:$PATH" bash "$GC" "$@" 2>/dev/null )
+}
+backdate_tip() {  # $1 worktree — push tip commit ~30 days into the past
+    local wt="$1" old old_iso
+    old=$(( $(date +%s) - 30*86400 ))
+    old_iso=$(python3 -c "import time;print(time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime($old)))")
+    ( cd "$wt" && GIT_COMMITTER_DATE="$old_iso" git commit -q --amend --no-edit --date "$old_iso" >/dev/null 2>&1 )
+}
+
+# ── Test 19: stale lock — locked + merged + OLD commit → lock ignored, pruned ─
+# This is the disk-bloat root cause: a lock left behind by a dead subagent must
+# NOT pin a merged worktree forever (Change B, 2026-05).
+echo "[19] stale lock (locked + merged + old commit) → SAFE-PRUNE-MERGED"
+R=$(new_repo)
+WT=$(add_worktree "$R" "stalelock-feat")          # not merged locally
+backdate_tip "$WT"                                 # commit > LOCK_STALE_HOURS old
+make_gh_merged "$R" "worktree-stalelock-feat"      # gh says merged
+git -C "$R" worktree lock "$WT" >/dev/null 2>&1
+JSON=$(run_gc_locks "$R" _gh --json)
+assert_eq "stale-locked merged → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" stalelock-feat)"
+assert_eq "stale-locked locked flag true" "true" "$(field_of "$JSON" stalelock-feat locked)"
+assert_eq "stale-locked stale_lock flag true" "true" "$(field_of "$JSON" stalelock-feat stale_lock)"
+
+# ── Test 20: fresh lock — locked + RECENT commit → honored as in-use (kept) ──
+# A lock backed by recent activity may be a live agent the scan missed; keep it.
+echo "[20] fresh lock (locked + recent commit) → UNSAFE-KEEP (lock-recent)"
+R=$(new_repo)
+WT=$(add_worktree "$R" "freshlock-feat")           # recent commit (now)
+make_gh_merged "$R" "worktree-freshlock-feat"
+git -C "$R" worktree lock "$WT" >/dev/null 2>&1
+JSON=$(run_gc_locks "$R" _gh --json)
+assert_eq "fresh-locked → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" freshlock-feat)"
+assert_eq "fresh-locked in_use_source lock-recent" "\"lock-recent\"" "$(field_of "$JSON" freshlock-feat in_use_source)"
+
+# ── Test 21: TRUST_LOCKS=1 restores legacy any-lock=in-use ──────────────────
+echo "[21] PWT_WORKTREE_GC_TRUST_LOCKS=1 → old locked worktree kept"
+R=$(new_repo)
+WT=$(add_worktree "$R" "trustlock-feat")
+backdate_tip "$WT"                                 # old → would be STALE by default
+make_gh_merged "$R" "worktree-trustlock-feat"
+git -C "$R" worktree lock "$WT" >/dev/null 2>&1
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+        PWT_WORKTREE_GC_TRUST_LOCKS=1 PATH="$R/_gh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "trusted lock → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" trustlock-feat)"
 
 echo ""
 echo "── results: $PASS passed, $FAIL failed ──"

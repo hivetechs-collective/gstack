@@ -21,6 +21,42 @@ Entries are newest-first.
 
 ---
 
+## [1.2.1] — 2026-05-27
+
+PATCH — fix the worktree-cleanup defect that let `.claude/worktrees/` grow to
+tens of GB despite the Layer-1 GC existing. Two independent root causes, both
+proven against a 74-worktree cleanscale checkout where the GC reclaimed 0:
+
+- `fix`: **stale-lock awareness** in `plan-w-team-worktree-gc.sh`. Claude Code
+  locks a subagent's worktree for its lifetime and SHOULD unlock on
+  SubagentStop, but the unlock is unreliable (crash/timeout). The legacy rule
+  "any lock == in-use" therefore pinned merged/idle worktrees forever once their
+  owner died. A lock is now honored as in-use ONLY when corroborated by a live
+  session OR recent activity (last commit within `PWT_WORKTREE_LOCK_STALE_HOURS`,
+  default 24h); a lock with neither is STALE and no longer blocks reclamation.
+  New env: `PWT_WORKTREE_LOCK_STALE_HOURS`, `PWT_WORKTREE_GC_TRUST_LOCKS=1`
+  (legacy opt-in). The misleading "in-use by live claude session" reason now
+  distinguishes `session` / `lock-recent` / `lock-trusted` sources.
+- `fix`: **ignore-path dirty check**. Runtime hooks rewrite `.claude/state/*`
+  (e.g. `bg-agents-cache.json`) into every worktree, so the (correct) "never
+  delete uncommitted work" rule fired on non-work cache files and kept every
+  worktree forever. Dirtiness confined to `PWT_WORKTREE_GC_DIRTY_IGNORE`
+  prefixes (default `.claude/state/`) is now treated as clean; any real
+  source/doc edit still blocks.
+- `fix`: **unlock-on-stop** — `subagent-stop-worktree-cleanup.sh` now runs
+  `git worktree unlock` on the subagent's own worktree before the scoped GC, so
+  locks self-release at the moment their owner stops (source-side fix). The
+  retro sweep (§8j-septies) passes `PWT_WORKTREE_GC_IGNORE_LOCKS=1` for its own
+  finished subagents. `remove_one` unlocks before `git worktree remove`.
+- `test`: +10 assertions (ignore-path clean/real-edit, stale-lock prune,
+  fresh-lock keep, trust-locks legacy). Corpus 39 → 49, all green incl. bash 3.2.
+- JSON output gains additive keys `locked`, `stale_lock`, `in_use_source`
+  (back-compat: existing keys unchanged).
+
+Impact: against cleanscale the enhanced GC reclassified 22 previously-pinned
+worktrees as SAFE-PRUNE and reclaimed ~11 GB; the full disk-hygiene pass freed
+~48 GB.
+
 ## [1.2.0] — 2026-05-25
 
 MINOR — objective-progress supervisor self-check (anti-stall + anti-drift),

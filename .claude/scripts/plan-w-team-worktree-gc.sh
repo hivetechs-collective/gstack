@@ -9,11 +9,24 @@
 #
 # Classification:
 #   SAFE-PRUNE-MERGED  branch merged to default (gh PR list preferred, local --merged fallback)
-#                      AND no uncommitted changes AND no live claude session has it as cwd
+#                      AND no REAL uncommitted changes AND no live claude session has it as cwd
 #   SAFE-PRUNE-IDLE    no commits in PWT_WORKTREE_IDLE_DAYS days (default 7),
 #                      AND no open PR, AND no uncommitted, AND no live claude session
 #   UNSAFE-KEEP        any blocker: open PR + unmerged, uncommitted, in-use, registered active PWT run
 #   ORPHAN-ASK         branch deleted on origin but local has unmerged commits — only removable with --orphans-ok
+#
+# Two refinements (2026-05) prevent the stale-state accumulation that let
+# .claude/worktrees/ grow to tens of GB despite this GC existing:
+#   • Stale-lock awareness: Claude Code locks a subagent's worktree for its
+#     lifetime and SHOULD unlock on SubagentStop, but the unlock is unreliable
+#     (crash/timeout). A lock is therefore honored as in-use ONLY when a live
+#     session corroborates it OR the worktree shows recent activity (last commit
+#     within PWT_WORKTREE_LOCK_STALE_HOURS). A lock with neither is STALE and
+#     does NOT block reclamation.
+#   • Ignore-path dirty check: runtime hooks rewrite .claude/state/* into every
+#     worktree, which would mark every worktree dirty forever. Dirtiness confined
+#     to PWT_WORKTREE_GC_DIRTY_IGNORE prefixes (default ".claude/state/") is
+#     treated as clean; only REAL source/doc edits count as uncommitted.
 #
 # Usage:
 #   plan-w-team-worktree-gc.sh                      # dry-run table (default)
@@ -34,11 +47,19 @@
 #   PWT_WORKTREE_GC_DISABLE=1      no-op (exit 0)
 #   PWT_WORKTREE_GC_DEFAULT_BRANCH override of default branch (auto-detected from origin/HEAD otherwise)
 #   PWT_WORKTREE_GC_TEST_MODE=1    skip in-use check (used by tests with stubbed claude-agents-extended)
+#   PWT_WORKTREE_LOCK_STALE_HOURS  a lock + no live session + last commit older than
+#                                  this (default 24) is STALE → does not block prune
+#   PWT_WORKTREE_GC_IGNORE_LOCKS=1 force EVERY lock stale (manual sweep / tests)
+#   PWT_WORKTREE_GC_TRUST_LOCKS=1  legacy behavior: ANY lock == in-use hard-keep
+#   PWT_WORKTREE_GC_DIRTY_IGNORE   colon-separated path prefixes whose dirtiness is
+#                                  ignored (default ".claude/state/"; empty disables)
 #
 # Safety invariants (uniform across all paths):
 #   1. NEVER touch worktrees outside .claude/worktrees/ (resolved real-path check).
-#   2. NEVER remove a worktree with uncommitted changes.
-#   3. NEVER remove a worktree currently in-use (claude-agents-extended.sh cwd field).
+#   2. NEVER remove a worktree with REAL uncommitted changes (dirtiness outside
+#      the PWT_WORKTREE_GC_DIRTY_IGNORE prefixes).
+#   3. NEVER remove a worktree currently in-use (claude-agents-extended.sh cwd
+#      field) or holding a lock backed by a live session / recent activity.
 #   4. NEVER force-delete a branch with unmerged commits unless --orphans-ok.
 #   5. IDEMPOTENT: re-running on clean repo = exit 0, no changes.
 #
@@ -338,6 +359,7 @@ classify_one() {
     local wt_path="$1"
     CLASS=""; BRANCH=""; REASON=""; LAST_COMMIT_AGE_DAYS=""; UNCOMMITTED=0
     MERGED=0; OPEN_PR=0; IN_USE=0; ACTIVE_RUN=0; OUTSIDE=0; MERGED_BY=""; ORIGIN_GONE=0
+    LOCKED=0; STALE_LOCK=0; IN_USE_SOURCE=""
 
     if ! is_under_worktrees_dir "$wt_path"; then
         CLASS="REFUSED-OUTSIDE-CLAUDE-WORKTREES"
@@ -354,18 +376,47 @@ classify_one() {
         return 0
     fi
 
-    # Uncommitted check
-    local porcelain
+    # Uncommitted check — ignore churn confined to transient runtime paths.
+    # Hooks rewrite .claude/state/* (e.g. bg-agents-cache.json) into every
+    # worktree; counting that as "uncommitted work" would mark every worktree
+    # dirty forever and block GC. We strip porcelain lines whose path is under an
+    # ignore prefix, so only REAL source/doc edits set UNCOMMITTED. Configurable
+    # via PWT_WORKTREE_GC_DIRTY_IGNORE (colon-separated prefixes; empty disables).
+    local porcelain real_dirty ignore_prefixes
     porcelain="$(git -C "$wt_path" status --porcelain 2>/dev/null || echo "")"
-    if [ -n "$porcelain" ]; then UNCOMMITTED=1; fi
+    ignore_prefixes="${PWT_WORKTREE_GC_DIRTY_IGNORE-.claude/state/}"
+    if [ -z "$porcelain" ]; then
+        UNCOMMITTED=0
+    elif [ -z "$ignore_prefixes" ]; then
+        UNCOMMITTED=1
+    else
+        real_dirty="$(printf '%s\n' "$porcelain" | IGNORE_PREFIXES="$ignore_prefixes" python3 -c '
+import sys, os
+prefixes = [p for p in os.environ.get("IGNORE_PREFIXES", "").split(":") if p]
+q = chr(34)
+for line in sys.stdin:
+    line = line.rstrip(chr(10))
+    if not line.strip():
+        continue
+    path = line[3:] if len(line) > 3 else ""
+    if " -> " in path:               # renamed: take destination
+        path = path.split(" -> ", 1)[1]
+    path = path.strip()
+    if len(path) >= 2 and path[0] == q and path[-1] == q:
+        path = path[1:-1]            # unquote paths with special chars
+    if any(path == pre.rstrip("/") or path.startswith(pre) for pre in prefixes):
+        continue
+    print(line)                      # a REAL (non-ignored) change survives
+' 2>/dev/null)"
+        if [ -n "$real_dirty" ]; then UNCOMMITTED=1; else UNCOMMITTED=0; fi
+    fi
 
-    # Last commit age in days
-    local last_commit_epoch
+    # Last commit age — used for SAFE-PRUNE-IDLE and stale-lock detection.
+    local last_commit_epoch now_epoch
+    now_epoch="$(date +%s)"
     last_commit_epoch="$(git -C "$wt_path" log -1 --format=%ct 2>/dev/null || echo "0")"
     if [ "$last_commit_epoch" -gt 0 ] 2>/dev/null; then
-        local now
-        now="$(date +%s)"
-        LAST_COMMIT_AGE_DAYS=$(( (now - last_commit_epoch) / 86400 ))
+        LAST_COMMIT_AGE_DAYS=$(( (now_epoch - last_commit_epoch) / 86400 ))
     fi
 
     # Merged check — a branch counts as merged if EITHER gh PR-state OR local
@@ -401,15 +452,41 @@ classify_one() {
     fi
 
     # In-use check (live claude session whose cwd / worktreePath is this dir)
-    if is_in_use "$wt_path"; then IN_USE=1; fi
+    if is_in_use "$wt_path"; then IN_USE=1; IN_USE_SOURCE="session"; fi
 
-    # Git-lock check — Claude Code locks Agent-tool subagent worktrees while the
-    # subagent is running (`git worktree list` shows "locked"). A locked worktree
-    # is a deliberate in-use signal; honor it as a hard keep even if the live
-    # session scan missed it (e.g. claude binary unavailable). Tests can suppress
-    # via PWT_WORKTREE_GC_IGNORE_LOCKS=1.
-    if [ "${PWT_WORKTREE_GC_IGNORE_LOCKS:-0}" != "1" ]; then
-        if is_worktree_locked "$wt_path"; then IN_USE=1; fi
+    # Git-lock check (stale-lock aware) — Claude Code locks an Agent-tool
+    # subagent's worktree for its lifetime and SHOULD unlock on SubagentStop, but
+    # the unlock is unreliable (crash/timeout). The legacy rule "lock == in-use"
+    # therefore pinned merged/idle worktrees forever once their owner died — the
+    # root cause of .claude/worktrees/ disk bloat. We now honor a lock as in-use
+    # ONLY when corroborated by liveness:
+    #   • a live session/subagent already claims it (IN_USE set above), OR
+    #   • the worktree shows recent activity (last commit within
+    #     PWT_WORKTREE_LOCK_STALE_HOURS) — covers the case where the claude binary
+    #     was unavailable so the live scan returned nothing.
+    # A lock with neither is STALE and must not block reclamation.
+    #   PWT_WORKTREE_GC_IGNORE_LOCKS=1 → treat every lock as absent (don't check).
+    #   PWT_WORKTREE_GC_TRUST_LOCKS=1  → restore legacy any-lock=in-use.
+    if [ "${PWT_WORKTREE_GC_IGNORE_LOCKS:-0}" != "1" ] && is_worktree_locked "$wt_path"; then
+        LOCKED=1
+        if [ "${PWT_WORKTREE_GC_TRUST_LOCKS:-0}" = "1" ]; then
+            IN_USE=1; [ -z "$IN_USE_SOURCE" ] && IN_USE_SOURCE="lock-trusted"
+        elif [ "$IN_USE" = "1" ]; then
+            : # a live session already corroborates the lock
+        else
+            local lock_stale_hours recent_commit age_hours
+            lock_stale_hours="${PWT_WORKTREE_LOCK_STALE_HOURS:-24}"
+            recent_commit=0
+            if [ "$last_commit_epoch" -gt 0 ] 2>/dev/null; then
+                age_hours=$(( (now_epoch - last_commit_epoch) / 3600 ))
+                [ "$age_hours" -lt "$lock_stale_hours" ] && recent_commit=1
+            fi
+            if [ "$recent_commit" = "1" ]; then
+                IN_USE=1; IN_USE_SOURCE="lock-recent"  # fresh lock, agent may be live but unseen
+            else
+                STALE_LOCK=1                            # lock outlived its owner — ignore it
+            fi
+        fi
     fi
 
     # Active PWT run check
@@ -428,7 +505,13 @@ classify_one() {
     #   3. ACTIVE_RUN keeps an UNMERGED worktree (a genuinely in-flight run).
     #   4. An unmerged branch with an open PR is a keep (work in review).
     if [ "$IN_USE" = "1" ]; then
-        CLASS="UNSAFE-KEEP"; REASON="in-use by live claude session"; return 0
+        CLASS="UNSAFE-KEEP"
+        case "$IN_USE_SOURCE" in
+            lock-recent)  REASON="locked, recent activity (<${PWT_WORKTREE_LOCK_STALE_HOURS:-24}h) — possible live agent" ;;
+            lock-trusted) REASON="locked worktree (PWT_WORKTREE_GC_TRUST_LOCKS=1)" ;;
+            *)            REASON="in-use by live claude session" ;;
+        esac
+        return 0
     fi
     if [ "$UNCOMMITTED" = "1" ]; then
         CLASS="UNSAFE-KEEP"; REASON="uncommitted changes"; return 0
@@ -437,6 +520,7 @@ classify_one() {
     if [ "$MERGED" = "1" ]; then
         CLASS="SAFE-PRUNE-MERGED"
         REASON="branch merged (source: ${MERGED_BY:-unknown})"
+        [ "$STALE_LOCK" = "1" ] && REASON="$REASON; stale lock ignored"
         return 0
     fi
 
@@ -452,6 +536,7 @@ classify_one() {
     if [ -n "$LAST_COMMIT_AGE_DAYS" ] && [ "$LAST_COMMIT_AGE_DAYS" -ge "$idle_days" ] && [ "$OPEN_PR" = "0" ]; then
         CLASS="SAFE-PRUNE-IDLE"
         REASON="no commits in ${LAST_COMMIT_AGE_DAYS}d (threshold ${idle_days}d), no open PR"
+        [ "$STALE_LOCK" = "1" ] && REASON="$REASON; stale lock ignored"
         return 0
     fi
 
@@ -479,6 +564,10 @@ remove_one() {
         echo "refuse: path outside .claude/worktrees/ ($wt_path)" >&2
         return 1
     fi
+    # Release any lingering lock first so a single `--force` succeeds even on a
+    # locked worktree (otherwise git refuses a locked tree without a double
+    # --force; the rm -rf fallback below still covers that case).
+    git -C "$MAIN_CHECKOUT" worktree unlock "$wt_path" 2>/dev/null || true
     # Run git worktree remove
     if git -C "$MAIN_CHECKOUT" worktree remove --force "$wt_path" 2>/dev/null; then
         removed_wt=1
@@ -634,11 +723,15 @@ row = {
     "merge_source": sys.argv[15],
     "merged_by": sys.argv[16],
     "origin_gone": sys.argv[17] == "1",
+    "locked": sys.argv[18] == "1",
+    "stale_lock": sys.argv[19] == "1",
+    "in_use_source": sys.argv[20] or None,
 }
 sys.stdout.write(json.dumps(row))
 ' "$wt_path" "$name" "$BRANCH" "$CLASS" "$REASON" "$ACTION" \
   "$REMOVED_WT" "$REMOVED_BRANCH" "$UNCOMMITTED" "$MERGED" "$OPEN_PR" \
-  "$IN_USE" "$ACTIVE_RUN" "${LAST_COMMIT_AGE_DAYS:-?}" "$MERGE_SOURCE" "${MERGED_BY:-}" "${ORIGIN_GONE:-0}" >> "$RESULTS_JSON_TMP"
+  "$IN_USE" "$ACTIVE_RUN" "${LAST_COMMIT_AGE_DAYS:-?}" "$MERGE_SOURCE" "${MERGED_BY:-}" "${ORIGIN_GONE:-0}" \
+  "${LOCKED:-0}" "${STALE_LOCK:-0}" "${IN_USE_SOURCE:-}" >> "$RESULTS_JSON_TMP"
 
     # Human table row
     if [ "$MODE_JSON" = "0" ]; then
