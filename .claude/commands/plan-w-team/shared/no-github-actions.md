@@ -34,6 +34,60 @@ GH Actions producing required status checks to wait on. The same `make test` /
 `make test-all` gate is wired into `.husky/pre-push` (or equivalent) so the
 admin-squash-merge push still passes through a green gate.
 
+## Deploy Secret Access (Headless / Autonomous) — the Standard
+
+Moving deploy off GitHub Actions removes the place CI used to read deploy secrets
+from (`secrets.*` injected into the runner). The local Makefile path needs its own
+secret source — and because autonomous `/plan-w-team` workers run **headless** (no
+GUI, no human at the keyboard), that source must be **prompt-free and durable**.
+This is the standard for ANY provider (Cloudflare, Fly, Vercel-via-token, AWS, …),
+not specific to one project.
+
+**The model (parameterize `<project>` and `<provider>`):**
+
+| Component | What it is |
+| --- | --- |
+| `~/.config/<project>/deploy.env` | `0600` file, **outside the repo**, holding the provider token (+ account/target id). The single durable secret store. |
+| `scripts/load-deploy-env.sh` | Sourceable. Loads that file into the env **only when the token var is unset** (an injected env always wins). Sourced by the deploy preflight **and** by every `make deploy-*` recipe. |
+| `scripts/setup-<provider>-token.sh` | One-time bootstrap: writes the `0600` file atomically (never echoes the token) and **verifies** the token resolves to the expected account/target before declaring success. Re-run to rotate. |
+| `scripts/preflight-deploy-account.sh` | Optional but recommended guardrail: refuses to deploy when the resolved token/login points at the **wrong** account/target. The env-file is NOT a bypass — the guardrail still runs. |
+
+**Why a `0600` file and not the obvious alternatives:**
+
+- **OS keychain** (macOS Keychain, etc.) → triggers a GUI "allow access" prompt that
+  **hangs a headless worker** (nothing to click). Disqualified for autonomous runs.
+- **`launchctl setenv` / shell-rc export** → **evaporates on reboot**; the recurring
+  "token missing → deploy blocked" symptom. Not durable.
+- **GitHub Actions secrets** → only readable by GH Actions, which this rule forbids.
+
+Security comes from **least-privilege token scope + `0600` perms + rotation**, not
+from at-rest encryption that needs an interactive unlock.
+
+**Token scope: least privilege, always.** Mint a token scoped to the **single**
+deploy capability on the **single** target account — never a global/admin key, never
+multi-account. (Cloudflare worked example: `Account › Workers Scripts:Edit` +
+`Account › Cloudflare Pages:Edit`, Account Resources → the one prod account only.)
+
+**Makefile wiring (the recipe must source the loader inline):** a preflight prereq
+runs in a *separate* process, so a token it loads does **not** propagate to the
+recipe. Each deploy recipe loads it again so the child deploy CLI inherits it:
+
+```make
+deploy-api: preflight-deploy-account
+	. scripts/load-deploy-env.sh && <provider-deploy-cmd>   # e.g. pnpm run deploy → wrangler
+```
+
+**Hygiene:** add `deploy.env` / `.deploy.env` to `.gitignore`; the canonical path is
+outside the repo so it can't be committed; never echo the token when verifying.
+
+**Reference implementation:** CleanRev (`cleanscale`) — `scripts/load-deploy-env.sh`,
+`scripts/setup-deploy-token.sh`, `scripts/preflight-deploy-account.sh`, the Makefile
+`deploy-*` recipes, and `docs/operations/DEPLOY_RUNBOOK.md` §"Non-Interactive
+(Headless) Deploy Credential". A repo adopting this copies that shape and swaps in
+its own `<project>` dir, `<provider>` token, and account/target id. Per-repo deploy
+recipes belong in that repo's Makefile (seeded from `scripts/Makefile.template`); only
+this *standard* lives in the skill.
+
 ## What Counts as a Violation (a defect to fix)
 
 - A new `.github/workflows/*.yml` whose job runs build/test/lint or a deploy step

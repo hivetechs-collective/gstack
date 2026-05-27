@@ -21,6 +21,36 @@ Entries are newest-first.
 
 ---
 
+## [1.4.0] — 2026-05-27
+
+MINOR — **Deploy Secret Access (Headless / Autonomous)** standard. The
+no-github-actions rule moved build/CI/deploy onto the local Makefile, which
+removed where CI used to read deploy secrets (`secrets.*` in the runner). This
+adds the replacement secret source — and because autonomous workers run headless,
+it must be prompt-free and reboot-stable. Lives in the skill so it travels to
+every synced repo (concrete tokens/account IDs stay per-project).
+
+- `docs`: **`shared/no-github-actions.md` §"Deploy Secret Access"** (landed from
+  PR #15, `97c5d7f`). Documents the four components — `~/.config/<project>/deploy.env`
+  (0600, outside the repo), `scripts/load-deploy-env.sh` (sources only when the
+  token var is unset; an injected env always wins), `scripts/setup-<provider>-token.sh`
+  (atomic 0600 write, never echoes the token, verifies the account before success),
+  `scripts/preflight-deploy-account.sh` (wrong-account guardrail). Captures the
+  CRITICAL Makefile gotcha (a preflight prereq runs in a separate process, so each
+  deploy recipe must source the loader INLINE), the why-not-keychain/launchctl/GH-
+  secrets rationale, mandatory least-privilege scope, `.gitignore` hygiene, and the
+  CleanRev (cleanscale) reference implementation. Cloudflare worked example.
+- `feat`: **`scripts/Makefile.template` seeds the pattern** — a `preflight-deploy-account`
+  target and a `deploy: preflight-deploy-account` recipe that models the inline
+  `. scripts/load-deploy-env.sh && <cmd>` shape, so every adopting repo gets the
+  correct deploy-recipe shape for free instead of re-deriving (and re-fumbling) it.
+- `chore`: `deploy.env` / `.deploy.env` added to `.gitignore` (defense-in-depth; the
+  canonical store is outside the repo).
+- `test`: `plan-w-team-makefile-template.test.sh` Test 7 (5 assertions) guards the
+  seeded pattern. Corpus green.
+
+---
+
 ## [1.3.1] — 2026-05-27
 
 PATCH — close the double-spawn gap that the 1.3.0 run itself triggered (req4; the
