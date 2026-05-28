@@ -284,7 +284,7 @@ If neither trigger fires, skip to **§5b (single-reviewer Pass 1)** unchanged �
 
 ### Fan-Out Roster
 
-Spawn **three parallel reviewers**, each focused on an independent dimension. Use `Agent` calls with `run_in_background: true` and rely on completion notifications (per `shared/opus-4-7-practices.md` §4). Reviewers are **Hands-tier** (`claude-opus-4-6` — pinned via the agent's frontmatter, **not** via the Agent tool's `model` parameter, which only accepts aliases per the rule in `plan-w-team.md` Model Strategy). Reviewers read and report; they do not synthesize. Synthesis is the lead's job.
+Spawn **three parallel reviewers**, each focused on an independent dimension. Use `Agent` calls with `run_in_background: true` and rely on completion notifications (per `shared/opus-4-7-practices.md` §4). Reviewers are **Brain-tier** (`model: opus` → Opus 4.8 — e.g. `security-expert`, `code-review-expert`; pinned via the agent's frontmatter, **not** via the Agent tool's `model` parameter, which only accepts aliases per the rule in `plan-w-team.md` Model Strategy). Reviewers read and report; they do not synthesize. Synthesis is the lead's job.
 
 | Slot | Agent (frontmatter-pinned)             | Focus                                                            | Skip If                                                                      |
 | ---- | -------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------- |
@@ -349,7 +349,7 @@ The synthesized CRITICAL list is the input to **§5b (Pass 1 — CRITICAL)** bel
 
 ### Cost Discipline
 
-Three parallel Hands-tier reviewers consume context. To keep this bounded:
+Three parallel Brain-tier reviewers consume context. To keep this bounded:
 
 - Reviewers must be told "file:line + one sentence" per finding — verbose review prose is the cost spike.
 - Skip Slot 3 when no matching scope tag exists (table above).
@@ -587,7 +587,7 @@ AUTOFIX_DECISION=$(route_orchestrator review-autofix-vs-defer "$SLUG" \
      Orchestrator handles the judgment calls (e.g., is this dead code safe to remove?).
      Fall-through: reviewer classifies manually if router unavailable. -->
 
-The reviewer (Brain tier) analyzes and classifies. It **does not** perform the auto-fix edits itself. Spawn a Hands-tier subagent (`builder` agent, Opus 4.6) to apply AUTO-FIX items:
+The reviewer (Brain tier) analyzes and classifies. It **does not** perform the auto-fix edits itself. Spawn a Hands-tier subagent (`builder` agent, Opus 4.7) to apply AUTO-FIX items:
 
 1. Reviewer writes the auto-fix list to `.claude/state/plan-w-team-autofix-$SLUG.md` — one heading per file, bulleted change list.
 2. Reviewer **freezes the handoff file** by computing its SHA256 and recording the digest in the spawn prompt. This guards against the race where a second reviewer pass overwrites the file mid-flight while a builder is reading it:

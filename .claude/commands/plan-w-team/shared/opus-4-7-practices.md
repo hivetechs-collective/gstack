@@ -62,7 +62,7 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 
 **How to apply**:
 
-- Brain-tier work (scope challenge, spec, review, evaluator) → `high` + "think carefully" prompt phrasing to approximate `xhigh`.
+- Brain-tier work (scope challenge, spec, review) → `high` by default; **one-way-door reviews and gnarly specs → `/effort xhigh`** (Opus 4.8, reachable from the CLI). Fall back to "think very carefully" prompt phrasing only when xhigh is unavailable (older model / non-CLI host). The evaluator stays at `high` — it is a throughput-sensitive per-iteration loop, so reserve xhigh for the critical security / one-way-door pass.
 - Hands-tier mechanical work (sync scripts, changelog bump, retro metrics) → `medium`.
 - One-off triage, log parsing, trivial grep → `low` or Haiku 4.5.
 - If you observe shallow reasoning at `high`, **raise effort (or add "think harder")** — do not try to prompt around it with more scaffolding.

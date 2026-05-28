@@ -49,7 +49,11 @@ N=$(cat "$COUNTER_FILE" 2>/dev/null || echo 0)
 N=$((N + 1))
 echo "$N" > "$COUNTER_FILE"
 if [ "$1" = "--bg" ]; then
-    printf '%s' "$2" > "$SANDBOX_DIR/.claude/state/prompt-call-$N.txt"
+    # The --bg prompt is always the LAST positional. Capture it by walking to the
+    # last arg so the test stays robust to flags inserted between --bg and the
+    # prompt (e.g. --fallback-model <model>, added in skill 1.6.0).
+    for _prompt_arg in "$@"; do :; done
+    printf '%s' "$_prompt_arg" > "$SANDBOX_DIR/.claude/state/prompt-call-$N.txt"
 fi
 if [ "$N" = "1" ]; then
     echo "backgrounded · 11111111"

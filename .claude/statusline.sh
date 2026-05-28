@@ -140,9 +140,43 @@ else
   output_style=$(echo "$input" | grep -o '"output_style"[[:space:]]*:[[:space:]]*{[^}]*"name"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/')
 fi
 
+# ---- effort level (v2.1.139+: .effort.level in stdin JSON, or $CLAUDE_EFFORT env) ----
+# The effort.level enum is low/medium/high/xhigh/max/ultra. Two signals exist and
+# they intentionally differ for ultracode: the stdin JSON .effort.level carries the
+# STORED level (literally "ultra" for ultracode), while $CLAUDE_EFFORT carries what
+# the model actually RECEIVES ("xhigh" for ultracode). The statusline runs as a bash
+# subprocess of Claude Code so it inherits $CLAUDE_EFFORT; we prefer the stdin field
+# when present (more precise) and fall back to the env var. Models without an effort
+# control (e.g. Haiku) omit the field entirely → segment hidden.
+effort_level=""
+if [ "$HAS_JQ" -eq 1 ]; then
+  effort_level=$(echo "$input" | jq -r '.effort.level // .effort // empty' 2>/dev/null)
+fi
+if [ -z "$effort_level" ] || [ "$effort_level" = "null" ]; then
+  effort_level="${CLAUDE_EFFORT:-}"
+fi
+effort_display=""
+case "$effort_level" in
+  ultra)                effort_display="ultracode" ;;        # xhigh + dynamic workflow orchestration
+  xhigh)                effort_display="xhigh + workflows" ;; # env-side view of ultracode / explicit xhigh
+  max)                  effort_display="max" ;;
+  high|medium|low|auto) effort_display="$effort_level" ;;
+  "")                   effort_display="" ;;
+  *)                    effort_display="$effort_level" ;;
+esac
+
 # ---- git colors ----
 git_color() { if [ "$use_color" -eq 1 ]; then printf '\033[38;5;150m'; fi; }  # soft green
 rst() { if [ "$use_color" -eq 1 ]; then printf '\033[0m'; fi; }
+# effort color: bright magenta for top-intensity (ultra/xhigh/max), amber for the rest
+effort_color() {
+  if [ "$use_color" -eq 1 ]; then
+    case "$effort_level" in
+      ultra|xhigh|max) printf '\033[1;38;5;201m' ;;
+      *)               printf '\033[38;5;214m' ;;
+    esac
+  fi
+}
 
 # ---- git ----
 git_branch=""
@@ -336,6 +370,9 @@ if [ -n "$git_branch" ]; then
   printf '  🌿 %s%s%s' "$(git_color)" "$git_branch" "$(rst)"
 fi
 printf '  🤖 %s%s%s' "$(model_color)" "$model_name" "$(rst)"
+if [ -n "$effort_display" ]; then
+  printf '  ⚡ %s%s%s' "$(effort_color)" "$effort_display" "$(rst)"
+fi
 if [ -n "$model_version" ] && [ "$model_version" != "null" ]; then
   printf '  🏷️ %s%s%s' "$(version_color)" "$model_version" "$(rst)"
 fi

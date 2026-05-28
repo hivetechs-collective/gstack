@@ -475,9 +475,9 @@ The condition template is the single source of truth — never inline an alterna
 
 ```
 
-## Auto-Mode Compatibility (Claude Code 2.1.146+)
+## Auto-Mode Compatibility (Claude Code 2.1.147+)
 
-Claude Code 2.1.146 changed auto-mode behavior so that `AskUserQuestion` is NO
+Claude Code 2.1.147 changed auto-mode behavior so that `AskUserQuestion` is NO
 longer suppressed when a hook or skill explicitly relies on it. This validates
 the design of `/plan-w-team`'s hard-gate halts (`push-ack`, `secret-scan-allow`,
 `scope-unlock-for-drift`): even when a worker session runs with `auto` mode

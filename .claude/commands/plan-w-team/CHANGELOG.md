@@ -21,6 +21,49 @@ Entries are newest-first.
 
 ---
 
+## [1.6.0] — 2026-05-28
+
+MINOR — **Post-1.5.0 deep-audit follow-through.** A 79-agent adversarial audit of
+the Opus 4.8 / Claude Code 2.1.140–2.1.154 surface (run under ultracode) confirmed
+33 actionable items; this release ships the certain, low-risk tier and corrects
+documentation that the 1.5.0 model rollover left stale. Spec for the deferred,
+higher-blast-radius items: `docs/specs/pwt-worker-recovery-and-workflow-guard.md`.
+
+- `feat`: **statusline effort display** — `.claude/statusline.sh` renders the active
+  effort level (`⚡ ultracode` / `⚡ xhigh + workflows` / `max` / `high`…), reading
+  `.effort.level` from stdin (the precise signal) then `$CLAUDE_EFFORT`. Hidden for
+  effort-less models. No $-cost/burn-rate added (Max-only statusline constraint kept).
+- `fix`: **flaky `pwt-claims-cleanup.test.sh`** — pinned `CLAUDE_PROJECTS_DIR` to an
+  empty sandbox so the `claude-agents-extended.sh` wrapper finds no live subagents.
+  Root cause: the test reached the real `~/.claude/projects`, so concurrent sessions'
+  subagents leaked into the "live SID" set and made orphan-removal assertions
+  non-deterministic (passed standalone, failed intermittently in-suite). Verified
+  GREEN 2× under live-subagent load. This removes the pre-existing red that forced
+  `--no-verify` on prior pwt commits; `make test-skill` is now 50/50.
+- `feat`: **`--fallback-model` resilience** — `pwt-goal.sh` threads
+  `--fallback-model` (default `claude-opus-4-7`, override `PWT_FALLBACK_MODEL`) into
+  both worker and supervisor `claude --bg` spawns, so a missing Opus 4.8 pin degrades
+  instead of hard-failing every request (2.1.152 behavior; no-op in interactive mode).
+- `docs`: **`/effort xhigh` wiring** — `opus-4-7-practices.md` §5 replaces the obsolete
+  "high + think-carefully to approximate xhigh" bullet with explicit guidance to use
+  `/effort xhigh` for one-way-door reviews and gnarly specs (evaluator stays `high`).
+- `fix(docs)`: **stale-model accuracy corrections** left by the 1.5.0 rollover —
+  `04-fix-first-review.md` reviewers corrected from "Hands-tier `claude-opus-4-6`" to
+  "Brain-tier (`model: opus` → Opus 4.8)" (verified vs `security-expert` /
+  `code-review-expert` frontmatter); builder auto-fix subagent `Opus 4.6`→`4.7`;
+  `goal-conditions.md` auto-mode change re-attributed `2.1.146`→`2.1.147`; CLAUDE.md
+  `$CLAUDE_EFFORT` row re-attributed to 2.1.133 read-side (vs the set-side
+  `CLAUDE_CODE_EFFORT_LEVEL`).
+- `docs`: CLAUDE.md compat-table backfill — `terminalSequence` (2.1.141),
+  `worktree.bgIsolation:"none"` + /goal in-flight gating (2.1.143), `--fallback-model`
+  (2.1.152), statusline `COLUMNS`/`LINES` (2.1.153), stdio-MCP env (2.1.154), and the
+  `effort.level` enum + `ultracode` note.
+- `test`: `tests/skill/cases/opus48-uplift.bats` extended with 1.6.0 invariants
+  (AC11–AC15: statusline effort levels, fallback-model spawn flags, reviewer-tier
+  accuracy, version/changelog).
+
+---
+
 ## [1.5.0] — 2026-05-28
 
 MINOR — **Opus 4.8 + Claude Code v2.1.154 uplift.** Rolled the Model Strategy a

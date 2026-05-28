@@ -18,6 +18,19 @@ PASS=0
 FAIL=0
 TOTAL=0
 
+# Hermetic isolation (fixes intermittent in-suite failure): pin the projects dir
+# to an empty sandbox so the claude-agents-extended.sh wrapper — reached via
+# pwt-claims-cleanup.sh's live-SID lookup — finds NO live subagents on the host.
+# Without this, concurrent sessions' subagents (a running /plan-w-team or a
+# Workflow fan-out) leak their SIDs into the "live" set, so orphan-removal
+# assertions pass standalone but fail intermittently inside a full `make
+# test-skill` run during live pwt activity. The PATH-injected fake `claude`
+# remains the only live-SID source. (SUBAGENT_FRESHNESS_SEC=0 is belt-and-braces.)
+EMPTY_PROJECTS=$(mktemp -d)
+export CLAUDE_PROJECTS_DIR="$EMPTY_PROJECTS"
+export SUBAGENT_FRESHNESS_SEC=0
+trap 'rm -rf "$EMPTY_PROJECTS"' EXIT
+
 assert_eq() {
     local label="$1" expected="$2" actual="$3"
     TOTAL=$((TOTAL + 1))
