@@ -21,6 +21,36 @@ Entries are newest-first.
 
 ---
 
+## [1.5.0] — 2026-05-28
+
+MINOR — **Opus 4.8 + Claude Code v2.1.154 uplift.** Rolled the Model Strategy a
+generation forward and adopted the low-risk surfaces from the 2.1.150→2.1.154
+changelog delta. Spec: `docs/specs/opus48-v2154-uplift.md`.
+
+- `breaking`: **Model generation rollover.** Brain-tier agent frontmatter pins
+  `claude-opus-4-7` → `claude-opus-4-8` (`team/evaluator`, `team/validator`,
+  `team/supervisor`, `team/silent-failure-hunter`, `research-planning/test-gap-analyzer`,
+  `research-planning/security-gap-analyzer`, `research-planning/system-architect`).
+  Hands-tier `claude-opus-4-6` → `claude-opus-4-7` (`team/builder`,
+  `implementation/react-typescript-specialist`, `implementation/rust-backend-specialist`).
+- `docs`: Manifest Model Strategy table + rollover guidance now reference Opus 4.8
+  (Brain) / 4.7 (Hands); added a generation note.
+- `docs`: **Dynamic Workflows (`/workflows`) vs /plan-w-team** positioning section
+  in the manifest — when to fan out via the Workflow tool vs run the spec-first
+  lifecycle. Adoption-into-pipeline deferred (research preview).
+- `docs`: `shared/opus-4-7-practices.md` updated for Opus 4.8 — defaults to high
+  effort, `/effort xhigh` now reachable from the CLI (the pre-4.8 "xhigh API-only /
+  unreachable on Max" limitation is lifted). Filename keeps the `-4-7-` slug for
+  backward-compatible references.
+- `docs`: CLAUDE.md Models table adds Opus 4.8; compat table gains rows for
+  2.1.150–2.1.154; hook-event table grows to 20 events (`MessageDisplay`) and notes
+  `SessionStart` `reloadSkills`/`sessionTitle` + `disallowed-tools` skill frontmatter.
+- `test`: `tests/skill/cases/opus48-uplift.bats` asserts the model pins, doc
+  invariants, version bump, and report presence (AC1–AC8/AC10).
+- `docs`: version-uplift report at `docs/operations/version-uplift-reports/2026-05-28-2.1.154.md`.
+
+---
+
 ## [1.4.0] — 2026-05-27
 
 MINOR — **Deploy Secret Access (Headless / Autonomous)** standard. The

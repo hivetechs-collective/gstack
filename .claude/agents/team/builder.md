@@ -2,7 +2,7 @@
 name: builder
 color: red
 description: Engineering agent that writes production code with automated validation
-model: claude-opus-4-6
+model: claude-opus-4-7
 isolation: worktree
 permissionMode: auto
 disallowedTools: []

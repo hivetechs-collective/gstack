@@ -1,6 +1,8 @@
-# Opus 4.7 Best Practices (Condensed from Cherny, 2026)
+# Opus 4.7/4.8 Best Practices (Condensed from Cherny, 2026)
 
 Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 with Claude Code". This file is a local condensation, not a verbatim reproduction of the source — when in doubt, defer to the original guidance. Read this file at the start of any Brain-tier stage (Step 0 scope, Step 1 spec, Step 3-4 execute, Step 5 review) and apply the patterns that match the current task.
+
+> **Opus 4.8 update (2026-05-28, v2.1.154):** The Brain tier is now **Opus 4.8** (`claude-opus-4-8`). Every pattern below still applies. Two deltas: (1) Opus 4.8 **defaults to high effort** and `/effort xhigh` is reachable from the CLI for the hardest tasks — see §5. (2) Opus 4.8 works independently for longer and is more honest about its own progress (flags uncertainty, fewer unsupported claims) — lean into delegate-outcomes (§6) and trust its self-reported blockers in autonomous `/goal` runs. The filename keeps the `-4-7-` slug for backward-compatible references across the skill.
 
 ## 1. Front-Load Task Specification
 
@@ -54,7 +56,7 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 
 ## 5. Effort Levels: Default High, Drop Deliberately
 
-**Rule**: Default effort to `high`. `xhigh` is API-only (Messages API `output_config.effort`) and is **not reachable via Claude Code on the Max subscription** — substitute with prompt-level phrasing per §2 ("think very carefully, consider all edge cases"). Drop to `medium`/`low` only for cost/latency-sensitive narrow tasks.
+**Rule**: Default effort to `high` (Opus 4.8 already defaults to high). On **Opus 4.8** (v2.1.154+), `/effort xhigh` IS reachable from the Claude Code CLI for the hardest Brain-tier tasks — use it for one-way-door reviews and gnarly specs. The earlier limitation (xhigh API-only / unreachable on Max, pre-4.8) is lifted. When xhigh is unavailable (older model, non-CLI host), substitute with prompt-level phrasing per §2 ("think very carefully, consider all edge cases"). Drop to `medium`/`low` only for cost/latency-sensitive narrow tasks.
 
 **Why**: 4.7 balances autonomy and intelligence at high effort without token runaway. Low effort on complex work produces shallow output, and on 4.7 the effort calibration is _stricter_ than 4.6 — `low`/`medium` now scope to exactly what was asked, so under-thinking risk on complex tasks is higher than on prior generations.
 

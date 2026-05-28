@@ -494,28 +494,31 @@ Split model tiers by cognitive demand to conserve daily allowance. Builder agent
 
 | Role               | Tier  | Pinned Model      | Agent Definition                               | Rationale                                      |
 | ------------------ | ----- | ----------------- | ---------------------------------------------- | ---------------------------------------------- |
-| Lead (you)         | Brain | Opus 4.7 (alias)  | invoking session default                       | Orchestration, judgment calls, scope decisions |
-| Evaluator          | Brain | `claude-opus-4-7` | `.claude/agents/team/evaluator.md` frontmatter | Independent quality assessment                 |
-| Fix-First Reviewer | Brain | `claude-opus-4-7` | lead-invoked Pass 1/2 review                   | Security review, one-way door scrutiny         |
-| Validator          | Brain | `claude-opus-4-7` | `.claude/agents/team/validator.md` frontmatter | Security-critical read-only review             |
-| Builder agents     | Hands | `claude-opus-4-6` | `.claude/agents/team/builder.md` frontmatter   | Implementation, file edits, test writing       |
+| Lead (you)         | Brain | Opus 4.8 (alias)  | invoking session default                       | Orchestration, judgment calls, scope decisions |
+| Evaluator          | Brain | `claude-opus-4-8` | `.claude/agents/team/evaluator.md` frontmatter | Independent quality assessment                 |
+| Fix-First Reviewer | Brain | `claude-opus-4-8` | lead-invoked Pass 1/2 review                   | Security review, one-way door scrutiny         |
+| Validator          | Brain | `claude-opus-4-8` | `.claude/agents/team/validator.md` frontmatter | Security-critical read-only review             |
+| Builder agents     | Hands | `claude-opus-4-7` | `.claude/agents/team/builder.md` frontmatter   | Implementation, file edits, test writing       |
 | Ship pipeline      | Lead  | lead session      | lead-invoked mechanical steps                  | Version bump, changelog, push (~5% of tokens)  |
 | Retro              | Lead  | lead session      | lead-invoked metrics phase                     | Metrics collection, streak tracking (minor)    |
+
+> **Generation note (2026-05-28, v2.1.154):** Brain tier is **Opus 4.8** (`claude-opus-4-8`, alias `opus`), Hands tier is **Opus 4.7** (`claude-opus-4-7`). Opus 4.8 defaults to high effort and works independently for longer — see `shared/opus-4-7-practices.md`. Step-5 reviewers (`test-gap-analyzer`, `security-gap-analyzer`) and the planning `system-architect` are Brain-tier (4.8); `react-typescript-specialist` / `rust-backend-specialist` are Hands (4.7).
 
 ### How tier pinning works (IMPORTANT — read before editing Agent calls)
 
 The Agent tool's `model` parameter **only accepts the aliases `opus` / `sonnet` / `haiku`**. It does NOT accept full model IDs like `claude-opus-4-7`. Passing a full ID will fail the tool's input validation.
 
-To pin a specific generation (4.7 vs 4.6):
+To pin a specific generation (4.8 vs 4.7):
 
-1. **Set the full model ID in the agent-definition frontmatter** (e.g., `model: claude-opus-4-7` in `.claude/agents/team/evaluator.md`).
+1. **Set the full model ID in the agent-definition frontmatter** (e.g., `model: claude-opus-4-8` in `.claude/agents/team/evaluator.md`).
 2. **Do NOT set `model:` in the Agent tool call** — if you do, the alias will override the frontmatter pin and defeat the tier split.
 3. For mechanical work done directly by the lead (ship, retro), no pinning is needed — the lead's session model is used. These phases are short (~5% of total tokens combined), so running them on the lead's Brain-tier model is not a meaningful cost concern. If you want to force Hands-tier for ship/retro, delegate to a `builder`-type subagent for the mechanical steps.
 
-When a new model generation ships:
+When a new model generation ships (the rollover applied for Opus 4.8 on 2026-05-28):
 
-- Update Brain-tier frontmatter pins to the new generation (e.g., `claude-opus-4-7` → `claude-opus-4-8`).
-- Demote the previous Brain model to the Hands tier (e.g., update `builder.md` to `claude-opus-4-7`).
+- Update Brain-tier frontmatter pins to the new generation (e.g., next time `claude-opus-4-8` → `claude-opus-4-9`).
+- Demote the previous Brain model to the Hands tier (e.g., update `builder.md` to `claude-opus-4-8`).
+- Brain agents to bump: `team/evaluator`, `team/validator`, `team/supervisor`, `team/silent-failure-hunter`, `research-planning/test-gap-analyzer`, `research-planning/security-gap-analyzer`, `research-planning/system-architect`. Hands agents: `team/builder`, `implementation/react-typescript-specialist`, `implementation/rust-backend-specialist`.
 
 ### Boris Cherny's Opus 4.7 Practices
 
@@ -578,6 +581,20 @@ All shared files are at `.claude/commands/plan-w-team/shared/`.
 ## Manual Branch Review with /ultra-review
 
 For ad-hoc branch reviews **outside** the /plan-w-team lifecycle, Anthropic ships the user-facing `/ultra-review` slash command — it runs a multi-agent fan-out review on the current branch without spec/build/ship steps. Use `/ultra-review` for one-off PR review on branches that didn't go through /plan-w-team. /plan-w-team's Step 5 has its own lifecycle-integrated hybrid Pass 1 (see `04-fix-first-review.md` §5b-pre) — triggered by one-way doors or `quality_gate: ultra-review` spec frontmatter. Use whichever matches the workflow.
+
+## Dynamic Workflows (`/workflows`) vs /plan-w-team
+
+Claude Code 2.1.154 introduced **dynamic workflows** (the `Workflow` tool / `/workflows`): ask Claude to author a workflow and it orchestrates tens-to-hundreds of background subagents in a single session, verifying its own outputs — purpose-built for breadth (codebase-scale migrations, exhaustive audits, fan-out review) benchmarked against an existing test suite.
+
+`/plan-w-team` and `/workflows` are complementary, not competing:
+
+| Use `/plan-w-team` when…                                                          | Use `/workflows` when…                                                            |
+| --------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Spec-first feature with **dependencies between tasks** and a ship/retro lifecycle | **Embarrassingly-parallel breadth** over many files/sites with no inter-task deps |
+| You need the 8-stage gates (scope → spec → review → ship → retro) + ACs           | You need scale (a migration, a sweep) and self-verification, not ceremony         |
+| One-way-door scrutiny, governance tags, board sync, goal-evaluator anchors        | A discover → transform-each → verify pipeline you can express as a script         |
+
+A common hybrid: scope inline, then a `/plan-w-team` task may itself fan out via `/workflows` for a mechanical breadth sub-step. Adopting the Workflow tool **into** the pipeline executor is deferred (research preview as of 2.1.154); revisit at GA. For now this is positioning guidance only.
 
 ## Example
 
