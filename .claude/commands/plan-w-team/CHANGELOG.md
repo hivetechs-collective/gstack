@@ -21,6 +21,30 @@ Entries are newest-first.
 
 ---
 
+## [1.13.0] — 2026-05-29
+
+MINOR — **Worktree disk governance, part 2: faster stale-lock reclamation (E1).**
+The GC already force-reaps merged worktrees with stale locks (and squash-merge
+detection via `gh pr list --state merged` already covers E4's hard case), but it
+treated a lock as "in-use" for **24h** — so a merged-but-locked worktree lingered
+~a day each, feeding the 67-worktree pileup.
+
+- `feat`: lower the stale-lock window **24h → 6h** and adopt the canonical knob
+  `PWT_STALE_LOCK_HOURS` (legacy `PWT_WORKTREE_LOCK_STALE_HOURS` still honored).
+  A lock older than the window with no live session/recent commit is STALE; if the
+  branch is also merged (or idle past `PWT_WORKTREE_IDLE_DAYS`) the worktree is
+  force-unlocked + `--force`-removed. A live agent is still safe: recent commits,
+  an active-run registry row, or an open PR all keep the worktree.
+- `test`: `plan-w-team-worktree-gc.test.sh` Test 19b — a locked+merged worktree
+  with a ~10h-old commit is now `SAFE-PRUNE-MERGED` (was kept under 24h), and
+  `PWT_STALE_LOCK_HOURS=24` still keeps it. Existing Tests 19/20/21 (merged-locked
+  reaped, fresh-locked kept, trust-locks kept) unchanged. GC suite 51/51; full 54/54.
+
+> Still ahead: auto-installed daily GC timer (E3), session-start sweep (E4),
+> node_modules-share default (E5), build-artifact hygiene (E7).
+
+---
+
 ## [1.12.0] — 2026-05-29
 
 MINOR — **Worktree disk governance, part 1: pre-spawn disk gate + worktree cap.**

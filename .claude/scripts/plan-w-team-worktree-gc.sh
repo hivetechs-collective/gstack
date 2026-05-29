@@ -475,7 +475,12 @@ for line in sys.stdin:
             : # a live session already corroborates the lock
         else
             local lock_stale_hours recent_commit age_hours
-            lock_stale_hours="${PWT_WORKTREE_LOCK_STALE_HOURS:-24}"
+            # E1 (2026-05-29 ENOSPC incident): a lock older than this AND
+            # merged/idle is force-reaped. Canonical knob is PWT_STALE_LOCK_HOURS
+            # (default 6 — was 24); the legacy PWT_WORKTREE_LOCK_STALE_HOURS name
+            # is still honored. 24h let merged-but-locked worktrees linger ~a day
+            # each, which fed the 67-worktree / 64 GB pileup.
+            lock_stale_hours="${PWT_STALE_LOCK_HOURS:-${PWT_WORKTREE_LOCK_STALE_HOURS:-6}}"
             recent_commit=0
             if [ "$last_commit_epoch" -gt 0 ] 2>/dev/null; then
                 age_hours=$(( (now_epoch - last_commit_epoch) / 3600 ))
@@ -507,7 +512,7 @@ for line in sys.stdin:
     if [ "$IN_USE" = "1" ]; then
         CLASS="UNSAFE-KEEP"
         case "$IN_USE_SOURCE" in
-            lock-recent)  REASON="locked, recent activity (<${PWT_WORKTREE_LOCK_STALE_HOURS:-24}h) — possible live agent" ;;
+            lock-recent)  REASON="locked, recent activity (<${PWT_STALE_LOCK_HOURS:-${PWT_WORKTREE_LOCK_STALE_HOURS:-6}}h) — possible live agent" ;;
             lock-trusted) REASON="locked worktree (PWT_WORKTREE_GC_TRUST_LOCKS=1)" ;;
             *)            REASON="in-use by live claude session" ;;
         esac

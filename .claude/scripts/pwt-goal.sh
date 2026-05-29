@@ -653,7 +653,13 @@ fi
 if [ "${PLAN_W_TEAM_DISABLE_WORKTREE_CAP:-0}" != "1" ] \
         && { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
     WT_CAP="${PWT_MAX_WORKTREES:-10}"
-    WT_DIR="${GUARD_PROJECT_ROOT:-$(pwd)}/.claude/worktrees"
+    # Resolve the worktree root self-contained — do NOT depend on GUARD_PROJECT_ROOT,
+    # which is only set inside the double-spawn guard block (skipped when that guard
+    # is bypassed, e.g. PLAN_W_TEAM_FORCE_SPAWN=1), leaving the cap silently counting
+    # $(pwd)'s worktrees instead of the target repo's. Canonical precedence matches
+    # the PROJECT_ROOT resolver below: test override → session project dir → git top.
+    WT_ROOT="${PWT_PROJECT_ROOT_OVERRIDE:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+    WT_DIR="$WT_ROOT/.claude/worktrees"
     if [ -d "$WT_DIR" ]; then
         WT_COUNT=$(find "$WT_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
         if [ "${WT_COUNT:-0}" -ge "$WT_CAP" ]; then

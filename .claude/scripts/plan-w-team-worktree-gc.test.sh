@@ -391,6 +391,12 @@ backdate_tip() {  # $1 worktree — push tip commit ~30 days into the past
     old_iso=$(python3 -c "import time;print(time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime($old)))")
     ( cd "$wt" && GIT_COMMITTER_DATE="$old_iso" git commit -q --amend --no-edit --date "$old_iso" >/dev/null 2>&1 )
 }
+backdate_tip_hours() {  # $1 worktree, $2 hours — push tip commit N hours into the past
+    local wt="$1" hrs="$2" old old_iso
+    old=$(( $(date +%s) - hrs*3600 ))
+    old_iso=$(python3 -c "import time;print(time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime($old)))")
+    ( cd "$wt" && GIT_COMMITTER_DATE="$old_iso" git commit -q --amend --no-edit --date "$old_iso" >/dev/null 2>&1 )
+}
 
 # ── Test 19: stale lock — locked + merged + OLD commit → lock ignored, pruned ─
 # This is the disk-bloat root cause: a lock left behind by a dead subagent must
@@ -405,6 +411,22 @@ JSON=$(run_gc_locks "$R" _gh --json)
 assert_eq "stale-locked merged → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" stalelock-feat)"
 assert_eq "stale-locked locked flag true" "true" "$(field_of "$JSON" stalelock-feat locked)"
 assert_eq "stale-locked stale_lock flag true" "true" "$(field_of "$JSON" stalelock-feat stale_lock)"
+
+# ── Test 19b: E1 default 24h→6h — locked + merged + ~10h-old commit → PRUNED ──
+# Under the OLD 24h default this 10h-old lock was "recent" and KEPT; under the new
+# 6h default (PWT_STALE_LOCK_HOURS) it is stale and the merged worktree is reaped.
+echo "[19b] stale lock (locked + merged + 10h-old commit) → SAFE-PRUNE-MERGED (6h default)"
+R=$(new_repo)
+WT=$(add_worktree "$R" "tenhrlock-feat")
+backdate_tip_hours "$WT" 10
+make_gh_merged "$R" "worktree-tenhrlock-feat"
+git -C "$R" worktree lock "$WT" >/dev/null 2>&1
+JSON=$(run_gc_locks "$R" _gh --json)
+assert_eq "10h-old locked merged → SAFE-PRUNE-MERGED (new 6h default)" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" tenhrlock-feat)"
+# And the legacy 24h knob still wins when set explicitly (kept as lock-recent).
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+        PWT_STALE_LOCK_HOURS=24 PATH="$R/_gh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "PWT_STALE_LOCK_HOURS=24 → 10h lock kept (lock-recent)" "UNSAFE-KEEP" "$(class_of "$JSON" tenhrlock-feat)"
 
 # ── Test 20: fresh lock — locked + RECENT commit → honored as in-use (kept) ──
 # A lock backed by recent activity may be a live agent the scan missed; keep it.
