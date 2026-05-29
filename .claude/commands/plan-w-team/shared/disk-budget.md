@@ -48,18 +48,32 @@ at `plan-w-team-worktree-gc.sh --execute`.
 
 ## Env knobs
 
-| Var                                | Default | Effect                                                                                                                         |
-| ---------------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| `PWT_DISK_MIN_FREE_GB`             | `15`    | Hard free-GB floor for a normal spawn. Below → `BLOCK`.                                                                        |
-| `PWT_DISK_MIN_FREE_GB_BUILD`       | `25`    | Hard free-GB floor when the directive is a heavy build.                                                                        |
-| `PWT_DISK_WORKTREE_COST_GB`        | `2.5`   | Est. cost of one normal worktree (capacity math).                                                                              |
-| `PWT_DISK_WORKTREE_COST_GB_BUILD`  | `6`     | Est. cost of one heavy-build worktree.                                                                                         |
-| `PWT_DISK_MIN_INODE_PCT`           | `5`     | `BLOCK` if inode-free% falls below this (inode exhaustion → ENOSPC).                                                           |
-| `PWT_DISK_MAX_PCT`                 | `95`    | Advisory used-% threshold (reported, not gated — APFS % is unreliable).                                                        |
-| `PWT_MAX_WORKTREES`                | `10`    | Hard cap on concurrent worktrees under `.claude/worktrees/`.                                                                   |
-| `PWT_STALE_LOCK_HOURS`             | `6`     | A locked worktree older than this AND merged/terminal is force-unlocked + reaped by the GC (see `plan-w-team-worktree-gc.sh`). |
-| `PLAN_W_TEAM_DISABLE_DISK_GATE`    | unset   | `=1` bypasses the disk gate entirely (use only with manually confirmed free disk).                                             |
-| `PLAN_W_TEAM_DISABLE_WORKTREE_CAP` | unset   | `=1` bypasses the worktree-count cap.                                                                                          |
+| Var                                | Default | Effect                                                                                                                                    |
+| ---------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `PWT_DISK_MIN_FREE_GB`             | `15`    | Hard free-GB floor for a normal spawn. Below → `BLOCK`.                                                                                   |
+| `PWT_DISK_MIN_FREE_GB_BUILD`       | `25`    | Hard free-GB floor when the directive is a heavy build.                                                                                   |
+| `PWT_DISK_WORKTREE_COST_GB`        | `2.5`   | Est. cost of one normal worktree (capacity math).                                                                                         |
+| `PWT_DISK_WORKTREE_COST_GB_BUILD`  | `6`     | Est. cost of one heavy-build worktree.                                                                                                    |
+| `PWT_DISK_MIN_INODE_PCT`           | `5`     | `BLOCK` if inode-free% falls below this (inode exhaustion → ENOSPC).                                                                      |
+| `PWT_DISK_MAX_PCT`                 | `95`    | Advisory used-% threshold (reported, not gated — APFS % is unreliable).                                                                   |
+| `PWT_MAX_WORKTREES`                | `10`    | Hard cap on concurrent worktrees under `.claude/worktrees/`.                                                                              |
+| `PWT_STALE_LOCK_HOURS`             | `6`     | A locked worktree older than this AND merged/terminal is force-unlocked + reaped by the GC (see `plan-w-team-worktree-gc.sh`).            |
+| `PLAN_W_TEAM_DISABLE_DISK_GATE`    | unset   | `=1` bypasses the disk gate entirely (use only with manually confirmed free disk).                                                        |
+| `PLAN_W_TEAM_DISABLE_WORKTREE_CAP` | unset   | `=1` bypasses the worktree-count cap.                                                                                                     |
+| `PWT_ORPHAN_IDLE_MIN`              | `30`    | Idle-minutes (transcript mtime) before an orphaned `claude --bg` session is reapable by the orphan reaper (runs from the daily GC timer). |
+| `PWT_ORPHAN_REAPER_DISABLE`        | unset   | `=1` disables the orphan bg-session reaper.                                                                                               |
+
+## Orphan bg-session reaper
+
+The retro reaper (`07-retro.md` §8j-sexies → `child-cleanup.sh`) only stops bg
+children when a run reaches Step 8. A worker that crashes, is abandoned, hits an
+un-retro'd halt, or is a stray spawn leaves an orphaned `claude --bg` **process**
+alive that nothing reaps (the worktree GC reclaims dirs + companion procs, not the
+sessions). `plan-w-team-orphan-session-reaper.sh` is the catch-all — it runs from
+the daily GC timer and stops a bg session ONLY when ALL hold: cwd is under **this**
+repo (incl. worktrees), it is **not** the current session, status is **not busy**,
+and its transcript has been idle ≥ `PWT_ORPHAN_IDLE_MIN`. Anything it cannot verify
+as idle is skipped. Dry-run by default; the timer calls it with `--execute`.
 
 ## How the supervisor / lead uses it
 

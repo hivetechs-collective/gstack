@@ -21,6 +21,32 @@ Entries are newest-first.
 
 ---
 
+## [1.17.0] — 2026-05-29
+
+MINOR — **Orphan bg-session reaper (catch-all for the retro-only cleanup gap).**
+Diagnosing why stray `claude --bg` sessions weren't auto-cleaned revealed that the
+ONLY automatic stopper of bg children is retro §8j-sexies (`child-cleanup.sh`),
+which fires only when a run reaches Step 8. A worker that crashes, is abandoned,
+hits an un-retro'd halt, or is a stray test spawn leaves an orphaned bg **process**
+that nothing reaps (the worktree GC reclaims dirs + companion procs, not sessions).
+This is the unhappy-path complement to the retro reaper — the same failure class as
+the 2026-05-20 "19 background agents" incident, now covered regardless of retro.
+
+- `feat`: **`plan-w-team-orphan-session-reaper.sh`** — stops a `claude --bg`
+  session ONLY when ALL hold: cwd under **this** repo (incl. worktrees), **not**
+  the current session, status **not busy**, and transcript idle ≥ `PWT_ORPHAN_IDLE_MIN`
+  (default 30 min). Any session whose idleness can't be verified is skipped.
+  Dry-run by default; `--execute` to stop. Fail-open.
+- `feat`: wired into the **daily GC timer** (plist template + systemd ExecStart) so
+  it runs without intervention, alongside the worktree + companion GC.
+- `docs`: `shared/disk-budget.md` — reaper section + `PWT_ORPHAN_IDLE_MIN` /
+  `PWT_ORPHAN_REAPER_DISABLE` knobs. Added to sync allowlist.
+- `test`: `plan-w-team-orphan-session-reaper.test.sh` (8 cases) — reaps only the
+  true orphan; never busy/self/other-repo/active/no-transcript; disable knob;
+  empty-list fail-open; threshold honored. Full suite 57/57.
+
+---
+
 ## [1.16.0] — 2026-05-29
 
 PATCH-level fix shipped as MINOR — **GC-timer worktree-leak guard.** A regression

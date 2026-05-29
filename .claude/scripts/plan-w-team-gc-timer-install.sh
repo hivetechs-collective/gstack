@@ -155,7 +155,7 @@ Description=plan-w-team worktree GC ($REPO_NAME)
 [Service]
 Type=oneshot
 Nice=10
-ExecStart=/bin/bash -lc 'cd "$REPO_PATH" && .claude/scripts/plan-w-team-worktree-gc.sh --execute --json && .claude/scripts/plan-w-team-companion-gc.sh --execute --json'
+ExecStart=/bin/bash -lc 'cd "$REPO_PATH" && .claude/scripts/plan-w-team-worktree-gc.sh --execute --json ; .claude/scripts/plan-w-team-companion-gc.sh --execute --json ; .claude/scripts/plan-w-team-orphan-session-reaper.sh --execute --json'
 SVC_EOF
     cat > "$TMR" 2>/dev/null <<TMR_EOF || { echo "[gc-timer] write failed — fail-open" >&2; exit 0; }
 [Unit]

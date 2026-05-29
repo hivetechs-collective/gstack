@@ -48,7 +48,7 @@
         <string>/bin/bash</string>
         <string>-lc</string>
         <!-- worktree GC (merged + idle, orphans preserved) then companion GC -->
-        <string>cd "__REPO_PATH__" &amp;&amp; .claude/scripts/plan-w-team-worktree-gc.sh --execute --json &amp;&amp; .claude/scripts/plan-w-team-companion-gc.sh --execute --json</string>
+        <string>cd "__REPO_PATH__" &amp;&amp; .claude/scripts/plan-w-team-worktree-gc.sh --execute --json ; .claude/scripts/plan-w-team-companion-gc.sh --execute --json ; .claude/scripts/plan-w-team-orphan-session-reaper.sh --execute --json</string>
     </array>
 
     <key>StartCalendarInterval</key>
