@@ -70,6 +70,16 @@ rc=$?
 #  still exits 0 cleanly even from an unrelated cwd — fail-open contract.)
 [ "$rc" -eq 0 ] && ok "runs fail-open (exit 0) from arbitrary cwd" || bad "non-zero exit ($rc)"
 
+# [10] worktree guard — never install from inside a worktree (the 2026-05-29 leak)
+WT_REPO="$TD/somerepo/.claude/worktrees/agent-x"
+mkdir -p "$WT_REPO"
+WTLABEL="io.test.pwt-gc-wt"
+WTOUT=$(PWT_GC_TIMER_AGENTS_DIR="$TD" PWT_GC_TIMER_NO_LOAD=1 PWT_GC_TIMER_LABEL="$WTLABEL" \
+        PWT_PROJECT_ROOT_OVERRIDE="$WT_REPO" bash "$SCRIPT" 2>&1)
+{ echo "$WTOUT" | grep -qi "inside a worktree" && [ ! -f "$TD/$WTLABEL.plist" ]; } \
+  && ok "install SKIPS inside a worktree (no per-worktree timer leak)" \
+  || bad "worktree guard failed — would leak a per-worktree timer"
+
 echo ""
 echo "── results: $PASS passed, $FAIL failed ──"
 [ "$FAIL" -eq 0 ]

@@ -103,6 +103,26 @@ case "$ACTION" in
       ;;
 esac
 
+# ── worktree guard (install path only) ────────────────────────────────────────
+# The GC timer belongs to the MAIN checkout — ONE per repo, pointing at the repo
+# root. A bg worker / Agent-tool subagent runs with a worktree as its cwd, so
+# `git rev-parse --show-toplevel` returns the WORKTREE; without this guard EVERY
+# worker's session-start would leak a per-worktree timer pointing at a dir that is
+# later reaped (observed 2026-05-29: io.claudepattern.pwt-worktree-gc.integration-cap
+# pointed at .claude/worktrees/integration-cap). Skip install inside a worktree —
+# the main checkout's interactive session installs the (idempotent) timer.
+case "$REPO_PATH" in
+    */.claude/worktrees/*)
+        echo "[gc-timer] inside a worktree ($REPO_PATH) — skipping; the main checkout owns the timer" >&2
+        exit 0 ;;
+esac
+__gc_gitdir="$(git -C "$REPO_PATH" rev-parse --git-dir 2>/dev/null || echo "")"
+case "$__gc_gitdir" in
+    */worktrees/*)
+        echo "[gc-timer] linked worktree (git-dir=$__gc_gitdir) — skipping; main checkout owns the timer" >&2
+        exit 0 ;;
+esac
+
 # ── install (idempotent) ──────────────────────────────────────────────────────
 if [ "$PLATFORM" = "Darwin" ]; then
     AGENTS_DIR="${PWT_GC_TIMER_AGENTS_DIR:-$HOME/Library/LaunchAgents}"

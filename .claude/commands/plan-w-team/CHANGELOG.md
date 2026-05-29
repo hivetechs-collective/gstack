@@ -21,6 +21,27 @@ Entries are newest-first.
 
 ---
 
+## [1.16.0] — 2026-05-29
+
+PATCH-level fix shipped as MINOR — **GC-timer worktree-leak guard.** A regression
+in 1.14.0 (E3): `plan-w-team-gc-timer-install.sh` resolves the repo via
+`git rev-parse --show-toplevel`, but a bg worker / Agent-tool subagent runs with a
+**worktree** as cwd — so `session-start.sh` installed a per-WORKTREE launchd timer
+pointing at a dir that the GC later reaps. Left unfixed, every worker would leak a
+stray daily timer (observed: `io.claudepattern.pwt-worktree-gc.integration-cap`
+pointing at `.claude/worktrees/integration-cap`).
+
+- `fix`: the installer now SKIPS when run inside a worktree (path under
+  `.claude/worktrees/` OR git-dir under `*/worktrees/*`) — the main checkout owns
+  the single per-repo timer. Idempotent install from the main session is unchanged.
+- `test`: `plan-w-team-gc-timer-install.test.sh` case [10] — install from a
+  worktree path is skipped and writes no plist. Suite 56/56.
+- Operational: removed the leaked stray timer + two stray test worktrees on the
+  author machine; consumers self-heal (no new per-worktree timers will be created,
+  and any already leaked point at reaped dirs that fail harmlessly until removed).
+
+---
+
 ## [1.15.0] — 2026-05-29
 
 MINOR — **Worktree disk governance, part 4: build-artifact hygiene (E7).** A
