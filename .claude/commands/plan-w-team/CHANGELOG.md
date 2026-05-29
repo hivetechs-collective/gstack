@@ -21,6 +21,79 @@ Entries are newest-first.
 
 ---
 
+## [1.11.0] — 2026-05-29
+
+MINOR — **Pilot (opt-in, default-strict): Opus-4.8 autonomy-profile tuning.** Third
+and final no-workflow leverage pilot. `PWT_AUTONOMY_PROFILE=relaxed` loosens the
+supervisor's stall/idle constants for long-horizon Opus-4.8 runs that legitimately
+cook longer between landings; `strict` (or unset) is **byte-for-byte today**.
+
+- `feat`: `supervisor-progress-check.sh` resolves `PWT_AUTONOMY_PROFILE` → fallbacks
+  for `STALL_THRESHOLD` (strict 2 / relaxed 4) and a new `PWT_INFLIGHT_MMIN`
+  (strict 30 / relaxed 60, the in-flight worktree-freshness window). Explicit
+  `STALL_THRESHOLD` / `PWT_INFLIGHT_MMIN` / `--threshold` always win
+  (explicit > profile > strict). Documented in `goal-conditions.md` kill-switch table.
+- `fix`: **blocker the adversarial review caught** — the Step-0 documented invocation
+  passed `--threshold "${STALL_THRESHOLD:-2}"`, which hardcoded 2 and would have made
+  `relaxed` inert. The documented call now runs bare so the script's profile/env
+  resolution governs (the flag remains for explicit override / tests).
+- **REJECTED (not shipped)**: the originally-proposed "self-honesty grace-tick"
+  (change #4) — it would reintroduce self-report as a deferral signal at the
+  STALL-ALERT boundary, the exact gaming the objective progress-check exists to
+  prevent. STALL-ALERT stays purely objective.
+- **No regression**: strict/unset == today. `supervisor-progress-check.test.sh` adds
+  behavioral parity cases (strict/unset → STALL-ALERT at 2 flat ticks; relaxed holds
+  to 4) plus the existing 13 cases unchanged (16/16). Full suite 53/53.
+
+---
+
+## [1.10.0] — 2026-05-29
+
+MINOR — **Pilot (opt-in, default-OFF): Tier-1 deep-audit breadth analyzer.** Second
+no-workflow leverage pilot. An Agent()-tool fan-out (NOT the Workflow tool) for
+breadth-heavy work, gated behind `PLAN_W_TEAM_DEEP_AUDIT=1`.
+
+- `feat`: `shared/deep-audit.md` — opt-in read-only breadth sweep (roster:
+  `code-review-expert` + `security-expert` + `documentation-expert`), **Tier-1 = the
+  Agent tool only**; Tier-2 (Workflow-tool engine) stays deferred to GA. Width clamp
+  `PLAN_W_TEAM_DEEP_AUDIT_MAX_AGENTS` (default 8). Single in-pipeline entry point in
+  `03-execute.md` (post-build, opt-in).
+- `feat`: artifact `plan-w-team-deep-audit-$SLUG.jsonl` (registered `audit-trail`)
+  with a real grep-able reader in `07-retro.md` §8e "Deep-Audit Cost" (findings ×
+  surfaces × agents; cleans up on clean retro; fail-open on malformed rows).
+- `feat`: `plan-w-team-register-spawn.sh` purpose enum gains `deep-audit-spawn`
+  (accepted, not folded to `other`) so a rare registered deep-audit child is
+  reclaimed by retro cleanup.
+- **No regression / corrections honored**: the §1.6 spec-freeze SHA256 snapshot
+  timing is **untouched**; default (unset) leaves Step-1/execute/retro byte-for-byte
+  current. Tests: `plan-w-team-deep-audit-reader.test.sh` (5 cases incl. default-off
+  n/a + fail-open) + `plan-w-team-spawn-registry.test.sh` U5b (enum accepts the
+  label). Full suite 53/53; symmetry-check 28/28.
+
+---
+
+## [1.9.0] — 2026-05-29
+
+MINOR — **Pilot (opt-in, default-OFF): Step-1 multi-angle spec fan-out (§1b-pre).**
+First of the no-workflow leverage pilots from the workflow-leverage evaluation
+(`docs/operations/workflow-tool-leverage-evaluation.md`). Uses the GA **Agent
+tool** (same-session subagents), NOT the research-preview Workflow tool.
+
+- `feat`: `01-specification.md` §1b-pre — when `PLAN_W_TEAM_SPEC_FANOUT=1`, three
+  Brain-tier reviewers (`system-architect` + `security-expert` + `code-review-expert`
+  — spec-authoring agents, deliberately NOT the diff-based gap analyzers, which
+  have no diff at Step 1) critique the draft spec and the lead folds findings in
+  **strictly before the AC-snapshot freeze**, preserving the frozen-contract chain.
+- `feat`: advisory artifact `plan-w-team-spec-fanout-$SLUG.json` (registered
+  `audit-trail` in `state-artifacts.md`) read by `07-retro.md` §8j-octies for a
+  marginal-catch-rate signal — the evidence gate before any future default-ON.
+- **Default-OFF / no regression**: unset (or `!= 1`) → Step 1 single-pass exactly
+  as before. Test `tests/skill/scenarios/spec-fanout-optin.bats` (7 cases) asserts
+  the gate, the pre-freeze ordering, the corrected roster, no Workflow-tool use,
+  and the registry/reader wiring. Full suite 52/52.
+
+---
+
 ## [1.8.0] — 2026-05-29
 
 MINOR — **Worker API/socket-halt recovery** (the second half of

@@ -9,7 +9,7 @@
 #
 # Arguments:
 #   session_id        8-char or full session id (matches `claude agents` / `claude stop`)
-#   purpose           pwt-goal-launch | supervisor-spawn | stage-spawn | other
+#   purpose           pwt-goal-launch | supervisor-spawn | stage-spawn | deep-audit-spawn | other
 #   slug              feature slug used by the rest of the /plan-w-team pipeline
 #   parent_session_id (optional) parent session id; pass empty string to skip
 #   spawned_by        (optional) caller name (script basename or "supervisor")
@@ -39,7 +39,7 @@ SPAWNED_BY="${5:-$(basename "${0##*-register-spawn.sh}" 2>/dev/null || echo unkn
 
 # Validate purpose (loose — unknown values fold to "other")
 case "$PURPOSE" in
-    pwt-goal-launch|supervisor-spawn|stage-spawn|other) ;;
+    pwt-goal-launch|supervisor-spawn|stage-spawn|deep-audit-spawn|other) ;;
     *) PURPOSE="other" ;;
 esac
 

@@ -31,6 +31,14 @@ tick() { # root [extra-args...]
 }
 verdict_of() { python3 -c "import json;print(json.load(open('$1')).get('verdict'))" 2>/dev/null; }
 streak_of() { python3 -c "import json;print(json.load(open('$1')).get('stallStreak'))" 2>/dev/null; }
+# profile-driven tick (C6): NO STALL_THRESHOLD / no --threshold flag, so the
+# PWT_AUTONOMY_PROFILE fallback governs the threshold (explicit env is unset).
+tickp() { # root profile
+    local r="$1" prof="$2"
+    STATEFILE="$r/.claude/state/sp.json"
+    ( cd "$r" && env -u STALL_THRESHOLD PWT_AUTONOMY_PROFILE="$prof" "$SCRIPT" --state "$STATEFILE" --spec "$r/ac.md" --transcript "$r/tx.txt" >/dev/null 2>&1 )
+    RC=$?
+}
 
 echo "── supervisor-progress-check tests ──"
 
@@ -75,6 +83,29 @@ SF="$R3/.claude/state/sp.json"
 ( cd "$R3" && STALL_THRESHOLD=1 "$SCRIPT" --state "$SF" >/dev/null 2>&1 ); RC=$?
 [ "$(verdict_of "$SF")" = "STALLED-UNKNOWN" ] && pass "no AC source → STALLED-UNKNOWN" || fail "unknown" "got $(verdict_of "$SF")"
 [ "$RC" -eq 0 ] && pass "STALLED-UNKNOWN never exits 2" || fail "unknown exit" "rc=$RC"
+
+# [C6a] PWT_AUTONOMY_PROFILE strict/unset == today: STALL-ALERT at 2 flat ticks
+Rs=$(newfix 5 2)
+tickp "$Rs" ""        # baseline → PROGRESSING
+tickp "$Rs" ""        # flat 1  → STALLED streak 1
+tickp "$Rs" ""        # flat 2  → STALL-ALERT (threshold 2 = today)
+{ [ "$RC" -eq 2 ] && [ "$(verdict_of "$STATEFILE")" = "STALL-ALERT" ]; } \
+  && pass "C6: strict/unset profile → STALL-ALERT at 2 flat ticks (byte-for-byte today)" \
+  || fail "C6 strict parity" "rc=$RC verdict=$(verdict_of "$STATEFILE")"
+
+# [C6b] PWT_AUTONOMY_PROFILE=relaxed loosens threshold to 4
+Rr=$(newfix 5 2)
+tickp "$Rr" relaxed   # baseline → PROGRESSING
+tickp "$Rr" relaxed   # flat 1 → streak 1
+tickp "$Rr" relaxed   # flat 2 → streak 2 (NOT yet alert; threshold 4)
+{ [ "$RC" -ne 2 ] && [ "$(streak_of "$STATEFILE")" = "2" ]; } \
+  && pass "C6: relaxed holds at streak 2 (no premature alert)" \
+  || fail "C6 relaxed hold" "rc=$RC streak=$(streak_of "$STATEFILE")"
+tickp "$Rr" relaxed   # flat 3 → streak 3
+tickp "$Rr" relaxed   # flat 4 → STALL-ALERT (threshold 4)
+{ [ "$RC" -eq 2 ] && [ "$(verdict_of "$STATEFILE")" = "STALL-ALERT" ]; } \
+  && pass "C6: relaxed → STALL-ALERT at 4 flat ticks" \
+  || fail "C6 relaxed alert" "rc=$RC verdict=$(verdict_of "$STATEFILE") streak=$(streak_of "$STATEFILE")"
 
 # [8] bash 3.2 compatibility (macOS /bin/bash) — runtime guard, not bash -n
 echo "[8] runs clean under bash 3.2 (/bin/bash on macOS)"

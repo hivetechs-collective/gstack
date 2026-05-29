@@ -33,7 +33,10 @@
 # Usage:
 #   supervisor-progress-check.sh [--state PATH] [--threshold N]
 #                                [--transcript PATH] [--spec PATH]
-# Env: STALL_THRESHOLD (default 2), CLAUDE_TRANSCRIPT_PATH (transcript default)
+# Env: PWT_AUTONOMY_PROFILE (strict|relaxed; unset=strict=today's exact behavior),
+#      STALL_THRESHOLD (overrides profile; strict 2 / relaxed 4),
+#      PWT_INFLIGHT_MMIN (overrides profile; strict 30 / relaxed 60),
+#      CLAUDE_TRANSCRIPT_PATH (transcript default)
 # Reads/writes: .claude/state/supervisor-progress.json
 # Exit: 0 normal; 2 on STALL-ALERT (caller MUST act, not idle).
 
@@ -41,7 +44,18 @@ set -uo pipefail
 cd "$(git rev-parse --show-toplevel 2>/dev/null || echo .)" || true
 
 STATE=".claude/state/supervisor-progress.json"
-THRESHOLD="${STALL_THRESHOLD:-2}"
+# ── autonomy profile (C6 pilot) ───────────────────────────────────────────────
+# PWT_AUTONOMY_PROFILE in {strict,relaxed}; unset/unknown => strict == byte-for-byte
+# today's behavior. The profile supplies FALLBACKS only — an explicitly-set
+# STALL_THRESHOLD / PWT_INFLIGHT_MMIN (and the --threshold flag below) always win
+# (explicit > profile > strict-default). bash 3.2 safe: plain scalars + case.
+_profile="${PWT_AUTONOMY_PROFILE:-strict}"
+case "$_profile" in
+    relaxed) _def_threshold=4; _def_inflight_mmin=60 ;;
+    *)       _def_threshold=2; _def_inflight_mmin=30 ;;  # strict / unset / unknown
+esac
+THRESHOLD="${STALL_THRESHOLD:-$_def_threshold}"
+INFLIGHT_MMIN="${PWT_INFLIGHT_MMIN:-$_def_inflight_mmin}"
 TRANSCRIPT="${CLAUDE_TRANSCRIPT_PATH:-}"
 SPEC=""
 while [ $# -gt 0 ]; do
@@ -106,7 +120,7 @@ progressed=0
 
 # In-flight guard: an agent worktree touched in the last 30 min = work cooking
 # (not yet reflected in metrics). Don't mistake that for supervisor idleness.
-inflight=$(find .claude/worktrees -maxdepth 1 -type d -name 'agent-*' -mmin -30 2>/dev/null | wc -l | tr -d ' ')
+inflight=$(find .claude/worktrees -maxdepth 1 -type d -name 'agent-*' -mmin "-${INFLIGHT_MMIN}" 2>/dev/null | wc -l | tr -d ' ')
 
 if [ "$progressed" -eq 1 ]; then
     verdict="PROGRESSING"; stall_streak=0

@@ -112,6 +112,12 @@ rm -f "$REGISTRY"
 ROW=$(cat "$REGISTRY")
 assert_contains "purpose folded to 'other'" '"purpose":"other"' "$ROW"
 
+echo "U5b: deep-audit-spawn purpose is accepted (NOT folded) — C4 pilot"
+rm -f "$REGISTRY"
+"$HELPER" "sidda001" "deep-audit-spawn" "$TEST_SLUG"
+ROW=$(cat "$REGISTRY")
+assert_contains "deep-audit-spawn preserved" '"purpose":"deep-audit-spawn"' "$ROW"
+
 # ───────────────────────────────────────────────────────────────────────────
 # Cleanup loop (07-retro.md §8j-sexies): seed registry + run snippet
 # ───────────────────────────────────────────────────────────────────────────

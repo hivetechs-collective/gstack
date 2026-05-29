@@ -394,6 +394,14 @@ agent that holds full-run context — ephemeral PWT-T1/T2 orchestrators see
 each decision in isolation. For single-builder, lead-implements-directly,
 or bug-fix strategies, Pattern C is skipped (no dispatch surface to own).
 
+### Optional: Deep-Audit Breadth Sweep (opt-in)
+
+When `PLAN_W_TEAM_DEEP_AUDIT=1`, after the primary build/merge completes, read
+`shared/deep-audit.md` and run its read-only Agent()-fan-out breadth sweep
+(Tier-1 — the Agent tool only, never the dynamic-workflow tool). When the var is
+unset (the default), skip this entirely — execution behavior is unchanged. This is
+the single in-pipeline entry point, so the flag gates exactly one site.
+
 ### UI-TDD Enforcement (UI repos only)
 
 When `.claude/qa-profile.json` exists AND any task's scope is `FRONTEND` or `TESTS`, every builder prompt MUST include the following directive BEFORE the shared self-regulation pointer:

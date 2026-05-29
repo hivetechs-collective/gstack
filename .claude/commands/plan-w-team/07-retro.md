@@ -155,6 +155,30 @@ Track worktree and agent coordination metrics:
 
 A stale-worktree incident or shared-file conflict means Step 2's conflict detection was incomplete. Expired worktree builders mean the feature was too large for worktree strategy — should have used "lead implements directly" per Step 3. Formatter re-reads mean the pre-edit format sync was skipped.
 
+### Deep-Audit Cost (opt-in — C4 pilot)
+
+When the optional Tier-1 deep-audit breadth sweep ran (`PLAN_W_TEAM_DEEP_AUDIT=1`,
+`shared/deep-audit.md`), score whether it earned its token cost. **n/a when the
+sweep did not run (the default)** — never blocks retro.
+
+```bash
+SLUG="<feature-slug>"
+DA_AUDIT=".claude/state/plan-w-team-deep-audit-${SLUG}.jsonl"
+if [ ! -f "$DA_AUDIT" ]; then
+  echo "Deep-audit: n/a (PLAN_W_TEAM_DEEP_AUDIT not set or no audit ran)"
+else
+  FINDINGS=$(jq -s 'length' "$DA_AUDIT" 2>/dev/null || echo 0)
+  SURFACES=$(jq -rs '[.[].surface] | unique | length' "$DA_AUDIT" 2>/dev/null || echo 0)
+  AGENTS=$(jq -rs '[.[].agent_type] | unique | length' "$DA_AUDIT" 2>/dev/null || echo 0)
+  CRIT=$(jq -rs '[.[] | select(.severity=="critical")] | length' "$DA_AUDIT" 2>/dev/null || echo 0)
+  echo "Deep-audit cost: ${FINDINGS} findings across ${SURFACES} surfaces by ${AGENTS} agents (${CRIT} critical)."
+  echo "  → Score 5 when findings>0 and no unaddressed critical; if findings≈0 across"
+  echo "    runs the sweep is not earning its cost — keep PLAN_W_TEAM_DEEP_AUDIT default-OFF."
+  # Cleanup on a clean retro (mirrors §8j-ter), keep on failure for inspection.
+  if [ "${RETRO_SUCCESS:-0}" = "1" ]; then rm -f "$DA_AUDIT"; fi
+fi
+```
+
 ## 8f. Hook Friction Log
 
 Track PostToolUse hook interactions that caused workflow friction:
@@ -766,6 +790,28 @@ fi
 ```
 
 **Kill switches:** `PWT_WORKTREE_GC_DISABLE=1` and `PWT_COMPANION_GC_DISABLE=1` each no-op their respective sweep. Both default ON. See `docs/operations/worktree-lifecycle.md` for the full lifecycle contract, the per-merge cleanup path (`§Step 6 ship`), and how to install the weekly accumulated-debt GC.
+
+## 8j-octies. Spec Fan-Out Catch-Rate (advisory — C1 pilot)
+
+When the Step-1 multi-angle spec fan-out ran (`PLAN_W_TEAM_SPEC_FANOUT=1`, §1b-pre),
+read its advisory record to score whether the fan-out earned its keep. This is the
+marginal-catch-rate signal the pilot gathers before the fan-out is promoted to
+default-ON. **n/a when the fan-out was off (the default)** — never blocks retro.
+
+```bash
+SLUG="<feature-slug>"
+FANOUT_STATE=".claude/state/plan-w-team-spec-fanout-${SLUG}.json"
+if [ ! -f "$FANOUT_STATE" ]; then
+  echo "Spec fan-out score: n/a (fan-out off — default — or no record)"
+else
+  FOLDED=$(jq -r '.findings_folded // 0' "$FANOUT_STATE" 2>/dev/null || echo 0)
+  DEFERRED=$(jq -r '.findings_deferred // 0' "$FANOUT_STATE" 2>/dev/null || echo 0)
+  echo "Spec fan-out: ${FOLDED} findings folded pre-freeze, ${DEFERRED} deferred."
+  echo "  → If folded≈0 across several runs, the fan-out is not earning its cost;"
+  echo "    keep PLAN_W_TEAM_SPEC_FANOUT default-OFF. If consistently >0 on real"
+  echo "    requirement/AC gaps, that is the evidence to promote it toward default-ON."
+fi
+```
 
 ## 8j. Auto-Memory Hints (advisory)
 

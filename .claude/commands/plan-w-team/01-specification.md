@@ -233,6 +233,48 @@ If the card already exists (from a previous `/board add` or backlog grooming), s
 
 **Cognitive frameworks used here**: Make the change easy, then make the easy change (Beck), Boring technology (McKinley), Strangler fig pattern (Fowler). Read `shared/cognitive-frameworks.md` for full reference.
 
+## §1b-pre. Multi-Angle Spec Fan-Out (OPT-IN — default OFF)
+
+When `PLAN_W_TEAM_SPEC_FANOUT=1`, run a parallel multi-angle critique of the
+just-authored draft spec **before the AC freeze below**. This catches missing
+requirements, weak/untestable acceptance criteria, untraced shadow paths, and
+security boundaries while the spec is still mutable. **Default OFF**: when the
+var is unset (or `!= 1`), Step 1 is single-pass exactly as before — author the
+spec, then freeze. This is a pilot; it stays default-OFF until the §8j-octies
+retro signal shows it earns its keep.
+
+Hard ordering rule: the fan-out MUST complete and its findings MUST be folded
+into the spec **strictly before** the freeze below, so the SHA256 snapshot
+digests the post-fan-out spec and the frozen contract is preserved.
+
+Roster — three same-session **Agent**-tool reviewers (Brain-tier, spec-authoring
+capable; NOT the diff-based gap analyzers, which read a diff that does not exist
+at Step 1):
+
+| Reviewer (subagent_type) | Angle                                                            |
+| ------------------------ | ---------------------------------------------------------------- |
+| `system-architect`       | Architecture fit, missing requirements, boundary/shadow paths    |
+| `security-expert`        | Security/abuse boundaries, one-way-door surfaces                 |
+| `code-review-expert`     | Testability — are the acceptance criteria observable/verifiable? |
+
+```bash
+# Opt-in gate — default OFF preserves today's single-pass Step 1 exactly.
+if [ "${PLAN_W_TEAM_SPEC_FANOUT:-0}" != "1" ]; then
+  echo "[§1b-pre] spec fan-out disabled (set PLAN_W_TEAM_SPEC_FANOUT=1 to enable)"
+else
+  SLUG="<feature-slug>"
+  FANOUT=".claude/state/plan-w-team-spec-fanout-${SLUG}.json"
+  # Lead spawns the three reviewers via the Agent tool with run_in_background:true
+  # (subagent_type: system-architect, security-expert, code-review-expert — via
+  # the Agent tool, NOT the dynamic-workflow tool, NOT the diff-based
+  # security-gap-analyzer/test-gap-analyzer), collects findings,
+  # FOLDS them into the draft spec, then writes the advisory record:
+  #   {"reviewers":[...],"verdicts":[...],"findings_folded":N,"findings_deferred":M}
+  # The fold-in happens HERE, before the freeze, so the contract chain stays intact.
+  echo "[§1b-pre] fan-out complete; findings folded; advisory record → $FANOUT"
+fi
+```
+
 ## Acceptance Criteria Snapshot (MANDATORY — integrity gate)
 
 At the end of Step 1, snapshot the Acceptance Criteria section of the spec with a SHA256 digest. The evaluator (Step 4b) reads this snapshot — NOT the live spec — so a mid-flight spec edit cannot silently loosen the contract.

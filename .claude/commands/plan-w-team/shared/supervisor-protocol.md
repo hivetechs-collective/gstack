@@ -411,9 +411,13 @@ The origin-chat supervisor's polling loop has three responsibilities per tick, i
 Before anything else, run the mechanical self-check:
 
 ```bash
-.claude/scripts/supervisor-progress-check.sh --threshold "${STALL_THRESHOLD:-2}"
-# (auto-detects the run's AC snapshot under .claude/state/ for the backlog anchor;
-#  pass --spec / --transcript explicitly if the run stores them elsewhere)
+.claude/scripts/supervisor-progress-check.sh
+# The script resolves its own stall threshold from PWT_AUTONOMY_PROFILE / STALL_THRESHOLD
+# (strict/unset = 2, relaxed = 4); do NOT pass `--threshold "${STALL_THRESHOLD:-2}"` here
+# — that hardcodes 2 and would make PWT_AUTONOMY_PROFILE=relaxed inert. Pass --threshold
+# only to force a specific value (e.g. tests). It also auto-detects the run's AC snapshot
+# under .claude/state/ for the backlog anchor; pass --spec / --transcript explicitly if
+# the run stores them elsewhere.
 ```
 
 It snapshots objective, user-verifiable metrics (branch commit count, AC-PASS
