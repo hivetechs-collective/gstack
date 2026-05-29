@@ -547,6 +547,20 @@ if [ -x "$CLEANUP_GOAL_STATES" ]; then
 fi
 
 # =================================================================
+# DISK GOVERNANCE: auto-install the worktree-GC timer (E3) + pressure sweep
+# Root cause #2 of the 2026-05-29 cleanscale ENOSPC incident was that the GC
+# launchd/systemd timer was never installed (manual template), so no periodic
+# sweep ever ran. This installs it idempotently on session start — never relying
+# on a human — and, when disk-budget.sh reports pressure, runs the GC now.
+# Backgrounded so it never slows session start; the script is fail-open (exit 0).
+# Kill switch: PWT_GC_TIMER_DISABLE=1.
+# =================================================================
+GC_TIMER_INSTALL="$PROJECT_ROOT/.claude/scripts/plan-w-team-gc-timer-install.sh"
+if [ -x "$GC_TIMER_INSTALL" ] && [ "${PWT_GC_TIMER_DISABLE:-0}" != "1" ]; then
+    nohup "$GC_TIMER_INSTALL" >/dev/null 2>&1 &
+fi
+
+# =================================================================
 # COMPOUND: Surface learnings and auto-act on patterns
 # =================================================================
 COMPOUND_DIR="$PROJECT_ROOT/.claude/hooks/compound"

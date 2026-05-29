@@ -865,6 +865,31 @@ The Step 5 reviewer enforces this by checking, for any PR carrying `DO NOT MERGE
 
 Read `shared/artifact-storage.md` for review log and streak tracking formats.
 
+## 6g-bis. Build-Artifact Hygiene (E7 — reclaim before the worktree lingers)
+
+Once a build worker has **shipped** (PR opened/pushed, tests green) but the worktree
+is **awaiting merge** (the common `DO NOT MERGE` flow can hold it for hours/days), the
+worktree still holds 100%-regenerable build output — iOS `Pods` + `DerivedData`
+(5–9 GB each), Android `.gradle`/`build`, Rust `target/`. That output dominated the
+64 GB in the 2026-05-29 ENOSPC incident. The build is done, so it is safe to drop now;
+it regenerates on demand if the branch is ever re-run.
+
+```bash
+# Reclaim regenerable build artifacts from the SHIPPED worker's worktree (it now
+# only needs to survive as a mergeable branch, not as a built tree). Safe: the
+# helper refuses any path outside .claude/worktrees/, removes only a fixed
+# allowlist of build dirs, and never touches source or the shared node_modules
+# symlink. Kill switch: PWT_BUILD_ARTIFACT_CLEAN_DISABLE=1.
+if [ -x .claude/scripts/plan-w-team-build-artifact-clean.sh ] \
+   && [ "${PWT_BUILD_ARTIFACT_CLEAN_DISABLE:-0}" != "1" ]; then
+  .claude/scripts/plan-w-team-build-artifact-clean.sh "$WORKTREE_PATH" --execute --json \
+    | jq -r '"✓ build-artifact hygiene: reclaimed " + (.reclaimable_mb|tostring) + " MB"' 2>/dev/null || true
+fi
+```
+
+This runs on the SHIP path (PR opened), independent of whether the merge has landed —
+unlike §6h below, which only fires on a clean merge to remove the whole worktree.
+
 ## 6h. Post-Merge Worktree Cleanup (supervisor-only)
 
 When the worker's feature branch has been **merged to the default branch on the parent repo** (clean merge, ship-readiness gate PASS), the supervisor — NOT the worker — reclaims the worker's worktree + branch. The supervisor has the right context: it knows the merge happened and that the worktree is now post-merge garbage.

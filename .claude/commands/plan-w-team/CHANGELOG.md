@@ -21,6 +21,66 @@ Entries are newest-first.
 
 ---
 
+## [1.15.0] — 2026-05-29
+
+MINOR — **Worktree disk governance, part 4: build-artifact hygiene (E7).** A
+shipped worker's worktree lingers awaiting merge (the `DO NOT MERGE` flow can hold
+it for hours/days) still holding 100%-regenerable build output — iOS `Pods` +
+`DerivedData` (5–9 GB each), Android `.gradle`/`build`, Rust `target/` — which
+dominated the 64 GB in the 2026-05-29 incident.
+
+- `feat`: **`plan-w-team-build-artifact-clean.sh`** — removes ONLY a fixed allowlist
+  of regenerable build dirs from a worktree (or `--all`), dry-run by default
+  (`--execute` to delete), `--json` output. Safety invariants mirror the GC:
+  refuses any path outside `.claude/worktrees/`, never touches source, and
+  **preserves the shared `node_modules` symlink** (E5/deps-share). Idempotent.
+- `feat`: wired into Step 6 ship (`05-ship.md` §6g-bis) — cleans the shipped
+  worker's worktree on the PR-opened path (build done → artifacts safe to drop),
+  independent of whether the merge landed. Kill switch
+  `PWT_BUILD_ARTIFACT_CLEAN_DISABLE=1`.
+- `test`: `plan-w-team-build-artifact-clean.test.sh` (7 cases) — dry-run safe,
+  execute reclaims, source preserved, node_modules symlink preserved, refuses
+  outside-worktrees paths, `--all` sweep, idempotent. Added to sync allowlist.
+  Full suite 56/56.
+
+> Disk-governance series (1.12.0–1.15.0) closes all four incident root causes
+> (no disk gate → E2, lock-pinning → E1, on-merge-can't-fire → E3/E4, build bloat
+> → E7). E5 node_modules sharing was already the default via `worktree-deps-share.sh`;
+> only the divergent-lockfile shared-store fallback remains as a minor refinement.
+
+---
+
+## [1.14.0] — 2026-05-29
+
+MINOR — **Worktree disk governance, part 3: auto-installed daily GC timer (E3 +
+E4).** Root cause #2 of the 2026-05-29 incident: the GC launchd template shipped
+as a MANUAL template (WL-T5) and was **never installed**, so no periodic sweep
+ever ran. This makes the timer install itself — never relying on a human.
+
+- `feat`: **`plan-w-team-gc-timer-install.sh`** — idempotent auto-installer.
+  macOS launchd + Linux systemd `--user` timer. Renders the (weekly) template to a
+  **DAILY** schedule, only rewrites/reloads when content changed, and runs the GC
+  **immediately when `disk-budget.sh` reports pressure** (free-GB based — supersedes
+  the raw-% heuristic per the APFS caveat). `--status` / `--uninstall` subcommands.
+  Fail-open: any error warns and exits 0 — installing the timer never blocks a
+  session. Knobs: `PWT_GC_TIMER_DISABLE`, `PWT_GC_TIMER_HOUR`, `PWT_GC_TIMER_PRESSURE`.
+- `feat`: **session-start wiring (E4)** — `session-start.sh` invokes the installer
+  backgrounded on every session start, so consumers get the daily timer + a
+  disk-pressure sweep automatically on next session. (Complements the existing
+  SubagentStop + Step-8-retro sweeps and the already-present `gh pr list --state
+merged` squash-merge detection.)
+- `docs`/sync: installer + its test added to the sync allowlist so the timer
+  auto-installs in every consumer repo.
+- `test`: `plan-w-team-gc-timer-install.test.sh` (10 cases) — daily render
+  (Weekday dropped), placeholder substitution, idempotency, status/uninstall,
+  disable knob, fail-open. Hermetic (never triggers the production GC). Full suite
+  55/55, verified green ×2.
+
+> Remaining: E5 divergent-lockfile shared-store fallback (the nm-symlink default
+> already exists), E7 build-artifact hygiene.
+
+---
+
 ## [1.13.0] — 2026-05-29
 
 MINOR — **Worktree disk governance, part 2: faster stale-lock reclamation (E1).**
