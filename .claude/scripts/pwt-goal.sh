@@ -691,6 +691,16 @@ if [ "$LAUNCH" = "1" ]; then
     if [ "$AUTO_PUSH" = "1" ]; then
         LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_AUTO_APPROVE_PUSH=1"
     fi
+    # PWT-WF1 workflow guard: bg workers/supervisor run headless, where the
+    # Dynamic-Workflows tool (/workflows) can auto-run — and the literal token
+    # "workflow" appears dozens of times in /plan-w-team prose (workflow lock,
+    # "autonomous workflow", …), so an incidental token could spawn a nested
+    # fan-out that bypasses gated dispatch + the RAM-budget gate. Disable it in
+    # every bg session this script spawns. Env-var name verified present in the
+    # CLI 2.1.156 binary (string table: CLAUDE_CODE_DISABLE_WORKFLOWS, alongside
+    # the full CLAUDE_CODE_DISABLE_* catalog). Headless/bg only — interactive
+    # sessions are untouched and may still author workflows.
+    LAUNCH_ENV="$LAUNCH_ENV CLAUDE_CODE_DISABLE_WORKFLOWS=1"
 
     # --fallback-model (Claude Code 2.1.152+): if the pinned primary model
     # (Opus 4.8) is ever not found, the session degrades to this model for the

@@ -379,6 +379,7 @@ Chained spawns are subject to the same deterministic guards as any other `pwt-go
 
 - **PWT-DS1** (process-level flag file): if `.claude/state/plan-w-team-hook-spawn-<sid>.flag` is fresh (≤60s), the spawn refuses with exit 3 (`PWT_DS1_DUPLICATE`). The supervisor SURFACES instead.
 - **PWT-DS2** (env-cascade): the chained worker inherits `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1`, so any `Use /plan-w-team to …` text in the worker's own goal cannot re-trigger the routing classifier. Subsequent `pwt-goal.sh` calls inside the worker exit 4 (`PWT_DS2_CASCADE`).
+- **PWT-WF1** (workflow guard): every bg session `pwt-goal.sh` spawns (worker + supervisor) carries `CLAUDE_CODE_DISABLE_WORKFLOWS=1` in `LAUNCH_ENV`. Dynamic Workflows (`/workflows`, the `Workflow` tool) auto-run in headless/bg mode, and the literal token "workflow" — which /plan-w-team prose uses dozens of times — can otherwise trigger a nested workflow fan-out that bypasses gated dispatch and the RAM-budget gate. The guard makes headless `/goal` runs deterministically Agent()-tool-only. Env-var name verified in the CLI 2.1.156 binary string table. **Interactive sessions are NOT guarded** — there an operator may legitimately author a workflow (e.g. this very evaluation run).
 
 These guards exist to prevent the failure modes that produced commits `c9cfcd5` (LLM-attention miss → double-spawn) and `553ab85` (worker self-replication). `next_batch_spec` chaining does not relax either guard.
 

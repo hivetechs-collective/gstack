@@ -21,6 +21,35 @@ Entries are newest-first.
 
 ---
 
+## [1.7.0] — 2026-05-28
+
+MINOR — **Headless workflow guard + Workflow-tool leverage evaluation.** Ships the
+unblocking half of the deferred recovery+guard spec, plus the durable outcome of an
+18-agent adversarial design audit of how (and whether) /plan-w-team should leverage
+the Workflow tool / ultracode / Opus 4.8. (API/socket-halt worker recovery — the
+other half — follows as 1.8.0; it is critical-path and gets its own tested change.)
+
+- `feat`: **PWT-WF1 workflow guard** — `pwt-goal.sh` adds `CLAUDE_CODE_DISABLE_WORKFLOWS=1`
+  to `LAUNCH_ENV`, so every bg worker + supervisor it spawns runs headless with
+  Dynamic Workflows disabled. The token "workflow" appears dozens of times in
+  /plan-w-team prose; in headless mode that could trigger a nested workflow fan-out
+  bypassing gated dispatch + the RAM-budget gate. Headless/bg only — interactive
+  sessions keep workflows. Env-var name **verified** in the CLI 2.1.156 binary string
+  table (not a silent no-op). Test: `pwt-goal-workflow-guard.test.sh` proves the var
+  reaches BOTH spawn environments end-to-end.
+- `fix(docs)`: resolve a self-report contradiction — `opus-4-7-practices.md` said
+  "trust its self-reported blockers in autonomous /goal runs", contradicting the
+  durable anti-gaming rule (progress "measured objectively, never self-reported").
+  Now scoped to **non-terminal corroboration only**; the objective metric still
+  governs STALL-ALERT.
+- `docs`: `docs/operations/workflow-tool-leverage-evaluation.md` — the adversarial
+  verdict (Workflow tool is research-preview / no stable API → deep pipeline adoption
+  defers to GA; safe-now wins are no-workflow autonomy tuning + Agent()-tool depth,
+  pilot-grade) and the sequenced roadmap. Records WHY the executor stays workflow-free
+  until GA.
+
+---
+
 ## [1.6.0] — 2026-05-28
 
 MINOR — **Post-1.5.0 deep-audit follow-through.** A 79-agent adversarial audit of
