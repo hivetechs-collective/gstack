@@ -15,6 +15,14 @@
 
 **Opus 4.7 tip**: Pass 1 (CRITICAL) benefits from deep adaptive thinking ("think carefully about security implications"). Pass 2 (INFORMATIONAL) benefits from terse thinking ("prioritize responding quickly — just list findings"). See `shared/opus-4-7-practices.md` §2.
 
+**Effort-escalation trigger (REQ-3 — autonomous, NO workflows).** When a reviewer/fix
+returns **`confidence: low` twice on the same task**, OR the task carries a **HARD**-tagged
+sub-problem, the lead **re-spawns THAT single task with an elevated thinking budget**
+(`ultrathink` / `/effort xhigh`) rather than retrying at default effort. This is the
+fix-stage twin of the supervisor's STALL-ALERT effort rung (`shared/supervisor-protocol.md`).
+It trades tokens for depth in place; it does **not** re-enable the Workflow tool for bg
+workers (`CLAUDE_CODE_DISABLE_WORKFLOWS=1` / PWT-WF1 stays — workflows are operator-only).
+
 After builders complete, worktrees are merged, and the evaluator loop (Step 4b) has run, perform a two-pass review on the full diff.
 
 ## 5-0. Fix-Immediately, Never Defer (ENFORCING — governs every pass)

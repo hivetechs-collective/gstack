@@ -21,6 +21,69 @@ Entries are newest-first.
 
 ---
 
+## [1.19.0] — 2026-05-29
+
+MINOR — **Autonomy work order REQ-3/4b/5 (completes `docs/specs/claude-pattern-DIRECTION-pwt-autonomy-2026-05-29.md`).**
+Doc/protocol changes; no new bg behavior that bypasses a gate.
+
+- `feat (REQ-5, SAFETY)`: **vendor/SSO console hard guardrail** in `secret-safety.md`
+  — workers must NEVER navigate to or interactive-login on a vendor/SSO management
+  console (Neon/AWS/GCP/Stripe/Cloudflare/Apple/Google-Play/Keycloak/Okta/Auth0).
+  Management-plane access is a **`blocked-external` gate**: HALT + escalate (like the
+  one-way-door asks). Verification uses the programmatic path only (connection string
+  / API token from the secrets inventory / prod API), never a browser login. Origin:
+  a bg worker drove Playwright to `console.neon.tech` → Keycloak OAuth this session.
+  Referenced from `03-execute.md` dispatch. (Browser automation of the app-under-test
+  is still correct — the rule targets third-party consoles only.)
+- `feat (REQ-3)`: **autonomous effort-escalation rung** — on STALL-ALERT /
+  LOW_CONFIDENCE_STREAK (`supervisor-protocol.md`), and on confidence-low-twice / a
+  HARD-tagged sub-problem (`04-fix-first-review.md`), elevate the reasoning budget
+  (ultrathink / `/effort xhigh`) for the recovery turn instead of retrying at default.
+  **PWT-WF1 stays** — bg workers never spawn nested workflows that bypass the RAM gate;
+  effort is the autonomous lever, workflows stay operator/interactive-only.
+- `feat (REQ-4b)`: **post-merge reclaim** in the supervisor AUTO-MERGE action — after
+  `gh pr merge` (admin-squash on the remote → no local hook fires), call
+  `plan-w-team-worktree-on-merge.sh` immediately so the merged worktree is reclaimed
+  without waiting for the nightly GC timer. (REQ-4a — GC-timer commit — shipped in 1.14.0.)
+- `test`: `tests/skill/scenarios/autonomy-workorder-req345.bats` (7 invariants). Suite 58/58.
+
+> Full work order complete: REQ-1/REQ-2 (1.18.0, keystone), REQ-4a (1.14.0),
+> REQ-3/REQ-4b/REQ-5 (this release).
+
+---
+
+## [1.18.0] — 2026-05-29
+
+MINOR — **Ship-gate self-finish: cross the finish line unattended (REQ-1 + REQ-2).**
+The keystone from the autonomy work order (`docs/specs/claude-pattern-DIRECTION-pwt-autonomy-2026-05-29.md`).
+The skill self-drove to ship then **wedged** at the test gate on two environment
+issues nothing self-healed (2026-05-29 cleanscale audit: 5 bg workers idling in
+`waiting`). This converts "operator babysits every wave" → "workers finish unattended".
+
+- `feat (REQ-1)`: **`plan-w-team-ship-preflight.sh`** — pre-push self-heal:
+  (a) seeds a worktree's missing `node_modules` via `worktree-deps-share.sh`
+  (fallback `pnpm install --frozen-lockfile`) so `turbo`/`make test-all` resolves —
+  the bg-LEAD deps gap (SessionStart no-ops for a main-cwd lead, never fires for
+  headless `claude -p`); (b) shuts orphaned booted iOS sims (`xcrun simctl`) so an
+  app-less sim can't false-fail maestro. iOS/JS-scoped, fail-open, bash 3.2 safe.
+  Kill switches: `PWT_SHIP_PREFLIGHT_DISABLE` / `PWT_SHIP_DEPS_DISABLE` / `PWT_SHIP_SIM_SHUTDOWN`.
+- `feat (REQ-1)`: wired into `05-ship.md` §6a-quater (runs before the §6b test gate);
+  bg-lead path in `03-execute.md` now calls deps-share **unconditionally** at
+  worktree-create (REQ-1c — closes the SessionStart coverage gap at the source).
+- `feat (REQ-2)`: ship-gate **wedge-recovery retry loop** (§6a-quater) — on a §6b
+  failure, classify `env-gap` / `sim-orphan` / `real-test`; self-heal + retry ≤2 for
+  the first two; a **real-test failure is NEVER retried into green** (surfaces via the
+  §6-0a retro trap). Heal the environment, never mask a real failure.
+- `test`: `plan-w-team-ship-preflight.test.sh` (9 cases) — seeds-when-missing /
+  no-op-when-present / deps-share path / fail-open / sim shutdown + kill-switch /
+  non-applicable skip / disable. Allowlisted. Full suite 58/58.
+
+> REQ-4a (GC-timer commit) already shipped in 1.14.0. Remaining from the work order:
+> REQ-5 (vendor/SSO OAuth guardrail — safety), REQ-3 (effort-escalation rung),
+> REQ-4b (reclaim right after `gh pr merge`).
+
+---
+
 ## [1.17.0] — 2026-05-29
 
 MINOR — **Orphan bg-session reaper (catch-all for the retro-only cleanup gap).**

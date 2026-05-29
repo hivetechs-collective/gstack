@@ -48,6 +48,38 @@ Each layer catches leaks the others cannot:
 
 Defense in depth means no layer is load-bearing alone. The sync filter exists even though scanners exist; the scanner exists even though filters exist.
 
+## Vendor / SSO Console Access — Hard Guardrail (REQ-5, SAFETY)
+
+**Workers MUST NEVER navigate to, or attempt an interactive login on, a vendor or
+SSO management console.** 2026-05-29 incident: a bg ops/compliance worker, lacking
+a programmatic path, drove Playwright to `console.neon.tech` and hit the Keycloak
+OAuth login. A worker cannot complete interactive SSO and must not try — that path
+leads to credential-stuffing-shaped behavior, hung browser sessions, and at worst a
+lockout.
+
+**The rule.** A task that requires **management-plane / vendor-console access is a
+`blocked-external` gate**: HALT and escalate to the human (same shape as the
+existing one-way-door asks — e.g. Stripe Connect #690, Apple #276). Do **not** open
+a browser to it, do **not** retry, do **not** attempt OAuth/SSO.
+
+Non-exhaustive console denylist (navigation or login to any of these = HALT):
+
+- `console.neon.tech`, `console.aws.amazon.com`, `console.cloud.google.com`
+- `dashboard.stripe.com`, `dash.cloudflare.com`
+- `developer.apple.com` / `appstoreconnect.apple.com`, `play.google.com/console`
+- any Keycloak / Okta / Auth0 / Google / Microsoft / GitHub **OAuth/SSO login** page
+
+**The allowed path is programmatic only.** Verification and changes use the
+documented programmatic interface — a Postgres connection string, a vendor **API
+token from the secrets inventory**, or the prod HTTP API — never an interactive
+browser login. If no programmatic credential exists for the task, that absence is
+itself the `blocked-external` escalation (the human provisions the token or performs
+the console action), not a cue to brute-force the UI.
+
+> Browser automation (Playwright/maestro) remains correct for **the app under
+> test** — your own UI on localhost / a preview URL. The guardrail is specifically
+> against third-party vendor/SSO **management consoles**.
+
 ## Pattern Catalog
 
 Authoritative list. Order in the source file is display-only; dedup is by `(file:line:name)`.
@@ -65,7 +97,7 @@ The table below is **auto-generated** from `.claude/scripts/secret-scan.sh` by `
 | `openai`             | `sk-[A-Za-z0-9]{48,}`                                              | Revoke at platform.openai.com/api-keys                            |
 | `stripe-live-secret` | `sk_live_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/apikeys                              |
 | `stripe-test-secret` | `sk_test_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/test/apikeys                         |
-| `stripe-live-pub`    | `pk_live_[a-zA-Z0-9]{20,}`                                         | Stripe publishable key — confirm intent before committing       |
+| `stripe-live-pub`    | `pk_live_[a-zA-Z0-9]{20,}`                                         | Stripe publishable key — confirm intent before committing         |
 | `slack`              | `xox[baprs]-[A-Za-z0-9-]{10,}`                                     | Revoke at api.slack.com/apps                                      |
 | `gitlab-pat`         | `glpat-[A-Za-z0-9_-]{20,}`                                         | Revoke at gitlab.com/-/profile/personal_access_tokens             |
 | `azure-conn`         | `DefaultEndpointsProtocol=https;AccountName=`                      | Rotate Azure storage account keys                                 |

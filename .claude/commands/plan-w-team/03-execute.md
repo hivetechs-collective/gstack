@@ -368,6 +368,13 @@ if .claude/scripts/plan-w-team-supervisor-route.sh "$SLUG"; then
     )
     # Supervisor returns when all tasks complete OR a hard-gate is hit.
     # On hard-gate return, lead surfaces the escalation block to the user.
+    #
+    # REQ-5 (SAFETY) — blocked-external gate: if ANY task needs management-plane /
+    # vendor-console access (Neon/Stripe/Apple/Google/Cloudflare/Keycloak OAuth/SSO),
+    # the worker MUST HALT and escalate as `blocked-external`, NEVER drive a browser
+    # to the console or attempt interactive login. Verification uses the programmatic
+    # path only (connection string / API token from the secrets inventory / prod API).
+    # Full rule + console denylist: shared/secret-safety.md §"Vendor / SSO Console Access".
 else
     # Wrapper exit 2 → kill switch set (PLAN_W_TEAM_DISABLE_SUPERVISOR=1)
     # Fall through to Pattern A (self-claiming pool) or Pattern B (continuous
@@ -471,9 +478,18 @@ post-create deps shim.)
 > lead works in a worktree it made itself. (Headless `claude -p` does not fire
 > `SessionStart` at all.)
 
-**Manual invocation** (lead-implements-directly, or to preview):
+**MANDATORY for the bg-lead path (REQ-1c — close the SessionStart coverage gap).**
+A `pwt-goal claude --bg` lead that creates/enters its own worktree gets NO automatic
+deps seeding (SessionStart no-ops for a main-cwd lead and never fires for headless
+`claude -p`). So when the lead works in a worktree it made itself, it MUST call
+deps-share **unconditionally** right after creating the worktree — do not rely on
+SessionStart. (The §6a-quater ship preflight is the backstop, but seeding at
+worktree-create avoids a mid-run `turbo: command not found` entirely.)
 
 ```bash
+# bg-lead, immediately after creating/entering its worktree (UNCONDITIONAL):
+.claude/scripts/worktree-deps-share.sh --worktree "$PWD" --main "$(git -C "$PWD" worktree list --porcelain | awk '/^worktree /{print $2; exit}')"
+
 # Apply sharing into a worktree (auto strategy = lockfile-hash-gated share)
 .claude/scripts/worktree-deps-share.sh --worktree <path> --main "$(git rev-parse --show-toplevel)"
 

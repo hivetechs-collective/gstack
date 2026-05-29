@@ -329,7 +329,7 @@ The matrix is consulted in two places:
 
 ### Actions, in detail
 
-- **AUTO-MERGE**: emit a status block citing the matrix row and PR number, then invoke `gh pr merge --auto --squash <PR>`. The `--auto` flag is important — GitHub waits for any required checks even if the supervisor's snapshot showed green moments earlier. Log the merge as a per-turn surface line: `✅ auto-merged PR #N (reversible, CI-green, no governance tag)`.
+- **AUTO-MERGE**: emit a status block citing the matrix row and PR number, then invoke `gh pr merge --auto --squash <PR>`. The `--auto` flag is important — GitHub waits for any required checks even if the supervisor's snapshot showed green moments earlier. Log the merge as a per-turn surface line: `✅ auto-merged PR #N (reversible, CI-green, no governance tag)`. **Then reclaim the merged worktree immediately (REQ-4b)** — `gh pr merge` is an **admin-squash on the remote**, so NO local hook fires and the inline §6h ship-block never runs for a remote squash (or for a worker that wedged before ship). Right after the merge confirms, call `.claude/scripts/plan-w-team-worktree-on-merge.sh "<worktree>" "<branch>" "<slug>"` so the worktree is reclaimed now, not left for the nightly GC timer. The helper enforces its own safety invariants (containment, uncommitted/in-use checks, idempotency) and safe-skips rather than failing, so calling it unconditionally on the merged branch is safe.
 - **CHAIN**: after AUTO-MERGE succeeds AND `next_batch_spec` is non-null, spawn the next worker via `pwt-goal.sh --worker-only "<request>"` (with `--type` if specified). PWT-DS1 / PWT-DS2 deterministic guards still apply — if a fresh hook flag is present or the env-cascade signal is set, the spawn refuses and the supervisor SURFACES instead.
 - **SPAWN FIX-WORKER**: spawn a focused worker whose goal is the CI failure, NOT a re-run of the original mission. The fix-worker's goal directive references the failing checks verbatim. The supervisor returns to POLL on the fix-worker; on its SUCCESS the matrix consults again on the original PR.
 - **RESTART (API_HALT — bounded reclaim)**: a worker wedged on a transient API/socket error is detected by the goal-evaluator (`plan-w-team-goal-evaluator.sh` classifies `API_HALT` when the child transcript is idle ≥ `PWT_API_HALT_IDLE_S` AND its last meaningful turn matches a transient-connection pattern from `pwt-transient-errors.sh`). On observing `API_HALT`: (1) read the restart-attempt count for this SID; (2) cap at `PWT_API_HALT_MAX_RESTARTS` (default 2); (3) optionally try `claude --resume <sid>` once as a cheap first attempt (a connection-dead session usually re-wedges, so don't rely on it); (4) respawn a continuation worker via `pwt-goal.sh --worker-only` seeded from the halted worker's last goal state; (5) log a `worker_restart` row to the supervisor-actions JSONL (`dead_sid`, `new_sid`, `attempt`); (6) PWT-DS1 (hook-spawn flag) and PWT-DS2 (env-cascade) anti-double-spawn backstops still apply — a refusal means SURFACE instead. On budget exhaustion, stop restarting and fall through to **DEAD → SURFACE**. A healthy worker is never restarted: the goal-evaluator's idle-mtime gate makes an actively-writing worker immune to API_HALT classification.
@@ -436,6 +436,16 @@ tick in `.claude/state/supervisor-progress.json`, and emits a verdict:
 Step-1 spec ACs still failing + Step-2 tasks not yet done. On `STALL-ALERT` the
 supervisor pulls its next item **only** from there; it never improvises
 off-target work to manufacture motion.
+
+**Effort-escalation rung (REQ-3 — autonomous "go deeper when stuck").** On
+`STALL-ALERT` (or a `LOW_CONFIDENCE_STREAK`), before re-attempting the next backlog
+item, **elevate the reasoning budget for the recovery turn** — interleaved-thinking
+/ `ultrathink` / `/effort xhigh` — rather than retrying at default effort. Trade
+tokens for depth in place. This is the bg-autonomous equivalent of "an operator
+invokes a workflow when stuck": the same recovery instinct, expressed as effort
+because **`CLAUDE_CODE_DISABLE_WORKFLOWS=1` stays for bg (PWT-WF1)** — a bg worker
+must NOT spawn nested workflows that bypass the RAM gate. Workflows remain an
+operator/interactive lever; effort escalation is the autonomous one.
 
 This **complements** the CONTINUATION CHECK below (which keys on user-input
 silence). Step 0 keys on objective work-progress — a supervisor can be inside

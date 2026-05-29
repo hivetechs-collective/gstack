@@ -323,6 +323,43 @@ Before bypassing:
 
 The allow file is checked into the repo (it documents intentional exceptions) but the entries must be reviewed during Step 5 Fix-First Review. A reviewer adding entries silently is itself a red flag.
 
+## 6a-quater. Pre-Push Self-Heal + Wedge Recovery (REQ-1/REQ-2 — run before §6b)
+
+The autonomous path self-drives to here then historically **wedged** at the test
+gate on two environment issues nothing self-healed (2026-05-29 cleanscale audit:
+5 bg workers found idling in `waiting`). Heal them BEFORE §6b so a bg worker
+finishes unattended instead of waiting for an operator.
+
+**REQ-1 — proactive self-heal.** Run the preflight before the test gate:
+
+```bash
+# (a) node_modules/turbo: a bg LEAD makes its worktree mid-session, so SessionStart
+#     can't seed deps (and headless `claude -p` never fires SessionStart). Without
+#     node_modules, `turbo`/`make test-all` dies on "turbo: command not found".
+# (b) orphaned iOS sim: a booted app-less sim left by a stopped worker false-fails
+#     maestro 57/57. Shut booted sims (xcrun simctl) so a fresh one boots with the app.
+# The helper does both: worktree-deps-share (or pnpm install --frozen-lockfile) +
+# xcrun simctl shutdown. Fail-open; iOS/JS-scoped; kill switches below.
+.claude/scripts/plan-w-team-ship-preflight.sh --worktree "$PWD" --json
+```
+
+Kill switches: `PWT_SHIP_PREFLIGHT_DISABLE=1`, `PWT_SHIP_DEPS_DISABLE=1`,
+`PWT_SHIP_SIM_SHUTDOWN=0`. See `shared/disk-budget.md` siblings / the script header.
+
+**REQ-2 — wedge-recovery retry loop (classify → fix → retry → THEN escalate).**
+When §6b below returns non-zero, classify the failure and recover before surfacing:
+
+| Class        | Signal                                                               | Action                                                     |
+| ------------ | -------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `env-gap`    | `turbo: command not found`, missing workspace bin, no `node_modules` | re-run the preflight (deps leg) + retry §6b once           |
+| `sim-orphan` | maestro fails ~all (e.g. 57/57) with a booted sim present            | re-run the preflight (sim leg) + retry §6b once            |
+| `real-test`  | genuine assertion/build failures                                     | **surface** via §6-0a retro trap — do NOT retry into green |
+
+Cap: **≤2 total attempts**. Log each classification. A proven `real-test` failure
+is NEVER silently retried — only `env-gap`/`sim-orphan` trigger a self-heal retry
+(consistent with the fix-defects-immediately rule: heal the environment, never mask
+a real failure). After the cap, surface "blocked" through the normal retro path.
+
 ## 6b. Run Full Test Suite (ENFORCING GATE — not a prose request)
 
 Detect the project's test framework and run it. **The exit code is the gate.** If any command fails, refuse to ship.
