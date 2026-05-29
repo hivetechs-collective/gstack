@@ -606,6 +606,71 @@ RAM_GATE
     fi
 fi
 
+# ─── DISK CAPACITY GATE (PWT-DISK1) ─────────────────────────────────────────
+# Mirror of the RAM gate for the disk dimension. The 2026-05-29 cleanscale
+# incident (67 worktrees / 64 GB → 0 bytes free → ENOSPC) had NO disk gate.
+# Reads disk-budget.sh; refuses on BLOCK (free_gb below floor / inode exhaustion)
+# or AT_CAPACITY, warns on REDUCE. Heavy-build directives (pod install, gradlew,
+# xcodebuild, pnpm install, …) raise the free-GB floor automatically. Gates on
+# absolute free GB, not %, because APFS % counts the whole shared container.
+# Fail-open (null / missing script) → proceed. Override: PLAN_W_TEAM_DISABLE_DISK_GATE=1.
+if [ "${PLAN_W_TEAM_DISABLE_DISK_GATE:-0}" != "1" ] \
+        && { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
+    DISK_BUDGET_SCRIPT="$(dirname "$0")/disk-budget.sh"
+    if [ -x "$DISK_BUDGET_SCRIPT" ]; then
+        DISK_JSON=$(PWT_DISK_DIRECTIVE="${ORIGINAL_REQUEST:-${REQUEST:-}}" "$DISK_BUDGET_SCRIPT" 2>/dev/null || echo "")
+        if [ -n "$DISK_JSON" ]; then
+            DISK_ACTION=$(printf '%s' "$DISK_JSON" | grep -oE '"recommended_action": *"[^"]*"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+            DISK_FREE=$(printf '%s' "$DISK_JSON"   | grep -oE '"free_gb": *[^,}]*'                  | head -1 | sed -E 's/.*: *//')
+            DISK_MINF=$(printf '%s' "$DISK_JSON"   | grep -oE '"min_free_gb": *[^,}]*'              | head -1 | sed -E 's/.*: *//')
+            DISK_CAP=$(printf '%s' "$DISK_JSON"    | grep -oE '"capacity_for_new_worktrees": *[^,}]*' | head -1 | sed -E 's/.*: *//')
+            if [ "$DISK_ACTION" = "BLOCK" ] || [ "$DISK_ACTION" = "AT_CAPACITY" ]; then
+                cat >&2 <<DISK_GATE
+✗ Disk gate refused: $DISK_ACTION
+
+  free_gb=$DISK_FREE  min_free_gb=$DISK_MINF  capacity_for_new_worktrees=$DISK_CAP
+
+  Spawning another worktree risks ENOSPC (the 2026-05-29 cleanscale failure mode).
+  Reclaim first — merge open PRs, or:
+    .claude/scripts/plan-w-team-worktree-gc.sh --execute
+
+  Override (only with manually confirmed free disk): PLAN_W_TEAM_DISABLE_DISK_GATE=1
+  Tune (shared/disk-budget.md): PWT_DISK_MIN_FREE_GB (15) / PWT_DISK_MIN_FREE_GB_BUILD (25)
+DISK_GATE
+                exit 5
+            elif [ "$DISK_ACTION" = "REDUCE" ]; then
+                echo "[disk-budget] REDUCE: free_gb=$DISK_FREE near floor $DISK_MINF — proceeding, but reclaim soon (worktree-gc)." >&2
+            fi
+        fi
+    fi
+fi
+
+# ─── WORKTREE COUNT CAP (PWT-DISK2) ─────────────────────────────────────────
+# Hard cap on concurrent worktrees: even with free disk, an unbounded worktree
+# count is the accumulation that fed the incident. Refuse new spawns at/above
+# PWT_MAX_WORKTREES until the GC reaps or PRs merge.
+# Override: PLAN_W_TEAM_DISABLE_WORKTREE_CAP=1 (or raise PWT_MAX_WORKTREES).
+if [ "${PLAN_W_TEAM_DISABLE_WORKTREE_CAP:-0}" != "1" ] \
+        && { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
+    WT_CAP="${PWT_MAX_WORKTREES:-10}"
+    WT_DIR="${GUARD_PROJECT_ROOT:-$(pwd)}/.claude/worktrees"
+    if [ -d "$WT_DIR" ]; then
+        WT_COUNT=$(find "$WT_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+        if [ "${WT_COUNT:-0}" -ge "$WT_CAP" ]; then
+            cat >&2 <<WT_CAP_MSG
+✗ Worktree cap reached: $WT_COUNT/$WT_CAP under .claude/worktrees/
+
+  Concurrent worktrees are capped to bound disk growth (PWT_MAX_WORKTREES).
+  GC or merge first:
+    .claude/scripts/plan-w-team-worktree-gc.sh --execute
+
+  Override: PLAN_W_TEAM_DISABLE_WORKTREE_CAP=1  (or raise PWT_MAX_WORKTREES)
+WT_CAP_MSG
+            exit 5
+        fi
+    fi
+fi
+
 # ─── FAIR-SHARE GATE (PWT-RAM2) ─────────────────────────────────────────────
 # Refuses to spawn when this repo is at/above its fair share AND another repo
 # has demand. Runs AFTER the RAM gate (which checks aggregate capacity), so we

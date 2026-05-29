@@ -21,6 +21,43 @@ Entries are newest-first.
 
 ---
 
+## [1.12.0] — 2026-05-29
+
+MINOR — **Worktree disk governance, part 1: pre-spawn disk gate + worktree cap.**
+Direct fix for the 2026-05-29 cleanscale incident (67 worktrees / 64 GB → 0 bytes
+free → `ENOSPC`, git + Bash tool failing). `pwt-goal.sh` consulted `ram-budget.sh`
+but had **no disk gate**, so spawns proceeded into a ~98%-full filesystem.
+
+- `feat`: **`disk-budget.sh` (PWT-DISK1)** — mirror of `ram-budget.sh` for disk.
+  Emits `{free_gb, used_pct, inode_free_pct, heavy_build, est_worktree_cost_gb,
+capacity_for_new_worktrees, recommended_action: SPAWN_OK|REDUCE|AT_CAPACITY|BLOCK}`.
+  **Gates on absolute free GB, not %** — APFS % counts the whole shared container
+  (the incident host read 94% used with 26 GB free). Heavy-build directives
+  (`pod install`, `gradlew`, `xcodebuild`, `pnpm install`, …) raise the floor
+  15→25 GB. Inode-exhaustion aware. **Fail-open** with a loud stderr warning on an
+  unreadable `df`.
+- `feat`: **disk gate wired into `pwt-goal.sh`** (after the RAM gate) — refuses the
+  spawn (exit 5) on `BLOCK`/`AT_CAPACITY` with a reclaim instruction
+  (`plan-w-team-worktree-gc.sh --execute`); warns on `REDUCE`. Override
+  `PLAN_W_TEAM_DISABLE_DISK_GATE=1`.
+- `feat`: **worktree count cap (PWT-DISK2)** — `pwt-goal.sh` refuses a spawn when
+  `.claude/worktrees/` holds ≥ `PWT_MAX_WORKTREES` (default 10). Override
+  `PLAN_W_TEAM_DISABLE_WORKTREE_CAP=1`.
+- `docs`: `shared/disk-budget.md` — the capacity model + all env knobs
+  (`PWT_DISK_MIN_FREE_GB`, `…_BUILD`, `PWT_DISK_MAX_PCT`, `PWT_MAX_WORKTREES`,
+  `PWT_STALE_LOCK_HOURS`). `disk-budget.sh` added to the sync allowlist so consumers
+  get the gate.
+- `test`: `disk-budget.test.sh` (9 cases) — BLOCK below floor; SPAWN_OK above;
+  heavy-build higher floor; fail-open on missing df; APFS-% trap (94% used + 30 GB
+  free → SPAWN_OK); + pwt-goal integration (spawn refused on low disk and over cap).
+  Full suite green; bash 3.2 verified.
+
+> Parts 2–4 (auto-installed daily GC timer, stale-lock force-reap + squash-merge
+> detection, node_modules-share default, build-artifact hygiene) follow as separate
+> increments — see `docs/specs` and the incident direction.
+
+---
+
 ## [1.11.0] — 2026-05-29
 
 MINOR — **Pilot (opt-in, default-strict): Opus-4.8 autonomy-profile tuning.** Third
