@@ -61,6 +61,16 @@ if [ -x "$LOCATE_CLAUDE" ]; then
     [ -n "$CLAUDE_BIN" ] && export CLAUDE_BIN
 fi
 
+# Source the shared transient-connection-error pattern set (API_HALT detection).
+# Best-effort: a missing helper (older consumer repo) leaves pwt_is_transient_error
+# undefined, and the API_HALT classifier below is guarded on `command -v`, so it
+# simply no-ops there — fail-safe, no regression.
+TRANSIENT_HELPER="$PROJECT_ROOT/.claude/scripts/pwt-transient-errors.sh"
+if [ -r "$TRANSIENT_HELPER" ]; then
+    # shellcheck source=/dev/null
+    . "$TRANSIENT_HELPER"
+fi
+
 # Worktree-aware state lookup: check $PWD/.claude/state first (the case when
 # /plan-w-team is running in a worktree), fall back to project root. We
 # aggregate goal files from both locations so the evaluator catches active
@@ -451,6 +461,52 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
                             fi
                             continue
                         fi
+                        # 2026-05-29 API_HALT detection (additive, FAIL-SAFE): a worker
+                        # that halted on a transient API/socket error is STILL listed in
+                        # background_tasks (alive process, idle session), so the DEAD
+                        # check above did NOT fire and it would otherwise block the parent
+                        # forever. Classify API_HALT only when BOTH gates hold, so quoted
+                        # error text in an ACTIVE transcript cannot false-positive:
+                        #   (a) child transcript idle — mtime older than the threshold;
+                        #   (b) last meaningful decoded turn matches a transient pattern.
+                        # A healthy worker has recent mtime → gate (a) fails → IMMUNE.
+                        # If the helper is absent or the transcript can't be resolved,
+                        # this whole block no-ops and falls through to today's behavior.
+                        if command -v pwt_is_transient_error >/dev/null 2>&1 \
+                           && [ -n "$ACTIVE_SIDS" ] && [ -n "$CHILD_SID" ] \
+                           && echo "$ACTIVE_SIDS" | grep -qFx "$CHILD_SID"; then
+                            CT_BASE="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}/$(printf '%s' "$PROJECT_ROOT" | sed 's#/#-#g')"
+                            CHILD_TX=""
+                            if [ -d "$CT_BASE" ]; then
+                                for cand in "$CT_BASE/${CHILD_SID}"*.jsonl; do
+                                    [ -f "$cand" ] && { CHILD_TX="$cand"; break; }
+                                done
+                            fi
+                            if [ -n "$CHILD_TX" ]; then
+                                NOW_EPOCH=$(date +%s)
+                                TX_MTIME=$(stat -f %m "$CHILD_TX" 2>/dev/null || stat -c %Y "$CHILD_TX" 2>/dev/null || echo "$NOW_EPOCH")
+                                IDLE_S=$(( NOW_EPOCH - TX_MTIME ))
+                                IDLE_THRESH="${PWT_API_HALT_IDLE_S:-600}"
+                                if [ "$IDLE_S" -ge "$IDLE_THRESH" ]; then
+                                    LAST_MEANINGFUL=$(decode_transcript "$CHILD_TX" | grep -v '^[[:space:]]*$' | tail -1)
+                                    if [ -n "$LAST_MEANINGFUL" ] && pwt_is_transient_error "$LAST_MEANINGFUL"; then
+                                        HALT_REASON="API_HALT — child SID $CHILD_SID idle ${IDLE_S}s (>=${IDLE_THRESH}s) and last turn matches transient-connection pattern"
+                                        jq --arg t "API_HALT" --arg r "$HALT_REASON" \
+                                           --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+                                           '.terminal_state = $t | .terminal_reason = $r | .terminated_at = $ts' \
+                                           "$CHILD_STATE" > "$CHILD_STATE.tmp" 2>/dev/null \
+                                            && mv "$CHILD_STATE.tmp" "$CHILD_STATE" || rm -f "$CHILD_STATE.tmp" 2>/dev/null
+                                        CHECKED_COUNT=$((CHECKED_COUNT+1))
+                                        # Precedence: SUCCESS < API_HALT < LOW_CONFIDENCE_STREAK < USER_ESCALATION_HALT.
+                                        if [ "$WORST_STATE" != "USER_ESCALATION_HALT" ] && [ "$WORST_STATE" != "LOW_CONFIDENCE_STREAK" ]; then
+                                            WORST_STATE="API_HALT"
+                                            WORST_REASON="child SLUG=$CHILD_SLUG $HALT_REASON"
+                                        fi
+                                        continue
+                                    fi
+                                fi
+                            fi
+                        fi
                         ALL_TERMINAL=false
                         continue
                     fi
@@ -465,6 +521,14 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
                         LOW_CONFIDENCE_STREAK)
                             if [ "$WORST_STATE" != "USER_ESCALATION_HALT" ]; then
                                 WORST_STATE="LOW_CONFIDENCE_STREAK"
+                                WORST_REASON=$(jq -r '.terminal_reason // ""' "$CHILD_STATE")
+                            fi
+                            ;;
+                        API_HALT)
+                            # Recoverable (supervisor restarts bounded); ranks above
+                            # SUCCESS but below LOW_CONFIDENCE_STREAK / USER_ESCALATION_HALT.
+                            if [ "$WORST_STATE" != "USER_ESCALATION_HALT" ] && [ "$WORST_STATE" != "LOW_CONFIDENCE_STREAK" ]; then
+                                WORST_STATE="API_HALT"
                                 WORST_REASON=$(jq -r '.terminal_reason // ""' "$CHILD_STATE")
                             fi
                             ;;

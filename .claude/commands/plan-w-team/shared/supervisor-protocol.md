@@ -99,13 +99,14 @@ Cleanup: `07-retro.md` removes on `RETRO_SUCCESS=1`
 
 ### Event types
 
-| Event              | When                                          | Required fields                                                          |
-| ------------------ | --------------------------------------------- | ------------------------------------------------------------------------ |
-| `supervisor_start` | First action of the supervisor's invocation   | `ts`, `event`, `slug`, `supervisor_agent_id`                             |
-| `spawn_decision`   | Before each `Agent()` builder spawn           | `ts`, `event`, `slug`, `task_id`, `agent_type`, `reason`                 |
-| `route_delegation` | After each `route_orchestrator` call returns  | `ts`, `event`, `slug`, `call_site`, `router_choice`, `router_confidence` |
-| `escalation`       | When supervisor hits a hard-gate site         | `ts`, `event`, `slug`, `call_site`, `reason`                             |
-| `supervisor_stop`  | Final action before returning control to lead | `ts`, `event`, `slug`, `reason`, `duration_s`                            |
+| Event              | When                                               | Required fields                                                          |
+| ------------------ | -------------------------------------------------- | ------------------------------------------------------------------------ |
+| `supervisor_start` | First action of the supervisor's invocation        | `ts`, `event`, `slug`, `supervisor_agent_id`                             |
+| `spawn_decision`   | Before each `Agent()` builder spawn                | `ts`, `event`, `slug`, `task_id`, `agent_type`, `reason`                 |
+| `route_delegation` | After each `route_orchestrator` call returns       | `ts`, `event`, `slug`, `call_site`, `router_choice`, `router_confidence` |
+| `escalation`       | When supervisor hits a hard-gate site              | `ts`, `event`, `slug`, `call_site`, `reason`                             |
+| `supervisor_stop`  | Final action before returning control to lead      | `ts`, `event`, `slug`, `reason`, `duration_s`                            |
+| `worker_restart`   | After a bounded API_HALT reclaim respawns a worker | `ts`, `event`, `slug`, `dead_sid`, `new_sid`, `attempt`, `reason`        |
 
 ### Example log
 
@@ -314,22 +315,24 @@ The matrix is consulted in two places:
 
 ### Matrix
 
-| Worker terminal       | PR CI | DO-NOT-MERGE label OR governance surface? | PR draft? | Action                                                                                             |
-| --------------------- | ----- | ----------------------------------------- | --------- | -------------------------------------------------------------------------------------------------- |
-| SUCCESS               | green | no                                        | no        | **AUTO-MERGE** (`gh pr merge --auto --squash <PR>`) + chain `next_batch_spec` if set on goal state |
-| SUCCESS               | green | yes                                       | no        | **SURFACE** to user — one-way door requires explicit consent                                       |
-| SUCCESS               | red   | any                                       | no        | **SPAWN FIX-WORKER** via `pwt-goal.sh --worker-only` with goal "fix CI on PR #N: <failing checks>" |
-| SUCCESS               | any   | any                                       | yes       | **LEAVE** — user intentionally drafted the PR                                                      |
-| USER_ESCALATION_HALT  | any   | any                                       | any       | **SURFACE** — hard-gate already fired upstream                                                     |
-| LOW_CONFIDENCE_STREAK | any   | any                                       | any       | **SURFACE** — supervisor decisions are unreliable                                                  |
-| DEAD                  | any   | any                                       | any       | **SURFACE** — worker died unexpectedly                                                             |
-| no terminal yet       | any   | any                                       | any       | **POLL** — continue waiting                                                                        |
+| Worker terminal       | PR CI | DO-NOT-MERGE label OR governance surface? | PR draft? | Action                                                                                                                                       |
+| --------------------- | ----- | ----------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| SUCCESS               | green | no                                        | no        | **AUTO-MERGE** (`gh pr merge --auto --squash <PR>`) + chain `next_batch_spec` if set on goal state                                           |
+| SUCCESS               | green | yes                                       | no        | **SURFACE** to user — one-way door requires explicit consent                                                                                 |
+| SUCCESS               | red   | any                                       | no        | **SPAWN FIX-WORKER** via `pwt-goal.sh --worker-only` with goal "fix CI on PR #N: <failing checks>"                                           |
+| SUCCESS               | any   | any                                       | yes       | **LEAVE** — user intentionally drafted the PR                                                                                                |
+| USER_ESCALATION_HALT  | any   | any                                       | any       | **SURFACE** — hard-gate already fired upstream                                                                                               |
+| LOW_CONFIDENCE_STREAK | any   | any                                       | any       | **SURFACE** — supervisor decisions are unreliable                                                                                            |
+| DEAD                  | any   | any                                       | any       | **SURFACE** — worker died unexpectedly                                                                                                       |
+| API_HALT              | any   | any                                       | any       | **RESTART (bounded N≤2)** — respawn continuation worker via `pwt-goal.sh --worker-only`; on budget exhaustion fall through to DEAD → SURFACE |
+| no terminal yet       | any   | any                                       | any       | **POLL** — continue waiting                                                                                                                  |
 
 ### Actions, in detail
 
 - **AUTO-MERGE**: emit a status block citing the matrix row and PR number, then invoke `gh pr merge --auto --squash <PR>`. The `--auto` flag is important — GitHub waits for any required checks even if the supervisor's snapshot showed green moments earlier. Log the merge as a per-turn surface line: `✅ auto-merged PR #N (reversible, CI-green, no governance tag)`.
 - **CHAIN**: after AUTO-MERGE succeeds AND `next_batch_spec` is non-null, spawn the next worker via `pwt-goal.sh --worker-only "<request>"` (with `--type` if specified). PWT-DS1 / PWT-DS2 deterministic guards still apply — if a fresh hook flag is present or the env-cascade signal is set, the spawn refuses and the supervisor SURFACES instead.
 - **SPAWN FIX-WORKER**: spawn a focused worker whose goal is the CI failure, NOT a re-run of the original mission. The fix-worker's goal directive references the failing checks verbatim. The supervisor returns to POLL on the fix-worker; on its SUCCESS the matrix consults again on the original PR.
+- **RESTART (API_HALT — bounded reclaim)**: a worker wedged on a transient API/socket error is detected by the goal-evaluator (`plan-w-team-goal-evaluator.sh` classifies `API_HALT` when the child transcript is idle ≥ `PWT_API_HALT_IDLE_S` AND its last meaningful turn matches a transient-connection pattern from `pwt-transient-errors.sh`). On observing `API_HALT`: (1) read the restart-attempt count for this SID; (2) cap at `PWT_API_HALT_MAX_RESTARTS` (default 2); (3) optionally try `claude --resume <sid>` once as a cheap first attempt (a connection-dead session usually re-wedges, so don't rely on it); (4) respawn a continuation worker via `pwt-goal.sh --worker-only` seeded from the halted worker's last goal state; (5) log a `worker_restart` row to the supervisor-actions JSONL (`dead_sid`, `new_sid`, `attempt`); (6) PWT-DS1 (hook-spawn flag) and PWT-DS2 (env-cascade) anti-double-spawn backstops still apply — a refusal means SURFACE instead. On budget exhaustion, stop restarting and fall through to **DEAD → SURFACE**. A healthy worker is never restarted: the goal-evaluator's idle-mtime gate makes an actively-writing worker immune to API_HALT classification.
 - **SURFACE**: emit a `⚠ HALT` block citing the matrix row + reason, stop polling, return control to the user. The supervisor does NOT exit — it waits for user input then resumes its loop.
 - **LEAVE**: emit a one-line acknowledgment (`PR #N left as draft per user`) and continue polling other workers; the draft PR is not the supervisor's concern.
 - **POLL**: continue the normal polling cadence (no surface).

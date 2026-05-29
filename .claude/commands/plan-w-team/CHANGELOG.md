@@ -21,6 +21,36 @@ Entries are newest-first.
 
 ---
 
+## [1.8.0] — 2026-05-29
+
+MINOR — **Worker API/socket-halt recovery** (the second half of
+`docs/specs/pwt-worker-recovery-and-workflow-guard.md`; completes the deferred
+recovery+guard work begun in 1.7.0). Closes the failure mode observed live on
+2026-05-28: a bg worker halted on `API Error: socket connection closed`, stayed
+listed in `background_tasks` (so the 2.1.145 DEAD check never fired), and the
+parent `/goal` session would have blocked forever.
+
+- `feat`: **API_HALT classification** in `plan-w-team-goal-evaluator.sh` — an
+  alive-but-idle child is classified `API_HALT` only when BOTH gates hold:
+  (a) its transcript mtime is older than `PWT_API_HALT_IDLE_S` (default 600s),
+  AND (b) the last meaningful decoded turn matches a transient-connection pattern.
+  Fully **fail-safe**: a healthy worker has a recent mtime → idle gate fails → it
+  is structurally immune; if the helper is absent or the transcript can't be
+  resolved, the block no-ops and falls through to today's behavior. Precedence:
+  `SUCCESS < API_HALT < LOW_CONFIDENCE_STREAK < USER_ESCALATION_HALT`.
+- `feat`: `.claude/scripts/pwt-transient-errors.sh` — single source of truth for
+  the transient-connection-error pattern set (mirrors the `secret-scan.sh`
+  centralization model; bash 3.2 safe), shared by the evaluator and the supervisor.
+- `docs`: supervisor-protocol Decision-Matrix `API_HALT` row + **RESTART
+  (bounded N≤2)** action + a `worker_restart` supervisor-actions event — the
+  supervisor respawns a continuation worker via `pwt-goal.sh --worker-only`,
+  capped, falling through to DEAD → SURFACE on exhaustion.
+- `test`: `plan-w-team-goal-evaluator-api-halt.test.sh` (AC1–AC5): idle+transient
+  → API_HALT; recent-mtime → immune; idle+normal-text → no fire; no-transcript →
+  fail-safe fall-through; persisted API_HALT propagates to the parent.
+
+---
+
 ## [1.7.0] — 2026-05-28
 
 MINOR — **Headless workflow guard + Workflow-tool leverage evaluation.** Ships the
