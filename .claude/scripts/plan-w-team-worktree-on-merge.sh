@@ -40,6 +40,70 @@ set -o pipefail
 
 emit() { printf '%s\n' "$1"; }
 
+# ─── Fix A1: post-merge primary-checkout re-sync + remote-branch delete ──────
+# After a server-side squash-merge, origin/<default> advances but the primary
+# (non-worktree) checkout is never re-synced and the remote feature branch is
+# never deleted — leaving the primary stale (parked behind origin, sometimes on
+# a leftover feature label) and the remote branch list cluttered. This helper
+# closes both gaps. It is fail-open (never blocks the merge bookkeeping) and
+# safe (ff-only — never force-resets a primary with real local commits).
+#
+# Reads globals $MAIN_CHECKOUT and $BRANCH (set by the main flow below, or by a
+# unit test that sources this script). Sets $RESYNC_REMOVED_REMOTE_BRANCH and
+# $RESYNC_PRIMARY_HEAD for result_json observability.
+RESYNC_REMOVED_REMOTE_BRANCH="false"
+RESYNC_PRIMARY_HEAD="unknown"
+
+__resync_primary_checkout() {
+    local mc="${MAIN_CHECKOUT:-}" br="${BRANCH:-}"
+    [ -n "$mc" ] && { [ -d "$mc/.git" ] || [ -e "$mc/.git" ]; } || { echo "resync: no MAIN_CHECKOUT" >&2; return 0; }
+
+    # Resolve the default branch (main/master/…) from the remote — never hardcode.
+    local def
+    def=$(git -C "$mc" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
+    [ -n "$def" ] || def=$(git -C "$mc" remote show origin 2>/dev/null | sed -n 's/.*HEAD branch: //p')
+    [ -n "$def" ] || def=main
+
+    git -C "$mc" fetch --quiet origin "$def" 2>/dev/null || { echo "resync: fetch failed" >&2; return 0; }
+
+    local head
+    head=$(git -C "$mc" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "DETACHED")
+
+    # Only auto-switch when the tree is clean (no staged/unstaged changes).
+    if [ -z "$(git -C "$mc" status --porcelain 2>/dev/null)" ]; then
+        if [ "$head" != "$def" ]; then
+            git -C "$mc" switch "$def" 2>/dev/null \
+                || echo "resync: could not switch to $def (head=$head) — left as-is" >&2
+            head=$(git -C "$mc" symbolic-ref --quiet --short HEAD 2>/dev/null || echo "DETACHED")
+        fi
+        if [ "$head" = "$def" ]; then
+            # Fast-forward ONLY — never create a merge commit in the primary checkout.
+            git -C "$mc" merge --ff-only "origin/$def" 2>/dev/null \
+                || echo "resync: ff-only to origin/$def declined (diverged) — manual review" >&2
+        fi
+    else
+        echo "resync: primary checkout dirty — skipped switch/ff (head=$head)" >&2
+    fi
+
+    # Delete the REMOTE feature branch (idempotent; ignore 'remote ref does not exist').
+    if [ -n "$br" ] && [ "$br" != "$def" ]; then
+        if git -C "$mc" push origin --delete "$br" 2>/dev/null; then
+            RESYNC_REMOVED_REMOTE_BRANCH="true"
+        else
+            echo "resync: remote branch $br already gone or protected" >&2
+        fi
+    fi
+    RESYNC_PRIMARY_HEAD="$(git -C "$mc" symbolic-ref --quiet --short HEAD 2>/dev/null || echo DETACHED)"
+}
+
+# Sourceable guard: when this file is sourced (unit tests), define the helpers
+# above and return before the arg-required main flow — so a test can call
+# __resync_primary_checkout directly. When executed, fall through to the flow.
+if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
+    return 0 2>/dev/null || true
+fi
+# ─── end Fix A1 helper ───────────────────────────────────────────────────────
+
 if [ "${PWT_WORKTREE_ON_MERGE_DISABLE:-0}" = "1" ]; then
     emit '{"skipped":true,"reason":"PWT_WORKTREE_ON_MERGE_DISABLE=1"}'
     exit 0
@@ -77,8 +141,11 @@ print(json.dumps({
     "removed_branch": sys.argv[5] == "1",
     "skipped": sys.argv[6] == "1",
     "reason": sys.argv[7],
+    "removed_remote_branch": sys.argv[8] == "true",
+    "primary_checkout_head": sys.argv[9],
 }))
-' "$WORKTREE_PATH" "$BRANCH" "$SLUG" "$1" "$2" "$3" "$4"
+' "$WORKTREE_PATH" "$BRANCH" "$SLUG" "$1" "$2" "$3" "$4" \
+        "$RESYNC_REMOVED_REMOTE_BRANCH" "$RESYNC_PRIMARY_HEAD"
 }
 
 # ─── invariant 1: containment ─────────────────────────────────────────────
@@ -165,6 +232,11 @@ if git -C "$MAIN_CHECKOUT" show-ref --quiet --verify "refs/heads/$BRANCH"; then
         removed_branch=1
     fi
 fi
+
+# ─── Fix A1: re-sync the primary checkout + delete the remote feature branch ──
+# Runs only on the success path (all invariants passed, local branch swept).
+# Fail-open: never blocks the merge result on hygiene.
+__resync_primary_checkout
 
 # ─── unregister from fleet JSONL ──────────────────────────────────────────
 if [ -d "$MAIN_CHECKOUT/.claude/state" ]; then

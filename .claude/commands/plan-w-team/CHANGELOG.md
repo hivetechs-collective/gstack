@@ -21,6 +21,36 @@ Entries are newest-first.
 
 ---
 
+## [1.20.0] — 2026-05-31
+
+MINOR — **Stale primary-checkout drift prevention + leftover-branch cleanup.**
+Closes the two hygiene gaps that left the primary (non-worktree) checkout broken
+after every shipped feature: nothing re-synced it to `origin/<default>` after a
+server-side squash-merge, and the merged remote branch was never deleted.
+
+- `fix (A1)`: `plan-w-team-worktree-on-merge.sh` now runs `__resync_primary_checkout`
+  on the success path — fetch + (clean-only) `switch <default>` + `merge --ff-only
+origin/<default>` (never force-resets a primary with real local commits) +
+  `push origin --delete <branch>`. Fail-open. Two new `result_json` fields:
+  `removed_remote_branch`, `primary_checkout_head`. Helper is now sourceable for tests.
+- `fix (A2)`: `supervisor-protocol.md` — every `gh pr merge` gains `--delete-branch`;
+  AUTO-MERGE bullet documents the helper's new re-sync duty; new Hard-Rules invariant
+  "PWT mutates branches only inside `.claude/worktrees/`; primary stays on default".
+- `feat (B)`: `pwt-goal.sh` `--launch` preflight `__assert_primary_on_default` restores
+  a primary parked on a stale feature label (clean + 0 unique commits) before spawning;
+  warns (never touches) when real local work is present. Targets the MAIN checkout via
+  `--git-common-dir`, never the current worktree.
+- `feat (D)`: `session-start.sh` drift guard auto-corrects or warns on a drifted primary;
+  skipped inside worktrees (`.git` file vs dir gate).
+- `fix (C)`: `sync-to-project.sh` self-heals consumers — ignores AND `git rm --cached`
+  the per-session machine caches (`bg-agents-cache`, `last-claude-version`,
+  `plan-usage-cache`, `usage-breakdown-cache`, `version-uplift-pending.flag`) so the
+  tree is clean enough for the auto-switch to fire. claude-pattern `.gitignore` adds the
+  one missing line (`version-uplift-pending.flag`).
+- `test`: `plan-w-team-worktree-on-merge.test.sh` +2 cases (ff-resync + remote-delete;
+  diverged-primary not-force-moved). Full harness 58/58 + bats green.
+- `docs`: `worktree-lifecycle.md` gains a "Primary-checkout re-sync (post-merge)" section.
+
 ## [1.19.0] — 2026-05-29
 
 MINOR — **Autonomy work order REQ-3/4b/5 (completes `docs/specs/claude-pattern-DIRECTION-pwt-autonomy-2026-05-29.md`).**

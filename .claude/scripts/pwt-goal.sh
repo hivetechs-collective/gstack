@@ -801,6 +801,49 @@ if [ "$LAUNCH" = "1" ]; then
         [ -z "$PROJECT_ROOT" ] && PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-}"
     fi
 
+    # ─── Fix B: assert the PRIMARY checkout sits on the default branch ────────
+    # PWT mutates branches only inside .claude/worktrees/ — the primary (main,
+    # non-worktree) checkout should always sit on the default branch. A human or
+    # agent that left it parked on a stale feature label (0 unique commits) makes
+    # post-merge re-sync impossible and accumulates drift. This launch-time guard
+    # auto-restores ONLY the provably-safe case (clean tree + 0 unique commits);
+    # anything with real local work is warned-about but never touched. It targets
+    # the MAIN checkout (resolved via --git-common-dir), never the current
+    # worktree, so running --launch from inside a worktree leaves that worktree's
+    # feature branch alone.
+    __assert_primary_on_default() {
+        local base cdir root def head ahead
+        base="${PROJECT_ROOT:-$PWD}"
+        cdir="$(git -C "$base" rev-parse --git-common-dir 2>/dev/null || echo "")"
+        if [ -n "$cdir" ]; then
+            case "$cdir" in
+                /*) root="$(dirname "$cdir")" ;;
+                *)  root="$(dirname "$(cd "$base" 2>/dev/null && realpath "$cdir" 2>/dev/null || echo "$base/$cdir")")" ;;
+            esac
+        fi
+        [ -n "${root:-}" ] && [ -e "$root/.git" ] || \
+            root="$(git -C "$base" rev-parse --show-toplevel 2>/dev/null || echo "$base")"
+
+        def="$(git -C "$root" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')"
+        [ -n "$def" ] || def=main
+        head="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || echo DETACHED)"
+        [ "$head" = "$def" ] && return 0
+
+        # Refresh origin/<default> first so the 0-unique-commits test is accurate.
+        git -C "$root" fetch --quiet origin "$def" 2>/dev/null || true
+        ahead="$(git -C "$root" rev-list --count "origin/$def..HEAD" 2>/dev/null || echo 1)"
+        if [ -z "$(git -C "$root" status --porcelain 2>/dev/null)" ] && [ "$ahead" = "0" ]; then
+            echo "pwt: primary checkout was on '$head' (0 unique commits) — restoring to '$def'" >&2
+            git -C "$root" switch "$def" 2>/dev/null && git -C "$root" merge --ff-only "origin/$def" 2>/dev/null || true
+        else
+            echo "WARNING pwt: primary checkout is on '$head', not '$def' (has local work or is dirty)." >&2
+            echo "        PWT runs in isolated worktrees; the primary should sit on '$def'." >&2
+            echo "        Resolve manually before/after this run to avoid drift." >&2
+        fi
+    }
+    __assert_primary_on_default
+    # ─── end Fix B ───────────────────────────────────────────────────────────
+
     # Resolve absolute path to the claude binary once via locate-claude.sh.
     # Without this, bare `claude --bg` fails with "env: claude: No such file
     # or directory" when the harness-inherited $PATH lacks the install dir

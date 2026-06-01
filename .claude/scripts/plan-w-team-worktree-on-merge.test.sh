@@ -140,6 +140,78 @@ else
     echo "  ⊘ skipped (no bash 3.2 at /bin/bash — not the regression-risk host)"
 fi
 
+# ── 9/10: Fix A1 — primary-checkout re-sync + remote-branch delete ─────────
+# These source the script (it returns before the arg-required main flow) and
+# drive __resync_primary_checkout directly against an origin-backed fixture.
+new_origin_repo() {
+    # Builds: bare origin + primary clone parked on a stale feature branch whose
+    # work already landed on origin/main (the "server-side squash" shape).
+    # Echoes the primary checkout path.
+    local tmp; tmp="$(mktemp -d -t pwt-resync-test.XXXXXX)"
+    ROOTS+=("$tmp")
+    git init -q --bare "$tmp/origin.git"
+    git -C "$tmp/origin.git" symbolic-ref HEAD refs/heads/main   # bare default branch = main
+    git clone -q "$tmp/origin.git" "$tmp/primary" 2>/dev/null
+    git -C "$tmp/primary" config user.email t@t.t
+    git -C "$tmp/primary" config user.name t
+    git -C "$tmp/primary" commit -q --allow-empty -m init
+    git -C "$tmp/primary" branch -M main
+    git -C "$tmp/primary" push -q -u origin main
+    git -C "$tmp/primary" remote set-head origin main           # populate refs/remotes/origin/HEAD
+    # Feature branch + its remote copy.
+    git -C "$tmp/primary" switch -q -c feat-x
+    git -C "$tmp/primary" commit -q --allow-empty -m feat
+    git -C "$tmp/primary" push -q -u origin feat-x
+    # Land feat-x on origin/main (server squash), then rewind primary/main so it
+    # is genuinely behind origin/main, and park primary on the stale feat-x label.
+    git -C "$tmp/primary" switch -q main
+    git -C "$tmp/primary" merge -q feat-x
+    git -C "$tmp/primary" push -q origin main
+    git -C "$tmp/primary" reset -q --hard HEAD~1   # primary/main now 1 behind origin/main
+    git -C "$tmp/primary" switch -q feat-x          # parked on stale label, clean tree
+    echo "$tmp/primary"
+}
+
+echo "[9] resync: ff primary to default + delete remote feature branch"
+PRIMARY=$(new_origin_repo)
+RESYNC_OUT=$(
+    export MAIN_CHECKOUT="$PRIMARY" BRANCH="feat-x"
+    # shellcheck disable=SC1090
+    source "$ONMERGE"
+    __resync_primary_checkout
+    echo "HEAD=$(git -C "$PRIMARY" symbolic-ref --short HEAD 2>/dev/null)"
+    echo "BEHIND=$(git -C "$PRIMARY" rev-list --count HEAD..origin/main 2>/dev/null)"
+    echo "REMOTE=$(git -C "$PRIMARY" ls-remote --heads origin feat-x 2>/dev/null | wc -l | tr -d ' ')"
+    echo "REMOVED=$RESYNC_REMOVED_REMOTE_BRANCH"
+    echo "RHEAD=$RESYNC_PRIMARY_HEAD"
+)
+assert_eq "primary switched to main" "main" "$(printf '%s\n' "$RESYNC_OUT" | sed -n 's/^HEAD=//p')"
+assert_eq "primary 0 behind origin/main" "0" "$(printf '%s\n' "$RESYNC_OUT" | sed -n 's/^BEHIND=//p')"
+assert_eq "remote feat-x deleted" "0" "$(printf '%s\n' "$RESYNC_OUT" | sed -n 's/^REMOTE=//p')"
+assert_eq "RESYNC_REMOVED_REMOTE_BRANCH true" "true" "$(printf '%s\n' "$RESYNC_OUT" | sed -n 's/^REMOVED=//p')"
+assert_eq "RESYNC_PRIMARY_HEAD main" "main" "$(printf '%s\n' "$RESYNC_OUT" | sed -n 's/^RHEAD=//p')"
+
+echo "[10] resync: diverged primary main is NOT force-moved (ff-only declines)"
+PRIMARY=$(new_origin_repo)
+git -C "$PRIMARY" switch -q main
+git -C "$PRIMARY" merge -q --ff-only origin/main             # catch up (0 behind)
+git -C "$PRIMARY" commit -q --allow-empty -m local-only-divergent
+CLONE2="$(dirname "$PRIMARY")/clone2"
+git clone -q "$(dirname "$PRIMARY")/origin.git" "$CLONE2" 2>/dev/null
+git -C "$CLONE2" config user.email t@t.t; git -C "$CLONE2" config user.name t
+git -C "$CLONE2" commit -q --allow-empty -m other-divergent
+git -C "$CLONE2" push -q origin main                          # origin/main now diverges from primary
+DIV_OUT=$(
+    export MAIN_CHECKOUT="$PRIMARY" BRANCH="feat-x"
+    # shellcheck disable=SC1090
+    source "$ONMERGE"
+    __resync_primary_checkout
+    echo "HEAD=$(git -C "$PRIMARY" symbolic-ref --short HEAD 2>/dev/null)"
+    echo "HAS_LOCAL=$(git -C "$PRIMARY" log --oneline 2>/dev/null | grep -c local-only-divergent)"
+)
+assert_eq "diverged: HEAD still main" "main" "$(printf '%s\n' "$DIV_OUT" | sed -n 's/^HEAD=//p')"
+assert_eq "diverged: local commit preserved (not force-reset)" "1" "$(printf '%s\n' "$DIV_OUT" | sed -n 's/^HAS_LOCAL=//p')"
+
 echo ""
 echo "── results: $PASS passed, $FAIL failed ──"
 [ "$FAIL" -eq 0 ]

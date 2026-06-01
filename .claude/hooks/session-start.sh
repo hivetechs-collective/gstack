@@ -243,6 +243,44 @@ if [ -n "$UNCOMMITTED" ]; then
 fi
 
 # =================================================================
+# STALE PRIMARY-CHECKOUT DRIFT GUARD (Fix D)
+# =================================================================
+# After server-side squash-merges, the primary checkout can be left parked on a
+# stale feature branch — behind origin/<default> with 0 unique commits — which
+# blocks clean re-sync and accumulates drift. Nudge it back to default when
+# provably safe (clean tree + 0 unique commits); otherwise warn. Runs ONLY in
+# the MAIN checkout: a linked worktree has a .git FILE (not a dir), so worktree
+# sessions — legitimately on a feature branch — are skipped (mirrors line ~124).
+# Depends on the per-session state caches being untracked (sync-to-project.sh
+# self-heal) so the tree is actually clean enough for the auto-switch to fire.
+if [ -d "$PROJECT_ROOT/.git" ] && command -v git >/dev/null 2>&1; then
+    pwt_branch=$(git -C "$PROJECT_ROOT" symbolic-ref --short HEAD 2>/dev/null || echo "")
+    pwt_def=$(git -C "$PROJECT_ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
+    [ -n "$pwt_def" ] || pwt_def=main
+    if [ -n "$pwt_branch" ] && [ "$pwt_branch" != "$pwt_def" ] \
+        && git -C "$PROJECT_ROOT" remote get-url origin >/dev/null 2>&1 \
+        && git -C "$PROJECT_ROOT" fetch origin "$pwt_def" --quiet 2>/dev/null; then
+        pwt_ahead=$(git -C "$PROJECT_ROOT" rev-list --count "origin/$pwt_def..HEAD" 2>/dev/null || echo "?")
+        pwt_behind=$(git -C "$PROJECT_ROOT" rev-list --count "HEAD..origin/$pwt_def" 2>/dev/null || echo "?")
+        pwt_dirty=$(git -C "$PROJECT_ROOT" status --porcelain 2>/dev/null)
+        if [ "$pwt_ahead" = "0" ] && [ "$pwt_behind" != "0" ] && [ "$pwt_behind" != "?" ] && [ -z "$pwt_dirty" ]; then
+            echo ""
+            echo "⟳ Primary checkout on '$pwt_branch' is $pwt_behind behind origin/$pwt_def with 0 unique commits — restoring to $pwt_def."
+            if git -C "$PROJECT_ROOT" switch "$pwt_def" 2>/dev/null \
+                && git -C "$PROJECT_ROOT" merge --ff-only "origin/$pwt_def" 2>/dev/null; then
+                echo "✓ Primary checkout now on $pwt_def (up to date)."
+            fi
+        elif [ "$pwt_ahead" != "0" ] && [ "$pwt_ahead" != "?" ]; then
+            echo ""
+            echo "⚠️  Primary checkout on '$pwt_branch' has $pwt_ahead unique commit(s) vs origin/$pwt_def — NOT auto-switching. Review/merge them."
+        elif [ -n "$pwt_dirty" ]; then
+            echo ""
+            echo "⚠️  Primary checkout on '$pwt_branch' is behind origin/$pwt_def but the tree is dirty — commit/stash, then re-run to auto-restore."
+        fi
+    fi
+fi
+
+# =================================================================
 # CI FAILURE DETECTION (100% reliable via hook)
 # =================================================================
 CI_FAILURES_LOG="$STATE_DIR/ci-failures.log"
