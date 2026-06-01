@@ -310,6 +310,23 @@ __pwt_write_skill_version_sidecar() {
     return 0
 }
 
+# Initialise the canonical run-manifest at spawn so the supervisor/human view has
+# one main-checkout-relative place to read the live stage from turn zero. The
+# worker fills in worktree_path/strategy/stage/tasks as the lifecycle proceeds.
+# Fail-open: never block the spawn over manifest bookkeeping.
+# Args: $1 = origin state dir (target), $2 = slug, $3 = run sid (worker session id)
+__pwt_init_manifest() {
+    local state_dir="${1:-}" slug="${2:-}" run_sid="${3:-}"
+    [ -z "$state_dir" ] && return 0
+    [ -z "$slug" ] && return 0
+    local helper="$(dirname "$0")/pwt-manifest.sh"
+    [ -x "$helper" ] || return 0
+    PWT_MANIFEST_STATE_DIR="$state_dir" "$helper" init \
+        --slug "$slug" --run-sid "$run_sid" --stage "0-spawn" --strategy "unresolved" \
+        >/dev/null 2>&1 || true
+    return 0
+}
+
 # Validate type
 case "$TYPE" in
     feature|refactor|bugfix|docs) ;;
@@ -938,6 +955,7 @@ if [ "$LAUNCH" = "1" ]; then
             __PWT_SPAWN_LABEL="launch"
         fi
         __pwt_write_skill_version_sidecar "$PROJECT_ROOT/.claude/state" "$SLUG_GUESS" "$__PWT_SPAWN_LABEL"
+        __pwt_init_manifest "$PROJECT_ROOT/.claude/state" "$SLUG_GUESS" "$WORKER_SID"
     fi
 
     # ─── Register claim in shared cross-repo registry (PWT-RAM2) ──────────────
@@ -1038,6 +1056,7 @@ if [ "$LAUNCH" = "1" ]; then
 EOF_GOAL_MIRROR
                 # Write the per-spawn skill-version sidecar alongside the mirror.
                 __pwt_write_skill_version_sidecar "$ORIGIN_STATE_DIR" "$SLUG_GUESS" "supervisor-goal"
+                __pwt_init_manifest "$ORIGIN_STATE_DIR" "$SLUG_GUESS" "${WORKER_SID:-}"
                 if [ "$ORIGIN_SOURCE" = "PWD" ]; then
                     echo "INFO: --supervisor-goal: using PWD as origin (git repo); origin goal-state: $ORIGIN_GOAL_FILE" >&2
                 else

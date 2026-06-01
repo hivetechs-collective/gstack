@@ -62,6 +62,18 @@ QUERY_SH="$PROJECT_ROOT/.claude/scripts/plan-w-team-fleet-query.sh"
 
 TS=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
+# Mirror the stage into the canonical run manifest (main-checkout-relative), so a
+# supervisor/human polling `pwt-status.sh` sees the live stage without reaching
+# into the worktree. This is the deterministic per-stage chokepoint — every stage
+# already calls this emitter, so the manifest stays current with no extra worker
+# step. Best-effort: never let manifest bookkeeping affect the status block.
+__MANIFEST_SH="$PROJECT_ROOT/.claude/scripts/pwt-manifest.sh"
+if [ -x "$__MANIFEST_SH" ]; then
+    __WT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "")"
+    "$__MANIFEST_SH" set --slug "$SLUG" --stage "$STAGE" \
+        ${__WT_ROOT:+--worktree "$__WT_ROOT"} >/dev/null 2>&1 || true
+fi
+
 # Workflow lock state
 if [ -d "$LOCK_DIR" ]; then
     if [ "$STAGE" = "retro-complete" ]; then

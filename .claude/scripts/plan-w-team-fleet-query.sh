@@ -50,6 +50,24 @@ STATE_DIR="$PROJECT_ROOT/.claude/state"
 FLEET_FILE="$STATE_DIR/plan-w-team-fleet-${SLUG}.jsonl"
 INTENT_FILE="$STATE_DIR/plan-w-team-fleet-intent-${SLUG}.jsonl"
 
+# Worktree-aware fallback: a run's fleet events are written INTO its worktree's
+# .claude/state/, so a reader invoked from the MAIN checkout finds nothing here.
+# The canonical manifest (always in the main checkout) records worktree_path —
+# use it to re-point at the worktree's state dir when the main copy is absent.
+# Belt-and-suspenders with pwt status, which can also pass CLAUDE_PROJECT_DIR.
+if [ ! -f "$FLEET_FILE" ]; then
+    __mani="$(dirname "$0")/pwt-manifest.sh"
+    if [ -x "$__mani" ]; then
+        __wt="$("$__mani" read --slug "$SLUG" 2>/dev/null \
+            | python3 -c 'import json,sys; print((json.load(sys.stdin) or {}).get("worktree_path","") or "")' 2>/dev/null || echo "")"
+        if [ -n "$__wt" ] && [ -f "$__wt/.claude/state/plan-w-team-fleet-${SLUG}.jsonl" ]; then
+            STATE_DIR="$__wt/.claude/state"
+            FLEET_FILE="$STATE_DIR/plan-w-team-fleet-${SLUG}.jsonl"
+            INTENT_FILE="$STATE_DIR/plan-w-team-fleet-intent-${SLUG}.jsonl"
+        fi
+    fi
+fi
+
 LIST_ID="${CLAUDE_CODE_TASK_LIST_ID:-$(basename "$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null || echo "$PROJECT_ROOT")")}"
 TASKS_DIR="${HOME}/.claude/tasks/${LIST_ID}"
 

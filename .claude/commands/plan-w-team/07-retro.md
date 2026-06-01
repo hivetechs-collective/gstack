@@ -629,6 +629,18 @@ if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
   if [ -x .claude/scripts/plan-w-team-cleanup-stale-goals.sh ]; then
     .claude/scripts/plan-w-team-cleanup-stale-goals.sh --quiet 2>/dev/null || true
   fi
+
+  # Canonical run-manifest + stage-event stream are per-run state — remove them
+  # alongside the goal/fleet files. They live in the MAIN checkout, so resolve
+  # the path via the helper (retro runs in the worktree). The run's terminal
+  # state is already authoritative in the goal-*.json the supervisor read this
+  # tick, so nothing is lost. Fail-open.
+  if [ -x .claude/scripts/pwt-manifest.sh ]; then
+    MANI_PATH="$(.claude/scripts/pwt-manifest.sh path --slug "$SLUG" 2>/dev/null || echo "")"
+    if [ -n "$MANI_PATH" ]; then
+      rm -f "$MANI_PATH" "$(dirname "$MANI_PATH")/plan-w-team-stage-events-${SLUG}.jsonl" 2>/dev/null || true
+    fi
+  fi
 fi
 ```
 

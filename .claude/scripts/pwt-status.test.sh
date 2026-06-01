@@ -174,6 +174,41 @@ assert_eq "exit 2 when jq missing" "2" "$RC"
 assert_contains "jq install hint" "brew install jq" "$OUT"
 rm -rf "$SHIM_DIR"
 
+echo "T11: manifest enrichment — list mode shows live stage from the manifest"
+setup_fake_root
+MANIFEST_SH="$PROJECT_ROOT/.claude/scripts/pwt-manifest.sh"
+SD="$FAKE_ROOT/.claude/state"
+PWT_MANIFEST_STATE_DIR="$SD" bash "$MANIFEST_SH" init --slug rollup-x --run-sid 45c3dbba \
+    --strategy parallel-builders --stage 3-execute >/dev/null 2>&1
+PWT_MANIFEST_STATE_DIR="$SD" bash "$MANIFEST_SH" task --slug rollup-x --id T1 --status done --owner aaaa1111 >/dev/null 2>&1
+OUT=$("$SCRIPT")
+assert_contains "list shows slug"       "rollup-x"  "$OUT"
+assert_contains "list shows live stage" "3-execute" "$OUT"
+assert_not_contains "list has no JSON 'stage' field" '"stage"' "$OUT"
+
+echo "T12: rollup mode joins manifest + fleet + tasks for one run"
+# Plant a worktree-local fleet log; manifest points at the worktree.
+WT="$FAKE_ROOT/.claude/worktrees/rollup-wt"
+mkdir -p "$WT/.claude/state"
+PWT_MANIFEST_STATE_DIR="$SD" bash "$MANIFEST_SH" set --slug rollup-x --worktree "$WT" >/dev/null 2>&1
+printf '{"event":"spawn","agent_id":"a"}\n{"event":"complete","agent_id":"a","duration_s":9}\n' \
+    > "$WT/.claude/state/plan-w-team-fleet-rollup-x.jsonl"
+OUT=$("$SCRIPT" rollup-x)
+assert_contains "rollup names the run"     "rollup-x"           "$OUT"
+assert_contains "rollup shows strategy"    "parallel-builders"  "$OUT"
+assert_contains "rollup shows stage"       "3-execute"          "$OUT"
+assert_contains "rollup lists task T1"     "T1"                 "$OUT"
+assert_contains "rollup shows builder roster" "spawned="        "$OUT"
+
+echo "T13: rollup --json emits the joined object; unknown slug → exit 3"
+JOUT=$("$SCRIPT" --json rollup-x)
+assert_contains "json has manifest key" '"manifest"' "$JOUT"
+assert_contains "json has fleet key"    '"fleet"'    "$JOUT"
+assert_contains "json has sessions key" '"sessions"' "$JOUT"
+"$SCRIPT" no-such-slug >/dev/null 2>&1
+assert_eq "unknown slug → exit 3" "3" "$?"
+teardown_fake_root
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

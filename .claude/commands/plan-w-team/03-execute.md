@@ -53,6 +53,23 @@ scripts/board.sh comment "<feature-name>" "## Execution Started
 **Started:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
 ```
 
+**Record strategy + builder roster in the canonical run manifest** (so a human/supervisor `pwt-status.sh <SLUG>` rollup shows the chosen strategy and per-task ownership, not just the stage). Fire-and-forget — never block execution:
+
+```bash
+# snippet-lint: skip — illustrative manifest wiring
+# Strategy + declared builder count (do this once, after Step 3 decides).
+.claude/scripts/pwt-manifest.sh set --slug "$SLUG" \
+  --strategy "<lead-implements-directly|parallel-builders|single-builder>" \
+  --builders <N> --stage 3-execute || true
+
+# Per-task ownership — call once per task as it is assigned/dispatched, and
+# again when it completes. owner is the builder's session id (or '-' for lead).
+.claude/scripts/pwt-manifest.sh task --slug "$SLUG" --id "<task-id>" \
+  --status "<pending|running|done|failed>" --owner "<builder-sid-or-->" || true
+```
+
+> The stage itself is mirrored automatically by `plan-w-team-surface-status.sh` at every stage end — these calls only add the strategy/builder/task detail the rollup can't infer. The rollup degrades gracefully if they are skipped (builder counts still come live from the fleet log).
+
 ### Pre-flight Checks
 
 - Require clean working tree (`git status` must show no uncommitted changes). This ensures builder changes can be cleanly attributed. If dirty, route through the orchestrator for a stash/commit decision rather than blocking:

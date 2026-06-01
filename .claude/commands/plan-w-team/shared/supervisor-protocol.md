@@ -455,7 +455,7 @@ the idle window yet still failing because nothing is landing; Step 0 catches tha
 ### Standard Tick
 
 1. `claude agents --json` — confirm worker SID still listed; if absent for ≥2 ticks, treat as DEAD per matrix.
-2. `claude logs <SID> --tail 200` — scan for stage transitions and pause-site emissions.
+2. `.claude/scripts/pwt-status.sh <SLUG>` — the **canonical run manifest** rollup (structured; no ANSI log-grep). Reports the live stage, strategy, builder roster (spawned/running/completed), and task list — from a main-checkout-relative file the worker updates each stage, so this works even though the worker runs in a worktree. **Surface a one-line stage summary to the user whenever the stage advanced since the last tick** (e.g. `▸ <slug>: stage 3-execute → 5-ship, 3 builders (2 done, 1 running)`). This is the origin-chat surfacing of mid-run progress — the founder sees the stage without reading the worker transcript. Fall back to `claude logs <SID> --tail 200` only if the manifest is absent (older worker / pre-manifest run).
 3. `.claude/state/plan-w-team-goal-<SLUG>.json` — read `terminal_state`; on non-null, consult Decision Matrix.
 4. `.claude/state/pwt-completion-summary-<SID>.md` — surface if ship/retro stages wrote one this tick.
 5. **Fix-Now Audit** — scan the tick's worker log + persisted review findings for any defect or flaky test logged as merely **"noted"** (or a flaky "fixed" by loosen/retry/`.skip`/timeout-widen). See Fix-Now Audit below.

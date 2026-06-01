@@ -21,6 +21,37 @@ Entries are newest-first.
 
 ---
 
+## [1.21.0] — 2026-05-31
+
+MINOR — **Canonical run manifest + observability rollup (stale-stage / split-state fix).**
+A worker writes its live state into its worktree, so a supervisor/human polling
+the main checkout saw only the spawn record, never the live stage. New
+main-checkout-relative manifest closes the split and powers a builder-roster rollup.
+
+- `feat`: **`pwt-manifest.sh`** — canonical per-run manifest
+  (`plan-w-team-manifest-<slug>.json`) + append-only stage-event stream
+  (`plan-w-team-stage-events-<slug>.jsonl`), both written to the MAIN checkout
+  (resolved via `git --git-common-dir`) even when the writer runs in a worktree.
+  Subcommands `init|set|task|read|path|list`; atomic, fail-open, kill switch
+  `PLAN_W_TEAM_MANIFEST_DISABLE=1`, gitignore-on-write, bash 3.2 safe.
+- `feat`: **`pwt-status.sh` rollup** — `pwt-status.sh <slug>` joins manifest ×
+  `claude-agents-extended` (lead + nested builder subagents) × `fleet-query`
+  (worktree-pointed) × stage history; `--json` machine-readable; list mode now
+  shows the live stage. Solves the "claude agents --json can't show nested
+  builders" gap.
+- `feat`: **`fleet-query.sh`** worktree-aware fallback — reads `worktree_path`
+  from the manifest so it works standalone from the main checkout.
+- `feat (wiring)`: `pwt-goal.sh` inits the manifest at both spawn chokepoints;
+  `plan-w-team-surface-status.sh` mirrors the stage every stage-end (deterministic,
+  zero extra worker step); `03-execute.md` records strategy + per-task ownership;
+  `07-retro.md` removes the per-run manifest at successful retro.
+- `feat (surfacing)`: `supervisor-protocol.md` Standard Tick reads
+  `pwt-status.sh <slug>` (structured — no ANSI log-grep) and surfaces a one-line
+  stage summary to the origin chat when the stage advances.
+- `test`: `pwt-manifest.test.sh` (26, incl. worktree→main-checkout guarantee) +
+  `pwt-status.test.sh` rollup cases (T11–T13). Allowlisted in `sync-to-project.sh`.
+- `docs`: `docs/specs/pwt-run-manifest.md`.
+
 ## [1.20.0] — 2026-05-31
 
 MINOR — **Stale primary-checkout drift prevention + leftover-branch cleanup.**
