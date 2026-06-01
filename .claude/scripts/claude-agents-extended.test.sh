@@ -59,6 +59,21 @@ mark_completed() {
 EOF
 }
 
+# Build a fake dynamic-Workflow lens-agent layout (depth 6 — two levels deeper
+# than an Agent-tool subagent):
+#   $base/<project>/<parent-sid>/subagents/workflows/<wf_run>/agent-<aid>.jsonl
+#   $base/<project>/<parent-sid>/subagents/workflows/<wf_run>/agent-<aid>.meta.json
+make_workflow_agent() {
+  # make_workflow_agent <base> <project> <parent-sid> <wf_run> <agentId> <cwd> <desc>
+  local base="$1" project="$2" psid="$3" wfrun="$4" aid="$5" cwd="$6" desc="$7"
+  local wfdir="$base/$project/$psid/subagents/workflows/$wfrun"
+  mkdir -p "$wfdir"
+  cat > "$wfdir/agent-${aid}.jsonl" <<EOF
+{"agentId":"$aid","type":"user","message":{"role":"user","content":"$desc"},"timestamp":"2026-05-23T10:00:00Z","cwd":"$cwd","sessionId":"$psid"}
+EOF
+  printf '{"agentType":"workflow-subagent"}\n' > "$wfdir/agent-${aid}.meta.json"
+}
+
 # ── tests ─────────────────────────────────────────────────────────────────────
 
 echo "Test suite: claude-agents-extended.sh"
@@ -328,6 +343,59 @@ chmod +x "$RT/claude"
 out_allempty=$(PATH="$RT:$PATH" CLAUDE_AGENTS_RETRY=2 "$WRAPPER" --bg-only 2>/dev/null)
 assert_jq "persistent-empty degrades to []" '. | length' "$out_allempty" "0"
 rm -rf "$RT"
+
+# Test 17: dynamic-Workflow lens-agents (depth-6 subagents/workflows/wf_*/) are
+# discovered as kind:"workflow" with a workflowRun id, and the parent session is
+# resolved correctly (NOT mis-derived as ".../subagents/workflows"). This is the
+# "it says it's running but we don't capture it" gap — a running Workflow tool
+# fan-out was previously invisible to the statusline.
+echo ""
+echo "[17] dynamic-Workflow lens-agents discovered as kind:workflow"
+TMP=$(mktemp -d)
+mkdir -p "$TMP/proj1"
+cat > "$TMP/proj1/sid-wfparent.jsonl" <<'EOF'
+{"type":"user","cwd":"/repo","message":{"role":"user","content":"hi"}}
+EOF
+make_workflow_agent "$TMP" "proj1" "sid-wfparent" "wf_abc123-def" "aw11111111111111" "/repo" "lens: bug-trace"
+make_workflow_agent "$TMP" "proj1" "sid-wfparent" "wf_abc123-def" "aw22222222222222" "/repo" "lens: anchor-coherence"
+out=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER")
+assert_jq "two workflow entries"        '[.[] | select(.kind=="workflow")] | length'           "$out" "2"
+assert_jq "kind is workflow"            '[.[] | select(.kind=="workflow")][0].kind'             "$out" "workflow"
+assert_jq "workflowRun captured"        '[.[] | select(.kind=="workflow")][0].workflowRun'      "$out" "wf_abc123-def"
+assert_jq "parent resolved (not workflows)" '[.[] | select(.kind=="workflow")][0].parentSessionId' "$out" "sid-wfparent"
+assert_jq "subagentType from meta"      '[.[] | select(.kind=="workflow")][0].subagentType'     "$out" "workflow-subagent"
+assert_jq "cwd from parent transcript"  '[.[] | select(.kind=="workflow")][0].cwd'              "$out" "/repo"
+rm -rf "$TMP"
+
+# Test 18: a workflow agent coexists with a regular subagent under the SAME
+# parent — both captured, classified distinctly, neither double-counted by the
+# two mutually-exclusive -path globs.
+echo ""
+echo "[18] workflow + subagent under same parent — distinct, not double-counted"
+TMP=$(mktemp -d)
+make_subagent "$TMP" "proj1" "sid-both" "as11111111111111" "/repo" "regular subagent"
+make_workflow_agent "$TMP" "proj1" "sid-both" "wf_xyz789-aaa" "aw33333333333333" "/repo" "lens"
+out=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER")
+assert_jq "total 2 (no double-count)"   '. | length'                                  "$out" "2"
+assert_jq "1 subagent"                  '[.[] | select(.kind=="subagent")] | length'  "$out" "1"
+assert_jq "1 workflow"                  '[.[] | select(.kind=="workflow")] | length'  "$out" "1"
+assert_jq "subagent has empty workflowRun" '[.[] | select(.kind=="subagent")][0].workflowRun' "$out" ""
+rm -rf "$TMP"
+
+# Test 19: --cwd filter applies to workflow agents too (parent cwd gate).
+echo ""
+echo "[19] --cwd filter applies to workflow lens-agents"
+TMP=$(mktemp -d)
+mkdir -p "$TMP/proj1"
+cat > "$TMP/proj1/sid-wfcwd.jsonl" <<'EOF'
+{"type":"user","cwd":"/repo/in","message":{"role":"user","content":"hi"}}
+EOF
+make_workflow_agent "$TMP" "proj1" "sid-wfcwd" "wf_filt-1" "aw44444444444444" "/repo/in" "lens"
+in_scope=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER" --cwd /repo/in)
+out_scope=$(CLAUDE_PROJECTS_DIR="$TMP" CLAUDE_AGENTS_EXTENDED_NO_RUN_CLAUDE=1 "$WRAPPER" --cwd /elsewhere)
+assert_jq "workflow in --cwd scope kept"  '[.[] | select(.kind=="workflow")] | length' "$in_scope"  "1"
+assert_jq "workflow out of scope dropped" '[.[] | select(.kind=="workflow")] | length' "$out_scope" "0"
+rm -rf "$TMP"
 
 # ── summary ───────────────────────────────────────────────────────────────────
 echo ""

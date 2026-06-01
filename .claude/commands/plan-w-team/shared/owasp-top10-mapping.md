@@ -1,17 +1,19 @@
 # OWASP Top 10 Coverage Map
 
-Deterministic file-pattern → OWASP category → agent → tier-set lookup for `/plan-w-team`. Closed catalog modeled on `shared/governance-tags.md` (file-glob-driven, deterministic, narrow by design).
+Deterministic file-pattern **and diff-content** → OWASP category → agent → tier-set lookup for `/plan-w-team`. Closed catalog modeled on `shared/governance-tags.md` (deterministic, narrow by design). Two trigger layers: a **file-glob** layer (the Coverage Map below) and a **content-signal** layer (the [§Content-Signal Triggers](#content-signal-triggers-diff-content-not-filename) table) that fires on what the diff _does_ — added because the most damaging bug class, Broken Access Control (OWASP #1), hides in normally-named route files (`qa-sim.ts`, `jobs.ts`) that match no security glob. See `shared/access-control-invariants.md` for the per-endpoint review rubric the content signals feed, and `shared/secure-by-default.md` for the write-side defaults.
 
-**Source list:** [OWASP Top 10 (2021)](https://owasp.org/Top10/).
+**Source lists:** [OWASP Top 10 (2021)](https://owasp.org/Top10/) (web) · [OWASP API Security Top 10 (2023)](https://owasp.org/API-Security/editions/2023/en/0x11-t10/) (API — API1 BOLA, API3 BOPLA/mass-assignment, API5 BFLA).
 
 **Why a closed list:** `/plan-w-team`'s Step 2 (paired-task scoping) and Step 5 (retroactive security-gap analysis) both need a deterministic answer to "which OWASP categories apply to this file" and "which security tiers must cover it." A free-form LLM judgment would re-introduce the failure mode the map is meant to fix (every PR's security scope drifts). A closed list of file-path globs gives every supervisor invocation the same answer.
 
 **Consumed by:**
 
-- `/plan-w-team/02-task-breakdown.md` — Step 2 forward-scoping of paired `N.s` security-review tasks (which files trigger the paired-task emission)
-- `/plan-w-team/04-fix-first-review.md` §5d-bis — `security-gap-analyzer` reads this for category attribution on findings
-- `/plan-w-team/05-ship.md` §6c-bis — Security Tier Gate uses the union of required tiers across all touched-file categories
-- `.claude/agents/research-planning/security-gap-analyzer.md` — emits `owasp_category:` field on each finding referencing this catalog
+- `/plan-w-team/02-task-breakdown.md` — Step 2 forward-scoping of paired `N.s` security-review tasks (file globs **and** content signals trigger the paired-task emission)
+- `/plan-w-team/04-fix-first-review.md` §5b (Access-Control Content-Signal Scan) + §5d-bis — content signals force a Pass-1 CRITICAL scan; the `security-gap-analyzer` reads this for category attribution
+- `/plan-w-team/05-ship.md` §6c-bis (Security Tier Gate) + §6c-ter (Access-Control Finding Gate) — tier union across categories + fail-closed block on a confirmed access-control finding
+- `/plan-w-team/01-specification.md` §1c — the spec-time threat-model trigger keys on the same content signals
+- `.claude/agents/research-planning/security-gap-analyzer.md` — emits `owasp_category:` / `api_security_category:` fields on each finding referencing this catalog
+- `.claude/agents/research-planning/security-expert.md` — the A01 reviewer; consumes the content-signal list + `shared/access-control-invariants.md`
 
 ---
 
@@ -34,6 +36,35 @@ The list is matched via standard glob semantics (`**/` recurses, `*` matches any
 
 ---
 
+## API Security Top 10 (2023) — Access-Control Categories
+
+The web Top 10 (2021) above maps by file glob. The API Security Top 10 (2023) covers the access-control classes that dominate modern API breaches and that **no filename glob reliably catches** — they live in ordinarily-named route/handler files. These are attributed by the content signals below, not by path.
+
+| API category  | Name                                                                 | Maps to web | Caught by content signal                                                                            |
+| ------------- | -------------------------------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------- |
+| **API1:2023** | Broken Object Level Authorization (BOLA / IDOR)                      | A01         | where/query-by-id without a tenant/owner predicate (CS-4)                                           |
+| **API3:2023** | Broken Object Property Level Authorization (BOPLA / mass-assignment) | A01         | privilege-bearing field write (CS-1); request-body spread into ORM update/insert (CS-2)             |
+| **API5:2023** | Broken Function Level Authorization (BFLA)                           | A01         | privileged operation with no per-operation role check; bypass/QA/service-token-gated handler (CS-3) |
+
+All three roll up to **A01: Broken Access Control** for tier purposes (T1 + T2 + T4) and route to `security-expert`. The per-endpoint review rubric is `shared/access-control-invariants.md` (INV-1…INV-5).
+
+---
+
+## Content-Signal Triggers (diff-content, not filename)
+
+Any of these signals in the diff forces A01 / API-security attribution → a mandatory paired `N.s` security-review task (Step 2), a Pass-1 CRITICAL Access-Control Content-Signal Scan (Step 5 §5b), and the A01 required tier set — **regardless of the filename**. This is the layer that catches the bug class the globs miss.
+
+| #    | Signal                                                 | Match heuristic (illustrative tokens)                                                                                                          | Category   | Invariant |
+| ---- | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | --------- |
+| CS-1 | **Privilege-bearing field write**                      | assignment to `role`, `platformRole`, `tenantId`/`orgId`, `isQaUser`, `ownerId`, `isAdmin`, `permissions`, `passwordHash`, `balance`, `*Cents` | A01 / API3 | INV-3     |
+| CS-2 | **Request-body spread into ORM update/insert**         | `.set({ ...body })`, `.values({ ...input })`, `...req.body`, `Object.assign(row, input)`                                                       | A01 / API3 | INV-3     |
+| CS-3 | **Service / bypass / QA / admin-token-gated handler**  | `QA_SIM_TOKEN`, `*_BYPASS_*`, a service-token / `x-*-bypass` header check gating a mutation                                                    | A01 / API5 | INV-4     |
+| CS-4 | **Where/query-by-id lacking a tenant/owner predicate** | `where(eq(table.id, …))` / `findById` / `WHERE id = $1` with no sibling tenant/owner predicate                                                 | A01 / API1 | INV-1     |
+
+The token lists are illustrative heuristics for a reviewer / `security-gap-analyzer`, not an exhaustive regex — a privilege-bearing field, a body-spread, a bypass token, or an unscoped by-id query counts even when written differently. The **canonical** signal definitions and per-signal failing/required code shapes live in `shared/access-control-invariants.md`; this table is the trigger index. The same four signals (CS-1…CS-4) appear verbatim in `02-task-breakdown.md` (N.s emission), `04-fix-first-review.md` §5b (the scan), and `01-specification.md` §1c (the spec trigger), so forward-scoping, review, and spec-time declaration all agree on what counts.
+
+---
+
 ## Union Rule for Multi-Category Files
 
 When a file matches multiple categories (e.g., `src/auth/login.ts` matches A01 + A07), the required tier set is the **union** of all matched tier sets. Example:
@@ -47,7 +78,7 @@ A path matching ONLY A06 (manifest) inherits **just T3** because dep-audit is th
 
 ## How Step 2 Uses This (forward scoping)
 
-For each task's `files_touched`, the lead matches each path against the globs in this catalog. If any path matches any category, the task receives a paired `N.s` security-review task in addition to `N.a` (test) and `N.b` (implementation) — per `02-task-breakdown.md` §Paired Task Protocol (security review).
+For each task's `files_touched`, the lead matches each path against the globs in this catalog. If any path matches any category, the task receives a paired `N.s` security-review task in addition to `N.a` (test) and `N.b` (implementation) — per `02-task-breakdown.md` §Paired Task Protocol (security review). **The content-signal layer is a second, filename-independent trigger**: if the task's diff matches any of CS-1…CS-4 above, `N.s` is emitted even when no path matches a glob.
 
 ```bash
 # Pseudocode (Step 2):
@@ -59,6 +90,11 @@ for path in "${FILES_TOUCHED[@]}"; do
     esac
   done
 done
+# Content-signal layer: the filename matched nothing, but the DIFF still does
+# something access-control-sensitive (CS-1..CS-4) — force N.s regardless of name.
+if [ "$TRIGGER_NS" = 0 ] && diff_matches_content_signal "$TASK_DIFF"; then
+  TRIGGER_NS=1
+fi
 if [ "$TRIGGER_NS" = 1 ]; then
   emit_paired_task_ns "$TASK_ID"
 fi
@@ -69,6 +105,8 @@ fi
 ## How Step 5 Uses This (retroactive analysis)
 
 The `security-gap-analyzer` agent consults this map to attribute each finding to an OWASP category. The category determines the required tier set, which Step 5 cross-checks against the Evidence Ledger from `shared/security-tiers.md`. Missing tier coverage on a touched category becomes a high-severity gap.
+
+**Content signals override the skip.** The §Content-Signal Triggers also force the analyzer to run even when NO file matches a glob (overriding the `no-security-surfaces` skip in `04-fix-first-review.md` §5d-bis), AND raise a Pass-1 CRITICAL via the §5b Access-Control Content-Signal Scan. A confirmed high-severity access-control finding on a content-signal surface is **gating** (blocks ship via §6c-ter), not a deferred retroactive `N.t` task — that retroactive lane is reserved for test-coverage gaps in untouched sibling code.
 
 ```bash
 # Pseudocode (Step 5 §5d-bis):
@@ -88,6 +126,8 @@ done
 ## How Step 6 Uses This (ship gate)
 
 Step 6 §6c-bis Security Tier Gate computes the **union of required tiers** across all touched files matching any OWASP category. The result is compared against the active profile from `.claude/state/security-policy.txt`. If the union exceeds the active profile, the ship gate proposes an upgrade or refuses to ship until the policy is acknowledged.
+
+Step 6 §6c-ter Access-Control Finding Gate is the executable counterpart: it reads the Step-5 review-findings artifact and `exit 1`s if a confirmed high-severity access-control finding (from the content-signal scan) is unresolved. Unlike §6c-bis (which asserts ledger presence against a policy), §6c-ter fails closed on a real finding — a deferral does not satisfy it.
 
 ---
 

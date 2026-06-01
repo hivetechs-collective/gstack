@@ -167,10 +167,17 @@ if [ "$MODE" = "detail" ]; then
         "$(echo "$FLEET" | jq -r '.completed // 0')" \
         "$(echo "$FLEET" | jq -r '.failed // 0')"
 
-    # Live sessions: lead (kind background/interactive) then builders (subagent)
-    LEAD_N=$(echo "$AGENTS" | jq '[.[] | select(.kind!="subagent")] | length')
+    # Live sessions: lead (kind background/interactive), builders (subagent),
+    # and dynamic-Workflow lens-agents (workflow). Lead = anything that is NOT a
+    # sub-tier agent, so exclude BOTH subagent and workflow kinds.
+    LEAD_N=$(echo "$AGENTS" | jq '[.[] | select(.kind!="subagent" and .kind!="workflow")] | length')
     SUB_N=$(echo "$AGENTS" | jq '[.[] | select(.kind=="subagent")] | length')
-    printf '  sessions: %s lead, %s builder-subagent(s) live\n' "${LEAD_N:-0}" "${SUB_N:-0}"
+    WF_N=$(echo "$AGENTS" | jq '[.[] | select(.kind=="workflow")] | length')
+    if [ "${WF_N:-0}" -gt 0 ]; then
+        printf '  sessions: %s lead, %s builder-subagent(s), %s workflow lens-agent(s) live\n' "${LEAD_N:-0}" "${SUB_N:-0}" "${WF_N:-0}"
+    else
+        printf '  sessions: %s lead, %s builder-subagent(s) live\n' "${LEAD_N:-0}" "${SUB_N:-0}"
+    fi
     echo "$AGENTS" | jq -r '.[] | "    [\(.kind)] \(.sessionId // "?")  \(.status // "?")  \(.subagentType // "")"' 2>/dev/null
 
     # Tasks

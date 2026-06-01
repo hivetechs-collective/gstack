@@ -20,7 +20,7 @@ After review passes, execute the ship pipeline.
 
 ## 6-0a. Minimal-Retro-on-Exit Trap (MANDATORY — install first)
 
-Every ship-gate `exit 1` below (review-findings missing, scope-lock drift, secret scan failure, test failure, coverage floor breach, push-ack missing, push-lock contention) used to terminate the run with no retro JSON on disk. `pwt-watch.sh` then degraded to a bare "session finished" notification with no context, and the `/goal` evaluator had no anchor to evaluate.
+Every ship-gate `exit 1` below (review-findings missing, scope-lock drift, secret scan failure, test failure, coverage floor breach, access-control finding gate, push-ack missing, push-lock contention) used to terminate the run with no retro JSON on disk. `pwt-watch.sh` then degraded to a bare "session finished" notification with no context, and the `/goal` evaluator had no anchor to evaluate.
 
 Install the trap **before** any other shell work so every subsequent exit path is covered:
 
@@ -154,7 +154,8 @@ if [ ! -f "$FINDINGS" ]; then
 ✗ SHIP BLOCKED: no review-findings artifact found.
   Step 5 must have written .claude/state/plan-w-team-review-findings-$SLUG.md
   before Step 6 runs. Either re-run Step 5, or — if you intentionally skipped
-  review — write the file by hand and set all_critical_resolved: true.
+  review — write the file by hand and set all_critical_resolved: true
+  and access_control_high_unresolved: 0 (the §6c-ter access-control gate keys off it).
 EOF
   exit 1
 fi
@@ -562,7 +563,7 @@ fi
 
 ## 6c-bis. Security Tier Gate (Security Review Extension — ENFORCING when no explicit policy)
 
-After the coverage-floor gate, the ship gate consults `.claude/state/security-policy.txt` to determine the active security tier set. If no policy is declared, it **proposes a sensible baseline** (T1+T3+T4) and adds overlays for repo size and user-facing surfaces. This closes the security-rigor gap that the §6c-bis coverage gate closed for test coverage: a feature touching auth/secrets/injection paths should not silently ship without lint scan, dep-audit, and secret-scan evidence.
+After the coverage-floor gate, the ship gate consults `.claude/state/security-policy.txt` to determine the active security tier set. If no policy is declared, it **proposes a sensible baseline** (T1+T3+T4) and adds overlays for repo size and user-facing surfaces. This closes the security-rigor gap that the §6c coverage gate closed for test coverage: a feature touching auth/secrets/injection paths should not silently ship without lint scan, dep-audit, and secret-scan evidence.
 
 Tier definitions live in `shared/security-tiers.md`. OWASP file-pattern attribution lives in `shared/owasp-top10-mapping.md`. Both are consulted; this block only enforces the ledger.
 
@@ -622,11 +623,57 @@ fi
 
 ### Why opt-out lives in `.claude/state/security-policy.txt`
 
-Same rationale as `coverage-policy.txt` (per §6c-bis Coverage Floor Auto-Default): the auto-default is an **opinion** of `/plan-w-team`, not the repo's intrinsic policy. Keeping it out of `package.json` / `Cargo.toml` etc. prevents the auto-default from accidentally affecting tooling that reads those files. The state file is gitignored by default so individual contributors can opt out locally without committing the decision. To make the opt-out repo-wide, the user can add the file to git deliberately.
+Same rationale as `coverage-policy.txt` (per §6c Coverage Floor Auto-Default): the auto-default is an **opinion** of `/plan-w-team`, not the repo's intrinsic policy. Keeping it out of `package.json` / `Cargo.toml` etc. prevents the auto-default from accidentally affecting tooling that reads those files. The state file is gitignored by default so individual contributors can opt out locally without committing the decision. To make the opt-out repo-wide, the user can add the file to git deliberately.
 
 ### Cognitive framework
 
 This gate borrows from the Bow-tie risk model (see `shared/cognitive-frameworks.md`): T1+T3+T4 covers the most common preventive controls (input-side defenses + dependency hygiene + secret leak prevention); T2 SAST + TO1 ZAP are the detective controls that catch what slipped past the preventive layer.
+
+## 6c-ter. Access-Control Finding Gate (ENFORCING)
+
+Where §6c-bis asserts that a tier _ledger_ exists against a policy, this gate fails closed on a **real, confirmed finding**. Step 5 §5d-ter classifies a confirmed high-severity broken-access-control bug (A01 / API1 BOLA / API3 BOPLA / API5 BFLA) in the diff's own touched code as a Pass-1 CRITICAL and records the open count in the `access_control_high_unresolved` frontmatter key of the review-findings artifact. This gate refuses to ship while that count is non-zero — and, unlike a normal CRITICAL, a `→ DEFERRED` marker does **not** clear it. This is the structural fix for both 2026-06-01 escapes: the `seed-platform-admin` account-takeover (bypass-token / privilege-field) and the `jobs.ts` FIN-15 cross-tenant IDOR (where-by-id without a tenant predicate) — neither of which the path-glob machinery gated.
+
+```bash
+FINDINGS=".claude/state/plan-w-team-review-findings-$SLUG.md"
+
+# §6c-ter reads the Step-5 verdict (§5h). §6a already hard-blocks on a missing
+# artifact; re-guard here so this gate is self-contained after a compaction.
+if [ ! -f "$FINDINGS" ]; then
+  echo "✗ Ship gate 6c-ter: no review-findings artifact ($FINDINGS) — run Step 5 §5h first."
+  exit 1
+fi
+
+# First match only (`exit`) so a stray second column-1 occurrence in the
+# LLM-authored body cannot produce a multi-line value. Absent key → empty.
+AC_HIGH_UNRESOLVED=$(awk '/^access_control_high_unresolved:/{print $2; exit}' "$FINDINGS")
+
+# Fail CLOSED on a malformed / non-numeric count — a gate whose whole purpose is
+# to be un-bypassable must never silently pass on a garbled artifact. An ABSENT
+# key (empty) defaults to 0 (back-compat with pre-1.22.0 / hand-authored files,
+# which §6a's escape hatch allows); a PRESENT-but-non-numeric value fails closed.
+case "$AC_HIGH_UNRESOLVED" in
+  "") AC_HIGH_UNRESOLVED=0 ;;
+  *[!0-9]*)
+    echo "✗ Ship gate 6c-ter: unparseable access_control_high_unresolved value ('$AC_HIGH_UNRESOLVED') — failing closed."
+    echo "  Re-run Step 5 §5h to refresh the review-findings artifact with an integer count."
+    exit 1 ;;
+esac
+
+if [ "$AC_HIGH_UNRESOLVED" -gt 0 ]; then
+  echo "✗ Ship gate 6c-ter: $AC_HIGH_UNRESOLVED confirmed high-severity broken-access-control finding(s) unresolved."
+  echo "  A01 / API1 BOLA (cross-tenant IDOR) / API3 BOPLA (privilege-field, mass-assignment) /"
+  echo "  API5 BFLA (bypass-token) on the diff's own touched code (04-fix-first-review.md §5d-ter)."
+  echo "  GATING, not deferrable — a '→ DEFERRED' marker does NOT clear them. Fix each now"
+  echo "  (§5-0 fix-immediately), or prove the surface is not exploitable (e.g. QA-scoped via"
+  echo "  assertQaScoped — see shared/secure-by-default.md), which downgrades the severity."
+  echo "  Then re-run Step 5 §5h to refresh the count before retrying ship."
+  exit 1
+fi
+
+echo "✓ Ship gate 6c-ter: no unresolved high-severity access-control findings"
+```
+
+**No ship-side override.** Every other gate has a `user`-acked escape hatch; this one deliberately does not. A confirmed live access-control exploit cannot be allow-listed at ship time. The only way past is to change the verdict at review (Step 5): fix the finding, or demonstrate it is not exploitable (e.g. the surface is provably QA-scoped via `assertQaScoped`), which downgrades its severity and removes it from `access_control_high_unresolved`. This keeps the override where the evidence is — in the review, not the push.
 
 ## 6d. Version Bump (if applicable)
 

@@ -78,6 +78,7 @@ Check `metadata.effort` on each claimed task and adjust your approach:
    - JSON: Syntax validation
 4. **Fix immediately** - If a validator reports an error, fix it before moving on
 5. **Commit atomically** - Each logical unit of work gets its own commit
+6. **Secure by default** - For any code that writes/mutates data or adds a handler, follow `.claude/commands/plan-w-team/shared/secure-by-default.md` (see Secure-by-Default Coding below)
 
 ## UI Rules (conditional)
 
@@ -96,6 +97,16 @@ On task completion for UI tasks, populate `metadata.tier_evidence` in your TaskU
 
 If either condition is false, skip this section entirely — the standard Guidelines above are sufficient.
 
+## Secure-by-Default Coding (conditional)
+
+This applies whenever your claimed task **writes/mutates data or adds a route/handler** (any `metadata.scope` of `BACKEND` / `API`, a database mutation, or a new endpoint). When it does, read the following shared file before writing any code, and follow it as hard rules:
+
+- `.claude/commands/plan-w-team/shared/secure-by-default.md` — deny-by-default authorization; allow-list mutable fields with `z.object({...}).strict()` + `.pick()`; never spread `req.body` into an ORM update/insert; scope every `where`-by-id with a tenant/owner predicate; gate any bypass/QA/service-token endpoint with `assertQaScoped(user)`.
+
+These five rules make the access-control invariants in `.claude/commands/plan-w-team/shared/access-control-invariants.md` hold by construction. A confirmed high-severity violation (privilege-field write from untrusted input, request-body spread, unscoped by-id query, or an ungated bypass-token mutation) is a Pass-1 CRITICAL that **gates ship** at Step 5/6 — so produce secure code the first time rather than relying on the reviewer to catch it.
+
+If the task is pure UI-copy, docs, or isolated compute with no auth/tenant/credential/mutation surface, skip this section.
+
 ## Communication
 
 - **After claiming a task**: SendMessage to lead with summary of what you're starting
@@ -111,3 +122,7 @@ If either condition is false, skip this section entirely — the standard Guidel
 - Skip error handling or validation
 - Ignore validator feedback
 - Write code without reading existing implementations first
+- Spread `req.body` / request body directly into an ORM update or insert (mass assignment)
+- Query/update by id without a tenant or owner predicate in the `where` clause
+- Write a privilege-bearing field (`role`, `platformRole`, `isAdmin`, `isQaUser`, `passwordHash`, …) from untrusted input
+- Expose a bypass / QA / service-token-gated handler without `assertQaScoped(user)`

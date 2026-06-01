@@ -273,7 +273,7 @@ emit_md() {
     printf '1. Review **candidate-for-adoption** entries — each is a candidate for a follow-up `/plan-w-team` run to adopt the surface.\n'
     printf '2. **breaking-change-required** entries indicate a migration is needed in already-adopted surfaces — schedule immediately.\n'
     printf '3. **not-applicable** entries can be ignored.\n'
-    printf '4. **already-adopted** entries are informational — confirm `CLAUDE.md` Features Adopted table mentions them.\n'
+    printf '4. **already-adopted** entries are informational — confirm the `Features Adopted` table in `docs/operations/claude-code-compatibility.md` mentions them.\n'
 }
 
 emit_json() {

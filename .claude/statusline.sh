@@ -511,12 +511,32 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
       ]
     ' "$bg_cache" 2>/dev/null || echo "[]")
 
+    # Build the wf-bucket dashboard array (kind: "workflow" — dynamic-Workflow
+    # lens-agents from subagents/workflows/wf_<run>/). Like subagents these are
+    # always "mine" (children of THIS session's `Workflow` tool call), so only the
+    # cwd gate applies. Previously uncaptured entirely: a running workflow showed
+    # no dots, so the line read as "idle" while a fan-out was actively churning.
+    wf_dashboard_json=$(jq --arg cwd "$PWD" '
+      [.[]
+        | select(.kind == "workflow")
+        | select(.cwd == $cwd or (.cwd | startswith($cwd + "/")))
+        | {
+            sid:    ((.agentId // .sessionId // "")[:8]),
+            status: (.status // "busy"),
+            busy:   ((.status // "busy") == "busy"),
+            role:   "worker",
+            run:    (.workflowRun // "")
+          }
+      ]
+    ' "$bg_cache" 2>/dev/null || echo "[]")
+
     bg_total=$(echo "$dashboard_json"     | jq 'length' 2>/dev/null || echo 0)
     sub_total=$(echo "$sub_dashboard_json" | jq 'length' 2>/dev/null || echo 0)
-    total_count=$(( bg_total + sub_total ))
+    wf_total=$(echo "$wf_dashboard_json"  | jq 'length' 2>/dev/null || echo 0)
+    total_count=$(( bg_total + sub_total + wf_total ))
     mine_count=$(echo "$dashboard_json" | jq '[.[] | select(.role != "other")] | length' 2>/dev/null || echo 0)
-    # Subagents are always "mine" by definition.
-    mine_count=$(( mine_count + sub_total ))
+    # Subagents and workflow lens-agents are always "mine" by definition.
+    mine_count=$(( mine_count + sub_total + wf_total ))
 
     # Phase label decision:
     #   - mine_count > 0           → "🚀 Agents Running"   (supervisor chain alive)
@@ -576,6 +596,7 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
       printf '\n  👤 %smain%s' "$(C '38;5;117')" "$(rst)"
       _render_bucket "bg"  "$dashboard_json"
       _render_bucket "sub" "$sub_dashboard_json"
+      _render_bucket "wf"  "$wf_dashboard_json"
     elif [ "$summaries_count" != "0" ]; then
       printf '\n  ✅ %sAgents Completed%s — summary in chat ↓' "$(C '38;5;46')" "$(rst)"
     fi

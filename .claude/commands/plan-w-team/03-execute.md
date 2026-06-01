@@ -208,6 +208,14 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
      tracking, regression attribution, commit discipline, EDIT ATOMICITY, and TYPE
      PRESERVATION rules. Follow them exactly.
 
+     If your task writes/mutates data or adds a route/handler, also read
+     `.claude/commands/plan-w-team/shared/secure-by-default.md` and follow it as hard
+     rules: deny-by-default authorization, allow-list mutable fields with
+     z.object({...}).strict() + .pick(), NEVER spread req.body into an ORM update/insert,
+     scope every where-by-id with a tenant/owner predicate, and gate any bypass/QA-token
+     endpoint with assertQaScoped(user). These prevent the broken-access-control findings
+     that gate ship at Step 5/6.
+
      TYPE PRESERVATION (critical — prevents merge conflicts):
      - NEVER create simplified versions of existing interfaces/types. Import and use
        the canonical types from the codebase.
@@ -442,7 +450,7 @@ When `.claude/qa-profile.json` exists AND any task's scope is `FRONTEND` or `TES
 
 This directive is prepended by the lead when spawning FRONTEND or TESTS builders. For BACKEND/DATABASE/CONFIG/DOCS tasks on the same UI repo, the directive is omitted — those builders follow the standard prompt template.
 
-When the lead implements directly (Multi-Session Feature Detection path), the lead reads the three shared files once at the start of Step 4 and follows the same rules for each UI task.
+When the lead implements directly (Multi-Session Feature Detection path), the lead reads the three shared files once at the start of Step 4 and follows the same rules for each UI task. For any task that writes/mutates data or adds a route/handler — UI repo or not — the lead also reads `shared/secure-by-default.md` once and applies it, exactly as a spawned builder would.
 
 ### Worktree Lifecycle Rules
 

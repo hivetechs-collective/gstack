@@ -6,10 +6,11 @@ Single source of truth for security-tier definitions and the evidence ledger tha
 
 - `/plan-w-team/01-specification.md` — Test Plan section references active security tiers when security surfaces are present
 - `/plan-w-team/02-task-breakdown.md` — Paired `N.s` security-review task references the tier set per the OWASP coverage map
-- `/plan-w-team/04-fix-first-review.md` — §5d-bis Retroactive Security-Gap Analysis enforces tier coverage
-- `/plan-w-team/05-ship.md` — §6c-bis Security Tier Gate enforces the auto-default floor (T1+T3+T4 baseline) when no policy declared
+- `/plan-w-team/04-fix-first-review.md` — §5b Access-Control Content-Signal Scan + §5d-bis Retroactive Security-Gap Analysis enforce tier coverage; §5d-ter gates confirmed access-control findings
+- `/plan-w-team/05-ship.md` — §6c-bis Security Tier Gate enforces the auto-default floor (T1+T3+T4 baseline) when no policy declared; §6c-ter Access-Control Finding Gate fails closed on a confirmed finding
+- `shared/access-control-invariants.md` — the per-endpoint access-control rubric (INV-1…INV-5) whose T2 evidence this ledger tracks
 - `.claude/agents/research-planning/security-gap-analyzer.md` — emits `tier:` field on each finding referencing this table
-- `.claude/agents/security-expert.md` — primary executor for `N.s` and `N.t` tasks; ledger rows are its compliance contract
+- `.claude/agents/research-planning/security-expert.md` — primary executor for `N.s` and `N.t` tasks; ledger rows are its compliance contract
 
 ---
 
@@ -26,6 +27,8 @@ Single source of truth for security-tier definitions and the evidence ledger tha
 | **TO2** | Fuzz testing        | `cargo-fuzz` (Rust), `AFL++` (C/C++), `atheris` (Python), `jazzer` (JVM)                                         | minutes to hours       | Opt-in for parser/protocol code       |
 
 `TO*` tiers are optional overlays on top of T1–T5. Future `TO3` slots are reserved (e.g., supply-chain attestation) and deliberately out of scope for v1.
+
+**Access-control diff checks ride on T2.** The diff-content access-control scan (Step 5 §5b, per `shared/owasp-top10-mapping.md` §Content-Signal Triggers and the rubric in `shared/access-control-invariants.md`) is part of the T2 static-source layer — it runs at Step 5 review like SAST, and a confirmed high-severity finding surfaces as ❌ on the T2 ledger row. Crucially, the **Step 6 §6c-ter Access-Control Finding Gate keys off the Step-5 review verdict, not a tier** — so a confirmed access-control exploit blocks ship even under SecBaseline (T1+T3+T4), which does not activate T2. The tier ledger records the evidence; §6c-ter is the unconditional gate.
 
 ---
 
@@ -110,30 +113,30 @@ If an evidence cell would be empty, the row is not done — use ⏳ until the ev
 
 ## Failure routing
 
-| Failing tier | First responder                            | Escalation                                                                            |
-| ------------ | ------------------------------------------ | ------------------------------------------------------------------------------------- |
-| T1           | Builder fixes immediately before task done | If lint flags a true positive in N.b code, escalate to N.s reviewer                   |
-| T2           | Step 5 reviewer (security-expert agent)    | SAST high-severity = Pass 1 CRITICAL                                                  |
-| T3           | Step 6 ship gate (security-expert)         | High-severity CVE in dep tree blocks ship                                             |
-| T4           | Pre-commit hook + Step 6                   | Real secret = immediate halt; pause site `secret-scan-allow` if allowlist edit needed |
-| T5           | Post-ship documentation step               | Missing SBOM = INFORMATIONAL, not blocking                                            |
-| TO1          | Repo opt-in only                           | ZAP high-severity blocks ship if profile includes TO1                                 |
-| TO2          | Original builder + security-expert         | Treat fuzz-found crash as one-way-door blocker                                        |
+| Failing tier | First responder                            | Escalation                                                                                              |
+| ------------ | ------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
+| T1           | Builder fixes immediately before task done | If lint flags a true positive in N.b code, escalate to N.s reviewer                                     |
+| T2           | Step 5 reviewer (security-expert agent)    | SAST **or access-control** high-severity = Pass 1 CRITICAL (access-control also gates ship via §6c-ter) |
+| T3           | Step 6 ship gate (security-expert)         | High-severity CVE in dep tree blocks ship                                                               |
+| T4           | Pre-commit hook + Step 6                   | Real secret = immediate halt; pause site `secret-scan-allow` if allowlist edit needed                   |
+| T5           | Post-ship documentation step               | Missing SBOM = INFORMATIONAL, not blocking                                                              |
+| TO1          | Repo opt-in only                           | ZAP high-severity blocks ship if profile includes TO1                                                   |
+| TO2          | Original builder + security-expert         | Treat fuzz-found crash as one-way-door blocker                                                          |
 
 ---
 
 ## Interaction with `/plan-w-team` lifecycle
 
-| Step                    | Ledger interaction                                                                                                                                                                             |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Step 1 Specification    | Test Plan names the active security tiers for the feature (from profile or spec override)                                                                                                      |
-| Step 2 Task breakdown   | Paired `N.s` security-review task is emitted for code-adding tasks on security-relevant surfaces. The task references this file for its tier-set scope. Refactor/docs/config remain unchanged. |
-| Step 3 Execute          | Builders run T1 locally before marking N.b done; N.s runs against the implemented surface                                                                                                      |
-| Step 4 Evaluator        | Evaluator refuses to PASS a verdict if security ledger has ❌ or empty active rows                                                                                                             |
-| Step 5 Fix-first review | §5d-bis Retroactive Security-Gap Analysis: `security-gap-analyzer` runs and queues `N.t` retroactive security-coverage tasks. Ledger row T2 fills with SAST results.                           |
-| Step 6 Ship             | §6c-bis Security Tier Gate: ledger copied into PR body / ship artifact; ship gate blocks on incomplete ledger; auto-default proposes profile if no `.claude/state/security-policy.txt`         |
-| Step 7 Post-ship docs   | T5 SBOM row filled if active profile includes it                                                                                                                                               |
-| Step 8 Retro            | Retro metrics: which tiers flaked, which were skipped, retroactive `N.t` task closure rate, security-gap-analyzer report finding count                                                         |
+| Step                    | Ledger interaction                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Step 1 Specification    | Test Plan names the active security tiers for the feature (from profile or spec override)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Step 2 Task breakdown   | Paired `N.s` security-review task is emitted for code-adding tasks on security-relevant surfaces. The task references this file for its tier-set scope. Refactor/docs/config remain unchanged.                                                                                                                                                                                                                                                                                                                                                  |
+| Step 3 Execute          | Builders run T1 locally before marking N.b done; N.s runs against the implemented surface                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Step 4 Evaluator        | Evaluator refuses to PASS a verdict if security ledger has ❌ or empty active rows                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Step 5 Fix-first review | §5b Access-Control Content-Signal Scan: a **confirmed high-severity** broken-access-control finding (A01/API1/API3/API5) in the diff's own touched code — cross-tenant IDOR (INV-1), privilege-field (INV-3), or bypass-token (INV-4) — is a Pass-1 CRITICAL that **blocks ship** (§5d-ter), NOT a retroactive task. §5d-bis Retroactive Security-Gap Analysis: `security-gap-analyzer` runs and queues `N.t` retroactive tasks for the remaining (medium/low, untouched-sibling) gaps. Ledger row T2 fills with SAST + access-control results. |
+| Step 6 Ship             | §6c-bis Security Tier Gate: ledger copied into PR body / ship artifact; ship gate blocks on incomplete ledger; auto-default proposes profile if no `.claude/state/security-policy.txt`                                                                                                                                                                                                                                                                                                                                                          |
+| Step 7 Post-ship docs   | T5 SBOM row filled if active profile includes it                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Step 8 Retro            | Retro metrics: which tiers flaked, which were skipped, retroactive `N.t` task closure rate, security-gap-analyzer report finding count                                                                                                                                                                                                                                                                                                                                                                                                          |
 
 ---
 
@@ -152,7 +155,7 @@ The `N.s` security-review task is the security-domain counterpart to STE's `N.a`
 
 Retroactive `N.t` tasks (created by Step 5 §5d-bis from `security-gap-analyzer` findings):
 
-- `N.t` — `security-expert` writes the missing security test/assertion. Runs after Step 6 ship and before Step 8 retro.
+- `N.t` — `security-expert` writes the missing security test/assertion. Runs after Step 6 ship and before Step 8 retro. **Carve-out**: a confirmed high-severity broken-access-control finding in the diff's own touched code (cross-tenant IDOR/INV-1, privilege-field/INV-3, or bypass-token/INV-4 — any confirmed high-sev access-control violation) is NOT an `N.t` — it is a Pass-1 CRITICAL fixed before ship (§5d-ter / §6c-ter), never deferred.
 
 ## Profile override
 

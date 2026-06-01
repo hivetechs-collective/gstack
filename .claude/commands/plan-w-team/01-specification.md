@@ -99,6 +99,17 @@ For each data flow that crosses a context boundary, verify the consumer can actu
 
 If data must cross a boundary, define the **bridge mechanism** (state file, git commit, environment variable) in the Technical Design.
 
+### Threat Model & Access-Control Surface (security-relevant features)
+
+REQUIRED when the feature hits any access-control content signal — see §1c for the trigger. Design the invariants in here so the diff-time gate (Step 5 §5b, Step 6 §6c-ter) has a declared surface to check against. Skip only for features with no auth/tenant/credential/privilege surface (note "N/A — no security surface").
+
+| Trust Boundary                 | Token / Credential In Play | Blast Radius If It Leaks                 | Privilege-Bearing Fields Written |
+| ------------------------------ | -------------------------- | ---------------------------------------- | -------------------------------- |
+| _e.g._ public HTTP → API       | session JWT                | one tenant's data                        | none                             |
+| _e.g._ QA harness → seed route | `QA_SIM_TOKEN` (bypass)    | every account if it can touch real users | `passwordHash`, `platformRole`   |
+
+Then state, per data-mutating endpoint, which of the five invariants in `shared/access-control-invariants.md` are in play (INV-1 object ownership / INV-2 role authz / INV-3 mass-assignment / INV-4 bypass-token scoping / INV-5 tenant isolation), and the deny-by-default authorization rule for each. A bypass/QA/service-token endpoint MUST state how it proves the target is QA-scoped (the `assertQaScoped` pattern). These declarations become the Step 5 review rubric and the Step 6 gate's expectations.
+
 ### Decision Labels
 
 Tag each design decision:
@@ -274,6 +285,20 @@ else
   echo "[§1b-pre] fan-out complete; findings folded; advisory record → $FANOUT"
 fi
 ```
+
+## §1c. Access-Control Threat-Model Trigger (security-relevant features)
+
+The `### Threat Model & Access-Control Surface` block in the Technical Design (above) is **MANDATORY** — not skippable — when ANY of these hold. The trigger keys on the same content signals the diff-time gate uses (`shared/owasp-top10-mapping.md` §Content-Signal Triggers), so the surface is _declared_ at spec time and _checked_ at review time:
+
+- The feature reads, writes, mints, or validates an auth/session token, API key, **bypass/QA/service token**, or other credential.
+- The feature writes any **privilege-bearing field** (`role`, `platformRole`, `tenantId`/`orgId`, `isQaUser`, `ownerId`, `isAdmin`, `permissions`, `passwordHash`, `balance`, `*Cents`).
+- The feature spreads a request body / untrusted input into an ORM `update`/`insert`/`save` (mass-assignment surface).
+- The feature performs a `where … by id` / single-record lookup or mutation that may need a tenant/owner predicate.
+- The feature adds or gates a handler behind a bypass / QA / debug / service token.
+
+Skip the block ONLY for features touching none of the above (pure docs, pure UI-copy, isolated compute with no auth/tenant/credential surface) — write "N/A — no security surface" so the omission is deliberate, not forgotten. When the block is required and the author leaves it empty, Step 5 review treats the missing block as an ASK item (mirroring the AC-snapshot tamper-detection pattern).
+
+Any security/access-control acceptance criteria belong **inside** the AC block below, so they are captured by the SHA256 freeze. Designing the invariants in here is the point: a confirmed high-severity broken-access-control finding against this declared surface is **GATING at Step 6 ship** (`05-ship.md` §6c-ter) — it blocks the push and is NOT retroactive (`04-fix-first-review.md` §5d-ter).
 
 ## Acceptance Criteria Snapshot (MANDATORY — integrity gate)
 

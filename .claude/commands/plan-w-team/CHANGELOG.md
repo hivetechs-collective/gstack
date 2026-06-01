@@ -21,6 +21,50 @@ Entries are newest-first.
 
 ---
 
+## [1.22.0] — 2026-06-01
+
+MINOR — **Access-control content-signal gate (catch broken-access-control by diff content, gate it).**
+Two real bugs shipped through the pipeline (2026-06-01): a `QA_SIM_TOKEN` `seed-platform-admin`
+route that overwrote `passwordHash` + escalated `platformRole` with no `isQaUser` precondition
+(account takeover · API3/API5), and a `jobs.ts` `assignedTo` that accepted a cross-tenant
+`users.id` (IDOR · API1). Root cause: the security machinery was **path-glob-triggered**, so
+access-control logic in normally-named route files (`qa-sim.ts`, `jobs.ts`) matched nothing →
+no `N.s` task, `security-gap-analyzer` skipped (`no-security-surfaces`), no required tier. The
+most damaging bug class — Broken Access Control (OWASP #1) — was the one the gate was structurally
+blindest to. This release closes that blind spot with a content-signal trigger layer, an
+access-control invariant layer, and gating (not retroactive) disposition for confirmed findings.
+Spec: [`docs/specs/access-control-content-signal-gate.md`](../../../docs/specs/access-control-content-signal-gate.md).
+
+- `feat`: **Content-signal triggering** — `shared/owasp-top10-mapping.md` gains the API Security
+  Top 10 (2023) categories (API1 BOLA, API3 BOPLA/mass-assignment, API5 BFLA) and a
+  Content-Signal Triggers table (CS-1 privilege-field write · CS-2 request-body spread into ORM
+  update/insert · CS-3 bypass/QA/service-token-gated handler · CS-4 where-by-id without a
+  tenant/owner predicate). Any signal forces A01/API attribution **regardless of filename**.
+- `feat`: **`02-task-breakdown.md`** — paired `N.s` security-review task now has a second,
+  filename- **and** mode-independent content-signal trigger layer; the refactor/config exemptions
+  are overridden by a content-signal match.
+- `feat`: **`shared/access-control-invariants.md`** (new) — the per-endpoint invariant rubric
+  (INV-1 object ownership/BOLA · INV-2 function authz/BFLA · INV-3 mass-assignment/BOPLA ·
+  INV-4 bypass-token scoping · INV-5 tenant isolation), consumed by the `N.s` pass, `security-expert`,
+  and `security-gap-analyzer`.
+- `feat`: **`shared/secure-by-default.md`** (new) — write-side defaults (deny-by-default,
+  `z.object({...}).strict()` + `.pick()` allow-lists, no `req.body` spread, scoped `where`,
+  `assertQaScoped()`); referenced by `03-execute.md` + `agents/team/builder.md`.
+- `feat`: **`04-fix-first-review.md`** — §5b Access-Control Content-Signal Scan (Pass-1 CRITICAL),
+  §5d-ter gating-not-retroactive rule, §5b CRITICAL table row, §5h `access_control_high_unresolved`
+  frontmatter key; content-signal match overrides the `no-security-surfaces` analyzer skip.
+- `feat`: **`05-ship.md`** — §6c-ter Access-Control Finding Gate (fail-closed `exit 1` on a
+  confirmed unresolved finding; no ship-side override; a `DEFERRED` marker does not clear it).
+- `feat`: **`01-specification.md`** — `### Threat Model & Access-Control Surface` template block +
+  `## §1c` trigger so the surface is declared at spec time.
+- `feat`: **agents** — `security-expert` (1.2.0→1.3.0) gains a mandatory per-endpoint invariant
+  checklist + access-control verdict-table output; `security-gap-analyzer` (1.0.0→1.1.0) gains
+  content-signal surface selection, four new gap_types, API-Sec categories, and a `gating` field.
+- `feat`: **`shared/security-tiers.md`** — access-control diff checks ride on T2; §6c-ter is the
+  SecBaseline-level (tier-independent) gate.
+- `test`: four regression scenarios — `content-signal-triggers-ns`, `access-control-finding-gates-ship`,
+  `access-control-invariants-checklist`, `owasp-api-top10-content-signals` (64 assertions, AC1–AC4).
+
 ## [1.21.0] — 2026-05-31
 
 MINOR — **Canonical run manifest + observability rollup (stale-stage / split-state fix).**

@@ -242,15 +242,28 @@ ui_scope_flag == true
 
 ## Paired Task Protocol (security review) — Security Review Extension
 
-In addition to the test-pairing rules above, **security-sensitive code-adding tasks** receive a paired `N.s` security-review task. The trigger condition expands the STE paired-task gate with a security-surface check:
+In addition to the test-pairing rules above, **security-sensitive code-adding tasks** receive a paired `N.s` security-review task. The trigger has two layers — a filename/glob layer (mode-gated) and a content-signal layer that fires on what the diff _does_ (filename- AND mode-independent). EMIT a paired `N.s` when **either** layer holds:
 
 ```
-scope ∈ {BACKEND, INFRASTRUCTURE, SCRIPTS, LIBRARY, API}
-AND mode == "add"
-AND ( files_touched intersects security-relevant surfaces (auth/secret/input-validation/injection/deserialization/crypto/SSRF/XSS)
-      OR files_touched intersects any glob in shared/governance-tags.md
-      OR files_touched intersects any OWASP category glob in shared/owasp-top10-mapping.md )
+(1) Filename/glob layer (mode-gated):
+    scope ∈ {BACKEND, INFRASTRUCTURE, SCRIPTS, LIBRARY, API}
+    AND mode == "add"
+    AND ( files_touched intersects security-relevant surfaces (auth/secret/input-validation/injection/deserialization/crypto/SSRF/XSS)
+          OR files_touched intersects any glob in shared/governance-tags.md
+          OR files_touched intersects any OWASP category glob in shared/owasp-top10-mapping.md )
+
+(2) Content-signal layer (forces N.s regardless of filename OR mode):
+    diff_content matches any CONTENT-SIGNAL CS-1..CS-4
+      CS-1  privilege-bearing field write (role, platformRole, tenantId/orgId, isQaUser,
+            ownerId, isAdmin, permissions, passwordHash, balance, *Cents)
+      CS-2  request-body spread into an ORM update/insert (.set({...body}), ...req.body,
+            Object.assign(row, input))
+      CS-3  service/bypass/QA/admin-token-gated handler (QA_SIM_TOKEN, *_BYPASS_*)
+      CS-4  where/query-by-id lacking a tenant/owner predicate
+    → see shared/owasp-top10-mapping.md §Content-Signal Triggers.
 ```
+
+Layer (2) is the access-control coverage fix: the two bugs that escaped the pipeline on 2026-06-01 (`platformRole` escalation in `qa-sim.ts`, cross-tenant `assignedTo` in `jobs.ts`) lived in normally-named route files that matched no glob in layer (1). A "refactor" that introduces a body-spread or drops a tenant predicate is **not** exempt — see Single-task exceptions below.
 
 | Task  | Role                                                       | Blocked by | Scope (mirrors parent task) | Agent             |
 | ----- | ---------------------------------------------------------- | ---------- | --------------------------- | ----------------- |
@@ -270,6 +283,17 @@ AND ( files_touched intersects security-relevant surfaces (auth/secret/input-val
 **/rbac/**, **/permission*, **/policies/**, **/acl*                         # A01 Access Control
 ```
 
+**Diff-content security signals** (force `N.s` regardless of filename — the layer (2) trigger). These catch Broken Access Control (OWASP #1) in ordinarily-named route files. Each maps to A01 plus an API Security Top 10 (2023) class:
+
+| Signal | What the diff does                                                                                                        | Category           |
+| ------ | ------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| CS-1   | writes a privilege-bearing field (`role`, `platformRole`, `tenantId`, `isQaUser`, `isAdmin`, `passwordHash`, `*Cents`, …) | A01 / API3 (BOPLA) |
+| CS-2   | spreads request body into an ORM update/insert (`.set({...body})`, `...req.body`)                                         | A01 / API3 (BOPLA) |
+| CS-3   | gates a handler behind a service / bypass / QA / admin token (`QA_SIM_TOKEN`, `*_BYPASS_*`)                               | A01 / API5 (BFLA)  |
+| CS-4   | runs a where/query-by-id without a tenant/owner predicate                                                                 | A01 / API1 (BOLA)  |
+
+The `N.s` review uses `shared/access-control-invariants.md` (INV-1…INV-5) as its rubric for any content-signal hit. Canonical signal definitions live in `shared/owasp-top10-mapping.md` §Content-Signal Triggers.
+
 **Rules** (mirror UI and STE non-UI paired-task blocks):
 
 - `N.s` runs `security-expert` against the implemented `N.b` output. `blockedBy: ["<N.b-task-id>"]` is MANDATORY — security review evaluates the implemented code, not a spec.
@@ -279,14 +303,14 @@ AND ( files_touched intersects security-relevant surfaces (auth/secret/input-val
 
 **Single-task exceptions** (no `N.s` pairing — same exclusions as STE):
 
-- `mode == "refactor"` — refactor changes are constrained by existing security tests; do not pair.
-- `mode == "docs"` — documentation has no security surface.
-- `mode == "config"` UNLESS the config touches `**/.env*` / secret wiring (A05 misconfiguration surface) — config touching credentials gets a `N.s`.
-- `scope == "DATABASE"` schema migrations — security review (RLS, GRANT, column-level encryption) lives in Step 5 one-way-door reviewer scrutiny instead of `N.s`.
+- `mode == "refactor"` — refactor changes are constrained by existing security tests; do not pair — **UNLESS the diff matches a content signal CS-1…CS-4** (e.g. a refactor that swaps in `.set({...req.body})` or drops a tenant predicate). The content-signal layer (2) overrides every mode-based exemption in this list except `docs`.
+- `mode == "docs"` — documentation has no security surface (no code diff to match a content signal).
+- `mode == "config"` UNLESS the config touches `**/.env*` / secret wiring (A05 misconfiguration surface) OR the diff matches a content signal — config touching credentials or a privilege-bearing default gets a `N.s`.
+- `scope == "DATABASE"` schema migrations — security review (RLS, GRANT, column-level encryption) lives in Step 5 one-way-door reviewer scrutiny instead of `N.s`. (A migration matching a content signal is still caught at Step 5 §5b and gated by §6c-ter.)
 
 **Rationale**: the security-rigor gap between UI/non-UI tests and security review was the parallel finding to the 2026-05 STE retro — UI features ship behind paired Playwright contracts; non-UI features (post-STE) ship behind paired unit tests; but **security** review for code touching auth, secrets, injection paths, etc. remained ad-hoc. This block closes that gap. The surface globs above are deliberately the same set used by the OWASP map so forward-scoping (`N.s` emission) and retroactive analysis (`security-gap-analyzer` at Step 5) agree on what counts as a "security-relevant" file.
 
-**Cost discipline**: `N.s` is a review pass, not a re-implementation. If `security-expert` finds high-severity issues, the orchestrator routes the fix-vs-defer decision through `pass-2-ask` (see `04-fix-first-review.md`) rather than letting `N.s` rewrite `N.b`.
+**Cost discipline**: `N.s` is a review pass, not a re-implementation. If `security-expert` finds high-severity issues, the orchestrator routes the fix-vs-defer decision through `pass-2-ask` (see `04-fix-first-review.md`) rather than letting `N.s` rewrite `N.b`. **Exception**: a confirmed high-severity broken-access-control finding in the diff's own touched code (A01 / API1 / API3 / API5 — cross-tenant IDOR, privilege-field/mass-assignment, or bypass-token) is **gating, not deferrable** — it is a Pass-1 CRITICAL that blocks ship per `04-fix-first-review.md` §5d-ter and `05-ship.md` §6c-ter.
 
 ## Hot-Path Overlay (STE Extension)
 

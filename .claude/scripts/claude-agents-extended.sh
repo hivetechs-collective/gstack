@@ -2,12 +2,18 @@
 # claude-agents-extended.sh — `claude agents --json` superset that includes Agent-tool subagents.
 #
 # Problem: `claude agents --json` (verified live against Claude Code 2.1.150) only
-# returns kind: "interactive" and kind: "background". Agent-tool subagents (the sidechain
-# children spawned by the Agent tool) are invisible to it — they exist only as JSONL
-# transcripts under ~/.claude/projects/<project>/<parent-sid>/subagents/agent-*.jsonl.
+# returns kind: "interactive" and kind: "background". Two other classes of running
+# work are invisible to it, existing only as JSONL transcripts on disk:
+#   - Agent-tool subagents (sidechain children of the Agent tool):
+#       ~/.claude/projects/<project>/<parent-sid>/subagents/agent-*.jsonl
+#   - Dynamic-Workflow agents (the `Workflow` tool / `/workflows` lens-agents):
+#       ~/.claude/projects/<project>/<parent-sid>/subagents/workflows/wf_<run>/agent-*.jsonl
+# The second was the "it says it's running but we don't capture it" gap: a running
+# workflow's lens-agents were never discovered, so the statusline showed only the
+# (idle) background sessions and never the live workflow fan-out.
 #
-# This wrapper augments the base output with kind: "subagent" entries derived from
-# those JSONL files, with terminal-state detection via the parent transcript.
+# This wrapper augments the base output with kind: "subagent" and kind: "workflow"
+# entries derived from those JSONL files, with terminal-state detection via mtime.
 #
 # Flags:
 #   --bg-only         skip subagent scan entirely; emit base output (optionally cwd-filtered).
@@ -28,9 +34,12 @@
 #                            if "1", skip running `claude agents --json` entirely (tests).
 #
 # Output:
-#   JSON array merging base entries + subagent entries. Subagent entry shape:
+#   JSON array merging base entries + subagent/workflow entries. Entry shape
+#   (kind is "subagent" for an Agent-tool child, "workflow" for a Workflow
+#   lens-agent — the latter also carries a non-empty "workflowRun"):
 #     {
-#       "kind": "subagent",
+#       "kind": "subagent" | "workflow",
+#       "workflowRun": "<wf_runId or empty string>",
 #       "parentSessionId": "<uuid>",
 #       "sessionId": "<agentId>",
 #       "agentId": "<agentId>",
@@ -151,9 +160,19 @@ subagents_json="[]"
 
 # Find candidate subagent JSONL files modified within the freshness window.
 # -mtime -1 keeps the find cheap (last 24h); we filter precisely below.
-# Using -path glob with shell expansion: `${PROJECTS_DIR}/*/*/subagents/agent-*.jsonl`.
-candidates=$(find "$PROJECTS_DIR" -mindepth 4 -maxdepth 4 \
-  -path '*/subagents/agent-*.jsonl' \
+#
+# TWO depths are captured:
+#   - Agent-tool subagents sit directly under <sid>/subagents/agent-*.jsonl (depth 4).
+#   - Dynamic-Workflow agents (the `Workflow` tool / `/workflows`) sit two levels
+#     deeper under <sid>/subagents/workflows/wf_<runId>/agent-*.jsonl (depth 6).
+# The second pattern was previously uncaptured, so a RUNNING workflow rendered as
+# "idle" in the statusline (none of its lens-agents were discovered) — the exact
+# "it says it's running but we don't capture it" gap. The two -path globs are
+# mutually exclusive (one demands `agent-` immediately after `subagents/`, the
+# other demands `workflows/wf_*/` first), so neither double-counts.
+candidates=$(find "$PROJECTS_DIR" -mindepth 4 -maxdepth 6 \
+  \( -path '*/subagents/agent-*.jsonl' \
+     -o -path '*/subagents/workflows/wf_*/agent-*.jsonl' \) \
   -type f -mtime -1 2>/dev/null || true)
 
 if [ -n "$candidates" ]; then
@@ -165,12 +184,28 @@ if [ -n "$candidates" ]; then
     [ -z "$subagent_file" ] && continue
     [ -f "$subagent_file" ] || continue
 
-    # Derive path components.
-    #   .../<project>/<parent-sid>/subagents/agent-<agentId>.jsonl
-    sub_dir=$(dirname "$subagent_file")                  # .../<parent-sid>/subagents
-    parent_dir=$(dirname "$sub_dir")                     # .../<parent-sid>
+    # Derive path components. Two layouts share this logic:
+    #   subagent:  .../<project>/<parent-sid>/subagents/agent-<id>.jsonl
+    #   workflow:  .../<project>/<parent-sid>/subagents/workflows/wf_<run>/agent-<id>.jsonl
+    # Strip from "/subagents/" onward to get the parent session dir at EITHER
+    # depth (the old dirname-twice only resolved the shallow layout, which would
+    # have mis-derived a workflow agent's parent as ".../subagents/workflows").
+    sub_dir=$(dirname "$subagent_file")                  # dir holding the jsonl + .meta.json
+    parent_dir="${subagent_file%/subagents/*}"           # .../<parent-sid> (depth-agnostic)
     parent_sid=$(basename "$parent_dir")
     parent_transcript="${parent_dir}.jsonl"
+
+    # Classify: a dynamic-Workflow lens-agent lives under subagents/workflows/wf_<run>/.
+    # It gets kind:"workflow" (its own statusline bucket) + a workflowRun id so a
+    # caller can group all agents of one workflow run.
+    case "$subagent_file" in
+      */subagents/workflows/wf_*/agent-*.jsonl)
+        entry_kind="workflow"
+        workflow_run=$(basename "$sub_dir") ;;           # wf_<runId>
+      *)
+        entry_kind="subagent"
+        workflow_run="" ;;
+    esac
     file_base=$(basename "$subagent_file")
     agent_id="${file_base#agent-}"
     agent_id="${agent_id%.jsonl}"
@@ -283,7 +318,7 @@ if [ -n "$candidates" ]; then
     # Emit. cwd is parent's cwd (matches statusline.sh filter); worktreePath
     # is the per-subagent worktree where it actually runs.
     entry=$(jq -nc \
-      --arg kind "subagent" \
+      --arg kind "$entry_kind" \
       --arg parentSessionId "$parent_sid" \
       --arg sessionId "$agent_id" \
       --arg agentId "$agent_id" \
@@ -293,7 +328,8 @@ if [ -n "$candidates" ]; then
       --argjson startedAt "${started_at_ms:-0}" \
       --arg description "$description" \
       --arg subagentType "$subagent_type" \
-      --arg toolUseId "$meta_tool_use_id" '
+      --arg toolUseId "$meta_tool_use_id" \
+      --arg workflowRun "$workflow_run" '
       {
         kind:            $kind,
         parentSessionId: $parentSessionId,
@@ -305,7 +341,8 @@ if [ -n "$candidates" ]; then
         startedAt:       $startedAt,
         description:     $description,
         subagentType:    $subagentType,
-        toolUseId:       $toolUseId
+        toolUseId:       $toolUseId,
+        workflowRun:     $workflowRun
       }
     ' 2>/dev/null) || continue
 

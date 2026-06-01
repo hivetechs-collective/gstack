@@ -113,9 +113,9 @@ log "$N_SAFE auto_integrate_safe finding(s) in $REPORT"
 # Header (fixed) + numbered list of findings. Truncate to MAX_CHARS — we only
 # include as many findings as fit. The worker reads the full report itself if
 # it needs the rest.
-HEADER='Adopt the Claude Code version-uplift findings flagged as auto_integrate_safe in the most recent report at docs/operations/version-uplift-reports/. For each finding below, update the relevant config / hook / doc / agent surface to use the new feature, add a one-line note to CLAUDE.md (`Features Adopted` table), and commit with prefix `feat(version-uplift):`. Do not adopt findings outside this list. Findings:'
+HEADER='Adopt the Claude Code version-uplift findings flagged as auto_integrate_safe in the most recent report at docs/operations/version-uplift-reports/. For each finding below, update the relevant config / hook / doc / agent surface to use the new feature, add a one-line note to the `Features Adopted` table in docs/operations/claude-code-compatibility.md (NOT CLAUDE.md — that table was externalized to keep CLAUDE.md under the 40k perf threshold), and commit with prefix `feat(version-uplift):`. Do not adopt findings outside this list. Findings:'
 
-FOOTER=$'\n\nDone when: all listed findings adopted, tests pass, CLAUDE.md table updated, and `bash tests/version-uplift/version-uplift.test.sh` exits 0.'
+FOOTER=$'\n\nDone when: all listed findings adopted, tests pass, the Features Adopted table in docs/operations/claude-code-compatibility.md is updated, and `bash tests/version-uplift/version-uplift.test.sh` exits 0.'
 
 # Stream findings into the directive, one at a time, stopping before MAX_CHARS.
 TMPDIR=$(mktemp -d -t auto-launch-XXXXXX)
