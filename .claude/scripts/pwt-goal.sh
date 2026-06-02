@@ -930,7 +930,12 @@ if [ "$LAUNCH" = "1" ]; then
     USER_SID="${CLAUDE_JOB_DIR:-}"
     USER_SID="${USER_SID##*/}"
     [ -z "$USER_SID" ] && USER_SID="${PWT_PARENT_SID:-}"
-    USER_SID="${USER_SID:0:8}"
+    # Record the FULL session id (NO 8-char truncation) as the registry's parent
+    # lineage key. child-cleanup's C8 reconciliation matches parent_session_id to
+    # the reaping session's id; an 8-char key let two concurrent runs whose
+    # session-id prefixes collide reap each other's workers (round-2 audit §3.2).
+    # The full UUID is collision-free. USER_SID is used only as a registry field
+    # here (no filename), so its length is unconstrained.
 
     REQUEST_SAFE=$(printf '%s' "$REQUEST" | head -c 200 | sed 's/"/\\"/g')
 

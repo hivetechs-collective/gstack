@@ -838,7 +838,7 @@ fi
 
 A `bypass_rate.score` below 5 means the lead skipped at least one stage-file Read outside the fast path — investigate whether the stage files need consolidation or the fast-path criterion (HOLD + ≤2 tasks) should widen.
 
-## 8j-octies. Spec Fan-Out Catch-Rate (advisory — C1 pilot)
+## 8j-nonies. Spec Fan-Out Catch-Rate (advisory — C1 pilot)
 
 When the Step-1 multi-angle spec fan-out ran (`PLAN_W_TEAM_SPEC_FANOUT=1`, §1b-pre),
 read its advisory record to score whether the fan-out earned its keep. This is the

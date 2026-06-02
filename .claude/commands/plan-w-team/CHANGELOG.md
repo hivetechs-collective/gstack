@@ -21,7 +21,45 @@ Entries are newest-first.
 
 ---
 
-## [1.26.0] — 2026-06-02 (efbef1d)
+## [1.26.1] — 2026-06-02 (be7a147)
+
+PATCH — **Round-2 re-audit regression fixes.** A round-2 adversarial re-audit
+([`docs/operations/pwt-principles-reaudit-2026-06-02-round2.md`](../../../docs/operations/pwt-principles-reaudit-2026-06-02-round2.md))
+confirmed the 1.22-1.26 wave delivers its intent (8 YES / 6 MOSTLY / 0 NO, suite
+green) but caught regressions the green suite did not exercise. All fixed with
+tests that now DO exercise them:
+
+- `fix` **§3.1 (BROKEN)**: `plan-w-team-await-terminal.sh` reported a false
+  `WORKER_GONE` for a LIVE worker when the base `claude agents --json` flaked to
+  `[]` but live subagents kept the merged array non-empty (passing the length>0
+  guard). The bg-worker liveness check now uses `--bg-only` so subagents can't
+  mask base flakiness → a flaky base degrades to `[]` → rearm, never false-gone.
+  New bats case.
+- `fix` **§3.2 (AT-RISK)**: C8 child-cleanup's `${SELF_SID:0:8}*` trailing-glob
+  lineage match could over-reap a CONCURRENT run's worker on an 8-char-prefix
+  collision (or a sub-8-char SELF_SID). Dropped the glob (exact match), guarded
+  sub-8 SELF_SID (skips reconciliation), and stopped truncating
+  `parent_session_id` at `pwt-goal.sh` (records the full SID → collision-free).
+  New prefix-collision + sub-8 tests.
+- `fix` **§3.6 (P6 regression from PWT-WT1)**: a worktree worker's retro couldn't
+  reach the origin/main `supervisor_mirror` row → the mirror never patched to
+  SUCCESS → a clean ship fell to a false `LOW_CONFIDENCE_STREAK` halt.
+  child-cleanup now cross-checkout-resolves the main state dir and patches ONLY
+  this worker's mirror (exact match, no glob). New cross-checkout test
+  (`PWT_CLEANUP_MAIN_STATE_OVERRIDE`).
+- `fix` **§3.3 (P14 regression)**: corrected the off-by-one CHANGELOG header SHAs
+  for 1.22.1→1.26.0 (each had cited the prior commit).
+- `fix` **§3.4**: renamed the duplicate `## 8j-octies` retro heading (fan-out →
+  `8j-nonies`) + repointed its reader (state-artifacts.md) and the
+  `plan-w-team.md` §8j-bypass cross-ref.
+- `fix` **§4 (C7 part-2)**: pinned `access-control-content-scan.sh` in the
+  sync-allowlist drift guard's `REQUIRED_NONPREFIXED` set.
+
+Full suite green (bats + 59 shell-integration + 33/33 symmetry). Remaining
+deferred backlog (P8 recompute, P9b/C4 MultiEdit matchers, C3/SUP-YIELD unit
+coverage, P11 Pass-2, native auto-bump hook) confirmed as the only material set.
+
+## [1.26.0] — 2026-06-02 (be7a147)
 
 MINOR — **PWT-SUP-YIELD: let a supervisor session sleep instead of busy-polling
 (completes the event-driven wait; principle #2).** Diagnosed from a live run
@@ -49,7 +87,7 @@ supervisor couldn't actually sleep even with the await-loop running).
 Provably safe to sync into a live run: any session without the flag is
 byte-identical to pre-change. Full suite green (bats + 59 shell-integration).
 
-## [1.25.0] — 2026-06-02 (587d577)
+## [1.25.0] — 2026-06-02 (efbef1d)
 
 MINOR — **PWT-WT1: spawn the bg worker INSIDE an isolated worktree (deterministic
 principle #6).** Root-cause fix for the 2026-06-02 incident where a route-hook
@@ -73,7 +111,7 @@ Full suite green (bats + 59 shell-integration). Developed in-session (the route
 hook spawned yet another worker on the trigger message; neutralized via goal-state
 deletion — its daemon is shared with a live progressive-qa run and can't be killed).
 
-## [1.24.0] — 2026-06-02 (3493932)
+## [1.24.0] — 2026-06-02 (587d577)
 
 MINOR — **Event-driven supervisor wait (principle #2): stop guessing poll
 intervals.** The supervisor/origin-chat previously waited on a worker by active
@@ -99,7 +137,7 @@ background until-loop idea.
   sad path), heartbeat re-arm, worker-gone debounce, present-worker-not-reaped.
 - sync allowlist updated so the helper propagates to consumer repos.
 
-## [1.23.2] — 2026-06-02 (f42bb0a)
+## [1.23.2] — 2026-06-02 (3493932)
 
 PATCH — **C8: spawn-registry↔cleanup slug reconciliation (concurrent-run-safe).**
 `pwt-goal.sh` registers a spawned worker under `SLUG_GUESS=__pwt_safe_slug(
@@ -128,7 +166,7 @@ to prevent (lives up to principles #6/#11/#12).
   §6c-ter fail-closed; the rest needs a recompute against a non-strict findings
   format → drift risk), C7 part-2, P14, C11, C12/C13.
 
-## [1.23.1] — 2026-06-02 (814b791)
+## [1.23.1] — 2026-06-02 (f42bb0a)
 
 PATCH — **Deferred-item follow-up from the 1.23.0 enforcement audit: the safe,
 high-value MEDIUMs.** Three of the deferred seam findings are now fixed with
@@ -161,7 +199,7 @@ rationale (see the audit report and the design-principles "Tracked follow-ups").
   mentions `model: opus`; frontmatter pins already protect); **C12/C13** low-value
   robustness/observability.
 
-## [1.23.0] — 2026-06-02 (ccd386e)
+## [1.23.0] — 2026-06-02 (814b791)
 
 MINOR — **Enforcement hardening from a verified adversarial principle audit.**
 A multi-agent audit (verify → completeness-critic → synthesize) of whether each
@@ -217,7 +255,7 @@ and the principle/enforcement summary is
   (sync-allowlist name-filter / fail-closed capacity gates), C8 (slug mismatch),
   P7 fix-counter, P8 handoff scope-fence, P14 native git-hook bump, C11-C13.
 
-## [1.22.1] — 2026-06-02 (b42c689)
+## [1.22.1] — 2026-06-02 (8f2afa7)
 
 PATCH — **Consolidated design-principles doc (close the "no single place names the principles" gap).**
 The principles governing the skill (spec-first gating, layered autonomy, no wall-clock caps,

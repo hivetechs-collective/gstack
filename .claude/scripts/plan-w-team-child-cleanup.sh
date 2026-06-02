@@ -172,7 +172,14 @@ fi  # end PRIMARY_PRESENT guard
 # parent_session_id matches THIS session. Concurrent-safe: another run's children
 # carry a different parent_session_id and are left untouched. Additive — with the
 # env unset this block is skipped, so behavior is byte-identical to pre-C8.
-if [ -n "${PWT_CLEANUP_PARENT_SID:-}" ]; then
+if [ -n "${PWT_CLEANUP_PARENT_SID:-}" ] && [ "${#PWT_CLEANUP_PARENT_SID}" -lt 8 ]; then
+    # Round-2 audit §3.2: a sub-8-char SELF_SID is too weak a lineage
+    # discriminator (it would over-match a far larger set of parent ids), so
+    # skip the cross-slug reconciliation rather than risk reaping a concurrent
+    # run's worker. The primary-manifest pass above already ran.
+    echo "[child-cleanup] PWT_CLEANUP_PARENT_SID too short (<8 chars) — skipping lineage reconciliation (over-reap guard, §3.2)" >&2
+fi
+if [ -n "${PWT_CLEANUP_PARENT_SID:-}" ] && [ "${#PWT_CLEANUP_PARENT_SID}" -ge 8 ]; then
     SELF_SID="$PWT_CLEANUP_PARENT_SID"
     STATE_DIR_RESOLVED=$(dirname "$MANIFEST")
     for sib in "$STATE_DIR_RESOLVED"/plan-w-team-spawned-children-*.jsonl; do
@@ -185,9 +192,14 @@ if [ -n "${PWT_CLEANUP_PARENT_SID:-}" ]; then
             RSID=$(printf '%s' "$row" | jq -r '.session_id // empty' 2>/dev/null || true)
             RP=$(printf '%s' "$row" | jq -r '.parent_session_id // empty' 2>/dev/null || true)
             [ -z "$RSID" ] && continue
-            # Lineage match only (tolerate short/long sid forms). Anything not
-            # spawned BY this session is another run's child — never touch it.
-            case "$RP" in "$SELF_SID"|"${SELF_SID:0:8}"*) : ;; *) continue ;; esac
+            # Lineage match — EXACT, no trailing glob (round-2 audit §3.2). RP is
+            # either the full session id (pwt-goal now records full; preferred) or
+            # the legacy 8-char form. Match RP == full SELF_SID, OR RP == exactly
+            # the 8-char prefix of SELF_SID (legacy registries). The dropped `*`
+            # prevents a "starts-with" over-match reaping a concurrent run whose
+            # parent id merely shares SELF_SID's first 8 chars. Anything else is
+            # another run's child — never touch it.
+            case "$RP" in "$SELF_SID"|"${SELF_SID:0:8}") : ;; *) continue ;; esac
             # Dedup against rows already attempted in the primary pass.
             printf '%s' "$ATTEMPTS_JSON" | jq -e --arg s "$RSID" 'any(.[]; .session_id==$s)' >/dev/null 2>&1 && continue
             ATTEMPT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -199,6 +211,56 @@ if [ -n "${PWT_CLEANUP_PARENT_SID:-}" ]; then
                 '. + [{session_id:$sid, purpose:"reconciled-by-lineage", attempted_at:$ts, exit_code:$ec}]' 2>/dev/null || printf '%s' "$ATTEMPTS_JSON")
         done < "$sib"
     done
+fi
+
+# ─── §3.6: cross-checkout supervisor-mirror SUCCESS sync (PWT-WT1 regression) ──
+# Under PWT-WT1 the worker runs in a worktree, so its primary manifest (the
+# worktree state dir) lacks the supervisor_mirror row that pwt-goal
+# --supervisor-goal wrote to the ORIGIN/main state dir. Without reaching it, the
+# worker's retro never patches the mirror to SUCCESS → the origin goal-evaluator
+# falsely writes LOW_CONFIDENCE_STREAK for a CLEANLY-shipped run (the round-2
+# audit §3.6 regression; re-opens the 2026-05-22 mirror-stayed-null incident for
+# the worktree worker). Resolve the main checkout's state dir and patch ONLY the
+# mirror whose session_id is THIS worker (exact 8-char match — pwt-goal records
+# the worker SID as the 8-char `backgrounded · <sid>`; no glob, so a concurrent
+# run's mirror is never falsely SUCCESS'd). Only runs when actually in a worktree
+# AND a parent-sid was passed; idempotent (skips an already-terminal mirror).
+if [ -n "${PWT_CLEANUP_PARENT_SID:-}" ]; then
+    # Resolve the MAIN checkout's state dir (test-only override takes precedence).
+    MIRROR_MAIN_STATE="${PWT_CLEANUP_MAIN_STATE_OVERRIDE:-}"
+    if [ -z "$MIRROR_MAIN_STATE" ]; then
+        MIRROR_COMMON=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "")
+        MIRROR_MAIN_ROOT=""
+        case "$MIRROR_COMMON" in
+            */.git) MIRROR_MAIN_ROOT="${MIRROR_COMMON%/.git}" ;;
+            */.git/worktrees/*) MIRROR_MAIN_ROOT="${MIRROR_COMMON%/.git/worktrees/*}" ;;
+        esac
+        [ -n "$MIRROR_MAIN_ROOT" ] && MIRROR_MAIN_STATE="$MIRROR_MAIN_ROOT/.claude/state"
+    fi
+    if [ -n "$MIRROR_MAIN_STATE" ] && [ -d "$MIRROR_MAIN_STATE" ] && [ "$MIRROR_MAIN_STATE" != "$(dirname "$MANIFEST")" ]; then
+        SELF8="${PWT_CLEANUP_PARENT_SID:0:8}"
+        for oreg in "$MIRROR_MAIN_STATE"/plan-w-team-spawned-children-*.jsonl; do
+            [ -f "$oreg" ] || continue
+            while IFS= read -r row; do
+                [ -z "$row" ] && continue
+                [ "$(printf '%s' "$row" | jq -r '.type // ""' 2>/dev/null || echo "")" = "supervisor_mirror" ] || continue
+                MSID=$(printf '%s' "$row" | jq -r '.session_id // ""' 2>/dev/null || echo "")
+                # Exact match on this worker's sid (full or its 8-char form). No glob.
+                [ "$MSID" = "$PWT_CLEANUP_PARENT_SID" ] || [ "$MSID" = "$SELF8" ] || continue
+                MP=$(printf '%s' "$row" | jq -r '.path // ""' 2>/dev/null || echo "")
+                [ -n "$MP" ] && [ -f "$MP" ] || { TOTAL_MIRROR_SKIPPED=$((TOTAL_MIRROR_SKIPPED + 1)); continue; }
+                [ -n "$(jq -r '.terminal_state // ""' "$MP" 2>/dev/null || echo "")" ] && { TOTAL_MIRROR_SKIPPED=$((TOTAL_MIRROR_SKIPPED + 1)); continue; }
+                if jq --arg t "SUCCESS" --arg r "auto-synced from worktree worker retro (§3.6 cross-checkout)" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+                    '.terminal_state = $t | .terminal_reason = $r | .terminated_at = $ts' "$MP" > "$MP.tmp" 2>/dev/null && mv "$MP.tmp" "$MP"; then
+                    TOTAL_MIRROR_PATCHED=$((TOTAL_MIRROR_PATCHED + 1))
+                    echo "[child-cleanup] §3.6 cross-checkout mirror patched SUCCESS: $MP (worker $MSID)" >&2
+                else
+                    rm -f "$MP.tmp" 2>/dev/null || true
+                    TOTAL_MIRROR_SKIPPED=$((TOTAL_MIRROR_SKIPPED + 1))
+                fi
+            done < "$oreg"
+        done
+    fi
 fi
 
 jq -nc \

@@ -304,7 +304,7 @@ printf '⚠ stage-file-bypass: skipping %s — reason: %s\n' "<stage_name>" "<re
   >> ".claude/state/plan-w-team-bypass-${SLUG}.log"
 ```
 
-Step 8 retro **does** count these (§8j-bypass) via `.claude/scripts/plan-w-team-bypass-rate.sh`, emitting a 1-5 `bypass_rate` quality signal into the retro JSON (0 bypasses = 5). This is a _floor_: it counts markers the lead actually emitted — a silently-skipped Read that never emitted a marker is not caught (true detection would need a hook diffing stage-file Read tool-calls). A run with multiple unjustified bypasses suggests the stage files need consolidation or the fast-path criterion needs widening. See audit P1 (`docs/operations/pwt-principles-enforcement-audit-2026-06-02.md`).
+Step 8 retro **does** count these (§8j-octies) via `.claude/scripts/plan-w-team-bypass-rate.sh`, emitting a 1-5 `bypass_rate` quality signal into the retro JSON (0 bypasses = 5). This is a _floor_: it counts markers the lead actually emitted — a silently-skipped Read that never emitted a marker is not caught (true detection would need a hook diffing stage-file Read tool-calls). A run with multiple unjustified bypasses suggests the stage files need consolidation or the fast-path criterion needs widening. See audit P1 (`docs/operations/pwt-principles-enforcement-audit-2026-06-02.md`).
 
 ### Top-of-Pipeline Goal Activation (PWT-T5b)
 

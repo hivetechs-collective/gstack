@@ -74,7 +74,16 @@ while :; do
   #     against flaky `claude agents --json`: require GONE_CONFIRM consecutive
   #     absences from a VALID (array, non-empty) listing before trusting it.
   if [ -n "$WORKER_SID" ] && [ -x "$EXT" ]; then
-    AGENTS=$(CLAUDE_AGENTS_RETRY="${CLAUDE_AGENTS_RETRY:-3}" "$EXT" --json 2>/dev/null || echo "")
+    # --bg-only is ESSENTIAL (round-2 audit §3.1): the merged wrapper appends
+    # on-disk Agent-tool SUBAGENTS to the base list. When the base `claude agents
+    # --json` flakes to [] under load (the documented C2 empty-but-exit-0 — the
+    # exact high-fan-out condition here), live subagents still make the merged
+    # array non-empty, passing the length>0 guard while the watched BG SID is
+    # absent → a LIVE worker is reported WORKER_GONE. A bg-worker liveness check
+    # must ignore subagents entirely: --bg-only emits ONLY base bg/interactive
+    # sessions, so a flaky base degrades to [] (empty) → fails the length>0 guard
+    # → no false gone (rearm/heartbeat instead).
+    AGENTS=$(CLAUDE_AGENTS_RETRY="${CLAUDE_AGENTS_RETRY:-3}" "$EXT" --json --bg-only 2>/dev/null || echo "")
     if printf '%s' "$AGENTS" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
       if printf '%s' "$AGENTS" | jq -e --arg s "${WORKER_SID:0:8}" 'any(.[]?; ((.sessionId//"")|tostring)[0:8]==$s)' >/dev/null 2>&1; then
         gone_streak=0   # still present

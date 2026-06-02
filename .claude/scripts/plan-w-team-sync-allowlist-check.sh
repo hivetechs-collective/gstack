@@ -75,7 +75,7 @@ done <<<"$CANDIDATES"
 # spawn / secret gates to function in a consumer repo; a rename that dropped one
 # from the allowlist would silently make those gates fail-open with no drift
 # warning (audit C7). Pin them explicitly.
-REQUIRED_NONPREFIXED="ram-budget.sh disk-budget.sh claude-agents-extended.sh locate-claude.sh secret-scan.sh"
+REQUIRED_NONPREFIXED="ram-budget.sh disk-budget.sh claude-agents-extended.sh locate-claude.sh secret-scan.sh access-control-content-scan.sh"
 for name in $REQUIRED_NONPREFIXED; do
     # Only require it if the source script actually exists (don't demand a dep a
     # given checkout legitimately doesn't ship).

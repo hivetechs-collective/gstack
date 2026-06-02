@@ -223,6 +223,54 @@ X1_COUNT=$(grep -c "stop childX1" "$SHIM_LOG" 2>/dev/null | tr -d ' ')
 assert_eq "C8c: childX1 (in primary + sibling) reaped exactly once" "1" "$X1_COUNT"
 rm -f "$SIB" "$FEATURE_MANIFEST"
 
+# ───────────────────────────────────────────────────────────────────────────
+# AC-CC8d/e (round-2 audit §3.2): lineage match must be EXACT — a concurrent
+# run whose parent id merely SHARES an 8-char prefix must NOT be over-reaped,
+# and a sub-8-char SELF_SID must skip reconciliation entirely.
+# ───────────────────────────────────────────────────────────────────────────
+SIB_A="$WORK_DIR/plan-w-team-spawned-children-runA.jsonl"
+SIB_B="$WORK_DIR/plan-w-team-spawned-children-runB.jsonl"
+
+echo "C8d: full parent ids sharing an 8-char prefix do NOT over-reap (exact lineage)"
+rm -f "$SIB_A" "$SIB_B" "$FEATURE_MANIFEST"; : > "$SHIM_LOG"
+printf '{"session_id":"childA","parent_session_id":"abcd1234-aaaa-AAAA","slug":"runA"}\n' > "$SIB_A"
+printf '{"session_id":"childB","parent_session_id":"abcd1234-bbbb-BBBB","slug":"runB"}\n' > "$SIB_B"
+OUT=$(SHIM_LOG="$SHIM_LOG" PATH="$SHIM_DIR:$PATH" PWT_CLEANUP_PARENT_SID="abcd1234-aaaa-AAAA" \
+    "$HELPER" "featureslug" "$FEATURE_MANIFEST")
+assert_contains "C8d: own-lineage child reaped" "stop childA" "$(cat "$SHIM_LOG")"
+OVER=$(grep -c "stop childB" "$SHIM_LOG" 2>/dev/null | tr -d ' ')
+assert_eq "C8d: prefix-collision concurrent run NOT over-reaped" "0" "$OVER"
+
+echo "C8e: a sub-8-char SELF_SID skips reconciliation (over-reap guard)"
+rm -f "$SIB_A"; : > "$SHIM_LOG"
+printf '{"session_id":"childA","parent_session_id":"abcd","slug":"runA"}\n' > "$SIB_A"
+SHIM_LOG="$SHIM_LOG" PATH="$SHIM_DIR:$PATH" PWT_CLEANUP_PARENT_SID="abcd" \
+    "$HELPER" "featureslug" "$FEATURE_MANIFEST" >/dev/null 2>&1
+NREAP=$(grep -c "^stop " "$SHIM_LOG" 2>/dev/null | tr -d ' ')
+assert_eq "C8e: sub-8 SELF_SID reaps nothing via reconciliation" "0" "$NREAP"
+rm -f "$SIB_A" "$SIB_B"
+
+# ───────────────────────────────────────────────────────────────────────────
+# AC-CC8f (round-2 audit §3.6): a worktree worker patches its ORIGIN
+# supervisor-mirror to SUCCESS (cross-checkout), and does NOT touch another
+# run's mirror. Uses PWT_CLEANUP_MAIN_STATE_OVERRIDE to stand in for the main
+# checkout's state dir (no real worktree needed).
+echo "C8f: worktree worker patches its origin supervisor-mirror to SUCCESS (not another run's)"
+MAIN_STATE="$WORK_DIR/main-state"; rm -rf "$MAIN_STATE"; mkdir -p "$MAIN_STATE"; : > "$SHIM_LOG"
+MINE="$MAIN_STATE/plan-w-team-goal-mine.json"
+OTHERS="$MAIN_STATE/plan-w-team-goal-others.json"
+printf '{"slug":"mine","terminal_state":null}\n'   > "$MINE"
+printf '{"slug":"others","terminal_state":null}\n' > "$OTHERS"
+printf '{"type":"supervisor_mirror","session_id":"wkr12345","path":"%s"}\n' "$MINE"   >  "$MAIN_STATE/plan-w-team-spawned-children-origrun.jsonl"
+printf '{"type":"supervisor_mirror","session_id":"other999","path":"%s"}\n'  "$OTHERS" >> "$MAIN_STATE/plan-w-team-spawned-children-origrun.jsonl"
+rm -f "$FEATURE_MANIFEST"
+PWT_CLEANUP_MAIN_STATE_OVERRIDE="$MAIN_STATE" PWT_CLEANUP_PARENT_SID="wkr12345" \
+  SHIM_LOG="$SHIM_LOG" PATH="$SHIM_DIR:$PATH" \
+  "$HELPER" "featureslug" "$FEATURE_MANIFEST" >/dev/null 2>&1
+assert_eq "C8f: this worker's origin mirror patched SUCCESS" "SUCCESS" "$(jq -r '.terminal_state // ""' "$MINE")"
+assert_eq "C8f: another run's mirror left untouched (null)" "" "$(jq -r '.terminal_state // ""' "$OTHERS")"
+rm -rf "$MAIN_STATE"
+
 # Summary
 echo ""
 echo "════════════════════════════════════════"
