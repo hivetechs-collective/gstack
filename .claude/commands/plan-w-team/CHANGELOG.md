@@ -21,6 +21,34 @@ Entries are newest-first.
 
 ---
 
+## [1.26.0] — 2026-06-02 (efbef1d)
+
+MINOR — **PWT-SUP-YIELD: let a supervisor session sleep instead of busy-polling
+(completes the event-driven wait; principle #2).** Diagnosed from a live run
+(2026-06-02): the goal-evaluator Stop hook fires in EVERY session that sees the
+worker's goal-state — including the origin-chat/supervisor — so it dragged the
+supervisor back to poll each turn, negating the 1.24.0 event-driven wait (the
+supervisor couldn't actually sleep even with the await-loop running).
+
+- `feat`: `plan-w-team-goal-evaluator.sh` — a session that marks itself
+  `PLAN_W_TEAM_SUPERVISOR_SESSION=1` now YIELDS (allowed to stop) instead of being
+  blocked on a non-terminal goal it is merely supervising; it re-wakes
+  event-driven via `plan-w-team-await-terminal.sh` (+ heartbeat re-arm for the
+  Step-0 progress/stall check). **Opt-in, default unchanged**: a session without
+  the flag blocks exactly as before. All per-goal terminal detection + dead-child/
+  mirror propagation still run; only the final no-terminal-yet outcome flips
+  block→yield, and only for the supervisor.
+- `fix` (safety invariant): `pwt-goal.sh` forces `PLAN_W_TEAM_SUPERVISOR_SESSION=0`
+  into the worker's `LAUNCH_ENV` so a spawned worker can NEVER inherit a
+  supervisor=1 marker — "the worker runs to terminal" holds by construction.
+- `feat`: `supervisor-protocol.md` §Wait mechanism + `plan-w-team.md` Step 3c — the
+  supervisor/origin sets the flag and launches the await-loop so it truly sleeps.
+- new: 3 scenario assertions (supervisor yields; non-supervisor still blocks;
+  flag=0 still blocks) added to `goal-evaluator-c3-antispoof.bats`.
+
+Provably safe to sync into a live run: any session without the flag is
+byte-identical to pre-change. Full suite green (bats + 59 shell-integration).
+
 ## [1.25.0] — 2026-06-02 (587d577)
 
 MINOR — **PWT-WT1: spawn the bg worker INSIDE an isolated worktree (deterministic

@@ -649,6 +649,27 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     fi
 done
 
+# PWT-SUP-YIELD — a SUPERVISOR/origin session YIELDS instead of being blocked.
+# A session that marks itself PLAN_W_TEAM_SUPERVISOR_SESSION=1 is SUPERVISING
+# spawned workers, not driving a pipeline itself — its job is to WAIT. So it
+# should be allowed to sleep (let Claude stop) and be re-woken EVENT-DRIVEN by
+# its background await-loop (plan-w-team-await-terminal.sh) / ScheduleWakeup,
+# rather than the goal-evaluator dragging it back to busy-poll every single turn
+# (the friction observed 2026-06-02 in a live run). SAFETY INVARIANT — the
+# owning WORKER never sets this flag: pwt-goal.sh forces PLAN_W_TEAM_SUPERVISOR_
+# SESSION=0 into the worker's LAUNCH_ENV so it can't be inherited, so worker
+# blocking is UNCHANGED ("the worker runs to terminal" holds by construction).
+# All per-goal terminal detection + parent-child/mirror propagation above STILL
+# ran this turn (a dead child is still propagated, a real terminal still
+# persisted); only the final no-terminal-yet outcome flips block→yield, and only
+# for the supervisor. The heartbeat re-arm in the await-loop still wakes the
+# supervisor periodically to run its Step-0 progress/stall check, so a stalled
+# worker is NOT masked.
+if [ -n "$BLOCK_REASON" ] && [ "${PLAN_W_TEAM_SUPERVISOR_SESSION:-0}" = "1" ]; then
+    echo "[goal-evaluator] supervisor session (PLAN_W_TEAM_SUPERVISOR_SESSION=1) → yield, not block. Re-wake event-driven via plan-w-team-await-terminal.sh. (suppressed: $BLOCK_REASON)" >&2
+    exit 0
+fi
+
 # Allow stop only if no pending blocks remain.
 # (Previously: "if ANY_TERMINAL || no_block" — wrong. One goal going terminal
 # must NOT suppress block emission for other still-pending goals. PWT-T5c

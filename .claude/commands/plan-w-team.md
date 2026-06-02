@@ -126,6 +126,10 @@ Supervisor responsibilities (perform in order, this turn):
 2. **WAIT — event-driven by default** (do not guess a poll interval). Launch a background watcher that blocks until the worker reaches terminal/halt and wakes you the INSTANT it does — the harness re-invokes you when a `run_in_background` command exits:
 
    ```bash
+   # Mark this origin chat as a supervisor so the goal-evaluator lets it YIELD
+   # (sleep) instead of blocking its stop every turn (PWT-SUP-YIELD). The worker
+   # never sets this (pwt-goal forces it to 0), so worker blocking is unchanged.
+   export PLAN_W_TEAM_SUPERVISOR_SESSION=1
    # run_in_background: true
    .claude/scripts/plan-w-team-await-terminal.sh --slug "<SLUG>" --worker-sid "<SID>"
    ```

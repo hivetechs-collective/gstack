@@ -822,6 +822,14 @@ if [ "$LAUNCH" = "1" ]; then
     # docs/operations/pwt-principles-enforcement-audit-2026-06-02.md (P3/C1).
     LAUNCH_ENV="$LAUNCH_ENV CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=${PWT_STOP_HOOK_BLOCK_CAP:-200}"
 
+    # PWT-SUP-YIELD safety: force PLAN_W_TEAM_SUPERVISOR_SESSION=0 in the worker so
+    # it can NEVER inherit a supervisor=1 marker from a spawning supervisor session.
+    # The goal-evaluator lets a supervisor session YIELD instead of block; the
+    # WORKER must always block-to-terminal, so it must never look like a supervisor.
+    # `env A=0` overrides any inherited A=1. See plan-w-team-goal-evaluator.sh
+    # (PWT-SUP-YIELD) + shared/supervisor-protocol.md §Wait mechanism.
+    LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_SUPERVISOR_SESSION=0"
+
     # --fallback-model (Claude Code 2.1.152+): if the pinned primary model
     # (Opus 4.8) is ever not found, the session degrades to this model for the
     # rest of the run instead of hard-failing EVERY request. Takes effect in

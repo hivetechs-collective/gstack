@@ -494,9 +494,15 @@ burns a supervisor turn. Instead, launch a background watcher that blocks until
 the state flips and wakes the supervisor THE INSTANT it does:
 
 ```bash
+# Mark THIS session as a supervisor so the goal-evaluator lets it YIELD (sleep)
+# instead of dragging it back to busy-poll every turn (PWT-SUP-YIELD). The worker
+# never sets this — pwt-goal forces it to 0 — so worker blocking is unchanged.
+export PLAN_W_TEAM_SUPERVISOR_SESSION=1
 # run_in_background: true — the harness re-invokes the supervisor when this exits.
 .claude/scripts/plan-w-team-await-terminal.sh --slug "$SLUG" --worker-sid "$WORKER_SID"
 ```
+
+Without `PLAN_W_TEAM_SUPERVISOR_SESSION=1`, the goal-evaluator Stop hook (which fires in EVERY session that sees the worker's goal-state, including this supervisor) blocks the supervisor's stop each turn — so even with the await-loop running, the supervisor is pulled back to poll rather than truly sleeping (observed 2026-06-02). The flag tells the evaluator "this session supervises, it doesn't own a pipeline → let it yield"; it then sleeps until the await-loop exits (terminal/halt) or its heartbeat re-arms it to run the Step-0 progress check.
 
 It watches the goal-state `terminal_state` (which the evaluator writes for ALL
 terminal/halt states — SUCCESS, USER_ESCALATION_HALT, LOW_CONFIDENCE_STREAK,
