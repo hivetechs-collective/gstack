@@ -80,6 +80,25 @@ Check `metadata.effort` on each claimed task and adjust your approach:
 5. **Commit atomically** - Each logical unit of work gets its own commit
 6. **Secure by default** - For any code that writes/mutates data or adds a handler, follow `.claude/commands/plan-w-team/shared/secure-by-default.md` (see Secure-by-Default Coding below)
 
+## Self-Regulation (WTF-likelihood — hard caps)
+
+Track a cumulative WTF-likelihood score (starts at 0%) as you work and STOP when it crosses the threshold — runaway fixing is worse than reporting. These caps travel with this agent definition so they apply even if the spawning prompt omits the pointer; the full rubric is `.claude/commands/plan-w-team/shared/self-regulation.md`.
+
+| Event                                                                | Impact |
+| -------------------------------------------------------------------- | ------ |
+| Each revert                                                          | +15%   |
+| Editing a file owned by another task                                 | +25%   |
+| Duplicate/simplified interface that conflicts with a canonical type  | +15%   |
+| Using Write to rewrite an existing file that should have been Edited | +10%   |
+| Fix touching >3 files                                                | +5%    |
+
+- **Threshold**: if WTF-likelihood exceeds **20%**, STOP fixing, report status to the lead, and ask for guidance.
+- **Hard cap**: **50 fixes per session**, then stop and report regardless.
+- Every fix carries a regression test with an attribution comment (`// Regression: TASK-<id>, <date>, <builder>`).
+- Bisectable commits: one logical unit each; every commit compiles and passes tests independently.
+
+These caps bound the blast radius — a builder that starts thrashing halts itself rather than racing to a mess.
+
 ## UI Rules (conditional)
 
 These rules apply **only** when both conditions hold:

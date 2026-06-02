@@ -493,8 +493,23 @@ fi
 # (verbatim from pwt-goal.sh's GOAL_TEXT template). Its LLM fired the manifest's
 # Step 3b spawn path. Worker c00b9887 then called pwt-goal.sh --launch (not
 # --worker-only), bypassing PWT-DS1.
+# ─── C6: in-worker FORCE_SPAWN must be OUT-OF-BAND ──────────────────────────
+# A worker's own LLM can self-set PLAN_W_TEAM_FORCE_SPAWN=1 — indeed the cascade
+# guard's stderr below USED to tell the reader to "set FORCE_SPAWN and retry",
+# which a worker dutifully follows, defeating the guard (audit C6). So inside a
+# worker (PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1) the bypass requires the separate
+# PLAN_W_TEAM_OPERATOR_FORCE_SPAWN=1 — an out-of-band signal a human operator
+# sets, never named in worker-facing goal text. Interactive/main keeps the
+# familiar PLAN_W_TEAM_FORCE_SPAWN escape hatch (the operator is at the keyboard).
+_PWT_BYPASS=0
+if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-0}" = "1" ]; then
+    [ "${PLAN_W_TEAM_OPERATOR_FORCE_SPAWN:-0}" = "1" ] && _PWT_BYPASS=1
+else
+    { [ "${PLAN_W_TEAM_FORCE_SPAWN:-0}" = "1" ] || [ "${PLAN_W_TEAM_OPERATOR_FORCE_SPAWN:-0}" = "1" ]; } && _PWT_BYPASS=1
+fi
+
 if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-0}" = "1" ] \
-        && [ "${PLAN_W_TEAM_FORCE_SPAWN:-0}" != "1" ] \
+        && [ "$_PWT_BYPASS" != "1" ] \
         && { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; }; then
     cat >&2 <<CASCADE_GUARD
 ✗ Worker-cascade refused: cannot spawn /plan-w-team from inside a worker session.
@@ -507,8 +522,10 @@ if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-0}" = "1" ] \
   routing logic, prompting another pwt-goal.sh call. That creates a recursive
   cascade.
 
-  If you intentionally need a sub-worker from inside an orchestrator running
-  inside a worker, set PLAN_W_TEAM_FORCE_SPAWN=1 and retry.
+  If a sub-worker is genuinely needed from inside an orchestrator running inside
+  a worker, a HUMAN OPERATOR (outside this worker) sets
+  PLAN_W_TEAM_OPERATOR_FORCE_SPAWN=1 — an out-of-band signal this worker cannot
+  self-authorize. Do NOT set it from inside the worker (audit C6).
 
   Caught 2026-05-22 via worker 85420913's own LLM spawning a duplicate, and
   worker c00b9887's --launch call producing 8cf9b873 + 752e86c4.
@@ -533,9 +550,11 @@ fi
 # --launch closes it. (Safe: the route hook calls pwt-goal BEFORE writing the
 # flag, so the hook's own spawn never trips this; only later calls do.)
 #
-# Override (escape hatch): PLAN_W_TEAM_FORCE_SPAWN=1 bypasses the guard.
+# Override (escape hatch): PLAN_W_TEAM_FORCE_SPAWN=1 bypasses the guard from an
+# interactive/main session; from INSIDE a worker the out-of-band
+# PLAN_W_TEAM_OPERATOR_FORCE_SPAWN=1 is required (see the C6 $_PWT_BYPASS block).
 # Use only if you've manually confirmed the hook's prior spawn is dead/stopped.
-if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; } && [ "${PLAN_W_TEAM_FORCE_SPAWN:-0}" != "1" ]; then
+if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; } && [ "$_PWT_BYPASS" != "1" ]; then
     GUARD_PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-${PWT_PROJECT_ROOT_OVERRIDE:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
     GUARD_DIR="$GUARD_PROJECT_ROOT/.claude/state"
     if [ -d "$GUARD_DIR" ]; then

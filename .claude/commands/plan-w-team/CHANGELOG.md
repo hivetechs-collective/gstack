@@ -21,6 +21,39 @@ Entries are newest-first.
 
 ---
 
+## [1.23.1] — 2026-06-02 (814b791)
+
+PATCH — **Deferred-item follow-up from the 1.23.0 enforcement audit: the safe,
+high-value MEDIUMs.** Three of the deferred seam findings are now fixed with
+tests; the genuinely-risky / low-value ones are left deferred with explicit
+rationale (see the audit report and the design-principles "Tracked follow-ups").
+
+- `fix`: **C6** — `PLAN_W_TEAM_FORCE_SPAWN=1` could bypass the cascade/DS1/DS2
+  spawn guards from _inside_ a worker, and the cascade guard's own stderr told
+  the reader to "set FORCE_SPAWN and retry" — which a worker's LLM dutifully
+  follows, defeating the guard. In-worker (PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1)
+  the bypass now requires the out-of-band `PLAN_W_TEAM_OPERATOR_FORCE_SPAWN=1`;
+  the stderr no longer instructs an in-worker FORCE_SPAWN. New AC6/AC7 in
+  `pwt-goal-double-spawn-guard.test.sh` + updated `worker-cascade-blocked.bats`.
+- `fix`: **C7 (drift guard)** — `plan-w-team-sync-allowlist-check.sh` now also
+  requires the non-prefixed gate dependencies (`ram-budget`, `disk-budget`,
+  `claude-agents-extended`, `locate-claude`, `secret-scan`) to be allowlisted,
+  so a future rename can't silently drop one (they're all currently allowlisted).
+- `fix`: **P7** — `builder.md` now inlines the WTF-likelihood self-regulation
+  caps (20% STOP / 50-fix hard cap + regression-test discipline) so they travel
+  with the agent definition, not only via a stage-file pointer. New drift-lock
+  `builder-self-regulation.bats`.
+- Still deferred (with rationale): **C7 part 2** runtime fail-loud on a missing
+  capacity script; **C8** spawn-registry↔cleanup slug reconciliation (cross-
+  process; a wrong fix over-reaps concurrent runs — needs concurrent-safe
+  design; weekly GC backstops it); **P8** autofix scope-fence + gating-integer
+  recompute (touches review/ship; §6c-ter already fails closed on the security
+  count); **P14** native git-hook bump (the fix is untracked `.git/hooks`, low
+  value; bumps-are-manual is documented and works); **C11** no-`model:` lint
+  (a reliable lint needs Agent()-block parsing — stage prose legitimately
+  mentions `model: opus`; frontmatter pins already protect); **C12/C13** low-value
+  robustness/observability.
+
 ## [1.23.0] — 2026-06-02 (ccd386e)
 
 MINOR — **Enforcement hardening from a verified adversarial principle audit.**

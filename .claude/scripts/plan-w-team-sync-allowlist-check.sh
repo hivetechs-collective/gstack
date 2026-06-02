@@ -70,6 +70,21 @@ while IFS= read -r path; do
     fi
 done <<<"$CANDIDATES"
 
+# C7: load-bearing gate dependencies that are NOT plan-w-team-*/pwt-*-prefixed,
+# so the discovery glob above misses them. They are required for the capacity /
+# spawn / secret gates to function in a consumer repo; a rename that dropped one
+# from the allowlist would silently make those gates fail-open with no drift
+# warning (audit C7). Pin them explicitly.
+REQUIRED_NONPREFIXED="ram-budget.sh disk-budget.sh claude-agents-extended.sh locate-claude.sh secret-scan.sh"
+for name in $REQUIRED_NONPREFIXED; do
+    # Only require it if the source script actually exists (don't demand a dep a
+    # given checkout legitimately doesn't ship).
+    [ -f "$SCRIPTS_DIR/$name" ] || continue
+    if ! echo "$ALLOW" | grep -qxF "$name"; then
+        MISSING+=("$name (non-prefixed gate dependency — audit C7)")
+    fi
+done
+
 if [ "${#MISSING[@]}" -gt 0 ]; then
     {
         echo ""
