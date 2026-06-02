@@ -109,14 +109,15 @@ At every turn boundary throughout steps 0-8, Layer 4 fires its Stop hook. If ter
 
 ## Where to look next
 
-| If you want to understand...                                                | Read                                                                    |
-| --------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| The 14 pause sites and their classifier verdicts                            | `shared/orchestrator-interception.md`                                   |
-| The supervisor agent's system prompt, decision authority, action log schema | `.claude/agents/team/supervisor.md` and `shared/supervisor-protocol.md` |
-| The fleet-state JSONL schema, query subcommands, retro metric formula       | `shared/fleet-manager.md`                                               |
-| The 4 terminal states + feature-specific criteria schema for the evaluator  | `shared/goal-conditions.md`                                             |
-| Which state files exist on disk and which stage reads/writes each           | `shared/state-artifacts.md`                                             |
-| How parallel-builder strategy is chosen and Pattern A/B/C activation        | `03-execute.md` §Fleet State Integration                                |
+| If you want to understand...                                                  | Read                                                                                                               |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| The 14 pause sites and their classifier verdicts                              | `shared/orchestrator-interception.md`                                                                              |
+| The supervisor agent's system prompt, decision authority, action log schema   | `.claude/agents/team/supervisor.md` and `shared/supervisor-protocol.md`                                            |
+| The fleet-state JSONL schema, query subcommands, retro metric formula         | `shared/fleet-manager.md`                                                                                          |
+| The 4 terminal states + feature-specific criteria schema for the evaluator    | `shared/goal-conditions.md`                                                                                        |
+| Which state files exist on disk and which stage reads/writes each             | `shared/state-artifacts.md`                                                                                        |
+| How parallel-builder strategy is chosen and Pattern A/B/C activation          | `03-execute.md` §Fleet State Integration                                                                           |
+| The core design principles that govern the whole skill (and their trade-offs) | [`docs/operations/plan-w-team-design-principles.md`](../../../../docs/operations/plan-w-team-design-principles.md) |
 
 ## Kill-switch quick reference
 

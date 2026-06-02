@@ -33,7 +33,8 @@ REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 
 REPORT=""
 REPORT_DIR="docs/operations/version-uplift-reports"
-MAX_CHARS=3500
+MAX_CHARS=3500           # soft truncation target for the findings list
+HARD_CAP=4000            # pwt-goal.sh /goal preflight ceiling — the real cap
 DRY_RUN=0
 CLEAR_FLAG=1
 PENDING_FLAG=".claude/state/version-uplift-pending.flag"
@@ -144,16 +145,23 @@ done < "$TMPDIR/findings.txt"
 printf '%s' "$FOOTER" >> "$DIRECTIVE_FILE"
 
 FINAL_LEN=$(wc -c < "$DIRECTIVE_FILE" | tr -d ' ')
-log "directive: $FINAL_LEN chars (cap $MAX_CHARS)"
+log "directive: $FINAL_LEN chars (target $MAX_CHARS, hard cap $HARD_CAP)"
 
-if [ "$FINAL_LEN" -gt "$MAX_CHARS" ]; then
-    log "directive exceeds cap — refusing to spawn"
+# --- dry-run: print and exit (inspection path) ---
+# Print BEFORE the spawn-refusal so the constructed directive — including the
+# "(... N more — see report)" truncation marker — is always observable. The
+# marker can legitimately push FINAL_LEN a few chars past the soft MAX_CHARS
+# target (e.g. 100 findings @ --max-chars=3500 → ~3613); only the SPAWN path
+# enforces the hard /goal ceiling.
+if [ "$DRY_RUN" -eq 1 ]; then
+    cat "$DIRECTIVE_FILE"
     exit 0
 fi
 
-# --- dry-run: print and exit ---
-if [ "$DRY_RUN" -eq 1 ]; then
-    cat "$DIRECTIVE_FILE"
+# MAX_CHARS is the soft truncation target; refuse to SPAWN only when the
+# directive exceeds pwt-goal.sh's hard ${HARD_CAP}-char /goal preflight ceiling.
+if [ "$FINAL_LEN" -gt "$HARD_CAP" ]; then
+    log "directive exceeds hard cap $HARD_CAP — refusing to spawn"
     exit 0
 fi
 

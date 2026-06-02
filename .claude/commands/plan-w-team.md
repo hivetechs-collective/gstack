@@ -4,6 +4,8 @@ Full-lifecycle planning and execution workflow: scope challenge, specification, 
 
 Based on IndyDevDan's claude-code-hooks-mastery pattern, extended with gstack-inspired lifecycle stages (scope challenge, fix-first review, ship pipeline, retro), self-regulation heuristics, cognitive frameworks, and artifact handoffs between stages.
 
+> **Design principles**: the governing principles behind this skill (spec-first gating, layered autonomy, no wall-clock caps, human-owned one-way doors, worktree isolation, self-regulation, …) are consolidated in [`docs/operations/plan-w-team-design-principles.md`](../../docs/operations/plan-w-team-design-principles.md). Read it before proposing structural changes — a change that weakens a principle needs a recorded scope-challenge verdict, not a silent edit.
+
 ## ⚠️ Routing Pre-Check (READ FIRST — runs before everything below)
 
 **This pre-check has ABSOLUTE precedence over every other interpretation of "the user typed a slash command." If a trigger phrase matches, AUTO-LAUNCH and exit. No exceptions, no clarifying questions, no scope analysis, no "Skill is already loaded so this must be in-session" reasoning.**

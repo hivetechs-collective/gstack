@@ -21,6 +21,24 @@ Entries are newest-first.
 
 ---
 
+## [1.22.1] — 2026-06-02 (b42c689)
+
+PATCH — **Consolidated design-principles doc (close the "no single place names the principles" gap).**
+The principles governing the skill (spec-first gating, layered autonomy, no wall-clock caps,
+human-owned one-way doors, ephemeral-vs-persistent layering, worktree isolation, self-regulation,
+fix-first review, baked-in governance, model tiering, durable state, non-hijacking routing,
+self-heal, quantitative retro) were real and consistently applied but distributed across the
+manifest, `architecture-layers.md`, `self-regulation.md`, `goal-conditions.md`, and the DIRECTION
+spec — with no one place to check a proposed change against.
+
+- `docs`: **`docs/operations/plan-w-team-design-principles.md`** (new) — 14 governing principles,
+  each with its enforcing mechanism cited, a §"how the principles interact / trade off" section,
+  and a "when you change the skill" checklist.
+- `docs`: **`shared/architecture-layers.md`** — added a "Where to look next" row pointing at the
+  new principles doc.
+- `docs`: **`plan-w-team.md`** — added a Design-principles callout under the intro linking the doc
+  and noting that weakening a principle needs a recorded scope-challenge verdict.
+
 ## [1.22.0] — 2026-06-01
 
 MINOR — **Access-control content-signal gate (catch broken-access-control by diff content, gate it).**
