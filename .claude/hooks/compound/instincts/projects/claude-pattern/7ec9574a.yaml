@@ -1,13 +1,13 @@
 ---
 id: 7ec9574a
 trigger: "when fixing bugs in bug_fixing context"
-confidence: 0.6
+confidence: 0.9
 domain: workflow
 scope: project
 project: claude-pattern
 created: 2026-05-26T17:55:36Z
-last_applied: 2026-05-26T18:01:24Z
-applications: 1
+last_applied: 2026-06-02T12:29:30Z
+applications: 4
 evidence:
   - "First observed in session 1779818136"
 ---

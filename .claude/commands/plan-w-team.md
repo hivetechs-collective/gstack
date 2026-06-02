@@ -47,7 +47,7 @@ If the route hook already fired on this turn, the Claude Code harness delivers i
 
 **History**: the original Bug 2 fix (commit `3790fca`) checked for the additionalContext marker `PWT-O1 origin-chat supervisor protocol`. That check NEVER fired because the harness drops additionalContext from UserPromptSubmit hooks. Result: every natural-language trigger produced double-spawn (hook spawn + manifest spawn). The systemMessage-based check above fires correctly because the harness DOES deliver systemMessage as a `hook_system_message` attachment.
 
-**PWT-DS1 — process-level backstop (LLM-attention is first line, flag-file is backup):** the visual marker check above is the first line of defense, but LLM-attention is not load-bearing — an origin assistant can read the marker and still call `pwt-goal.sh --worker-only` anyway (the failure mode that produced commit `c9cfcd5`). The deterministic backstop is at the process level: when the route hook spawns a worker, it writes a flag file at `.claude/state/plan-w-team-hook-spawn-<parent_sid_short>.flag` containing the worker SID, parent SID, spawn timestamp, and trigger pattern. `pwt-goal.sh --worker-only` checks for this flag at startup; if a flag from the current parent SID exists within the last 60 seconds, it refuses to spawn (exit 3 (PWT_DS1_DUPLICATE label, code returns 3)) regardless of what the manifest narrative says. The flag is registered in `shared/state-artifacts.md`.
+**PWT-DS1 — process-level backstop (LLM-attention is first line, flag-file is backup):** the visual marker check above is the first line of defense, but LLM-attention is not load-bearing — an origin assistant can read the marker and still call `pwt-goal.sh --worker-only` anyway (the failure mode that produced commit `c9cfcd5`). The deterministic backstop is at the process level: when the route hook spawns a worker, it writes a flag file at `.claude/state/plan-w-team-hook-spawn-<parent_sid_short>.flag` containing the worker SID, parent SID, spawn timestamp, and trigger pattern. `pwt-goal.sh --worker-only` checks for this flag at startup; if a flag from the current parent SID is fresh within the `PWT_DOUBLE_SPAWN_WINDOW_MIN` window (default 3 minutes, mtime-based — the flag is not auto-deleted), it refuses to spawn (exit 3 (PWT_DS1_DUPLICATE label, code returns 3)) regardless of what the manifest narrative says. The flag is registered in `shared/state-artifacts.md`.
 
 **PWT-DS2 — cascade guard (workers cannot self-multiply):** PWT-DS1 prevents the origin-chat double-spawn; PWT-DS2 prevents a different failure mode where a worker's own goal text contains `Use /plan-w-team to ...` (verbatim from the `pwt-goal.sh` template) and the worker's LLM matches the trigger pattern and calls `pwt-goal.sh` again. To stop the cascade, `pwt-goal.sh --worker-only` propagates `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1` into the worker's environment; any subsequent `pwt-goal.sh` invocation (both `--worker-only` and `--launch`) detects this env signal and exits 4 (`PWT_DS2_CASCADE`). Escape hatch for legitimate nested runs: `PLAN_W_TEAM_FORCE_SPAWN=1` (documented in stderr of the refusal). See `shared/orchestrator-interception.md` §Cascade Guard for the full diagnostic chain that prompted commit `553ab85`.
 
@@ -61,7 +61,7 @@ flowchart TD
     E --> F{Manifest Step 3a check<br/>scan transcript for marker}
     F -->|marker present| G[Skip to Step 3c<br/>act as supervisor]
     F -->|marker absent| H[Step 3b: call pwt-goal.sh]
-    H --> I{PWT-DS1 deterministic guard<br/>flag file present in last 60s?}
+    H --> I{PWT-DS1 deterministic guard<br/>flag fresh within window?<br/>default 3 min}
     I -->|present| J[Refuse spawn → exit 3<br/>cite flag path PWT_DS1_DUPLICATE]
     I -->|absent| K[Proceed with spawn]
     G --> L[Exactly ONE bg worker]
@@ -290,7 +290,14 @@ When BOTH hold, the lead MAY skip reading a stage file IF the lead has internali
 
 Where `<stage_name>` is one of `00-scope-challenge`, `01-specification`, `02-task-breakdown`, `03-execute`, `04-fix-first-review`, `05-ship`, `06-post-ship`, `07-retro` (or a shared/ stage). The `<reason>` should be one short clause (e.g., "already loaded in this turn", "trivial doc-only edit", "Step 5 review only references stage file by name").
 
-Retros downstream MAY count `⚠ stage-file-bypass:` occurrences against the bypass-rate quality signal. A run with multiple unjustified bypasses suggests the stage files need consolidation or the fast-path criterion needs widening.
+**ALSO append the same line to the run's bypass log** so the marker is countable after compaction (the transcript is not reliably greppable from the retro stage):
+
+```bash
+printf '⚠ stage-file-bypass: skipping %s — reason: %s\n' "<stage_name>" "<reason>" \
+  >> ".claude/state/plan-w-team-bypass-${SLUG}.log"
+```
+
+Step 8 retro **does** count these (§8j-bypass) via `.claude/scripts/plan-w-team-bypass-rate.sh`, emitting a 1-5 `bypass_rate` quality signal into the retro JSON (0 bypasses = 5). This is a _floor_: it counts markers the lead actually emitted — a silently-skipped Read that never emitted a marker is not caught (true detection would need a hook diffing stage-file Read tool-calls). A run with multiple unjustified bypasses suggests the stage files need consolidation or the fast-path criterion needs widening. See audit P1 (`docs/operations/pwt-principles-enforcement-audit-2026-06-02.md`).
 
 ### Top-of-Pipeline Goal Activation (PWT-T5b)
 

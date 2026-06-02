@@ -45,7 +45,7 @@ set -uo pipefail
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-CLASSIFIER_DOC="$REPO_ROOT/.claude/commands/plan-w-team/shared/orchestrator-interception.md"
+CLASSIFIER_DOC="${PWT_CLASSIFIER_DOC_OVERRIDE:-$REPO_ROOT/.claude/commands/plan-w-team/shared/orchestrator-interception.md}"
 STATE_DIR="$REPO_ROOT/.claude/state"
 
 # ---------------------------------------------------------------------------
@@ -146,6 +146,29 @@ grep_classifier_verdict() {
 }
 
 VERDICT="$(grep_classifier_verdict "$CALL_SITE" || true)"
+
+# ---------------------------------------------------------------------------
+# PWT-P4 hard-gate floor — irreversible one-way doors NEVER auto-decide.
+# ---------------------------------------------------------------------------
+# The verdict above is parsed from an editable markdown table. A single-cell
+# edit (or a doc-sync drift) flipping one of these three from `user` to
+# `orchestrator` would let an ephemeral agent auto-decide an irreversible
+# action — push to remote, a secret allow-list edit, or a mid-flight scope
+# unlock — that the user must own. Hardcode the floor here so the table can
+# only ever ADD scrutiny to these labels, never remove it. This also fails
+# SAFE when the table row is missing entirely (empty verdict → forced user
+# rather than the UnknownCallSiteError below). The single explicit, pre-
+# authorized opt-out (push-ack under PLAN_W_TEAM_AUTO_APPROVE_PUSH=1) is
+# handled in the `user` case. See audit P4
+# (docs/operations/pwt-principles-enforcement-audit-2026-06-02.md).
+case "$CALL_SITE" in
+  push-ack|secret-scan-allow|scope-unlock-for-drift)
+    if [ "$VERDICT" != "user" ]; then
+      echo "[orchestrator-route] PWT-P4 hard-gate floor: '$CALL_SITE' classifier verdict was '${VERDICT:-<empty>}'; forcing 'user' (one-way door must never auto-decide)" >&2
+      VERDICT="user"
+    fi
+    ;;
+esac
 
 # ---------------------------------------------------------------------------
 # AC3 — Unknown call-site label → non-zero exit with UnknownCallSiteError

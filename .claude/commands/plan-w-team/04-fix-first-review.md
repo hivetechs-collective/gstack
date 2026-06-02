@@ -413,6 +413,17 @@ This is the executable machinery behind the "Broken access control (content sign
 - **CS-3 service / bypass / QA / admin-token-gated handler** — a handler reachable via `QA_SIM_TOKEN`, a `*_BYPASS_*` env var, or a service-token / `x-*-bypass` header check that performs a mutation.
 - **CS-4 where/query-by-id without a tenant/owner predicate** — `where(eq(table.id, …))` / `findById` / `WHERE id = $1` with no sibling tenant/owner predicate.
 
+**Run the deterministic scanner as the detection FLOOR** (audit P9c — detection must not be LLM-only; a deterministic gate is only as good as the detection feeding it):
+
+```bash
+# Greps the diff's ADDED hunks for CS-1..CS-4 token shapes; deny-by-default.
+.claude/scripts/access-control-content-scan.sh --slug "$SLUG"
+# exit 3 = suspect(s) found (adjudicate each in Steps 2-4 below);
+# exit 0 = clean; exit 2 = could not scan → treat as review-required.
+```
+
+You **MUST NOT** record `access_control_high_unresolved: 0` (Step 4) while any CS suspect over a data-mutating endpoint remains un-adjudicated. Step 6 §6c-ter re-runs this exact scanner and fails closed if a `0` count contradicts a live signal — so a missed detection cannot quietly become a clean ship. The scanner is a floor, not a substitute for judgment: it can over-flag (adjudicate and clear those with a one-line rationale) and cannot prove the absence of a cleverly-written violation (Steps 2-3 still apply).
+
 **Step 2 — for each data-mutating endpoint touched by the diff, answer the five invariants** in `shared/access-control-invariants.md`: INV-1 object ownership (BOLA), INV-2 function/role authorization (BFLA), INV-3 mass-assignment / privilege-field guard (BOPLA), INV-4 bypass/test-token scoping, INV-5 tenant isolation under writes + JOINs. "Cannot tell from the diff" counts as **not satisfied** (deny-by-default). If `security-expert` ran as a Pass-1 reviewer (§5b-pre), it produces the per-endpoint verdict table; otherwise the lead runs the rubric inline.
 
 **Step 3 — classify and gate.** A **confirmed** high-severity access-control finding in the diff's own touched code — a real, exploitable A01 / API1 (cross-tenant IDOR · INV-1) / API3 (privilege-field or mass-assignment · INV-3) / API5 (bypass-token · INV-4) violation — is a **Pass-1 CRITICAL that blocks ship**. Severity (not the invariant id) is the gate. It is NOT routed to the §5d-bis retroactive `N.t` queue (see §5d-ter). Lower-severity or untouched-sibling gaps follow the normal §5d-bis retroactive path. Two-way-door content-signal nits (e.g. a clearly QA-only fixture) follow §5d auto-fix-vs-ask like any other Pass-1 check.
@@ -449,7 +460,7 @@ DIFF_FILES=$(git diff --name-only "$BASE_SHA"..HEAD)
 EXISTING_TESTS=$(git ls-files | grep -E '\.(test|spec)\.[tj]sx?$|_test\.py$|tests?/' | sort -u)
 ```
 
-Invoke `test-gap-analyzer` (Brain-tier, Opus 4.7) with:
+Invoke `test-gap-analyzer` (Brain-tier, Opus 4.8) with:
 
 - `slug` — the /plan-w-team SLUG
 - `diff_files` — paths + line ranges from the diff
@@ -512,7 +523,7 @@ EXISTING_SEC_TESTS=$(git ls-files | grep -E '(security|auth|injection|xss|csrf|s
 OWASP_MAP=".claude/commands/plan-w-team/shared/owasp-top10-mapping.md"
 ```
 
-Invoke `security-gap-analyzer` (Brain-tier, Opus 4.7) with:
+Invoke `security-gap-analyzer` (Brain-tier, Opus 4.8) with:
 
 - `slug` — the /plan-w-team SLUG
 - `diff_files` — paths + line ranges from the diff

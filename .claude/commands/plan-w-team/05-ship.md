@@ -421,7 +421,14 @@ a red gate or a merely-"noted" defect/flaky item.**
 - Re-read the persisted review findings (§6a): if any defect/flaky was logged as merely
   "noted" without a completed fix, the ship gate refuses — return it to fix-now first.
 
-## 6b-bis. No-GitHub-Actions Drift Gate (ENFORCING)
+## 6b-bis. No-GitHub-Actions Drift Detector (git-level defense-in-depth)
+
+> Primary, write-time enforcement is the `block-gh-actions-build.sh` PreToolUse hook
+> (audit P9b) — it blocks an Edit/Write that introduces a build/CI/deploy workflow before
+> it ever reaches the tree. This §6b-bis check is git-level **defense-in-depth**: it catches
+> a workflow introduced outside the Write/Edit path (e.g. a `git apply`, a merge, or a
+> pre-hook bypass). It is a defect _detector_ (it `echo`s), not a hard `exit 1` gate — the
+> hook is the gate.
 
 GitHub Actions MUST NOT be introduced as a build/CI/deploy path — the canonical path is
 the local Makefile + admin-squash-merge (`scripts/Makefile.template`). Full rule and the
@@ -668,6 +675,31 @@ if [ "$AC_HIGH_UNRESOLVED" -gt 0 ]; then
   echo "  assertQaScoped — see shared/secure-by-default.md), which downgrades the severity."
   echo "  Then re-run Step 5 §5h to refresh the count before retrying ship."
   exit 1
+fi
+
+# ── Deterministic detection backstop (audit P9c) ─────────────────────────────
+# The count above is LLM-authored in Step 5 §5b. Re-run the deterministic
+# content scanner over the diff: if it flags CS-1..CS-4 signals that Step 5
+# recorded as 0, the DETECTION step missed a live A01 (a deterministic gate is
+# only as trustworthy as the detection feeding it). Fail CLOSED — this closes
+# the GIGO hole where a clean LLM-authored count passes a real bug through.
+SCAN_SCRIPT="$(git rev-parse --show-toplevel 2>/dev/null)/.claude/scripts/access-control-content-scan.sh"
+if [ -x "$SCAN_SCRIPT" ]; then
+  "$SCAN_SCRIPT" --slug "$SLUG" --quiet
+  SCAN_RC=$?
+  if [ "$SCAN_RC" -eq 3 ] && [ "$AC_HIGH_UNRESOLVED" -eq 0 ]; then
+    echo "✗ Ship gate 6c-ter: the deterministic access-control scanner flagged content"
+    echo "  signals (CS-1..CS-4) in the diff, but Step 5 recorded"
+    echo "  access_control_high_unresolved: 0 — detection missed a signal the scanner caught."
+    SUSPECTS_FILE="$(git rev-parse --show-toplevel 2>/dev/null)/.claude/state/plan-w-team-content-signal-suspects-$SLUG.txt"
+    [ -f "$SUSPECTS_FILE" ] && sed 's/^/    /' "$SUSPECTS_FILE"
+    echo "  Adjudicate each in Step 5 §5b (fix, or prove non-exploitable e.g. QA-scoped via"
+    echo "  assertQaScoped), then re-run §5h so the count reflects reality. Fail-closed."
+    exit 1
+  elif [ "$SCAN_RC" -eq 2 ]; then
+    echo "⚠ Ship gate 6c-ter: access-control scanner could not produce a diff to corroborate"
+    echo "  the clean count — manually confirm no access-control change shipped unreviewed."
+  fi
 fi
 
 echo "✓ Ship gate 6c-ter: no unresolved high-severity access-control findings"
@@ -999,6 +1031,15 @@ fi
 The helper enforces every safety invariant itself (containment to `.claude/worktrees/`, uncommitted check, in-use check, idempotency) and returns `skipped:true` with a `safe-skip:*` reason rather than failing when a guard trips — so wiring it unconditionally on the PASS path is safe. Repo-wide accumulated-debt sweeps are the weekly launchd GC, not this per-merge step. Full contract: `docs/operations/worktree-lifecycle.md`. Kill switch: `PWT_WORKTREE_ON_MERGE_DISABLE=1`.
 
 ## End-of-Stage Status Block (PWT-T5)
+
+**Ship-verdict artifact (C3 — deterministic SUCCESS corroboration).** Reaching this point means every §6 ENFORCING gate passed (each `exit 1`s on failure: §6a-ter secret scan, §6b test suite, §6c coverage, §6c-bis security tier, §6c-ter access-control). Write a machine-readable ship-verdict that the goal-evaluator **requires** before honoring SUCCESS inside a bg worker — so a worker cannot self-declare the `/goal` done by emitting `retro-complete` transcript text alone, bypassing the ship gate (audit C3, `docs/operations/pwt-principles-enforcement-audit-2026-06-02.md`):
+
+```bash
+SHIP_VERDICT=".claude/state/plan-w-team-ship-verdict-${SLUG}.json"
+mkdir -p .claude/state
+printf '{"slug":"%s","verdict":"PASS","ts":"%s"}\n' \
+  "$SLUG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$SHIP_VERDICT"
+```
 
 At the end of this stage, emit a status block for the `/goal` evaluator. This is a one-line invocation; the helper handles all field population (workflow lock, supervisor log, fleet log, escalations).
 

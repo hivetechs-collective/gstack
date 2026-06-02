@@ -803,6 +803,32 @@ fi
 
 **Kill switches:** `PWT_WORKTREE_GC_DISABLE=1` and `PWT_COMPANION_GC_DISABLE=1` each no-op their respective sweep. Both default ON. See `docs/operations/worktree-lifecycle.md` for the full lifecycle contract, the per-merge cleanup path (`§Step 6 ship`), and how to install the weekly accumulated-debt GC.
 
+## 8j-octies. Stage-File Bypass Rate (quality signal — P1)
+
+Counts the `⚠ stage-file-bypass:` markers the lead appended to the run's bypass log (`plan-w-team.md` Fast Path) and records a 1-5 `bypass_rate` signal into the retro JSON. This is the deterministic half of P1: marker _emission_ is still lead-driven (a floor — a silently-skipped Read that never emitted a marker is not caught), but the _counting_ is now real and testable, replacing the previously fictional "retros MAY count" prose. Advisory; never blocks the retro.
+
+```bash
+SLUG="<feature-slug>"
+RETRO_STATE=".claude/state/plan-w-team-retro-${SLUG}.json"
+if [ -x .claude/scripts/plan-w-team-bypass-rate.sh ]; then
+  BYPASS_JSON=$(.claude/scripts/plan-w-team-bypass-rate.sh --slug "$SLUG" 2>/dev/null || echo '{"count":0,"score":5,"source":"none"}')
+  BYPASS_COUNT=$(printf '%s' "$BYPASS_JSON" | jq -r '.count // 0')
+  BYPASS_SCORE=$(printf '%s' "$BYPASS_JSON" | jq -r '.score // 5')
+  echo "✓ stage-file-bypass: count=$BYPASS_COUNT score=$BYPASS_SCORE/5"
+  if [ -f "$RETRO_STATE" ] && command -v jq >/dev/null 2>&1; then
+    TMP=$(mktemp "${RETRO_STATE}.tmp.XXXXXX")
+    jq --argjson b "$BYPASS_JSON" '.quality_signals.bypass_rate = $b' \
+      "$RETRO_STATE" > "$TMP" 2>/dev/null && mv "$TMP" "$RETRO_STATE" || rm -f "$TMP"
+  fi
+  # On a successful retro, clear the run's bypass log (mirrors other §8j cleanups).
+  if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
+    rm -f ".claude/state/plan-w-team-bypass-${SLUG}.log"
+  fi
+fi
+```
+
+A `bypass_rate.score` below 5 means the lead skipped at least one stage-file Read outside the fast path — investigate whether the stage files need consolidation or the fast-path criterion (HOLD + ≤2 tasks) should widen.
+
 ## 8j-octies. Spec Fan-Out Catch-Rate (advisory — C1 pilot)
 
 When the Step-1 multi-angle spec fan-out ran (`PLAN_W_TEAM_SPEC_FANOUT=1`, §1b-pre),

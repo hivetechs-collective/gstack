@@ -51,6 +51,11 @@ EXCLUDES=(
   "--glob=!.claude/scripts/plan-w-team-symmetry-check.sh"
   "--glob=!docs/specs/**"
   "--glob=!.claude/state/**"
+  # Test fixtures hard-code concrete-slug artifact paths (plan-w-team-manifest-feat-x.json,
+  # …-wt-run.json, …-killed.json, …-b32.json) that are NOT production readers — counting
+  # them as orphans kept the checker permanently RED, eroding the very signal P11 depends
+  # on. Exclude the *.test.sh corpus from the orphan scan. (Audit P11.)
+  "--glob=!**/*.test.sh"
 )
 
 orphans=()

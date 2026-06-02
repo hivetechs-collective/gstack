@@ -81,7 +81,7 @@ The evaluator hook fires on every `Stop` event (Claude finishes a turn). It:
 2. Returns immediately if no active goal state file exists (no `/plan-w-team` run in progress).
 3. Returns immediately if `stop_hook_active=true` in hook input (block-cap protection).
 4. Reads the transcript file path from hook input, tails recent lines.
-5. Checks for each of the 3 terminal-state anchors via grep.
+5. Checks for each of the 3 directly-detected terminal-state anchors via grep (`API_HALT`, the 4th, arises only via parent-child propagation — see §Parent-Child Terminal Propagation).
 6. If a terminal state is hit: persists `terminal_state` + `terminal_reason` to state file, exits 0 (let Claude stop).
 7. If no terminal state: outputs `{"decision":"block","reason":"..."}` to keep Claude working.
 
@@ -92,13 +92,14 @@ The evaluator **has no semantic intelligence**. It only matches concrete pattern
 
 Both blocks contain machine-readable JSON. The evaluator greps for specific anchors:
 
-| Terminal state          | Anchor pattern (grep)                                                                                       |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `SUCCESS`               | `"stage":"retro-complete"` AND `"workflow_lock":"done"`                                                     |
-| `USER_ESCALATION_HALT`  | `"pending_escalations":[...]` containing `"push-ack"`, `"secret-scan-allow"`, or `"scope-unlock-for-drift"` |
-| `LOW_CONFIDENCE_STREAK` | `"low_confidence_routes":N` where N ≥ 3                                                                     |
+| Terminal state          | Anchor pattern (grep)                                                                                                                                                                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SUCCESS`               | `"stage":"retro-complete"` AND `"workflow_lock":"done"`                                                                                                                                                                                                 |
+| `USER_ESCALATION_HALT`  | `"pending_escalations":[...]` containing `"push-ack"`, `"secret-scan-allow"`, or `"scope-unlock-for-drift"`                                                                                                                                             |
+| `LOW_CONFIDENCE_STREAK` | `"low_confidence_routes":N` where N ≥ 3                                                                                                                                                                                                                 |
+| `API_HALT`              | No direct transcript anchor — a derived state: a registered child worker idle ≥ `PWT_API_HALT_IDLE_S` (600s) whose last turn matches a transient-connection pattern. Arises only via parent-child propagation (see §Parent-Child Terminal Propagation). |
 
-**No `TIME_OR_TURN_CAP` terminal state**: the only valid termination signals are goal-success (above) and the three hard-gate / low-confidence anchors. The evaluator does not track turn count or wall-clock and will not auto-stop a run for taking too long. If the pipeline truly stalls without producing those signals, the user halts it manually (`/goal clear` or session interrupt).
+**No `TIME_OR_TURN_CAP` terminal state**: the only valid termination signals are goal-success (above), the hard-gate / low-confidence anchors, and `API_HALT` (a delegated child that died on a transient API error). The evaluator does not track turn count or wall-clock and will not auto-stop a run for taking too long. If the pipeline truly stalls without producing those signals, the user halts it manually (`/goal clear` or session interrupt).
 
 ## The Condition (copy-paste template)
 
@@ -137,13 +138,14 @@ The condition is well under `/goal`'s 4000 char limit.
 
 ## Terminal-State Reference
 
-| State                   | Transcript anchor                                                                                                                                     | What it means                                                             |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| `SUCCESS`               | A status block with `stage: "retro-complete"` AND `workflow_lock: "done"` (emitted by `07-retro.md`)                                                  | Pipeline ran end-to-end without escalation; ship gate passed              |
-| `USER_ESCALATION_HALT`  | Any status/summary block with non-empty `pending_escalations` containing one of the 3 hard-gate labels                                                | A hard-gate was hit; user must respond before pipeline can proceed        |
-| `LOW_CONFIDENCE_STREAK` | Either: 3 consecutive supervisor summary blocks mentioning "low-confidence" in `goal_progress`, OR any status block with `low_confidence_routes >= 3` | Supervisor's decisions are unreliable; do not let it continue dispatching |
+| State                   | Transcript anchor                                                                                                                                                    | What it means                                                                                                          |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `SUCCESS`               | A status block with `stage: "retro-complete"` AND `workflow_lock: "done"` (emitted by `07-retro.md`)                                                                 | Pipeline ran end-to-end without escalation; ship gate passed                                                           |
+| `USER_ESCALATION_HALT`  | Any status/summary block with non-empty `pending_escalations` containing one of the 3 hard-gate labels                                                               | A hard-gate was hit; user must respond before pipeline can proceed                                                     |
+| `LOW_CONFIDENCE_STREAK` | Either: 3 consecutive supervisor summary blocks mentioning "low-confidence" in `goal_progress`, OR any status block with `low_confidence_routes >= 3`                | Supervisor's decisions are unreliable; do not let it continue dispatching                                              |
+| `API_HALT`              | No transcript anchor — derived during parent-child propagation when a delegated child worker is idle ≥ 600s and its last turn matches a transient-connection pattern | A delegated child died on a transient API error; surface to the user rather than masking it under the parent's SUCCESS |
 
-**Removed:** an earlier `TIME_OR_TURN_CAP` terminal state was deleted by design (2026-05-19). Wall-clock and turn-count termination conflated "the work is done" with "we've used our budget" — neither is a legitimate stopping signal for autonomous engineering work. The three states above are the only ways a `/plan-w-team` run reaches terminal.
+**Removed:** an earlier `TIME_OR_TURN_CAP` terminal state was deleted by design (2026-05-19). Wall-clock and turn-count termination conflated "the work is done" with "we've used our budget" — neither is a legitimate stopping signal for autonomous engineering work. The four states above (three directly-detected + `API_HALT` via propagation) are the only ways a `/plan-w-team` run reaches terminal.
 
 ### Evaluator State Machine
 
@@ -186,7 +188,7 @@ stateDiagram-v2
 **Reading the diagram:**
 
 - The hook is **always active** while the goal state file exists; the kill switch (`PLAN_W_TEAM_DISABLE_GOAL=1`) removes the hook from the path entirely.
-- The three terminal states are **mutually exclusive per evaluation**; precedence (USER_ESCALATION_HALT > LOW_CONFIDENCE_STREAK > SUCCESS) only matters for parent-child propagation (next section).
+- The three directly-detected terminal states are **mutually exclusive per evaluation**; precedence — `USER_ESCALATION_HALT > LOW_CONFIDENCE_STREAK > API_HALT > SUCCESS` (the hook's canonical chain, `plan-w-team-goal-evaluator.sh` ~L532) — only matters for parent-child propagation (next section). `API_HALT` is never detected directly; it arises only when propagating a dead child's state.
 - The `CheckFeatureCriteria` branch is what PWT-T5c adds on top of T5b: a non-empty `feature_specific_done_criteria` array forces an AND-check between generic anchors and every per-AC pattern before SUCCESS fires. With an empty array (or a missing field), behavior is identical to T5b — generic anchors alone fire SUCCESS.
 - "BLOCK stop" means the hook exits with `"continue": true` so Claude can't terminate; "let Claude stop" means the hook exits with `"continue": false`. The hook is the only thing standing between the run and termination — wrong hook decision = wrong run lifetime.
 
@@ -201,7 +203,7 @@ The evaluator (`.claude/hooks/plan-w-team-goal-evaluator.sh`) handles this by re
 3. When every registered worker has a non-null `terminal_state`, propagate the worst-precedence state to the parent:
 
    ```text
-   SUCCESS < LOW_CONFIDENCE_STREAK < USER_ESCALATION_HALT
+   SUCCESS < API_HALT < LOW_CONFIDENCE_STREAK < USER_ESCALATION_HALT
    ```
 
    A halted worker halts the parent (must surface to user). A clean worker satisfies parent SUCCESS. Mixed signals win toward the more severe state.

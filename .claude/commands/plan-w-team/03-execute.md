@@ -201,7 +201,7 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
      // Do NOT set `model:` here. The Agent tool's enum accepts only aliases
      // (opus/sonnet/haiku) and would override the specialist's frontmatter pin.
      // Tier selection happens in the agent-definition file (e.g., builder.md
-     // has `model: claude-opus-4-6` for Hands tier). See SKILL.md Model Strategy.
+     // has `model: claude-opus-4-7` for Hands tier). See SKILL.md Model Strategy.
      prompt: "You are rules-builder. Claim tasks from the pool and implement them.
 
      Read `.claude/commands/plan-w-team/shared/self-regulation.md` for WTF-likelihood
@@ -635,7 +635,7 @@ while iteration < max_iterations:
       # Do NOT set `model:` here. The Agent tool's enum accepts only aliases
       # (opus/sonnet/haiku) and would override the evaluator's frontmatter pin.
       # Brain-tier pinning lives in .claude/agents/team/evaluator.md frontmatter
-      # (`model: claude-opus-4-7`). See SKILL.md Model Strategy → API note.
+      # (`model: claude-opus-4-8`). See SKILL.md Model Strategy → API note.
       prompt: "You are the evaluator. Read your instructions at
         .claude/agents/team/evaluator.md
 

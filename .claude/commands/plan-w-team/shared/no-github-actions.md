@@ -1,6 +1,6 @@
 # No GitHub Actions for Build / CI / Deploy — Governance Rule
 
-**Status**: ENFORCING. This is a `/plan-w-team` governance rule, not advice.
+**Status**: ENFORCING — backed by a real mechanism, not just prose (audit P9b). Write-time enforcement is the `block-gh-actions-build.sh` PreToolUse hook: it blocks creating/editing a `.github/workflows/*.ya?ml` that runs build/CI/deploy steps (a `jobs:` block with `run:`/`uses:`). Observer-only workflows (`ci-alert*`, `board-auto-add*`) are exempt; kill switch `PLAN_W_TEAM_DISABLE_GH_ACTIONS_GUARD=1`. The Step 6 §6b-bis check is git-level defense-in-depth (catches a workflow introduced outside the Write/Edit path). This is a `/plan-w-team` governance rule, not advice.
 
 GitHub Actions MUST NOT be used as a build, CI, or deploy path. The canonical path
 is the **local Makefile + admin-squash-merge** workflow (see `scripts/Makefile.template`,
@@ -45,12 +45,12 @@ not specific to one project.
 
 **The model (parameterize `<project>` and `<provider>`):**
 
-| Component | What it is |
-| --- | --- |
-| `~/.config/<project>/deploy.env` | `0600` file, **outside the repo**, holding the provider token (+ account/target id). The single durable secret store. |
-| `scripts/load-deploy-env.sh` | Sourceable. Loads that file into the env **only when the token var is unset** (an injected env always wins). Sourced by the deploy preflight **and** by every `make deploy-*` recipe. |
-| `scripts/setup-<provider>-token.sh` | One-time bootstrap: writes the `0600` file atomically (never echoes the token) and **verifies** the token resolves to the expected account/target before declaring success. Re-run to rotate. |
-| `scripts/preflight-deploy-account.sh` | Optional but recommended guardrail: refuses to deploy when the resolved token/login points at the **wrong** account/target. The env-file is NOT a bypass — the guardrail still runs. |
+| Component                             | What it is                                                                                                                                                                                    |
+| ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `~/.config/<project>/deploy.env`      | `0600` file, **outside the repo**, holding the provider token (+ account/target id). The single durable secret store.                                                                         |
+| `scripts/load-deploy-env.sh`          | Sourceable. Loads that file into the env **only when the token var is unset** (an injected env always wins). Sourced by the deploy preflight **and** by every `make deploy-*` recipe.         |
+| `scripts/setup-<provider>-token.sh`   | One-time bootstrap: writes the `0600` file atomically (never echoes the token) and **verifies** the token resolves to the expected account/target before declaring success. Re-run to rotate. |
+| `scripts/preflight-deploy-account.sh` | Optional but recommended guardrail: refuses to deploy when the resolved token/login points at the **wrong** account/target. The env-file is NOT a bypass — the guardrail still runs.          |
 
 **Why a `0600` file and not the obvious alternatives:**
 
@@ -69,7 +69,7 @@ multi-account. (Cloudflare worked example: `Account › Workers Scripts:Edit` +
 `Account › Cloudflare Pages:Edit`, Account Resources → the one prod account only.)
 
 **Makefile wiring (the recipe must source the loader inline):** a preflight prereq
-runs in a *separate* process, so a token it loads does **not** propagate to the
+runs in a _separate_ process, so a token it loads does **not** propagate to the
 recipe. Each deploy recipe loads it again so the child deploy CLI inherits it:
 
 ```make
@@ -86,7 +86,7 @@ outside the repo so it can't be committed; never echo the token when verifying.
 (Headless) Deploy Credential". A repo adopting this copies that shape and swaps in
 its own `<project>` dir, `<provider>` token, and account/target id. Per-repo deploy
 recipes belong in that repo's Makefile (seeded from `scripts/Makefile.template`); only
-this *standard* lives in the skill.
+this _standard_ lives in the skill.
 
 ## What Counts as a Violation (a defect to fix)
 

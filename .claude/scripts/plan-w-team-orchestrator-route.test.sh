@@ -669,6 +669,51 @@ preflight_info() {
 }
 
 # ---------------------------------------------------------------------------
+# AC8 — PWT-P4 hard-gate floor (audit pwt-principles-enforcement-2026-06-02)
+# ---------------------------------------------------------------------------
+# The 3 irreversible one-way doors (push-ack, secret-scan-allow,
+# scope-unlock-for-drift) must route to the USER even when the classifier
+# table is tampered to say `orchestrator`. The router hardcodes a floor that
+# forces `user` for these labels regardless of the (editable) table.
+make_tampered_classifier() {
+  # Copy the real classifier doc, flip all 3 hard-gate verdicts to orchestrator.
+  # Single-quoted sed exprs → backticks are literal, not command substitution.
+  local out="$TEST_TMPDIR/tampered-interception.md"
+  sed -E \
+    -e 's/(`push-ack`[[:space:]]*[|][[:space:]]*)`user`/\1`orchestrator`/' \
+    -e 's/(`secret-scan-allow`[[:space:]]*[|][[:space:]]*)`user`/\1`orchestrator`/' \
+    -e 's/(`scope-unlock-for-drift`[[:space:]]*[|][[:space:]]*)`user`/\1`orchestrator`/' \
+    "$REPO_ROOT/.claude/commands/plan-w-team/shared/orchestrator-interception.md" > "$out"
+  printf '%s' "$out"
+}
+
+_hard_gate_floor_case() {
+  local site="$1"
+  reset_mock_logs
+  local tdoc; tdoc="$(make_tampered_classifier)"
+  local exit_code stdout stderr
+  run_router_cmd exit_code stdout stderr \
+    PWT_CLASSIFIER_DOC_OVERRIDE="$tdoc" \
+    PLAN_W_TEAM_AUTO_APPROVE_PUSH="" \
+    MOCK_AGENT_MODE="ok" \
+    -- \
+    "$site" "test-slug-p4-${site}" ctx
+  # Tampered table said `orchestrator`, but the floor must NOT spawn the agent
+  assert_file_not_contains "P4/$site: no agent_invoke despite tampered table" \
+    "$MOCK_AGENT_CALL_LOG" "agent_invoke called" || return 1
+  # …and must route to the user instead
+  assert_file_contains "P4/$site: ask_user_question called" \
+    "$MOCK_ASK_CALL_LOG" "ask_user_question called" || return 1
+  # …and must announce the floor override on stderr
+  assert_stderr_contains "P4/$site: hard-gate floor warning" \
+    "$stderr" "PWT-P4 hard-gate floor" || return 1
+}
+
+test_ac8a() { _hard_gate_floor_case "push-ack"; }
+test_ac8b() { _hard_gate_floor_case "secret-scan-allow"; }
+test_ac8c() { _hard_gate_floor_case "scope-unlock-for-drift"; }
+
+# ---------------------------------------------------------------------------
 # Main runner
 # ---------------------------------------------------------------------------
 printf 'plan-w-team-orchestrator-route.test.sh\n'
@@ -686,6 +731,9 @@ run_test "AC4: malformed decision block: fall through to ASK with prose preamble
 run_test "AC5: concurrent invocations: mkdir lock serializes, no torn JSONL" test_ac5
 run_test "AC6: symmetry-check exits 0 after router + registry row exist (T1b)" test_ac6
 run_test "AC7: --resume with no decision log: legacy ASK, no JSONL, no warnings" test_ac7
+run_test "AC8a: P4 hard-gate floor: push-ack forced to user despite tampered table" test_ac8a
+run_test "AC8b: P4 hard-gate floor: secret-scan-allow forced to user despite tampered table" test_ac8b
+run_test "AC8c: P4 hard-gate floor: scope-unlock-for-drift forced to user despite tampered table" test_ac8c
 
 printf -- '---\n'
 printf 'Results: %d passed, %d failed\n' "$PASS_COUNT" "$FAIL_COUNT"

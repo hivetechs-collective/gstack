@@ -21,6 +21,62 @@ Entries are newest-first.
 
 ---
 
+## [1.23.0] — 2026-06-02 (ccd386e)
+
+MINOR — **Enforcement hardening from a verified adversarial principle audit.**
+A multi-agent audit (verify → completeness-critic → synthesize) of whether each
+of the 14 design principles is _actually enforced_ vs documented found the
+governing defect class: the boundary GATES are deterministic, but several
+DETECTION / accountability layers feeding them were LLM-procedural with no
+deterministic backstop — a gate that re-checks an LLM-authored count is theater
+over a silent miss. Every HIGH finding is fixed with tests; the audit report is
+[`docs/operations/pwt-principles-enforcement-audit-2026-06-02.md`](../../../docs/operations/pwt-principles-enforcement-audit-2026-06-02.md)
+and the principle/enforcement summary is
+[`docs/operations/plan-w-team-design-principles.md`](../../../docs/operations/plan-w-team-design-principles.md).
+
+- `fix`: **P3/C1** — bg workers inherited the default-8 Stop-hook block cap and
+  were silently force-stopped mid-run (defeating "no turn cap" for the canonical
+  autonomous path). `CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=200` in `settings.json` +
+  `pwt-goal.sh` `LAUNCH_ENV`. New `stop-hook-block-cap.bats`.
+- `fix`: **C3** — the `/goal` completion contract was worker-spoofable (SUCCESS
+  from transcript text + self-writable `terminal_state`). Worker-mode SUCCESS now
+  requires a deterministic ship-verdict artifact (`05-ship.md` writes it only
+  after every §6 gate passes); the `terminal_state` short-circuit is honored only
+  with `evaluator` provenance. New `goal-evaluator-c3-antispoof.bats`.
+- `fix`: **C4** — `secret-scan-allow` allow-file was self-clearable by a bg
+  worker. `block-protected-paths.sh` now blocks in-worker writes to it. New
+  `secret-allow-worker-guard.bats`.
+- `fix`: **C2** — the parallel-worker gate used a single un-retried
+  `claude agents --json` (fail-open under the exact load it detects). Routed
+  through `claude-agents-extended.sh` retry + loud empty-after-retries marker.
+- `feat`: **P9c** — new `access-control-content-scan.sh` deterministic CS-1..CS-4
+  detection floor; gates Step 5 §5b and §6c-ter (fails closed on a missed
+  signal). New behavioral `access-control-content-scan.bats`.
+- `fix`: **P4** — hardcoded `HARD_GATES` floor in `plan-w-team-orchestrator-route.sh`
+  (push-ack / secret-scan-allow / scope-unlock-for-drift forced to `user` even if
+  the classifier table is tampered). New AC8a/b/c tests + `PWT_CLASSIFIER_DOC_OVERRIDE`.
+- `feat`: **P9b** — new `block-gh-actions-build.sh` PreToolUse hook makes the
+  No-GitHub-Actions rule actually enforcing; §6b-bis relabeled defense-in-depth.
+  New `block-gh-actions-build.bats`.
+- `feat`: **P1** — new `plan-w-team-bypass-rate.sh` turns the previously-fictional
+  stage-file-bypass accountability into a real retro `bypass_rate` signal
+  (§8j-octies); the lead now dual-sinks the marker to a slug-keyed log. New
+  `bypass-rate.bats`.
+- `fix`: **P11** — symmetry checker was RED; added a `*.test.sh` exclude and
+  registered 5 artifacts (manifest, stage-events, ship-verdict,
+  content-signal-suspects, bypass-log). Now 33/33, exit 0.
+- `docs`: **C5** — reconciled goal-conditions.md to the hook's canonical terminal
+  precedence (`SUCCESS < API_HALT < LOW_CONFIDENCE_STREAK < USER_ESCALATION_HALT`),
+  documented `API_HALT`, fixed the "3 anchors" count.
+- `docs`: **P2/P10/P12** — Layer-1 "route hook" → orchestrator-route script; 4
+  stale model strings (`claude-opus-4-6`, gap-analyzer "Opus 4.7" → 4.8);
+  DS1 dedupe-window doc/stderr 60s → `PWT_DOUBLE_SPAWN_WINDOW_MIN` (3 min).
+- `docs`: **refuted recon** — P13 self-heal IS shipped (v1.18.0); P12 DS1/DS2
+  guards are real + tested; P14 version bumps are manual (memory was correct).
+- Deferred (tracked in the audit report): C6 (FORCE_SPAWN-in-worker), C7
+  (sync-allowlist name-filter / fail-closed capacity gates), C8 (slug mismatch),
+  P7 fix-counter, P8 handoff scope-fence, P14 native git-hook bump, C11-C13.
+
 ## [1.22.1] — 2026-06-02 (b42c689)
 
 PATCH — **Consolidated design-principles doc (close the "no single place names the principles" gap).**

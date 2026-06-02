@@ -549,7 +549,7 @@ if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; } && [ "${PLAN_W_TEAM_FORC
 ✗ Double-spawn refused: the route hook already spawned worker $EXISTING_WORKER
   at $EXISTING_AT for this user turn.
 
-  Flag: $FRESH_FLAG (auto-expires after 60s)
+  Flag: $FRESH_FLAG (treated as fresh within ${DS_WINDOW_MIN} min via mtime; override PWT_DOUBLE_SPAWN_WINDOW_MIN — the flag is not auto-deleted)
 
   Why this guard exists: the manifest's Step 3a check ("if you see the
   systemMessage marker, skip Step 3b") depends on the LLM noticing the
@@ -789,6 +789,19 @@ if [ "$LAUNCH" = "1" ]; then
     # the full CLAUDE_CODE_DISABLE_* catalog). Headless/bg only — interactive
     # sessions are untouched and may still author workflows.
     LAUNCH_ENV="$LAUNCH_ENV CLAUDE_CODE_DISABLE_WORKFLOWS=1"
+
+    # PWT-P3 no-caps guarantee: Claude Code defaults the consecutive-Stop-hook
+    # block cap to 8. A full /plan-w-team run blocks the Stop hook far more than
+    # 8 times (the goal-evaluator blocks every turn until terminal), so without
+    # a raised cap the bg worker this launcher spawns is silently force-stopped
+    # mid-pipeline after ~8 evaluator blocks — defeating BOTH P3 ("no turn cap")
+    # and P12 ("one bg worker for a multi-hour run") for the canonical autonomous
+    # path. The interactive mitigation (~/.zshrc) never reaches a --bg/headless
+    # session (it does not source ~/.zshrc), so propagate the cap into the worker
+    # env here. Also set repo-wide in .claude/settings.json env (covers
+    # interactive + synced consumers); belt-and-braces. See
+    # docs/operations/pwt-principles-enforcement-audit-2026-06-02.md (P3/C1).
+    LAUNCH_ENV="$LAUNCH_ENV CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=${PWT_STOP_HOOK_BLOCK_CAP:-200}"
 
     # --fallback-model (Claude Code 2.1.152+): if the pinned primary model
     # (Opus 4.8) is ever not found, the session degrades to this model for the

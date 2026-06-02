@@ -210,14 +210,30 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     STARTED_AT=$(jq -r '.started_at' "$GOAL_FILE")
     EXISTING_TERMINAL=$(jq -r '.terminal_state // ""' "$GOAL_FILE")
 
-    # Already marked terminal in a previous turn → allow stop
-    # (Backward-compat escape hatch: a user/agent can write terminal_state
-    # directly into the goal state file to force a graceful halt — this is the
-    # documented workaround the cleanscale agent used before this fix.)
+    # Already marked terminal in a previous turn → allow stop.
+    # Backward-compat escape hatch: a user/agent can write terminal_state
+    # directly into the goal state file to force a graceful halt.
+    #
+    # C3 spoof-guard: inside a bg worker (--launch / --worker-only, marked by
+    # PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1) this short-circuit is spoofable — the
+    # worker's own LLM can jq-write terminal_state=SUCCESS to stop the /goal loop
+    # while skipping the ship gate and AC AND-check. So in worker mode honor a
+    # pre-existing terminal_state ONLY when the EVALUATOR itself wrote it
+    # (terminal_state_source=evaluator, set on its write-back below). Interactive
+    # sessions keep the unrestricted escape hatch — a human is watching. A human
+    # halting a worker does so out-of-band (stop the bg session), not by trusting
+    # the worker's own self-write. See audit C3.
     if [ -n "$EXISTING_TERMINAL" ]; then
-        dbg "SLUG=$SLUG already terminal_state=$EXISTING_TERMINAL (state-file short-circuit) → allowing stop"
-        ANY_TERMINAL=true
-        continue
+        TERMINAL_SRC=$(jq -r '.terminal_state_source // ""' "$GOAL_FILE")
+        if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-}" = "1" ] && [ "$TERMINAL_SRC" != "evaluator" ]; then
+            echo "[goal-evaluator] SLUG=$SLUG worker-mode spoof-guard: ignoring self-written terminal_state=$EXISTING_TERMINAL (no evaluator provenance) — continuing real detection" >&2
+            dbg "SLUG=$SLUG worker-mode: un-provenanced terminal_state ignored (spoof guard)"
+            # Do NOT short-circuit; fall through to real anchor detection.
+        else
+            dbg "SLUG=$SLUG already terminal_state=$EXISTING_TERMINAL (state-file short-circuit) → allowing stop"
+            ANY_TERMINAL=true
+            continue
+        fi
     fi
 
     # Read recent transcript lines (last ~500) for anchor detection.
@@ -310,6 +326,22 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
                 # Will be picked up by the BLOCK_REASON branch below
                 CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but feature-specific criteria unmet: ${UNMET_DESCRIPTIONS}. Continue pipeline until each criterion appears in transcript (typically as 'AC<N>: PASS' lines emitted by Step 5 review and Step 6 ship)."
             fi
+        fi
+    fi
+
+    # C3 — deterministic ship-verdict corroboration (worker mode only).
+    # Transcript anchors are assistant free-text a worker can fabricate. Inside a
+    # bg worker, require Step 6 to have written a real PASS ship-verdict artifact
+    # (only reachable after every §6 ENFORCING gate passed) before honoring
+    # SUCCESS. Interactive runs keep transcript-only detection (human watching).
+    if [ "$TERMINAL" = "SUCCESS" ] && [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-}" = "1" ]; then
+        SHIP_VERDICT_FILE="$(dirname "$GOAL_FILE")/plan-w-team-ship-verdict-${SLUG}.json"
+        if [ "$(jq -r '.verdict // ""' "$SHIP_VERDICT_FILE" 2>/dev/null)" != "PASS" ]; then
+            TERMINAL=""
+            REASON=""
+            CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but no deterministic ship-verdict for slug=$SLUG. Step 6 writes .claude/state/plan-w-team-ship-verdict-${SLUG}.json with verdict=PASS only after every §6 ENFORCING gate passes; SUCCESS is withheld until it exists. Continue the pipeline through a real ship."
+            echo "[goal-evaluator] SLUG=$SLUG worker-mode: SUCCESS anchors present but ship-verdict missing/!=PASS — withholding SUCCESS (C3 anti-spoof)" >&2
+            dbg "SLUG=$SLUG worker-mode SUCCESS withheld — no PASS ship-verdict at $SHIP_VERDICT_FILE"
         fi
     fi
 
@@ -596,9 +628,12 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     fi
 
     if [ -n "$TERMINAL" ]; then
-        # Persist terminal state
+        # Persist terminal state. terminal_state_source=evaluator is the C3
+        # provenance marker: the worker-mode short-circuit guard above honors a
+        # pre-existing terminal_state only when the evaluator (not the worker's
+        # own LLM) wrote it.
         jq --arg t "$TERMINAL" --arg r "$REASON" --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
-           '.terminal_state = $t | .terminal_reason = $r | .terminated_at = $ts' \
+           '.terminal_state = $t | .terminal_reason = $r | .terminated_at = $ts | .terminal_state_source = "evaluator"' \
            "$GOAL_FILE" > "$GOAL_FILE.tmp" && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
         ANY_TERMINAL=true
         echo "[goal-evaluator] SLUG=$SLUG terminal=$TERMINAL reason=$REASON" >&2

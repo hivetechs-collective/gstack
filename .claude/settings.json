@@ -52,7 +52,8 @@
     ]
   },
   "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "CLAUDE_CODE_STOP_HOOK_BLOCK_CAP": "200"
   },
   "respectGitignore": true,
   "statusLine": {
@@ -222,6 +223,10 @@
           },
           {
             "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-gh-actions-build.sh"
+          },
+          {
+            "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/config-protection.sh"
           },
           {
@@ -244,6 +249,10 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-protected-paths.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/block-gh-actions-build.sh"
           },
           {
             "type": "command",

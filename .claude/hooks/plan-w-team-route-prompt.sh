@@ -418,11 +418,43 @@ if [ "${PLAN_W_TEAM_DISABLE_PARALLEL_GATE:-}" != "1" ] \
     fi
     [ -z "$PWG_CANON_ROOT" ] && PWG_CANON_ROOT="$PROJECT_ROOT"
 
-    # Query the agents list. Use the resolved $PWG_CLAUDE_BIN so the call
-    # works under harness-inherited environments where $PATH is stripped.
-    PWG_AGENTS_RAW=$("$PWG_CLAUDE_BIN" agents --json 2>/dev/null || echo "[]")
+    # Query the agents list through the retry wrapper (audit C2). A bare single
+    # `claude agents --json` returns empty-but-exit-0 INTERMITTENTLY UNDER LOAD
+    # (memory reference_claude_agents_json_flaky) — precisely the concurrent-
+    # worker load this gate exists to detect. The old single un-retried call
+    # therefore failed OPEN exactly when a peer worker existed, re-opening the
+    # 2026-05-22 two-workers-racing-same-files incident. claude-agents-extended.sh
+    # absorbs the flakiness via CLAUDE_AGENTS_RETRY and is the same view the
+    # statusline/cleanup consumers trust. Fall back to a retried raw-bin call
+    # (using the PATH-resolved $PWG_CLAUDE_BIN) when the wrapper is unsynced.
+    PWG_EXTENDED="$PWG_CANON_ROOT/.claude/scripts/claude-agents-extended.sh"
+    [ -x "$PWG_EXTENDED" ] || PWG_EXTENDED="$PROJECT_ROOT/.claude/scripts/claude-agents-extended.sh"
+    PWG_AGENTS_RAW=""
+    if [ -x "$PWG_EXTENDED" ]; then
+        PWG_AGENTS_RAW=$(CLAUDE_AGENTS_RETRY="${CLAUDE_AGENTS_RETRY:-3}" "$PWG_EXTENDED" --json 2>/dev/null)
+        # Wrapper exits non-zero when it could not reach `claude` (stripped PATH);
+        # force the raw-bin fallback rather than trusting its "[]" fail value.
+        [ $? -ne 0 ] && PWG_AGENTS_RAW=""
+    fi
+    if [ -z "$PWG_AGENTS_RAW" ] || ! printf '%s' "$PWG_AGENTS_RAW" | jq empty >/dev/null 2>&1; then
+        _pwg_try=0
+        while [ "$_pwg_try" -lt "${CLAUDE_AGENTS_RETRY:-3}" ]; do
+            _pwg_try=$((_pwg_try + 1))
+            PWG_AGENTS_RAW=$("$PWG_CLAUDE_BIN" agents --json 2>/dev/null || echo "")
+            printf '%s' "$PWG_AGENTS_RAW" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 && break
+            sleep 1
+        done
+    fi
     if [ -z "$PWG_AGENTS_RAW" ] || ! printf '%s' "$PWG_AGENTS_RAW" | jq empty >/dev/null 2>&1; then
         PWG_AGENTS_RAW="[]"
+    fi
+    # Observability (audit C2): an empty list after retries cannot distinguish
+    # "genuinely no peer workers" (proceeding is correct) from "persistent
+    # flakiness" (proceeding is a race). We proceed to avoid blocking the
+    # legitimate first run, but emit a loud marker the origin-chat supervisor
+    # surfaces, so a silent race window is at least visible in the transcript.
+    if [ "$(printf '%s' "$PWG_AGENTS_RAW" | jq 'length' 2>/dev/null || echo 0)" = "0" ]; then
+        echo "⚠ PWG: agents --json empty after ${CLAUDE_AGENTS_RETRY:-3} retries — proceeding with NO peer-worker confirmation (race window if a peer exists)" >&2
     fi
 
     # Filter for bg /plan-w-team workers in this project, excluding self.
