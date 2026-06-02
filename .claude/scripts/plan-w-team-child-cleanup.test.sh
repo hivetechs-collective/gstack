@@ -185,6 +185,44 @@ OUT=$(SHIM_LOG="$SHIM_LOG" PATH="$SHIM_DIR:$PATH" \
 ATTEMPT_SIDS=$(printf '%s' "$OUT" | jq -r '.attempts[].session_id' 2>/dev/null | sort | tr '\n' ',' | sed 's/,$//')
 assert_eq "attempts array session_ids" "alpha111,beta2222,gamma333" "$ATTEMPT_SIDS"
 
+# ───────────────────────────────────────────────────────────────────────────
+# AC-CC8 (audit C8): lineage reconciliation — reap children registered under a
+# DIFFERENT slug by parent_session_id, concurrent-run-safe.
+# ───────────────────────────────────────────────────────────────────────────
+SELF="mainsid01"
+SIB="$WORK_DIR/plan-w-team-spawned-children-origreq.jsonl"
+FEATURE_MANIFEST="$WORK_DIR/plan-w-team-spawned-children-featureslug.jsonl"  # the mismatch: absent
+
+echo "C8a: lineage child under a different slug IS reaped; another run's child is NOT"
+rm -f "$SIB" "$FEATURE_MANIFEST"; : > "$SHIM_LOG"
+printf '{"session_id":"childX1","parent_session_id":"mainsid01","purpose":"pwt-goal-launch","slug":"origreq"}\n' >  "$SIB"
+printf '{"session_id":"childY2","parent_session_id":"otherrun9","purpose":"pwt-goal-launch","slug":"origreq"}\n' >> "$SIB"
+OUT=$(SHIM_LOG="$SHIM_LOG" PATH="$SHIM_DIR:$PATH" PWT_CLEANUP_PARENT_SID="$SELF" \
+    "$HELPER" "featureslug" "$FEATURE_MANIFEST")
+assert_contains "C8a: my lineage child reaped" "stop childX1" "$(cat "$SHIM_LOG")"
+OTHER_REAPED=$(grep -c "stop childY2" "$SHIM_LOG" 2>/dev/null | tr -d ' ')
+assert_eq "C8a: other run's child left untouched" "0" "$OTHER_REAPED"
+assert_contains "C8a: reconciled count is 1" '"reconciled":1' "$OUT"
+
+echo "C8b: no-regression — without PWT_CLEANUP_PARENT_SID, siblings are NOT scanned"
+: > "$SHIM_LOG"
+OUT=$(SHIM_LOG="$SHIM_LOG" PATH="$SHIM_DIR:$PATH" \
+    "$HELPER" "featureslug" "$FEATURE_MANIFEST")
+assert_contains "C8b: absent primary + no parent sid → no-registry skip" 'no registry' "$OUT"
+assert_eq "C8b: zero stop calls (reconciliation off)" "0" "$(grep -c '^stop ' "$SHIM_LOG" 2>/dev/null | tr -d ' ')"
+
+echo "C8c: a child in BOTH the primary registry and a sibling is reaped exactly once (dedup)"
+: > "$SHIM_LOG"
+# childX1 is in the sibling (from C8a) AND now in the primary registry too.
+printf '{"session_id":"primary1","parent_session_id":"mainsid01","purpose":"stage-spawn","slug":"featureslug"}\n' >  "$FEATURE_MANIFEST"
+printf '{"session_id":"childX1","parent_session_id":"mainsid01","purpose":"stage-spawn","slug":"featureslug"}\n'  >> "$FEATURE_MANIFEST"
+OUT=$(SHIM_LOG="$SHIM_LOG" PATH="$SHIM_DIR:$PATH" PWT_CLEANUP_PARENT_SID="$SELF" \
+    "$HELPER" "featureslug" "$FEATURE_MANIFEST")
+assert_contains "C8c: primary-only child reaped" "stop primary1" "$(cat "$SHIM_LOG")"
+X1_COUNT=$(grep -c "stop childX1" "$SHIM_LOG" 2>/dev/null | tr -d ' ')
+assert_eq "C8c: childX1 (in primary + sibling) reaped exactly once" "1" "$X1_COUNT"
+rm -f "$SIB" "$FEATURE_MANIFEST"
+
 # Summary
 echo ""
 echo "════════════════════════════════════════"

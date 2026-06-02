@@ -55,18 +55,25 @@ if [ "${PLAN_W_TEAM_DISABLE_CHILD_CLEANUP:-}" = "1" ]; then
     exit 0
 fi
 
-if [ ! -f "$MANIFEST" ]; then
-    printf '{"skipped":true,"reason":"no registry","attempts":[]}\n'
-    exit 0
-fi
-
 ATTEMPTS_JSON='[]'
 TOTAL_REGISTERED=0
 TOTAL_STOPPED=0
 TOTAL_NOOP=0
 TOTAL_MIRROR_PATCHED=0
 TOTAL_MIRROR_SKIPPED=0
+RECONCILED=0
 
+PRIMARY_PRESENT=0
+[ -f "$MANIFEST" ] && PRIMARY_PRESENT=1
+
+# No primary manifest AND no lineage reconciliation requested → nothing to do.
+# (Preserves the exact pre-C8 contract when PWT_CLEANUP_PARENT_SID is unset.)
+if [ "$PRIMARY_PRESENT" = "0" ] && [ -z "${PWT_CLEANUP_PARENT_SID:-}" ]; then
+    printf '{"skipped":true,"reason":"no registry","attempts":[]}\n'
+    exit 0
+fi
+
+if [ "$PRIMARY_PRESENT" = "1" ]; then
 while IFS= read -r row; do
     [ -z "$row" ] && continue
     # jq exits non-zero on parse errors (e.g., malformed rows). `|| true` so the
@@ -153,14 +160,55 @@ while IFS= read -r row; do
         '. + [{session_id:$sid, purpose:$purpose, attempted_at:$ts, exit_code:$exit_code}]' \
         2>/dev/null || printf '%s' "$ATTEMPTS_JSON")
 done < "$MANIFEST"
+fi  # end PRIMARY_PRESENT guard
+
+# ─── C8: lineage reconciliation (concurrent-run-safe) ───────────────────────
+# The primary manifest is keyed by the feature SLUG, but pwt-goal registers a
+# spawned worker under SLUG_GUESS=__pwt_safe_slug(ORIGINAL_REQUEST), which can
+# differ — so a child registered under a different slug would never be reaped
+# (the orphan-bg accumulation the registry+cleanup pair exists to prevent, audit
+# C8). When the caller passes the reaping session's own id via
+# PWT_CLEANUP_PARENT_SID, ALSO scan sibling registries and reap rows whose
+# parent_session_id matches THIS session. Concurrent-safe: another run's children
+# carry a different parent_session_id and are left untouched. Additive — with the
+# env unset this block is skipped, so behavior is byte-identical to pre-C8.
+if [ -n "${PWT_CLEANUP_PARENT_SID:-}" ]; then
+    SELF_SID="$PWT_CLEANUP_PARENT_SID"
+    STATE_DIR_RESOLVED=$(dirname "$MANIFEST")
+    for sib in "$STATE_DIR_RESOLVED"/plan-w-team-spawned-children-*.jsonl; do
+        [ -f "$sib" ] || continue          # literal glob when no match → skip
+        [ "$sib" = "$MANIFEST" ] && continue
+        while IFS= read -r row; do
+            [ -z "$row" ] && continue
+            RT=$(printf '%s' "$row" | jq -r '.type // ""' 2>/dev/null || echo "")
+            [ "$RT" = "supervisor_mirror" ] && continue   # mirror rows: handled by their own run's primary pass
+            RSID=$(printf '%s' "$row" | jq -r '.session_id // empty' 2>/dev/null || true)
+            RP=$(printf '%s' "$row" | jq -r '.parent_session_id // empty' 2>/dev/null || true)
+            [ -z "$RSID" ] && continue
+            # Lineage match only (tolerate short/long sid forms). Anything not
+            # spawned BY this session is another run's child — never touch it.
+            case "$RP" in "$SELF_SID"|"${SELF_SID:0:8}"*) : ;; *) continue ;; esac
+            # Dedup against rows already attempted in the primary pass.
+            printf '%s' "$ATTEMPTS_JSON" | jq -e --arg s "$RSID" 'any(.[]; .session_id==$s)' >/dev/null 2>&1 && continue
+            ATTEMPT_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            if claude stop "$RSID" >/dev/null 2>&1; then EC=0; TOTAL_STOPPED=$((TOTAL_STOPPED + 1)); else EC=$?; TOTAL_NOOP=$((TOTAL_NOOP + 1)); fi
+            CLAIM_HELPER_PATH="$(dirname "$0")/pwt-ram-claim.sh"
+            [ -x "$CLAIM_HELPER_PATH" ] && "$CLAIM_HELPER_PATH" remove "$RSID" >/dev/null 2>&1 || true
+            TOTAL_REGISTERED=$((TOTAL_REGISTERED + 1)); RECONCILED=$((RECONCILED + 1))
+            ATTEMPTS_JSON=$(printf '%s' "$ATTEMPTS_JSON" | jq -c --arg sid "$RSID" --arg ts "$ATTEMPT_TS" --argjson ec "$EC" \
+                '. + [{session_id:$sid, purpose:"reconciled-by-lineage", attempted_at:$ts, exit_code:$ec}]' 2>/dev/null || printf '%s' "$ATTEMPTS_JSON")
+        done < "$sib"
+    done
+fi
 
 jq -nc \
     --argjson attempts "$ATTEMPTS_JSON" \
     --argjson registered "$TOTAL_REGISTERED" \
     --argjson stopped "$TOTAL_STOPPED" \
     --argjson noop "$TOTAL_NOOP" \
+    --argjson reconciled "$RECONCILED" \
     --argjson mirror_patched "$TOTAL_MIRROR_PATCHED" \
     --argjson mirror_skipped "$TOTAL_MIRROR_SKIPPED" \
-    '{skipped:false, registered:$registered, stopped:$stopped, noop:$noop, mirror_patched:$mirror_patched, mirror_skipped:$mirror_skipped, attempts:$attempts}' \
-    2>/dev/null || printf '{"skipped":false,"registered":%d,"stopped":%d,"noop":%d,"mirror_patched":%d,"mirror_skipped":%d,"attempts":[]}\n' \
-        "$TOTAL_REGISTERED" "$TOTAL_STOPPED" "$TOTAL_NOOP" "$TOTAL_MIRROR_PATCHED" "$TOTAL_MIRROR_SKIPPED"
+    '{skipped:false, registered:$registered, stopped:$stopped, noop:$noop, reconciled:$reconciled, mirror_patched:$mirror_patched, mirror_skipped:$mirror_skipped, attempts:$attempts}' \
+    2>/dev/null || printf '{"skipped":false,"registered":%d,"stopped":%d,"noop":%d,"reconciled":%d,"mirror_patched":%d,"mirror_skipped":%d,"attempts":[]}\n' \
+        "$TOTAL_REGISTERED" "$TOTAL_STOPPED" "$TOTAL_NOOP" "$RECONCILED" "$TOTAL_MIRROR_PATCHED" "$TOTAL_MIRROR_SKIPPED"

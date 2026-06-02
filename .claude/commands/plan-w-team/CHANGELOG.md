@@ -21,6 +21,35 @@ Entries are newest-first.
 
 ---
 
+## [1.23.2] — 2026-06-02 (f42bb0a)
+
+PATCH — **C8: spawn-registry↔cleanup slug reconciliation (concurrent-run-safe).**
+`pwt-goal.sh` registers a spawned worker under `SLUG_GUESS=__pwt_safe_slug(
+ORIGINAL_REQUEST)`, but `plan-w-team-child-cleanup.sh` reads the registry keyed
+by the feature SLUG — on mismatch the cleanup found no manifest and reaped
+nothing, re-creating the orphan-bg accumulation the registry+cleanup pair exists
+to prevent (lives up to principles #6/#11/#12).
+
+- `fix`: `plan-w-team-child-cleanup.sh` gains a lineage-reconciliation pass: when
+  the caller passes `PWT_CLEANUP_PARENT_SID`, it also scans sibling
+  `plan-w-team-spawned-children-*.jsonl` registries and reaps rows whose
+  `parent_session_id` matches THIS session — so a child registered under a
+  different slug is still cleaned up. **Concurrent-run-safe**: another run's
+  children carry a different `parent_session_id` and are left untouched.
+  **Additive / no regression**: with the env unset the block is skipped and
+  behavior is byte-identical (existing 24 assertions unchanged); dedup avoids
+  double-stopping a child present in both the primary and a sibling.
+- `fix`: `07-retro.md` §8j-sexies passes the worker's own session id
+  (`CLAUDE_JOB_DIR` basename) as `PWT_CLEANUP_PARENT_SID`; empty when
+  unavailable → reconciliation no-ops.
+- new: 3 C8 assertions in `plan-w-team-child-cleanup.test.sh` (lineage reap +
+  other-run child untouched + dedup); `reconciled` count added to the cleanup
+  JSON.
+- Still deferred (rationale in 1.23.1 entry + design-principles "Follow-up
+  status"): P8 (its access-control GIGO sliver is already covered by P9c +
+  §6c-ter fail-closed; the rest needs a recompute against a non-strict findings
+  format → drift risk), C7 part-2, P14, C11, C12/C13.
+
 ## [1.23.1] — 2026-06-02 (814b791)
 
 PATCH — **Deferred-item follow-up from the 1.23.0 enforcement audit: the safe,

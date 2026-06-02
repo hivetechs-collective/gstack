@@ -720,7 +720,16 @@ REGISTRY=".claude/state/plan-w-team-spawned-children-${SLUG}.jsonl"
 # Helper emits a single-line JSON document to stdout describing the run.
 # It honors PLAN_W_TEAM_DISABLE_CHILD_CLEANUP=1, tolerates missing registries
 # and malformed JSONL rows, and never exits non-zero (fail-open).
-CHILD_CLEANUP_JSON=$(.claude/scripts/plan-w-team-child-cleanup.sh "$SLUG")
+#
+# C8 lineage reconciliation: pass THIS session's own id so the helper also reaps
+# children registered under a different slug (pwt-goal registers a spawned
+# worker under __pwt_safe_slug(ORIGINAL_REQUEST), which can differ from the
+# feature SLUG used here). Resolved from CLAUDE_JOB_DIR's basename; empty when
+# unavailable, in which case reconciliation no-ops and only the exact-SLUG
+# registry is reaped (no regression). Concurrent-run-safe: only rows whose
+# parent_session_id matches this session are touched.
+PWT_SELF_SID="${CLAUDE_JOB_DIR##*/}"
+CHILD_CLEANUP_JSON=$(PWT_CLEANUP_PARENT_SID="$PWT_SELF_SID" .claude/scripts/plan-w-team-child-cleanup.sh "$SLUG")
 
 # Surface a one-liner for human observation. The helper's full output is
 # captured above and persisted to RETRO_STATE below.
