@@ -21,6 +21,32 @@ Entries are newest-first.
 
 ---
 
+## [1.24.0] — 2026-06-02 (3493932)
+
+MINOR — **Event-driven supervisor wait (principle #2): stop guessing poll
+intervals.** The supervisor/origin-chat previously waited on a worker by active
+polling at a guessed ~30–60s cadence — losing up to a full interval of dev time
+between a worker finishing and the supervisor noticing, and burning a supervisor
+turn on every unchanged tick. Adapted from the progressive-qa-initiative run's
+background until-loop idea.
+
+- `feat`: NEW `.claude/scripts/plan-w-team-await-terminal.sh` — a blocking watcher
+  meant to run via `Bash(run_in_background: true)` so the harness re-invokes the
+  supervisor THE INSTANT the run flips state. Watches the goal-state
+  `terminal_state` (the evaluator writes it for ALL terminal/halt states —
+  SUCCESS / USER_ESCALATION_HALT / LOW_CONFIDENCE_STREAK / API_HALT, so the sad
+  path wakes too) plus worker liveness (debounced against the flaky
+  `claude agents --json`, per C2). Exit 0 = terminal/halt; exit 3 = heartbeat
+  re-arm (a re-check, **NOT** a wall-clock cap — principle #3). Tunable via
+  `PWT_AWAIT_INTERVAL_S` / `PWT_AWAIT_HEARTBEAT_S` / `PWT_AWAIT_GONE_CONFIRM`.
+- `feat`: `shared/supervisor-protocol.md` §POLLING LOOP and `plan-w-team.md`
+  Step 3c now make the event-driven wait the **default**; active poll /
+  `ScheduleWakeup` remain documented fallbacks for cross-session gaps. The Step-0
+  Progress Check + CONTINUATION CHECK still run on every wake.
+- new: `tests/skill/cases/await-terminal.bats` (5) — terminal detection (happy +
+  sad path), heartbeat re-arm, worker-gone debounce, present-worker-not-reaped.
+- sync allowlist updated so the helper propagates to consumer repos.
+
 ## [1.23.2] — 2026-06-02 (f42bb0a)
 
 PATCH — **C8: spawn-registry↔cleanup slug reconciliation (concurrent-run-safe).**

@@ -484,7 +484,34 @@ advancement until the item is GREEN, not "noted".
 
 **Auto-terminate of origin mirror (2026-05-22)**: The origin chat's mirror goal-state file (`.claude/state/plan-w-team-goal-<SLUG>.json`, written by `pwt-goal.sh --supervisor-goal`) **auto-terminates on worker retro** — no manual `jq` intervention needed. Mechanism: `pwt-goal.sh --supervisor-goal` registers the mirror in the spawned-children registry as `type=supervisor_mirror`; on worker retro, `07-retro §8j-sexies → child-cleanup.sh` patches the mirror to SUCCESS. If the worker dies without retro, the goal-evaluator hook's DEAD-detection branch patches the mirror to LOW_CONFIDENCE_STREAK. See `docs/specs/supervisor-mirror-lifecycle.md`.
 
-Cadence: ~30–60s. Use `Bash + sleep` or `ScheduleWakeup` (preferred for runs >5 min).
+### Wait mechanism — EVENT-DRIVEN by default (do not guess a poll interval)
+
+When the supervisor is **waiting on a worker to reach terminal/halt** (the common
+case between progress ticks), prefer an **event-driven wait** over active polling.
+Active polling guesses a 30–60s cadence: if the worker finishes 2s after a tick,
+~58s of dev time is lost before the supervisor notices, and every unchanged tick
+burns a supervisor turn. Instead, launch a background watcher that blocks until
+the state flips and wakes the supervisor THE INSTANT it does:
+
+```bash
+# run_in_background: true — the harness re-invokes the supervisor when this exits.
+.claude/scripts/plan-w-team-await-terminal.sh --slug "$SLUG" --worker-sid "$WORKER_SID"
+```
+
+It watches the goal-state `terminal_state` (which the evaluator writes for ALL
+terminal/halt states — SUCCESS, USER_ESCALATION_HALT, LOW_CONFIDENCE_STREAK,
+API_HALT, so the **sad path wakes too, not just the happy path**) and the worker's
+liveness (debounced against flaky `claude agents --json`). Exit codes: `0` =
+terminal/halt reached (read `terminal_state` and emit the TERMINAL/⚠HALT block);
+`3` = heartbeat re-arm (re-run the Step-0 progress check, then re-launch the wait —
+this is a heartbeat, **NOT** a wall-clock cap; principle #3 forbids turn/time caps
+on the work). Tune via `PWT_AWAIT_INTERVAL_S` / `PWT_AWAIT_HEARTBEAT_S`.
+
+**Fallbacks** (when the event-driven wait is unavailable — e.g. a cross-session
+gap the bg process can't span): active poll at ~30–60s via `Bash + sleep`, or
+`ScheduleWakeup` (for idle gaps >5 min, to stay within the prompt-cache window).
+The Step-0 Progress Check and CONTINUATION CHECK still run on each wake regardless
+of which wait mechanism delivered it.
 
 ### CONTINUATION CHECK (idle-detection)
 

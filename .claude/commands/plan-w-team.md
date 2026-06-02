@@ -123,13 +123,16 @@ Supervisor responsibilities (perform in order, this turn):
       watching for stage transitions, pause-sites, supervisor decisions
    ```
 
-2. **POLLING LOOP** — observe worker state by polling, surfacing every NEW transition as an assistant message. Primitives:
-   - `claude agents --json` — worker liveness + stage hint
-   - `claude logs <SID> --tail 200` — worker transcript tail
-   - `.claude/state/plan-w-team-goal-*.json` — terminal state for the active SLUG
-   - `.claude/state/pwt-completion-summary-<SID>.md` — written by ship/retro stages
+2. **WAIT — event-driven by default** (do not guess a poll interval). Launch a background watcher that blocks until the worker reaches terminal/halt and wakes you the INSTANT it does — the harness re-invokes you when a `run_in_background` command exits:
 
-   Cadence: poll every ~30–60s via Bash + sleep, or schedule the next poll via `ScheduleWakeup` (preferred for runs >5 min). Do not echo unchanged state.
+   ```bash
+   # run_in_background: true
+   .claude/scripts/plan-w-team-await-terminal.sh --slug "<SLUG>" --worker-sid "<SID>"
+   ```
+
+   It watches `plan-w-team-goal-<SLUG>.json`'s `terminal_state` (set by the evaluator for SUCCESS / USER_ESCALATION_HALT / LOW_CONFIDENCE_STREAK / API_HALT — sad path included) and worker liveness. Exit `0` → terminal/halt (read it, emit the TERMINAL block); exit `3` → heartbeat re-arm (re-launch the wait — a heartbeat, NOT a wall-clock cap). This replaces active polling: no interval-guessing (no dev time lost between the worker finishing and you noticing), no turn burned per unchanged tick. Other observation primitives when you DO wake: `claude agents --json` (liveness), `claude logs <SID> --tail 200` (tail), `.claude/state/pwt-completion-summary-<SID>.md` (ship/retro summary).
+
+   **Fallback** (event-driven wait unavailable, e.g. a cross-session gap): poll every ~30–60s via Bash + sleep, or `ScheduleWakeup` for idle gaps >5 min. Either way, surface every NEW transition; do not echo unchanged state.
 
 3. **ESCALATION** — if the worker hits a hard-gate pause site (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`) or logs 3 consecutive `confidence=low` supervisor decisions, surface a ⚠ HALT block and STOP polling — the user must respond. Note: `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` auto-clears `push-ack` inside the worker; expected progress past it is NOT a halt.
 
