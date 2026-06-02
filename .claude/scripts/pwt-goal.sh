@@ -936,15 +936,35 @@ if [ "$LAUNCH" = "1" ]; then
         exit 1
     }
 
+    # ─── PWT-WT1: spawn the worker INSIDE an isolated git worktree ──────────────
+    # Principle #6 (worktree isolation) MUST be deterministic for the spawned bg
+    # worker — not left to the worker's own LLM calling EnterWorktree mid-session.
+    # `claude --bg` WITHOUT --worktree starts in the MAIN checkout (the manifest's
+    # "--bg auto-creates a worktree" claim was wrong — `claude --help` shows
+    # isolation requires the explicit -w/--worktree flag). Any edit before (or
+    # instead of) a mid-session EnterWorktree then lands in main, racing/clobbering
+    # a concurrent in-session editor — observed 2026-06-02: a route-hook worker
+    # co-edited 04/05/07 in the main checkout against an in-session change. With
+    # --worktree the worker branches from HEAD into .claude/worktrees/<name>, so
+    # its edits can NEVER touch the main checkout; it merges back at Step 6 ship
+    # like any builder. Bash 3.2-safe string flag (word-split like $LAUNCH_ENV;
+    # __pwt_safe_slug yields kebab [a-z0-9-], no spaces). Opt-out (rare — a repo
+    # where worktrees are unavailable): PWT_DISABLE_WORKER_WORKTREE=1.
+    WT_FLAG=""
+    if [ "${PWT_DISABLE_WORKER_WORKTREE:-0}" != "1" ]; then
+        WT_NAME="pwt-$(__pwt_safe_slug "$ORIGINAL_REQUEST")"
+        WT_FLAG="--worktree ${WT_NAME:0:60}"
+    fi
+
     # LAUNCH_ENV always contains PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1; the bare
     # `claude --bg` branch is unreachable but kept as a safety net.
     # Use $CLAUDE_BIN (resolved via locate-claude.sh) to avoid PATH-dependent
     # "env: claude: No such file or directory" failures.
     if [ -n "$LAUNCH_ENV" ]; then
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg $WT_FLAG --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
         LAUNCH_RC=$?
     else
-        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 "$CLAUDE_BIN" --bg --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 "$CLAUDE_BIN" --bg $WT_FLAG --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
         LAUNCH_RC=$?
     fi
 

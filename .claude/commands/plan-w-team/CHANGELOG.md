@@ -21,6 +21,30 @@ Entries are newest-first.
 
 ---
 
+## [1.25.0] — 2026-06-02 (587d577)
+
+MINOR — **PWT-WT1: spawn the bg worker INSIDE an isolated worktree (deterministic
+principle #6).** Root-cause fix for the 2026-06-02 incident where a route-hook
+bg worker edited the MAIN checkout and clobbered a concurrent in-session editor.
+
+- `fix`: `pwt-goal.sh` now spawns the worker with `claude --bg --worktree <slug>`
+  (both `--launch` and `--worker-only` paths). The worker branches from HEAD into
+  `.claude/worktrees/<slug>`, so its edits can NEVER touch the main checkout — it
+  merges back at Step 6 ship like any builder. Previously plain `claude --bg`
+  started the worker in main, and worktree isolation was left to the worker's LLM
+  calling `EnterWorktree` mid-session (LLM-attention, not enforced) — any edit
+  before/instead of that landed in main. `claude --help` confirms isolation
+  requires the explicit `-w/--worktree` flag; `--bg` alone does NOT auto-isolate
+  (the manifest claim was wrong — fixed). Opt-out: `PWT_DISABLE_WORKER_WORKTREE=1`.
+- `fix`: `plan-w-team.md` §Background Execution — corrected the inaccurate
+  "`--bg` auto-creates a worktree" claim and documented the deterministic spawn.
+- new: `pwt-goal-worker-only.test.sh` now captures the spawn args and asserts the
+  worker is launched with `--worktree` (AC2.5) and that the opt-out drops it (AC2.6).
+
+Full suite green (bats + 59 shell-integration). Developed in-session (the route
+hook spawned yet another worker on the trigger message; neutralized via goal-state
+deletion — its daemon is shared with a live progressive-qa run and can't be killed).
+
 ## [1.24.0] — 2026-06-02 (3493932)
 
 MINOR — **Event-driven supervisor wait (principle #2): stop guessing poll
