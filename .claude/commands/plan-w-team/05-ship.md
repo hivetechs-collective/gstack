@@ -20,7 +20,7 @@ After review passes, execute the ship pipeline.
 
 ## 6-0a. Minimal-Retro-on-Exit Trap (MANDATORY — install first)
 
-Every ship-gate `exit 1` below (review-findings missing, scope-lock drift, secret scan failure, test failure, coverage floor breach, access-control finding gate, push-ack missing, push-lock contention) used to terminate the run with no retro JSON on disk. `pwt-watch.sh` then degraded to a bare "session finished" notification with no context, and the `/goal` evaluator had no anchor to evaluate.
+Every ship-gate `exit 1` below (review-findings missing, scope-lock drift, secret scan failure, credential-wall escalation, test failure, coverage floor breach, access-control finding gate, push-ack missing, push-lock contention) used to terminate the run with no retro JSON on disk. `pwt-watch.sh` then degraded to a bare "session finished" notification with no context, and the `/goal` evaluator had no anchor to evaluate.
 
 Install the trap **before** any other shell work so every subsequent exit path is covered:
 
@@ -360,6 +360,44 @@ Cap: **≤2 total attempts**. Log each classification. A proven `real-test` fail
 is NEVER silently retried — only `env-gap`/`sim-orphan` trigger a self-heal retry
 (consistent with the fix-defects-immediately rule: heal the environment, never mask
 a real failure). After the cap, surface "blocked" through the normal retro path.
+
+## 6a-quinquies. Credential-Wall Escalation Gate (ENFORCING — step-completeness invariant)
+
+A deploy CLI that hit a NON-INTERACTIVE credential/token wall during Step 3
+execute or this ship stage (e.g. `wrangler` → "in a non-interactive environment…
+set a `CLOUDFLARE_API_TOKEN`", or `gh`/`vercel`/`eas`/`flyctl`/`aws` login walls)
+is a `blocked-external` operator escalation — the SAME shape as the browser-console
+guardrail in `shared/secret-safety.md §REQ-5`, now extended to CLI token walls by
+**§REQ-6**. The `plan-w-team-credential-wall-detect.sh` PostToolUse /
+PostToolUseFailure hook persists the EXACT missing secret + the repo's documented
+operator action to a durable artifact (`.claude/state/plan-w-team-credwall-<SLUG>.json`,
+survives compaction) and emits a `USER_ESCALATION_HALT` block.
+
+This gate is the **step-completeness invariant**: while that artifact is unresolved,
+a deploy/ship step blocked on a credential **CANNOT be marked complete and CANNOT
+be silently skipped** — the gate FAILS CLOSED. This closes the "stopped short of
+the operator step" failure mode from the 2026-06-02 cleanscale report.
+
+```bash
+# Fails closed (exit 1) on any unresolved credential-wall artifact; also fails
+# closed on a malformed artifact (same posture as §6c-ter). Exit 0 = clear.
+if ! .claude/scripts/plan-w-team-credential-wall-gate.sh; then
+  # The gate already printed the missing secret + operator action. Do NOT mark
+  # the deploy/ship step done; do NOT skip it. Surface the blocked-external
+  # USER_ESCALATION_HALT to the operator (pending_escalations: ["credential-wall"])
+  # so the /goal evaluator halts for the human to provision the secret.
+  exit 1
+fi
+```
+
+**Resolution (operator):** provision the missing secret per
+`shared/no-github-actions.md §"Deploy Secret Access"` (the headless `0600`
+`deploy.env` standard) OR complete the documented login (e.g. `wrangler login`),
+then set `"resolved": true` in the artifact (or delete it) and re-run the deploy.
+The step stays explicitly BLOCKED until then — never "noted and advanced"
+(`04-fix-first-review.md §Fix-Immediately`). Kill switch (incident only):
+`PLAN_W_TEAM_DISABLE_CREDWALL_GUARD=1` disables the _detector_ hook; the gate
+itself has no bypass — that is the point.
 
 ## 6b. Run Full Test Suite (ENFORCING GATE — not a prose request)
 
@@ -1032,7 +1070,7 @@ The helper enforces every safety invariant itself (containment to `.claude/workt
 
 ## End-of-Stage Status Block (PWT-T5)
 
-**Ship-verdict artifact (C3 — deterministic SUCCESS corroboration).** Reaching this point means every §6 ENFORCING gate passed (each `exit 1`s on failure: §6a-ter secret scan, §6b test suite, §6c coverage, §6c-bis security tier, §6c-ter access-control). Write a machine-readable ship-verdict that the goal-evaluator **requires** before honoring SUCCESS inside a bg worker — so a worker cannot self-declare the `/goal` done by emitting `retro-complete` transcript text alone, bypassing the ship gate (audit C3, `docs/operations/pwt-principles-enforcement-audit-2026-06-02.md`):
+**Ship-verdict artifact (C3 — deterministic SUCCESS corroboration).** Reaching this point means every §6 ENFORCING gate passed (each `exit 1`s on failure: §6a-ter secret scan, §6a-quinquies credential-wall, §6b test suite, §6c coverage, §6c-bis security tier, §6c-ter access-control). Write a machine-readable ship-verdict that the goal-evaluator **requires** before honoring SUCCESS inside a bg worker — so a worker cannot self-declare the `/goal` done by emitting `retro-complete` transcript text alone, bypassing the ship gate (audit C3, `docs/operations/pwt-principles-enforcement-audit-2026-06-02.md`):
 
 ```bash
 SHIP_VERDICT=".claude/state/plan-w-team-ship-verdict-${SLUG}.json"

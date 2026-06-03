@@ -21,6 +21,55 @@ Entries are newest-first.
 
 ---
 
+## [1.27.0] — 2026-06-02 (6095b87)
+
+MINOR — **Credential-wall escalation + step-completeness invariant** (brief
+`credential-wall-escalation`). Closes the 2026-06-02 cleanscale defect where a
+deploy CLI hit a non-interactive credential wall (`wrangler` → "set a
+`CLOUDFLARE_API_TOKEN`") and the run **stopped short** — neither completing the
+deploy nor escalating, with the missing secret never surfaced or persisted.
+
+- `feat` **detector**: new `.claude/scripts/credential-wall-detect.sh` — pure,
+  testable classifier for CLI non-interactive credential/token walls
+  (wrangler/gh/vercel/eas/flyctl/aws). Extracts the EXACT missing secret name;
+  zero false positive on success output + prose.
+- `feat` **runtime hook**: new `.claude/hooks/plan-w-team-credential-wall-detect.sh`
+  (PostToolUse(Bash) + PostToolUseFailure). Persists the missing secret + the
+  repo's documented operator action (from `DEPLOY_RUNBOOK.md` when present) to a
+  durable `.claude/state/plan-w-team-credwall-<SLUG>.json` (survives compaction;
+  a secret NAME only, never a value) and emits a `blocked-external`
+  `USER_ESCALATION_HALT` block (`pending_escalations: ["credential-wall"]`).
+  Kill switch `PLAN_W_TEAM_DISABLE_CREDWALL_GUARD=1`.
+- `feat` **step-completeness gate**: new
+  `.claude/scripts/plan-w-team-credential-wall-gate.sh`, wired ENFORCING at
+  `05-ship.md §6a-quinquies`. Fails closed while the artifact is unresolved (and
+  on a malformed artifact) so a deploy/ship step blocked on a credential can
+  NEVER be marked complete or silently skipped. The gate has no bypass.
+- `feat` **goal-evaluator**: `credential-wall` added to the hard-gate site set →
+  `USER_ESCALATION_HALT` terminal (additive; push-ack/secret-scan-allow/
+  scope-unlock-for-drift unchanged).
+- `feat` **docs (extend, not regress)**: `secret-safety.md §REQ-6` (CLI sibling of
+  the §REQ-5 browser-console guardrail; §REQ-5 untouched); `no-github-actions.md`
+  §"Deploy Secret Access" → new "Escalate, never skip" subsection;
+  `03-execute.md` REQ-6 deploy-discipline note; new state-artifact registered
+  (symmetry-check 38/38).
+- `test`: new `tests/skill/cases/credential-wall.bats` — wrangler/gh/vercel
+  detection, success+prose negatives, hook persistence + escalation emission, and
+  the fail-closed/malformed gate paths.
+- `chore` **sync**: `credential-wall-detect.sh` + `plan-w-team-credential-wall-gate.sh`
+  added to the `sync-to-project.sh` allowlist; the hook + `settings.json` wiring
+  propagate via the base rsync.
+- `fix` **secret-scan self-documentation**: adding §REQ-6 to `secret-safety.md`
+  surfaced a pre-existing false-positive — `secret-scan.sh` flagged the
+  `azure-conn` row of its OWN auto-generated Pattern Catalog (the catalog mirrors
+  the scanner's pattern SHAPES). The scanner already self-excludes its source file
+  for this reason; extended that to skip lines inside the drift-checked
+  `BEGIN/END AUTO-GENERATED: secret-patterns` block (lines OUTSIDE the block are
+  still scanned — a real secret elsewhere in the doc is still caught). Regenerated
+  the catalog table to clear pre-existing doc-sync drift. New bats coverage in
+  `secret-scan.bats` (inside-block skipped / outside-block still caught). This
+  removes the stale per-slug allow-anchor fragility for `secret-safety.md`.
+
 ## [1.26.2] — 2026-06-02 (f258045)
 
 PATCH — **Round-2 follow-up: close the remaining MEDIUM gaps the re-audit named.**

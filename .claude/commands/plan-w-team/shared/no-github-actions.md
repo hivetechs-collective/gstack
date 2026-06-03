@@ -80,6 +80,39 @@ deploy-api: preflight-deploy-account
 **Hygiene:** add `deploy.env` / `.deploy.env` to `.gitignore`; the canonical path is
 outside the repo so it can't be committed; never echo the token when verifying.
 
+### Escalate, never skip (the enforced half of this standard)
+
+The standard above tells you WHERE the deploy credential lives. This subsection is
+the ENFORCED rule for what happens when it is **missing** at deploy time. The
+2026-06-02 cleanscale report surfaced the gap: a deploy hit `wrangler`'s
+non-interactive wall ("set a `CLOUDFLARE_API_TOKEN`"), and the run **stopped short
+of the operator step** — it neither completed the deploy nor escalated, and the
+missing secret was never surfaced. Documenting the `deploy.env` standard did not by
+itself stop a deploy step from being silently skipped.
+
+**The rule:** a deploy/ship step that hits a CLI non-interactive credential wall
+**escalates, it does not skip**. This is a `blocked-external` operator escalation —
+the CLI sibling of the browser-console guardrail, codified in
+[`secret-safety.md §REQ-6`](./secret-safety.md). It is backed by a real mechanism,
+not prose:
+
+- **Detector** — `.claude/scripts/credential-wall-detect.sh` classifies the wall and
+  extracts the EXACT missing secret name.
+- **Hook** — `.claude/hooks/plan-w-team-credential-wall-detect.sh` (PostToolUse /
+  PostToolUseFailure) persists `.claude/state/plan-w-team-credwall-<SLUG>.json`
+  (missing secret + the documented operator action, resolved from
+  `docs/operations/DEPLOY_RUNBOOK.md` when present; survives compaction) and emits a
+  `USER_ESCALATION_HALT` block.
+- **Gate** — `.claude/scripts/plan-w-team-credential-wall-gate.sh`, wired ENFORCING
+  at `05-ship.md §6a-quinquies`, **fails closed** while the artifact is unresolved.
+  The deploy/ship step **cannot be marked complete or skipped** until the operator
+  provisions the secret (into the `0600` `deploy.env` above) or completes the login,
+  then sets `"resolved": true`.
+
+This is the step-completeness invariant: advancing past an incomplete deploy step
+that is blocked on a credential is impossible. Treat a credential wall the same way
+§Fix-Immediately treats a red gate — surface and resolve, never "note and advance".
+
 **Reference implementation:** CleanRev (`cleanscale`) — `scripts/load-deploy-env.sh`,
 `scripts/setup-deploy-token.sh`, `scripts/preflight-deploy-account.sh`, the Makefile
 `deploy-*` recipes, and `docs/operations/DEPLOY_RUNBOOK.md` §"Non-Interactive

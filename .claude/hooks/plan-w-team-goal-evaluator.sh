@@ -360,7 +360,14 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     # pending_escalations array and slug colocate on ONE line (well inside the
     # window); in RAW text a multi-line status block stays inside ±5 lines.
     if [ -z "$TERMINAL" ]; then
-        for SITE in push-ack secret-scan-allow scope-unlock-for-drift; do
+        # credential-wall (2026-06-02): a CLI non-interactive credential/token
+        # wall hit during deploy/ship is a blocked-external operator escalation —
+        # same shape as the browser-console REQ-5 gate. The credential-wall
+        # detector hook emits a USER_ESCALATION_HALT block carrying
+        # "pending_escalations":["credential-wall"], so the run halts for the
+        # operator to provision the missing secret. Additive — the original three
+        # hard-gate sites are unchanged.
+        for SITE in push-ack secret-scan-allow scope-unlock-for-drift credential-wall; do
             # grep -B/-A scope: any pending_escalations line referencing $SITE
             # must have $SLUG within 10 lines (status block size).
             # Space-tolerant (2026-05-25): pretty-printed blocks render

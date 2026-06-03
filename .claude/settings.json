@@ -392,6 +392,15 @@
             "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/plan-w-team-credential-wall-detect.sh"
+          }
+        ]
       }
     ],
     "PostToolUseFailure": [
@@ -400,6 +409,10 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/mcp-health-check.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/plan-w-team-credential-wall-detect.sh"
           }
         ]
       }

@@ -400,6 +400,16 @@ if .claude/scripts/plan-w-team-supervisor-route.sh "$SLUG"; then
     # to the console or attempt interactive login. Verification uses the programmatic
     # path only (connection string / API token from the secrets inventory / prod API).
     # Full rule + console denylist: shared/secret-safety.md §"Vendor / SSO Console Access".
+    #
+    # REQ-6 (SAFETY) — CLI credential-wall sibling: a deploy-shaped command run here
+    # that hits a NON-INTERACTIVE token wall (wrangler/gh/vercel/eas/flyctl/aws —
+    # "non-interactive", "set <PROVIDER>_API_TOKEN", "not logged in", "login
+    # required") is the SAME blocked-external escalation. The
+    # plan-w-team-credential-wall-detect.sh hook persists the EXACT missing secret +
+    # operator action to a durable artifact and emits USER_ESCALATION_HALT; the
+    # plan-w-team-credential-wall-gate.sh ENFORCING gate (05-ship.md §6a-quinquies)
+    # then makes the step un-skippable. NEVER mark a deploy task done on a credential
+    # wall — leave it BLOCKED and escalate. Full rule: shared/secret-safety.md §REQ-6.
 else
     # Wrapper exit 2 → kill switch set (PLAN_W_TEAM_DISABLE_SUPERVISOR=1)
     # Fall through to Pattern A (self-claiming pool) or Pattern B (continuous

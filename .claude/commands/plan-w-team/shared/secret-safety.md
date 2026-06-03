@@ -80,6 +80,56 @@ the console action), not a cue to brute-force the UI.
 > test** — your own UI on localhost / a preview URL. The guardrail is specifically
 > against third-party vendor/SSO **management consoles**.
 
+## CLI Non-Interactive Credential Walls — Hard Guardrail (REQ-6, SAFETY)
+
+§REQ-5 above covers the **browser** vendor/SSO console wall. **§REQ-6 is its CLI
+sibling**: a deploy CLI run **non-interactively** (no human at the keyboard) that
+hits a credential/token wall. 2026-06-02 cleanscale incident: a deploy hit
+
+> `wrangler` — "In a non-interactive environment, it's necessary to set a
+> `CLOUDFLARE_API_TOKEN` environment variable"
+
+and the run **stopped short** — it neither completed the deploy nor raised a proper
+operator escalation, and the specific missing secret was never surfaced or
+persisted. A worker cannot complete an interactive `wrangler login` (OAuth in the
+operator's browser) any more than it can complete an SSO console login, so it must
+not pretend the step is done or skip it.
+
+**The rule.** A CLI non-interactive credential/token wall is a `blocked-external`
+gate — the SAME shape as §REQ-5. HALT and escalate to the operator. Do **not** mark
+the deploy/ship step complete, do **not** silently skip it, do **not** retry into a
+loop. The step stays explicitly BLOCKED until the operator provisions the secret
+or completes the login.
+
+Non-exhaustive wall-signature catalog (any of these on a deploy CLI = HALT):
+
+- `wrangler` / `gh` / `vercel` / `eas` / `flyctl` / `aws` / `pnpm run deploy`
+  emitting: "non-interactive", "set `<PROVIDER>`\_API_TOKEN", "could not
+  authenticate", "not authenticated", "login required", "not logged in", "you must
+  be logged in", "not logged into any …", "no existing credentials found",
+  "run `<provider> login`".
+
+**The real mechanism (not prose).** This guardrail is enforced by three composed
+pieces — see [`no-github-actions.md §"Deploy Secret Access" → "Escalate, never skip"`](./no-github-actions.md):
+
+| Piece                                                 | Role                                                                                                                                                                                                          |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.claude/scripts/credential-wall-detect.sh`           | Pure detector: classifies the wall + extracts the EXACT missing secret name (`CLOUDFLARE_API_TOKEN`, `VERCEL_TOKEN`, …).                                                                                      |
+| `.claude/hooks/plan-w-team-credential-wall-detect.sh` | PostToolUse / PostToolUseFailure hook: persists `.claude/state/plan-w-team-credwall-<SLUG>.json` (survives compaction) + emits the `USER_ESCALATION_HALT` block (`pending_escalations: ["credential-wall"]`). |
+| `.claude/scripts/plan-w-team-credential-wall-gate.sh` | ENFORCING ship gate (`05-ship.md §6a-quinquies`): fails closed while the artifact is unresolved — the step-completeness invariant.                                                                            |
+
+The durable artifact records the missing secret name + the repo's documented
+operator action (resolved from `docs/operations/DEPLOY_RUNBOOK.md` when present).
+**It never stores a secret value** — only the NAME of the one that is missing.
+
+**The allowed resolution is operator-side, programmatic-or-login.** The operator
+provisions the least-privilege token into the headless `0600` `deploy.env` (per
+`no-github-actions.md §"Deploy Secret Access"`) OR completes the documented login,
+sets `"resolved": true` in the artifact, and re-runs. A worker must not brute-force
+the credential into existence. Kill switch (incident only):
+`PLAN_W_TEAM_DISABLE_CREDWALL_GUARD=1` disables the detector hook; the gate has no
+bypass.
+
 ## Pattern Catalog
 
 Authoritative list. Order in the source file is display-only; dedup is by `(file:line:name)`.
@@ -88,26 +138,27 @@ The table below is **auto-generated** from `.claude/scripts/secret-scan.sh` by `
 
 <!-- BEGIN AUTO-GENERATED: secret-patterns -->
 
-| Name                 | Pattern (shape)                                                    | Remediation                                                       |
-| -------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------- |
-| `aws`                | `AKIA[A-Z0-9]{16}`                                                 | Revoke at AWS IAM console; rotate access keys                     |
-| `github-token`       | `gh[pousr]_[a-zA-Z0-9_]{36,}`                                      | Revoke at github.com/settings/tokens                              |
-| `anthropic`          | `sk-ant-[a-zA-Z0-9_-]{20,}`                                        | Revoke at console.anthropic.com/settings/keys                     |
-| `openai-proj`        | `sk-proj-[A-Za-z0-9_-]{20,}`                                       | Revoke at platform.openai.com/api-keys                            |
-| `openai`             | `sk-[A-Za-z0-9]{48,}`                                              | Revoke at platform.openai.com/api-keys                            |
-| `stripe-live-secret` | `sk_live_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/apikeys                              |
-| `stripe-test-secret` | `sk_test_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/test/apikeys                         |
-| `stripe-live-pub`    | `pk_live_[a-zA-Z0-9]{20,}`                                         | Stripe publishable key — confirm intent before committing         |
-| `slack`              | `xox[baprs]-[A-Za-z0-9-]{10,}`                                     | Revoke at api.slack.com/apps                                      |
-| `gitlab-pat`         | `glpat-[A-Za-z0-9_-]{20,}`                                         | Revoke at gitlab.com/-/profile/personal_access_tokens             |
-| `azure-conn`         | `DefaultEndpointsProtocol=https;AccountName=`                      | Rotate Azure storage account keys                                 |
-| `azure-accountkey`   | `AccountKey=[A-Za-z0-9+/=]{40,}`                                   | Rotate Azure storage account keys                                 |
-| `paddle-live`        | `pdl_live_apikey_[a-zA-Z0-9]{20,}`                                 | Revoke at vendors.paddle.com/authentication-v2                    |
-| `paddle-sandbox`     | `pdl_sdbx_apikey_[a-zA-Z0-9]{20,}`                                 | Revoke at sandbox-vendors.paddle.com/authentication-v2            |
-| `resend`             | `re_[A-Za-z0-9]{20,}`                                              | Revoke at resend.com/api-keys                                     |
-| `smtp2go`            | `api-[a-f0-9]{32}`                                                 | Revoke at app.smtp2go.com/settings/                               |
-| `jwt`                | `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}` | JWT in code — if live session/signing token, rotate issuer secret |
-| `private-key`        | `-----BEGIN [A-Z ]*PRIVATE KEY-----`                               | Rotate private key; revoke if used in production                  |
+| Name                 | Pattern (shape)                                                    | Remediation                                                                                                          |
+| -------------------- | ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `aws`                | `AKIA[A-Z0-9]{16}`                                                 | Revoke at AWS IAM console; rotate access keys                                                                        |
+| `github-token`       | `gh[pousr]_[a-zA-Z0-9_]{36,}`                                      | Revoke at github.com/settings/tokens                                                                                 |
+| `anthropic`          | `sk-ant-[a-zA-Z0-9_-]{20,}`                                        | Revoke at console.anthropic.com/settings/keys                                                                        |
+| `openai-proj`        | `sk-proj-[A-Za-z0-9_-]{20,}`                                       | Revoke at platform.openai.com/api-keys                                                                               |
+| `openai`             | `sk-[A-Za-z0-9]{48,}`                                              | Revoke at platform.openai.com/api-keys                                                                               |
+| `stripe-live-secret` | `sk_live_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/apikeys                                                                                 |
+| `stripe-test-secret` | `sk_test_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/test/apikeys                                                                            |
+| `stripe-live-pub`    | `pk_live_[a-zA-Z0-9]{20,}`                                         | Stripe publishable key — confirm intent before committing                                                          |
+| `slack`              | `xox[baprs]-[A-Za-z0-9-]{10,}`                                     | Revoke at api.slack.com/apps                                                                                         |
+| `gitlab-pat`         | `glpat-[A-Za-z0-9_-]{20,}`                                         | Revoke at gitlab.com/-/profile/personal_access_tokens                                                                |
+| `azure-conn`         | `DefaultEndpointsProtocol=https;AccountName=`                      | Rotate Azure storage account keys                                                                                    |
+| `azure-accountkey`   | `AccountKey=[A-Za-z0-9+/=]{40,}`                                   | Rotate Azure storage account keys                                                                                    |
+| `paddle-live`        | `pdl_live_apikey_[a-zA-Z0-9]{20,}`                                 | Revoke at vendors.paddle.com/authentication-v2                                                                       |
+| `paddle-sandbox`     | `pdl_sdbx_apikey_[a-zA-Z0-9]{20,}`                                 | Revoke at sandbox-vendors.paddle.com/authentication-v2                                                               |
+| `resend`             | `re_[A-Za-z0-9]{20,}`                                              | Revoke at resend.com/api-keys                                                                                        |
+| `smtp2go`            | `api-[a-f0-9]{32}`                                                 | Revoke at app.smtp2go.com/settings/                                                                                  |
+| `cloudflare-token`   | `cfut_[A-Za-z0-9]{20,}`                                            | Roll at dash.cloudflare.com/profile/api-tokens (committed 2026-05-25 in cleanscale #465 — scanner had no CF pattern) |
+| `jwt`                | `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}` | JWT in code — if live session/signing token, rotate issuer secret                                                  |
+| `private-key`        | `-----BEGIN [A-Z ]*PRIVATE KEY-----`                               | Rotate private key; revoke if used in production                                                                     |
 
 <!-- END AUTO-GENERATED: secret-patterns -->
 

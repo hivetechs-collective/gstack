@@ -185,6 +185,20 @@ emit_finding() {
 scan_text() {
   local label="$1"
   local text="$2"
+  # Self-documentation skip: lines inside an auto-generated secret-pattern catalog
+  # block are the scanner's OWN published pattern SHAPES, not live credentials.
+  # The scanner already self-excludes its source file (secret-scan.sh) for exactly
+  # this reason (see should_skip_file); shared/secret-safety.md embeds the SAME
+  # catalog, regenerated + drift-checked between these markers by secret-doc-sync.sh.
+  # A secret scanner must not flag its own documentation of what secrets look like.
+  # We skip ONLY the marked block; any line outside it is still scanned, so a real
+  # secret pasted elsewhere in the doc is still caught. (Empty when no markers.)
+  local catalog_lines
+  catalog_lines=$(printf '%s\n' "$text" | awk '
+    /BEGIN AUTO-GENERATED: secret-patterns/ { inblk=1 }
+    { if (inblk) print NR }
+    /END AUTO-GENERATED: secret-patterns/ { inblk=0 }
+  ')
   local entry name regex remediation
   for entry in "${PATTERNS[@]}"; do
     name="${entry%%|*}"
@@ -198,6 +212,10 @@ scan_text() {
       [[ -z "$line" ]] && continue
       local linenum="${line%%:*}"
       local content="${line#*:}"
+      # Skip matches inside the auto-generated catalog block (self-documentation).
+      if [[ -n "$catalog_lines" ]] && printf '%s\n' "$catalog_lines" | grep -qxF "$linenum"; then
+        continue
+      fi
       is_placeholder_line "$content" && continue
       local token
       token=$(printf '%s' "$content" | grep -oE "$regex" | head -1)
@@ -257,11 +275,22 @@ case "$MODE" in
     # scan '+' lines. Skip '+++ ' header.
     current_file=""
     current_line=0
+    in_catalog=0
     while IFS= read -r raw; do
+      # Track auto-generated catalog markers across the diff stream (markers are
+      # typically unchanged context lines). A '+' line inside the block is the
+      # scanner's own published pattern SHAPE, not a live secret — skip it, exactly
+      # as scan_text does for --staged/--paths. BEGIN/END live on distinct lines and
+      # the marker lines themselves never carry a secret shape, so order is safe.
+      case "$raw" in
+        *"BEGIN AUTO-GENERATED: secret-patterns"*) in_catalog=1 ;;
+        *"END AUTO-GENERATED: secret-patterns"*)   in_catalog=0 ;;
+      esac
       case "$raw" in
         '+++ '*)
           current_file="${raw#+++ }"
           current_file="${current_file#b/}"
+          in_catalog=0
           continue
           ;;
         '--- '*) continue ;;
@@ -275,6 +304,8 @@ case "$MODE" in
           ;;
         '+'*)
           case "$current_file" in *.claude/scripts/secret-scan.sh) current_line=$((current_line + 1)); continue ;; esac
+          # Inside the auto-generated catalog block: self-documentation, not a leak.
+          if [[ "$in_catalog" == 1 ]]; then current_line=$((current_line + 1)); continue; fi
           added="${raw#+}"
           if ! is_placeholder_line "$added"; then
             for entry in "${PATTERNS[@]}"; do
