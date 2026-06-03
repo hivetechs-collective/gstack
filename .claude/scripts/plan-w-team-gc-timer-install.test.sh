@@ -19,8 +19,18 @@ export PWT_GC_TIMER_PRESSURE=0
 export PWT_GC_TIMER_NO_LOAD=1
 
 TD=$(mktemp -d); trap 'rm -rf "$TD"' EXIT
-# Common test env: temp agents dir, never load, never pressure-sweep, fixed label.
+# Simulated MAIN checkout — a non-worktree, non-git temp path. Pinning REPO_PATH
+# via PWT_PROJECT_ROOT_OVERRIDE keeps the install cases [1]-[8] deterministic no
+# matter where the suite runs from. Without it the script resolves REPO_PATH via
+# `git rev-parse --show-toplevel`, which returns the WORKTREE when the suite runs
+# inside one (the standard `claude --bg` /plan-w-team context) — tripping the
+# worktree guard and failing [1]-[5]. (The dedicated worktree-guard case [10] sets
+# its own override pointing INTO .claude/worktrees, so it is unaffected.)
+MAINREPO="$TD/mainrepo"; mkdir -p "$MAINREPO"
+# Common test env: temp agents dir, never load, never pressure-sweep, fixed label,
+# pinned main-checkout root.
 run() { PWT_GC_TIMER_AGENTS_DIR="$TD" PWT_GC_TIMER_NO_LOAD=1 PWT_GC_TIMER_PRESSURE=0 \
+        PWT_PROJECT_ROOT_OVERRIDE="$MAINREPO" \
         PWT_GC_TIMER_LABEL=io.test.pwt-gc bash "$SCRIPT" "$@" 2>"$TD/err"; }
 PLIST="$TD/io.test.pwt-gc.plist"
 

@@ -59,6 +59,90 @@ run --all --execute >/dev/null
 run --all --execute >/dev/null; rc=$?
 [ "$rc" -eq 0 ] && ok "idempotent re-run exits 0" || bad "non-zero on clean re-run ($rc)"
 
+# ── installable preservation (build-artifact-preservation feature, 1.28.0) ──
+# FINAL artifacts (*.app/*.ipa/*.apk/*.aab) must be PRESERVED (relocated to the
+# kept-artifacts home), while the GB-scale intermediates in the same dir are still
+# reclaimed. Mirrors the cleanscale incident: a .app deleted with its ios/build dir.
+KEPT="$TR/.playwright-mcp/kept-build-artifacts"   # default home, rooted at REPO_ROOT (=$TR)
+
+# [8]+[9] a .app inside ios/build is RELOCATED to the kept home (not deleted),
+#         while a 2 MB intermediate in the same dir IS reclaimed in the same run.
+WT2=$(mk_wt agent-d)
+mkdir -p "$WT2/ios/build/Debug-iphonesimulator/MyApp.app/Contents"
+echo "binary" > "$WT2/ios/build/Debug-iphonesimulator/MyApp.app/Contents/MyApp"
+mkdir -p "$WT2/ios/build/Intermediates"
+dd if=/dev/zero of="$WT2/ios/build/Intermediates/big.o" bs=1024 count=2048 2>/dev/null
+OUT2=$(run "$WT2" --execute --json)
+[ -f "$KEPT/agent-d/ios/build/Debug-iphonesimulator/MyApp.app/Contents/MyApp" ] \
+  && ok "[AC1] .app inside ios/build relocated to kept home (not deleted)" \
+  || bad "[AC1] .app NOT preserved — installable was deleted with its build dir (BUG)"
+{ echo "$OUT2" | grep -qE '"reclaimable_mb": [1-9]' && [ ! -d "$WT2/ios/build" ]; } \
+  && ok "[AC2] intermediates reclaimed (>=1 MB) in the same run; build dir removed" \
+  || bad "[AC2] intermediate reclaim regressed (savings lost)"
+
+# [10] .ipa/.apk/.aab inside android/build + ios/build are likewise preserved
+WT3=$(mk_wt agent-e)
+mkdir -p "$WT3/android/build/outputs" "$WT3/android/build/intermediates" "$WT3/ios/build"
+echo apk > "$WT3/android/build/outputs/app.apk"
+echo aab > "$WT3/android/build/outputs/app.aab"
+echo ipa > "$WT3/ios/build/App.ipa"
+echo o   > "$WT3/android/build/intermediates/o"
+run "$WT3" --execute >/dev/null
+{ [ -f "$KEPT/agent-e/android/build/outputs/app.apk" ] \
+  && [ -f "$KEPT/agent-e/android/build/outputs/app.aab" ] \
+  && [ -f "$KEPT/agent-e/ios/build/App.ipa" ] \
+  && [ ! -d "$WT3/android/build" ] && [ ! -d "$WT3/ios/build" ]; } \
+  && ok "[AC3-clean] .ipa/.apk/.aab preserved; intermediate build dirs removed" \
+  || bad "[AC3-clean] android/ios installables not preserved"
+
+# [11] kept-artifacts home is NEVER touched by a subsequent --all sweep
+run --all --execute >/dev/null
+{ [ -f "$KEPT/agent-d/ios/build/Debug-iphonesimulator/MyApp.app/Contents/MyApp" ] \
+  && [ -f "$KEPT/agent-e/android/build/outputs/app.apk" ]; } \
+  && ok "[AC5-clean] kept-artifacts home survives an --all sweep (never cleaned)" \
+  || bad "[AC5-clean] kept home was clobbered by sweep (BUG)"
+
+# [12] PWT_KEPT_ARTIFACTS_HOME absolute override is honored as-is
+WT4=$(mk_wt agent-f)
+mkdir -p "$WT4/ios/build"; echo ipa > "$WT4/ios/build/keep.ipa"
+ALT="$TR/alt-kept"
+PWT_KEPT_ARTIFACTS_HOME="$ALT" PWT_PROJECT_ROOT_OVERRIDE="$TR" bash "$SCRIPT" "$WT4" --execute 2>"$TR/err"
+[ -f "$ALT/kept-build-artifacts/agent-f/ios/build/keep.ipa" ] \
+  && ok "PWT_KEPT_ARTIFACTS_HOME (absolute) override honored" \
+  || bad "PWT_KEPT_ARTIFACTS_HOME override ignored"
+
+# [13] the clean script refuses to clean the kept home itself (in-tree guard)
+mkdir -p "$WTS/.kepthome/ios/build"; echo ipa > "$WTS/.kepthome/ios/build/x.ipa"
+PWT_KEPT_ARTIFACTS_HOME="$WTS/.kepthome" PWT_PROJECT_ROOT_OVERRIDE="$TR" \
+  bash "$SCRIPT" "$WTS/.kepthome" --execute 2>"$TR/err"
+[ -f "$WTS/.kepthome/ios/build/x.ipa" ] \
+  && ok "refuses to clean the kept-artifacts home itself" \
+  || bad "cleaned inside the kept home (BUG: home not protected)"
+
+# [14] dry-run still moves/deletes NOTHING even with installables present
+WT5=$(mk_wt agent-g)
+mkdir -p "$WT5/ios/build"; echo app > "$WT5/ios/build/Z.app"
+run "$WT5" >/dev/null   # dry-run (no --execute)
+{ [ -f "$WT5/ios/build/Z.app" ] && [ ! -e "$KEPT/agent-g/ios/build/Z.app" ]; } \
+  && ok "dry-run preserves in place — no move, no delete" \
+  || bad "dry-run moved or deleted an artifact (BUG)"
+
+# [15] FAIL CLOSED: if find cannot fully enumerate a build dir (unreadable subdir),
+# the dir is KEPT, never silently deleted (a hidden installable could be inside).
+# (root bypasses unix perms, so the find error can't be simulated there — skip.)
+if [ "$(id -u)" != "0" ]; then
+  WT6=$(mk_wt agent-h)
+  mkdir -p "$WT6/ios/build/locked"; echo x > "$WT6/ios/build/locked/secret"
+  chmod 000 "$WT6/ios/build/locked"
+  run "$WT6" --execute >/dev/null 2>&1
+  [ -d "$WT6/ios/build" ] \
+    && ok "find-error fails CLOSED — build dir kept, not silently deleted" \
+    || bad "find-error deleted the dir (fail-OPEN regression — could lose an installable)"
+  chmod 755 "$WT6/ios/build/locked" 2>/dev/null   # restore so the EXIT trap can clean up
+else
+  ok "find-error fail-closed (skipped — running as root, perms not enforceable)"
+fi
+
 echo ""
 echo "── results: $PASS passed, $FAIL failed ──"
 [ "$FAIL" -eq 0 ]

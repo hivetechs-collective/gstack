@@ -77,11 +77,75 @@ get_command() {
     echo "$INPUT" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/' || echo ""
 }
 
+# Extract the PreToolUse payload's cwd (the dir the Bash command runs in), so a
+# relative rm target (e.g. `rm -rf build`) resolves to the same path the command
+# would actually delete — not the hook process's own CWD. Empty when absent.
+get_cwd() {
+    echo "$INPUT" | grep -o '"cwd"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/' || echo ""
+}
+
 # =============================================================================
 # BASH COMMAND PROTECTION
 # =============================================================================
 check_bash_command() {
     local cmd="$1"
+
+    # ── FINAL-ARTIFACT GUARD (build-artifact-preservation, 1.28.0) ────────────
+    # An rm -rf must NOT be blanket-allowed by the safe_rm_targets short-circuit
+    # below if it would delete a FINAL installable (*.app/*.ipa/*.apk/*.aab) or
+    # the protected kept-artifacts home. This runs FIRST — before both the
+    # safe-target allow and the generic dangerous-rm block — so installables are
+    # preserved-by-default even inside build/dist/target. It inspects the REAL
+    # filesystem, not just the command string. Pure-intermediate rm -rf (no
+    # installable present) falls through unchanged, so the GB-scale reclaim path
+    # is not regressed. Mirrors the proactive layer in
+    # .claude/scripts/plan-w-team-build-artifact-clean.sh; policy at
+    # docs/operations/build-cleanup-preserve-installables.md.
+    if echo "$cmd" | grep -qE 'rm\s+(-[^\s]*)?-[rf]'; then
+        local _kept_home="${PWT_KEPT_ARTIFACTS_HOME:-.playwright-mcp}"
+        local _cwd; _cwd=$(get_cwd)
+        local _tok _abs _found _frc
+        for _tok in $cmd; do
+            case "$_tok" in -*|rm|sudo|'&&'|'||'|';'|'|') continue ;; esac
+            _tok="${_tok%/}"
+            [ -z "$_tok" ] && continue
+            # Protected kept-artifacts home → hard block (string match on the token;
+            # the home holds preserved installables and must never be cleanup-deleted).
+            case "$_tok" in
+                "$_kept_home"|"$_kept_home"/*|*/"$_kept_home"|*/"$_kept_home"/*)
+                    respond "block" "rm -rf of the protected kept-artifacts home" \
+                      "⛔ BLOCKED: the kept-artifacts home ($_kept_home) must never be deleted — it holds preserved installables (.app/.ipa/.apk/.aab). See docs/operations/build-cleanup-preserve-installables.md" "$_tok" ;;
+            esac
+            # Resolve a RELATIVE target against the payload cwd (the dir the command
+            # actually runs in) so `rm -rf build` is scanned at the right path, not
+            # the hook process's CWD. Absolute tokens are used as-is.
+            _abs="$_tok"
+            case "$_tok" in /*) : ;; *) [ -n "$_cwd" ] && _abs="$_cwd/$_tok" ;; esac
+            # Target IS a final installable (extension on the token) → ask.
+            case "$_tok" in
+                *.app|*.ipa|*.apk|*.aab)
+                    respond "ask" "rm -rf targets a final installable" \
+                      "⚠️ CONFIRM: '$_tok' is a final installable (.app/.ipa/.apk/.aab). Preserve it (copy to the kept-artifacts home) before deleting, or confirm. See docs/operations/build-cleanup-preserve-installables.md" "$_tok" ;;
+            esac
+            [ -d "$_abs" ] || continue
+            # Scan the dir for installables. FAIL CLOSED: if find could not fully
+            # enumerate (unreadable subdir / FS error), do NOT fall through to the
+            # safe_rm allow — ask, so an unenumerated installable is not deleted.
+            if _found=$(find "$_abs" \( -name '*.app' -o -name '*.ipa' -o -name '*.apk' -o -name '*.aab' \) -prune -print 2>/dev/null); then
+                _frc=0
+            else
+                _frc=$?
+            fi
+            if [ "$_frc" -ne 0 ]; then
+                respond "ask" "rm -rf target could not be scanned for installables" \
+                  "⚠️ CONFIRM: could not fully scan '$_tok' for final installables (find error). Preserve any installable before deleting, or confirm. See docs/operations/build-cleanup-preserve-installables.md" "$_tok"
+            fi
+            if [ -n "$_found" ]; then
+                respond "ask" "rm -rf target contains a final installable" \
+                  "⚠️ CONFIRM: '$_tok' contains a final installable (.app/.ipa/.apk/.aab). Preserve it before deleting, or confirm. See docs/operations/build-cleanup-preserve-installables.md" "$_tok"
+            fi
+        done
+    fi
 
     # Safe targets for rm -rf — build caches and generated artifacts
     # These are always safe to delete and should never be blocked

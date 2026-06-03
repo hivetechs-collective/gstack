@@ -21,6 +21,40 @@ Entries are newest-first.
 
 ---
 
+## [1.28.0] — 2026-06-03 (411e1a6)
+
+MINOR — **Build cleanup preserves installables, cleans only intermediates**
+(brief `build-artifact-preservation`). Closes the 2026-06-02 cleanscale incident
+where a build-cleanup deleted an iOS Simulator `.app` together with its ~931 MB
+`ios/build` intermediates on the cofounder-demo critical path. The intermediates
+were ~90%+ of the footprint and should be reclaimed; the reusable `.app` should
+have been kept. claude-pattern carried the identical bug. Additive safety layer —
+the GB-scale intermediate reclaim and the existing location/source invariants are
+preserved, extended with a final-artifact dimension.
+
+- `feat` **proactive layer** — `.claude/scripts/plan-w-team-build-artifact-clean.sh`
+  now relocates any final installable (`*.app`/`*.ipa`/`*.apk`/`*.aab`) out of an
+  about-to-be-cleaned build dir into a protected kept-artifacts home BEFORE removing
+  intermediates. Fail-safe: a failed `mv` skips the `rm` (never lose an artifact we
+  could not save). Reclaim is measured after relocation, so the GB figure reflects
+  intermediates only. Refuses to clean the kept-artifacts home itself.
+- `feat` **reactive layer** — `.claude/hooks/damage-control/damage-control.sh` adds a
+  final-artifact guard that runs BEFORE the `safe_rm_targets` short-circuit: an
+  `rm -rf` whose target IS or CONTAINS an installable requires confirmation (`ask`)
+  even for `build`/`dist`/`target`; the kept-artifacts home is hard-blocked; a
+  pure-intermediate `rm -rf` is still allowed (GB-reclaim path not regressed).
+- `feat` **kept-artifacts home** — configurable via `PWT_KEPT_ARTIFACTS_HOME`
+  (absolute used as-is, relative resolved under the repo root so it survives worktree
+  removal); default `.playwright-mcp/`. Layout
+  `<home>/kept-build-artifacts/<worktree>/<relpath>`.
+- `feat` **policy doc** — `docs/operations/build-cleanup-preserve-installables.md`,
+  referenced from CLAUDE.md's disk-hygiene section; propagated to consumers via
+  `sync-to-project.sh`.
+- `test` — new `.claude/hooks/damage-control/damage-control.test.sh` (8 cases) and
+  extended `plan-w-team-build-artifact-clean.test.sh` (cases 8-14): preservation of
+  `.app`/`.ipa`/`.apk`/`.aab`, intermediate reclaim ≥1 MB in the same run, kept-home
+  never cleaned, override honored, dry-run inert, `ask`/`allow`/`block` decisions.
+
 ## [1.27.0] — 2026-06-02 (6095b87)
 
 MINOR — **Credential-wall escalation + step-completeness invariant** (brief

@@ -8,8 +8,12 @@
 bashPatterns:
   # --- FILE DESTRUCTION ---
   # NOTE: rm -rf targeting build caches (.next, node_modules, dist, target, build,
-  # __pycache__, .turbo, .parcel-cache, .cache, .tsbuildinfo) is always ALLOWED.
-  # The safe-target allowlist in damage-control.sh short-circuits before this pattern.
+  # __pycache__, .turbo, .parcel-cache, .cache, .tsbuildinfo) is ALLOWED via the
+  # safe-target allowlist in damage-control.sh, which short-circuits before this
+  # pattern — EXCEPT when the target IS or CONTAINS a final installable
+  # (*.app/*.ipa/*.apk/*.aab) or the kept-artifacts home: the final-artifact guard
+  # (build-artifact-preservation, 1.28.0) runs first and asks/blocks regardless of
+  # the enclosing dir name. See docs/operations/build-cleanup-preserve-installables.md.
   - pattern: "rm\\s+(-[^\\s]*)?-[rf]"
     description: "rm with recursive or force flags (except build caches)"
     action: block
