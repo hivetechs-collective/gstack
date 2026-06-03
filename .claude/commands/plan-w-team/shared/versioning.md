@@ -63,6 +63,26 @@ checking whether `VERSION` is staged), the hook is a no-op.
 captured in `git log --oneline` but is not back-ported into the changelog —
 the policy is forward-only from `1.0.0`.
 
+## CHANGELOG SHA backfill convention
+
+Each `## [x.y.z] — <date> (<sha>)` header cites the commit that shipped that
+version. A commit can never contain its own SHA, so when an entry is written the
+author would reflexively cite the _current_ HEAD — which is the _prior_ version's
+commit. That off-by-one is invisible to the eye and recurred three times (1.22.1,
+then 1.26.1) before it was caught.
+
+The convention that closes it:
+
+1. Write the new entry with the literal token `(pending)` as its SHA.
+2. Commit the version bump.
+3. Backfill: replace `(pending)` with `git rev-parse --short HEAD`, then commit
+   that one-line correction (a docs-only follow-up, no new version).
+
+`tests/skill/cases/changelog-sha.bats` enforces it: every entry whose SHA
+resolves must satisfy `git show <sha>:.../VERSION == <entry version>`, and at
+most one entry may be `(pending)`. The lint tolerates unresolvable SHAs (squashed
+/ pre-`VERSION`-file / shallow clones) so it never false-fails on ancient history.
+
 ## Why we don't bump on every commit
 
 The hook only bumps when the commit touches:
@@ -83,4 +103,3 @@ test-covered by `.claude/hooks/pre-commit-pwt-version-bump.test.sh`.
 
 Run `.claude/hooks/pre-commit-pwt-version-bump.test.sh` after touching the hook,
 and confirm the resulting `VERSION` matches the bump kind before pushing.
-

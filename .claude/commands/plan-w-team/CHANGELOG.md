@@ -21,7 +21,39 @@ Entries are newest-first.
 
 ---
 
-## [1.26.1] — 2026-06-02 (be7a147)
+## [1.26.2] — 2026-06-02 (f258045)
+
+PATCH — **Round-2 follow-up: close the remaining MEDIUM gaps the re-audit named.**
+
+- `fix` **P11**: the symmetry checker's Pass-2 (orphan-reader) was DEAD CODE for
+  every `$SLUG`-keyed artifact — the rg capture ends in `-`, and the old blanket
+  `*-` skip dropped them all (4 real handoff artifacts unregistered yet
+  uncatchable). Pass-2 now skips only the bare common prefix and uses an EXACT
+  stem match for `$SLUG` refs; registered the 4 surfaced artifacts (fleet-intent,
+  skill-version, pass1-synthesis, test-output). Checker 37/37, exit 0 — and the
+  green is no longer hollow.
+- `fix` **P9b/C4 (MultiEdit bypass)**: registered a `MultiEdit` PreToolUse matcher
+  for `block-protected-paths.sh` + `block-gh-actions-build.sh` — a `MultiEdit` to
+  `.github/workflows/` or the secret-scan-allow file no longer bypasses the gates.
+  New bats (behavioral + matcher-registration).
+- `fix` **CS-4 (Drizzle)**: the content-scanner's CS-4 regex now also matches the
+  Drizzle relational `where: eq(t.id, …)` object-property form (round-2 §3.5).
+- `feat` **P14 root fix**: new `changelog-sha.bats` lint asserts every CHANGELOG
+  entry's cited SHA resolves AND `git show <sha>:…/VERSION` equals the entry's
+  version — catching the off-by-one drift class at its root. The newest entry
+  carries `(pending)` until backfilled with its own shipping commit (the
+  chicken-and-egg a commit can't contain its own SHA); documented in
+  `versioning.md`.
+
+C3/SUP-YIELD: confirmed already gate-covered (the `goal-evaluator-c3-antispoof`
+scenario runs in `tests/skill/run.sh`). Accepted-by-design (not forced, to avoid
+the drift the audit warns of): P7 deterministic fix-counter (prompt caps +
+drift-lock are the higher-value layer), P8 gating-integer recompute (a strict
+recompute against the non-strict findings format would itself be drift; §6c-ter
+scanner re-run already covers the GIGO case), §6c-ter exit-2 warn (defense-in-depth;
+§5b is the primary detection). Full suite green (bats + 59 shell + 37/37 symmetry).
+
+## [1.26.1] — 2026-06-02 (51e6b52)
 
 PATCH — **Round-2 re-audit regression fixes.** A round-2 adversarial re-audit
 ([`docs/operations/pwt-principles-reaudit-2026-06-02-round2.md`](../../../docs/operations/pwt-principles-reaudit-2026-06-02-round2.md))
@@ -992,7 +1024,7 @@ which are surfaced as recommendations.
 
 ---
 
-## [1.1.0] — 2026-05-25 (e9443cc)
+## [1.1.0] — 2026-05-25 (0fda762)
 
 MINOR — consolidates the additive skill-surface work landed 2026-05-23 → 2026-05-25.
 All changes are backward-compatible: pre-bump worker sessions keep functioning.

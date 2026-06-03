@@ -136,14 +136,28 @@ done < <(grep -E '^\| `\.claude/state/' "$REGISTRY")
 # registry never declared, so Pass 1 (registry → code) misses it entirely.
 while IFS= read -r ref; do
   [ -z "$ref" ] && continue
-  # Skip wildcard/glob mentions in prose: `.claude/state/plan-w-team-*` has rg
-  # capture stop at the `*`, leaving a path that ends in a bare `-`. Real artifact
-  # paths always have a meaningful suffix (slug, category, .json, .lock, etc).
-  [[ "$ref" == *- ]] && continue
+  # round-2 audit P11: the old `[[ "$ref" == *- ]] && continue` made Pass-2 DEAD
+  # CODE for EVERY `$SLUG`-keyed artifact — the rg capture stops at the
+  # `${SLUG}`/`<…>` placeholder boundary, so every such reader ends in `-` and was
+  # blanket-skipped (4 real handoff artifacts were unregistered yet uncatchable).
+  # Fix: skip ONLY the bare common prefix (a genuine `*` prose wildcard), and for
+  # a `$SLUG`-keyed ref (ending in `-`) require an EXACT match against a registered
+  # stem — a prefix match would let `…-fleet-intent-` falsely satisfy the registered
+  # `…-fleet-` stem and hide a distinct unregistered artifact.
+  [ "$ref" = ".claude/state/plan-w-team-" ] && continue
   matched=0
-  for p in "${registered_prefixes[@]+"${registered_prefixes[@]}"}"; do
-    [[ "$ref" == "$p"* ]] && { matched=1; break; }
-  done
+  case "$ref" in
+    *-)
+      for p in "${registered_prefixes[@]+"${registered_prefixes[@]}"}"; do
+        [ "$ref" = "$p" ] && { matched=1; break; }
+      done
+      ;;
+    *)
+      for p in "${registered_prefixes[@]+"${registered_prefixes[@]}"}"; do
+        [[ "$ref" == "$p"* ]] && { matched=1; break; }
+      done
+      ;;
+  esac
   [ "$matched" = "0" ] && orphan_readers+=("$ref")
 done < <(rg --no-filename --only-matching "${EXCLUDES[@]}" -- '\.claude/state/plan-w-team-[a-zA-Z0-9_.-]*' "${SCOPE[@]}" 2>/dev/null | sort -u)
 

@@ -89,7 +89,10 @@ CS2='\.\.\.[[:space:]]*(req\.body|body|input|payload)|Object\.assign\(|\.set\(\{
 CS3='QA_SIM_TOKEN|_BYPASS_|[xX]-[A-Za-z-]*bypass|service[_-]?token'
 # CS-4 where/query-by-id (BOLA) — flagged only when the SAME line lacks a
 # tenant/owner predicate (the missing-predicate is the actual signal).
-CS4='where\([[:space:]]*eq\([A-Za-z0-9_]+\.id|findById|WHERE[[:space:]]+[A-Za-z0-9_.]*id[[:space:]]*='
+# `where[(:]` covers both the call form `where(eq(t.id` AND Drizzle's relational
+# object-property form `where: eq(t.id` / `where: (eq(t.id` (round-2 audit §3.5
+# soft edge — the regex previously missed the `where:` form).
+CS4='where[(:][[:space:]]*[(]?eq\([A-Za-z0-9_]+\.id|findById|WHERE[[:space:]]+[A-Za-z0-9_.]*id[[:space:]]*='
 TENANT='tenant|org|owner|userId|user_id|accountId|account_id'
 
 record() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$SUSPECTS_FILE"; }
