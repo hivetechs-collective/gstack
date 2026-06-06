@@ -216,6 +216,54 @@ else
     fail "live-sid companion survives --execute" "pid $LIVE_PID killed — live target must be kept"
 fi
 
+# ── AC5a: leaked build-daemon reaping (esbuild/Metro/vite/...) ──────────────
+# [B1] esbuild whose cwd is under a DEAD (gone) worktree dir → would-kill
+echo "[B1] AC5a: build daemon under a gone worktree dir → would-kill"
+R=$(new_repo); RR=$(cd "$R" && pwd -P); PS="$R/psb1.txt"; CWDMAP="$R/cwdb1.txt"
+ps_line 5001 "$MY_UID" "node /opt/node_modules/esbuild/bin/esbuild --service=0.19 --ping" > "$PS"
+printf '5001 %s\n' "$RR/.claude/worktrees/ghostwt/node_modules/esbuild" > "$CWDMAP"
+JSON=$( cd "$R" && PWT_COMPANION_GC_TEST_PS="$PS" PWT_COMPANION_GC_TEST_NO_KILL=1 \
+        PWT_COMPANION_GC_TEST_CWD_MAP="$CWDMAP" PWT_COMPANION_GC_AGENTS_EXTENDED=/nonexistent \
+        bash "$GC" --json 2>/dev/null )
+echo "$JSON" > "$R/outb1.json"
+assert_eq "build daemon under gone worktree → would-kill" "would-kill" "$(action_of "$R/outb1.json" 5001)"
+assert_eq "build daemon kind is build-daemon" "build-daemon" "$(python3 -c 'import json;d=json.load(open("'"$R"'/outb1.json"));print(d["companions"][0]["kind"] if d["companions"] else "none")')"
+
+# [B2] esbuild whose cwd is under a LIVE (registered) worktree → keep
+echo "[B2] AC5a: build daemon under a live registered worktree → keep"
+R=$(new_repo); RR=$(cd "$R" && pwd -P); PS="$R/psb2.txt"; CWDMAP="$R/cwdb2.txt"; REGWT="$R/regwt.txt"
+mkdir -p "$R/.claude/worktrees/livewt/node_modules/esbuild"
+printf 'worktree %s/.claude/worktrees/livewt\nbranch refs/heads/x\n\n' "$RR" > "$REGWT"
+ps_line 5002 "$MY_UID" "node /opt/node_modules/esbuild/bin/esbuild --service=0.19 --ping" > "$PS"
+printf '5002 %s\n' "$RR/.claude/worktrees/livewt/node_modules/esbuild" > "$CWDMAP"
+JSON=$( cd "$R" && PWT_COMPANION_GC_TEST_PS="$PS" PWT_COMPANION_GC_TEST_NO_KILL=1 \
+        PWT_COMPANION_GC_TEST_CWD_MAP="$CWDMAP" PWT_COMPANION_GC_TEST_REGISTERED_WT="$REGWT" \
+        PWT_COMPANION_GC_AGENTS_EXTENDED=/nonexistent bash "$GC" --json 2>/dev/null )
+echo "$JSON" > "$R/outb2.json"
+assert_eq "build daemon under live worktree → keep" "keep" "$(action_of "$R/outb2.json" 5002)"
+
+# [B3] esbuild whose cwd is the MAIN checkout (not under worktrees) → keep
+echo "[B3] AC5a: build daemon in main checkout → keep (never touched)"
+R=$(new_repo); RR=$(cd "$R" && pwd -P); PS="$R/psb3.txt"; CWDMAP="$R/cwdb3.txt"
+ps_line 5003 "$MY_UID" "node /opt/node_modules/esbuild/bin/esbuild --service=0.19 --ping" > "$PS"
+printf '5003 %s\n' "$RR/apps/web" > "$CWDMAP"
+JSON=$( cd "$R" && PWT_COMPANION_GC_TEST_PS="$PS" PWT_COMPANION_GC_TEST_NO_KILL=1 \
+        PWT_COMPANION_GC_TEST_CWD_MAP="$CWDMAP" PWT_COMPANION_GC_AGENTS_EXTENDED=/nonexistent \
+        bash "$GC" --json 2>/dev/null )
+echo "$JSON" > "$R/outb3.json"
+assert_eq "build daemon in main checkout → keep" "keep" "$(action_of "$R/outb3.json" 5003)"
+
+# [B4] SAME-UID guard still applies to build daemons (different uid → keep)
+echo "[B4] AC5a: different-uid build daemon under dead worktree → keep"
+R=$(new_repo); RR=$(cd "$R" && pwd -P); PS="$R/psb4.txt"; CWDMAP="$R/cwdb4.txt"
+ps_line 5004 "$OTHER_UID" "node /opt/node_modules/esbuild/bin/esbuild --service=0.19 --ping" > "$PS"
+printf '5004 %s\n' "$RR/.claude/worktrees/ghostwt2/node_modules" > "$CWDMAP"
+JSON=$( cd "$R" && PWT_COMPANION_GC_TEST_PS="$PS" PWT_COMPANION_GC_TEST_NO_KILL=1 \
+        PWT_COMPANION_GC_TEST_CWD_MAP="$CWDMAP" PWT_COMPANION_GC_AGENTS_EXTENDED=/nonexistent \
+        bash "$GC" --json 2>/dev/null )
+echo "$JSON" > "$R/outb4.json"
+assert_eq "other-uid build daemon → keep" "keep" "$(action_of "$R/outb4.json" 5004)"
+
 # [13] bash 3.2 compatibility (macOS /bin/bash; mac-mini deployment) ──────────
 # Runtime guard against bash-4 constructs (declare -A etc.) that `bash -n` misses.
 echo "[13] runs clean under bash 3.2 (/bin/bash on macOS)"

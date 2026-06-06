@@ -405,6 +405,16 @@ A chain is auditable: every worker's `started_from_slug` walks back to the origi
 
 The origin-chat supervisor's polling loop has three responsibilities per tick, in order: (0) PROGRESS CHECK (added 2026-05-25), (1) standard worker observation, (2) CONTINUATION CHECK (added 2026-05-22).
 
+> **Standing hygiene duty (1.32.0):** at pre-flight AND on each supervisor wake, run
+> `.claude/scripts/plan-w-team-hygiene-sweep.sh` (dry-run by default; `--execute` to
+> reclaim) and **surface its one-line summary** in the per-wake transcript block —
+> `hygiene-sweep: df_free_gb=… worktrees=… wt_reaped=… companions_reaped=… orphan_dirs=… mode=… action=…`.
+> It composes the worktree GC (now reaping `SAFE-PRUNE-PUSHED` for the push-not-merge
+> lifecycle), the companion GC (orphan watchers + leaked build daemons), and the disk
+> gate, so cruft from prior runs is swept before it blocks a spawn (the 2026-05-29
+> 67-worktree → ENOSPC failure this prevents). See
+> [`docs/operations/worktree-lifecycle.md`](../../../docs/operations/worktree-lifecycle.md) §Push-not-merge hardening.
+
 ### Step 0: Progress Check (anti-stall + anti-drift) — runs FIRST, every tick
 
 > **Durable rule:** A monitoring-only tick is a **FAILURE while the backlog is > 0.** Progress is measured **objectively** (real metrics moved), never self-reported. Watching the worker and writing `"goal_progress": "progressing"` is NOT progress if nothing landed. "Memory pressure", a "perceived ceiling", or an `AT_CAPACITY` RAM verdict do **not** license indefinite idling — if they block progress for `STALL_THRESHOLD` ticks, that is a STALL to escalate, not a state to sit in.
@@ -512,6 +522,23 @@ terminal/halt reached (read `terminal_state` and emit the TERMINAL/⚠HALT block
 `3` = heartbeat re-arm (re-run the Step-0 progress check, then re-launch the wait —
 this is a heartbeat, **NOT** a wall-clock cap; principle #3 forbids turn/time caps
 on the work). Tune via `PWT_AWAIT_INTERVAL_S` / `PWT_AWAIT_HEARTBEAT_S`.
+
+**Worktree-aware goal-state resolution (PWT-WT2).** PWT-WT1 spawns `--worker-only`
+workers with `claude --bg --worktree`, so the worker runs inside
+`.claude/worktrees/<slug>/` and its goal-state may live there, not in the main
+checkout. `await-terminal.sh` resolves the goal-state **each tick** in precedence:
+(1) explicit `--state-dir`; (2) main `<root>/.claude/state/plan-w-team-goal-<SLUG>.json`;
+(3) worktree fallback `<root>/.claude/worktrees/*/.claude/state/plan-w-team-goal-<SLUG>.json`.
+So the supervisor passes only `--slug "$SLUG"` (the `SLUG_GUESS` under which
+`pwt-goal.sh --worker-only` seeds the file) and need NOT hand-read worktree state;
+pass `--state-dir <dir>` only to pin a known location. Because `pwt-goal.sh`
+**seeds** `plan-w-team-goal-<SLUG>.json` at spawn (the anti-skip anchor — see
+`shared/goal-conditions.md`), the PRIMARY `terminal_state` trigger is active from
+t=0 even when the worker idles at terminal without exiting; `WORKER_GONE` + heartbeat
+remain as belt-and-braces backstops. This is what closed the 2026-06-02 regression
+where the supervisor only ever woke on the 30-min heartbeat (the worktree-isolated
+worker's file was invisible to a main-only watcher). Spec:
+`docs/specs/supervisor-wait-worktree-aware.md`.
 
 **Fallbacks** (when the event-driven wait is unavailable — e.g. a cross-session
 gap the bg process can't span): active poll at ~30–60s via `Bash + sleep`, or

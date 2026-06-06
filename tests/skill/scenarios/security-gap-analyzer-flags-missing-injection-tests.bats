@@ -19,8 +19,8 @@ REVIEW_STAGE="$COMMANDS_DIR/04-fix-first-review.md"
   [ -f "$AGENT_FILE" ]
 }
 
-@test "security-gap-analyzer AC2: agent pinned to model: claude-opus-4-7 (Brain-tier)" {
-  run grep -E '^model: claude-opus-4-7' "$AGENT_FILE"
+@test "security-gap-analyzer AC2: agent pinned to model: claude-opus-4-8 (Brain-tier)" {
+  run grep -E '^model: claude-opus-4-8' "$AGENT_FILE"
   assert_success
 }
 

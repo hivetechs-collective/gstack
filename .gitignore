@@ -15,3 +15,10 @@ bun.lock
 # Claude sync artifacts (auto-managed by sync-to-project.sh)
 .claude/agents.backup.*
 .claude/statusline.log
+
+# Claude per-session machine caches (regenerated every session — local only)
+.claude/state/bg-agents-cache.json
+.claude/state/last-claude-version.json
+.claude/state/plan-usage-cache.json
+.claude/state/usage-breakdown-cache.json
+.claude/state/version-uplift-pending.flag

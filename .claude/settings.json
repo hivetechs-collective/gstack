@@ -88,6 +88,10 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/worktree-deps-share.sh"
+          },
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/plan-w-team-bg-resume-guard.sh"
           }
         ]
       }

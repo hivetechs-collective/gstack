@@ -86,6 +86,130 @@ AUTO_PUSH=0      # auto-approve push-ack hard-gate during autonomous run
 TYPE="feature"
 REQUEST=""
 
+# ─── --resume-staleness-check (AC4 — bg-worker resume staleness self-exit) ───
+# The bg-session daemon auto-resumes persisted `claude --bg` workers on restart
+# (e.g. after a CLI version bump) with no completion check, so an already-shipped
+# directive re-runs and risks a duplicate/conflicting push to the open PR. This
+# mode reconciles "is this directive already terminal/shipped?" so a SessionStart
+# guard (plan-w-team-bg-resume-guard.sh) can self-exit a resumed-but-done worker.
+#
+# Usage:
+#   pwt-goal.sh --resume-staleness-check [--sid <8hex>] [--slug <slug>]
+#                                        [--branch <b>] [--state-dir <d>] [--json]
+# Exit codes (tie to shared/goal-conditions.md terminal anchors):
+#   0  STALE     — goal-state terminal_state is non-null OR target branch merged /
+#                  carries an open PR with the shipped commits → worker should self-exit.
+#   1  LIVE      — no terminal signal; the directive is still in flight → proceed.
+#   2  UNKNOWN   — could not resolve goal-state/branch (fail-open → caller proceeds).
+if [ "${1:-}" = "--resume-staleness-check" ]; then
+    shift
+    RSC_SID=""; RSC_SLUG=""; RSC_BRANCH=""; RSC_STATE_DIR=""; RSC_JSON=0; RSC_BRANCH_EXPLICIT=0
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --sid)       RSC_SID="${2:-}"; shift 2 || break ;;
+            --slug)      RSC_SLUG="${2:-}"; shift 2 || break ;;
+            --branch)    RSC_BRANCH="${2:-}"; RSC_BRANCH_EXPLICIT=1; shift 2 || break ;;
+            --state-dir) RSC_STATE_DIR="${2:-}"; shift 2 || break ;;
+            --json)      RSC_JSON=1; shift ;;
+            *) shift ;;
+        esac
+    done
+
+    __rsc_emit() {  # $1 verdict, $2 reason, $3 exit
+        if [ "$RSC_JSON" = "1" ]; then
+            printf '{"verdict":"%s","reason":"%s","slug":"%s","sid":"%s","branch":"%s"}\n' \
+                "$1" "$2" "$RSC_SLUG" "$RSC_SID" "$RSC_BRANCH"
+        else
+            echo "resume-staleness: $1 — $2" >&2
+        fi
+        exit "$3"
+    }
+
+    # Resolve candidate state dirs: explicit → project root → main → worktree glob.
+    RSC_ROOT="${RSC_STATE_DIR:+}"
+    RSC_PRIMARY="${PWT_PROJECT_ROOT_OVERRIDE:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+    RSC_STATE_DIRS=""
+    [ -n "$RSC_STATE_DIR" ] && RSC_STATE_DIRS="$RSC_STATE_DIR"
+    [ -d "$RSC_PRIMARY/.claude/state" ] && RSC_STATE_DIRS="$RSC_STATE_DIRS
+$RSC_PRIMARY/.claude/state"
+    # main-checkout (climb from common dir) + worktree-isolated state dirs
+    RSC_COMMON="$(git rev-parse --git-common-dir 2>/dev/null || echo "")"
+    if [ -n "$RSC_COMMON" ]; then
+        RSC_MAIN="$(dirname "$(realpath "$RSC_COMMON" 2>/dev/null || echo "$RSC_COMMON")")"
+        [ -d "$RSC_MAIN/.claude/state" ] && RSC_STATE_DIRS="$RSC_STATE_DIRS
+$RSC_MAIN/.claude/state"
+        for d in "$RSC_MAIN"/.claude/worktrees/*/.claude/state; do
+            [ -d "$d" ] && RSC_STATE_DIRS="$RSC_STATE_DIRS
+$d"
+        done
+    fi
+
+    # Locate the goal-state file: prefer slug; else match worker_sid prefix.
+    RSC_GOAL_FILE=""
+    while IFS= read -r sd; do
+        [ -z "$sd" ] && continue
+        if [ -n "$RSC_SLUG" ] && [ -f "$sd/plan-w-team-goal-${RSC_SLUG}.json" ]; then
+            RSC_GOAL_FILE="$sd/plan-w-team-goal-${RSC_SLUG}.json"; break
+        fi
+        if [ -n "$RSC_SID" ]; then
+            for f in "$sd"/plan-w-team-goal-*.json; do
+                [ -f "$f" ] || continue
+                if grep -q "\"worker_sid\"[[:space:]]*:[[:space:]]*\"${RSC_SID}" "$f" 2>/dev/null; then
+                    RSC_GOAL_FILE="$f"; break 2
+                fi
+            done
+        fi
+    done <<RSC_DIRS
+$RSC_STATE_DIRS
+RSC_DIRS
+
+    # (1) terminal_state in the goal-state file → STALE.
+    if [ -n "$RSC_GOAL_FILE" ] && [ -f "$RSC_GOAL_FILE" ]; then
+        RSC_TERM="$(python3 -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: print(""); sys.exit(0)
+v=d.get("terminal_state")
+print(v if v not in (None,"") else "")' "$RSC_GOAL_FILE" 2>/dev/null)"
+        [ -z "$RSC_SLUG" ] && RSC_SLUG="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("slug") or "")
+except Exception: print("")' "$RSC_GOAL_FILE" 2>/dev/null)"
+        if [ -n "$RSC_TERM" ]; then
+            __rsc_emit STALE "goal-state terminal_state=$RSC_TERM (already terminal)" 0
+        fi
+    fi
+
+    # Gate: a bare --sid that matched NO goal-state is not a recognized pwt worker —
+    # do NOT run branch checks against an arbitrary session's cwd (false-positive
+    # guard). Only proceed to branch checks when a goal-state matched, OR the caller
+    # gave an explicit --slug / --branch.
+    if [ -z "$RSC_GOAL_FILE" ] && [ -z "$RSC_SLUG" ] && [ "$RSC_BRANCH_EXPLICIT" != "1" ]; then
+        __rsc_emit UNKNOWN "no goal-state matched sid=$RSC_SID and no explicit slug/branch (fail-open)" 2
+    fi
+
+    # (2) target branch already shipped — merged to default OR open PR carries HEAD.
+    [ -z "$RSC_BRANCH" ] && RSC_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+    if [ -n "$RSC_BRANCH" ] && [ "$RSC_BRANCH" != "HEAD" ]; then
+        RSC_DEFAULT="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')"
+        [ -z "$RSC_DEFAULT" ] && RSC_DEFAULT="main"
+        if git branch --merged "$RSC_DEFAULT" 2>/dev/null | sed 's/^[* +]*//' | grep -qxF "$RSC_BRANCH"; then
+            __rsc_emit STALE "branch $RSC_BRANCH already merged to $RSC_DEFAULT" 0
+        fi
+        if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+            RSC_PR_STATE="$(gh pr list --head "$RSC_BRANCH" --state all --json state -q '.[0].state' 2>/dev/null || echo "")"
+            if [ "$RSC_PR_STATE" = "MERGED" ]; then
+                __rsc_emit STALE "branch $RSC_BRANCH PR already MERGED" 0
+            fi
+        fi
+    fi
+
+    # (3) nothing resolved at all → fail-open UNKNOWN; a found-but-non-terminal
+    # state → LIVE (genuinely in flight).
+    if [ -z "$RSC_GOAL_FILE" ]; then
+        __rsc_emit UNKNOWN "no goal-state found for sid=$RSC_SID slug=$RSC_SLUG (fail-open)" 2
+    fi
+    __rsc_emit LIVE "goal-state present, terminal_state null, branch not shipped" 1
+fi
+
 # Parse args
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -681,11 +805,17 @@ DISK_GATE
     fi
 fi
 
-# ─── WORKTREE COUNT CAP (PWT-DISK2) ─────────────────────────────────────────
-# Hard cap on concurrent worktrees: even with free disk, an unbounded worktree
-# count is the accumulation that fed the incident. Refuse new spawns at/above
-# PWT_MAX_WORKTREES until the GC reaps or PRs merge.
+# ─── WORKTREE COUNT CAP (PWT-DISK2) — disk-aware, auto-GC-retry (AC3) ────────
+# A raw count cap (PWT_MAX_WORKTREES) decoupled from real `df` dead-ends every
+# spawn once N worktrees accrue, even with tens of GB free (cleanscale tripped at
+# 14/10 with 77 GiB free). The count is now a SOFT NUDGE, not a wall:
+#   (a) when the cap trips, auto-run the IMPROVED GC (--execute; reaps SAFE-PRUNE-
+#       PUSHED + broadened-dirty per Fix #1/#2) ONCE and re-count;
+#   (b) if still at/above the cap, consult disk-budget.sh: hard-refuse (exit 5)
+#       ONLY on real disk pressure (BLOCK / AT_CAPACITY); if df is healthy
+#       (SPAWN_OK / REDUCE / fail-open null) ALLOW the spawn with a warning.
 # Override: PLAN_W_TEAM_DISABLE_WORKTREE_CAP=1 (or raise PWT_MAX_WORKTREES).
+# Knobs: PWT_CAP_GC_RETRY_DISABLE=1 skips the auto-GC step (tests / debugging).
 if [ "${PLAN_W_TEAM_DISABLE_WORKTREE_CAP:-0}" != "1" ] \
         && { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
     WT_CAP="${PWT_MAX_WORKTREES:-10}"
@@ -699,18 +829,54 @@ if [ "${PLAN_W_TEAM_DISABLE_WORKTREE_CAP:-0}" != "1" ] \
     if [ -d "$WT_DIR" ]; then
         WT_COUNT=$(find "$WT_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
         if [ "${WT_COUNT:-0}" -ge "$WT_CAP" ]; then
-            cat >&2 <<WT_CAP_MSG
-✗ Worktree cap reached: $WT_COUNT/$WT_CAP under .claude/worktrees/
+            # (a) auto-GC-retry once — reclaim merged/pushed/idle worktrees in place.
+            if [ "${PWT_CAP_GC_RETRY_DISABLE:-0}" != "1" ]; then
+                CAP_GC_SCRIPT="$(dirname "$0")/plan-w-team-worktree-gc.sh"
+                if [ -x "$CAP_GC_SCRIPT" ]; then
+                    echo "[cap] worktree count $WT_COUNT/$WT_CAP — auto-GC-retry (plan-w-team-worktree-gc.sh --execute) before refusing" >&2
+                    ( cd "$WT_ROOT" && "$CAP_GC_SCRIPT" --execute >/dev/null 2>&1 ) || true
+                    WT_COUNT=$(find "$WT_DIR" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
+                    echo "[cap] post-GC worktree count: $WT_COUNT/$WT_CAP" >&2
+                fi
+            fi
+            # (b) still over the cap → disk-aware decision (count alone never walls).
+            if [ "${WT_COUNT:-0}" -ge "$WT_CAP" ]; then
+                CAP_DISK_SCRIPT="$(dirname "$0")/disk-budget.sh"
+                CAP_DISK_ACTION=""
+                if [ -x "$CAP_DISK_SCRIPT" ]; then
+                    CAP_DISK_JSON=$(PWT_DISK_DIRECTIVE="${ORIGINAL_REQUEST:-${REQUEST:-}}" "$CAP_DISK_SCRIPT" 2>/dev/null || echo "")
+                    CAP_DISK_ACTION=$(printf '%s' "$CAP_DISK_JSON" | grep -oE '"recommended_action": *"[^"]*"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+                fi
+                if [ "$CAP_DISK_ACTION" = "BLOCK" ] || [ "$CAP_DISK_ACTION" = "AT_CAPACITY" ]; then
+                    cat >&2 <<WT_CAP_MSG
+✗ Worktree cap reached AND disk under pressure: $WT_COUNT/$WT_CAP, disk=$CAP_DISK_ACTION
 
-  Concurrent worktrees are capped to bound disk growth (PWT_MAX_WORKTREES).
-  GC or merge first:
-    .claude/scripts/plan-w-team-worktree-gc.sh --execute
+  Auto-GC reaped nothing reclaimable and real disk is low — refusing the spawn
+  to avoid the ENOSPC failure mode (2026-05-29). Merge open PRs or free disk:
+    .claude/scripts/plan-w-team-worktree-gc.sh --execute --orphans-ok
 
   Override: PLAN_W_TEAM_DISABLE_WORKTREE_CAP=1  (or raise PWT_MAX_WORKTREES)
 WT_CAP_MSG
-            exit 5
+                    exit 5
+                fi
+                # Disk healthy (SPAWN_OK / REDUCE / null) → the count cap is advisory.
+                echo "[cap] worktree count $WT_COUNT/$WT_CAP but disk healthy (${CAP_DISK_ACTION:-unknown}) — allowing spawn (soft nudge: reclaim soon)." >&2
+            else
+                echo "[cap] auto-GC reclaimed below cap ($WT_COUNT/$WT_CAP) — proceeding." >&2
+            fi
         fi
     fi
+fi
+
+# ─── SPAWN DRY-RUN (test/diagnostic capacity check) ─────────────────────────
+# When PWT_SPAWN_DRY_RUN=1, all capacity gates (RAM / disk / worktree-cap /
+# fair-share) above have run; short-circuit BEFORE the real `claude --bg` spawn
+# and report that the gates passed. Lets tests assert the allow-path without
+# launching a session. Only meaningful for the spawn modes.
+if [ "${PWT_SPAWN_DRY_RUN:-0}" = "1" ] \
+        && { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
+    echo "SPAWN_DRY_RUN_OK"
+    exit 0
 fi
 
 # ─── FAIR-SHARE GATE (PWT-RAM2) ─────────────────────────────────────────────
@@ -1064,6 +1230,44 @@ if [ "$LAUNCH" = "1" ]; then
             # SLUG_GUESS computed earlier (once) via __pwt_safe_slug.
             "$REGISTER_HELPER" "$WORKER_SID" "pwt-goal-launch" "$SLUG_GUESS" "" "pwt-goal.sh --worker-only" \
                 >/dev/null 2>&1 || true
+        fi
+
+        # ─── SEED THE GOAL-STATE FILE (PWT-WT2) ───────────────────────────────
+        # Deterministically activate the self-hosted goal-evaluator's anti-skip
+        # anchor for EVERY worker-only spawn — not just --supervisor-goal. Without
+        # this, the goal-state file's existence depended entirely on the worker's
+        # LLM running the manifest's PWT-T5b activation block inside its worktree;
+        # when the worker idled/skipped it, the file existed NOWHERE, the evaluator
+        # saw "No active goal → exit 0", and the worker could stop short of its DoD
+        # with nothing blocking it (1.28.0 build-artifact worker c68e27ac pushed to
+        # origin then went idle BEFORE the consumer sync — supervisor finished it by
+        # hand). Seeding here makes the anchor active from t=0:
+        #   - the worker's OWN goal-evaluator finds it via FALLBACK_STATE_DIR
+        #     ($CLAUDE_PROJECT_DIR/.claude/state) → blocks premature stop;
+        #   - the supervisor's await-terminal.sh resolves it (main path, or via its
+        #     worktree-glob fallback) → instant terminal detection, not a 30-min
+        #     heartbeat. See docs/specs/supervisor-wait-worktree-aware.md.
+        # Fail-open: a failed seed never blocks the (already-succeeded) spawn — the
+        # worker's PWT-T5b activation remains a second path to the file. The worker
+        # injects feature_specific_done_criteria into THIS file in its Step 1 §1.5.
+        if [ -n "$PROJECT_ROOT" ] && [ -d "$PROJECT_ROOT/.claude/state" ]; then
+            SEED_GOAL_FILE="$PROJECT_ROOT/.claude/state/plan-w-team-goal-${SLUG_GUESS}.json"
+            SEED_NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+            if command -v jq >/dev/null 2>&1; then
+                jq -n \
+                    --arg slug "$SLUG_GUESS" \
+                    --arg started_at "$SEED_NOW_ISO" \
+                    --arg worker_sid "$WORKER_SID" \
+                    --arg skill_version "$SKILL_VERSION" \
+                    --arg skill_commit_sha "$SKILL_COMMIT_SHA" \
+                    '{slug:$slug, started_at:$started_at, terminal_state:null, terminal_reason:null, worker_sid:$worker_sid, skill_version:$skill_version, skill_commit_sha:$skill_commit_sha, feature_specific_done_criteria:[]}' \
+                    > "$SEED_GOAL_FILE" 2>/dev/null || true
+            else
+                printf '{"slug":"%s","started_at":"%s","terminal_state":null,"terminal_reason":null,"worker_sid":"%s","skill_version":"%s","skill_commit_sha":"%s","feature_specific_done_criteria":[]}\n' \
+                    "$SLUG_GUESS" "$SEED_NOW_ISO" "$WORKER_SID" "$SKILL_VERSION" "$SKILL_COMMIT_SHA" \
+                    > "$SEED_GOAL_FILE" 2>/dev/null || true
+            fi
+            [ -f "$SEED_GOAL_FILE" ] && echo "  goal-state seed:    $SEED_GOAL_FILE  (anti-skip anchor active)" >&2
         fi
 
         # ─── --supervisor-goal: mirror goal state to origin .claude/state/ ────

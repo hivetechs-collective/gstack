@@ -18,7 +18,7 @@ load "$BATS_TEST_DIRNAME/../helpers/test_helper.bash"
   run grep -E '^name: silent-failure-hunter$' "$agent_file"
   [ "$status" -eq 0 ]
 
-  run grep -E '^model: claude-opus-4-7$' "$agent_file"
+  run grep -E '^model: claude-opus-4-8$' "$agent_file"
   [ "$status" -eq 0 ]
 
   run grep -E '^description:' "$agent_file"

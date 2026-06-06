@@ -199,6 +199,22 @@ ACTIVE_SIDS=$(echo "$INPUT" \
 BLOCK_REASON=""
 ANY_TERMINAL=false
 
+# PWT-SUP-YIELD-SID (2026-06-03): identity-based supervisor yield. The env-only
+# PLAN_W_TEAM_SUPERVISOR_SESSION flag (checked far below) cannot exempt an ORIGIN
+# chat that BECOMES a supervisor mid-session — it can't set its own launch env — so
+# such a session was dragged into Stop-hook busy-poll every turn. PWT-WT2 worsened
+# it: pwt-goal now reliably SEEDS the goal-state (with the owning worker's SID) into
+# the launching checkout, so this hook always finds it for the origin session. Fix:
+# only the OWNING worker (whose SID == the goal's worker_sid) must be blocked to run
+# to terminal; any other session (supervisor/observer) yields and is re-woken
+# event-driven by its background await-loop. SAFETY: a blocking goal with NO
+# worker_sid (legacy / in-session /plan-w-team with no bg worker) is un-ownable →
+# fail safe to BLOCK; an empty SELF_SID (older harness w/o .session_id) disables SID
+# matching → BLOCK. The owning worker thus always blocks ("worker runs to terminal").
+SELF_SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+OWNS_BLOCKING=0             # this session IS the owning worker of some blocking goal
+BLOCKING_GOAL_UNOWNABLE=0  # some blocking goal has no worker_sid → ownership unprovable
+
 for GOAL_FILE in "${GOAL_FILES[@]}"; do
     if ! jq -e . "$GOAL_FILE" >/dev/null 2>&1; then
         # Corrupt state file — log and skip
@@ -652,6 +668,22 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         else
             BLOCK_REASON="/plan-w-team SLUG=$SLUG not yet terminal. Continue pipeline. Need ONE of: status block with stage=retro-complete + workflow_lock=done; pending_escalations containing a hard-gate site (push-ack/secret-scan-allow/scope-unlock-for-drift); low_confidence_routes>=3."
         fi
+        # PWT-SUP-YIELD-SID bookkeeping: this goal is BLOCKING — record whether THIS
+        # session owns it. Match the goal's recorded worker_sid (8-hex short SID, see
+        # pwt-goal PWT-WT2) against SELF_SID's prefix (session_id is a full UUID whose
+        # first 8 chars are the short SID). No worker_sid → ownership unprovable.
+        # Normalize (trim ALL whitespace + lowercase) so a malformed/padded worker_sid
+        # can't slip past the fail-safe (adversarial verify CASE J: "  5de5b9ac" would
+        # else make the GENUINE owner yield). Ownership is established ONLY by a
+        # well-formed token starting with 8 hex chars; anything else (empty, short,
+        # non-hex, was-whitespace) is UN-OWNABLE → fail safe to BLOCK, never yield.
+        THIS_WORKER_SID=$(jq -r '.worker_sid // ""' "$GOAL_FILE" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+        case "$THIS_WORKER_SID" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+                [ -n "$SELF_SID" ] && [ "${SELF_SID:0:8}" = "${THIS_WORKER_SID:0:8}" ] && OWNS_BLOCKING=1 ;;
+            *)
+                BLOCKING_GOAL_UNOWNABLE=1 ;;
+        esac
         dbg "SLUG=$SLUG NOT terminal → blocking stop. reason=$BLOCK_REASON"
     fi
 done
@@ -674,6 +706,21 @@ done
 # worker is NOT masked.
 if [ -n "$BLOCK_REASON" ] && [ "${PLAN_W_TEAM_SUPERVISOR_SESSION:-0}" = "1" ]; then
     echo "[goal-evaluator] supervisor session (PLAN_W_TEAM_SUPERVISOR_SESSION=1) → yield, not block. Re-wake event-driven via plan-w-team-await-terminal.sh. (suppressed: $BLOCK_REASON)" >&2
+    exit 0
+fi
+
+# PWT-SUP-YIELD-SID — identity-based supervisor yield (complements the env flag
+# above). A session that owns NONE of the blocking goals — its SID differs from
+# EVERY blocking goal's recorded worker_sid, and no blocking goal is un-ownable —
+# is a supervisor/observer, not the worker driving a pipeline. It yields (lets
+# Claude stop) and is re-woken event-driven by its background await-loop, exactly
+# like an env-flagged supervisor. This fixes the mid-session supervisor that cannot
+# set PLAN_W_TEAM_SUPERVISOR_SESSION in its launch env. The owning worker (SID
+# match → OWNS_BLOCKING=1) and any un-ownable goal (no worker_sid →
+# BLOCKING_GOAL_UNOWNABLE=1) still BLOCK, so "the worker runs to terminal" holds.
+if [ -n "$BLOCK_REASON" ] && [ -n "$SELF_SID" ] \
+   && [ "$OWNS_BLOCKING" = "0" ] && [ "$BLOCKING_GOAL_UNOWNABLE" = "0" ]; then
+    echo "[goal-evaluator] non-owning session (SID ${SELF_SID:0:8} != every blocking goal's worker_sid) → supervisor yield, not block. Event-driven re-wake via plan-w-team-await-terminal.sh. (suppressed: $BLOCK_REASON)" >&2
     exit 0
 fi
 

@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"text","text":"Routing has been shaky."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Routing status: {\"stage\":\"step-4-execute\",\"low_confidence_routes\":4,\"slug\":\"escq-feature\"}"}]}}

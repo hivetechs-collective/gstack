@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"text","text":"Starting retro now."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Emitting terminal status block: {\"stage\":\"retro-complete\",\"workflow_lock\":\"done\",\"slug\":\"escq-feature\"}"}]}}

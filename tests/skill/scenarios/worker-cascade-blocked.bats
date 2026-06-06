@@ -61,20 +61,31 @@ teardown() { teardown_sandbox; }
   [[ "$output" == *"PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1"* ]]
 }
 
-@test "worker-cascade-blocked: stderr documents the FORCE_SPAWN escape hatch" {
+@test "worker-cascade-blocked: stderr documents the OUT-OF-BAND operator escape hatch (C6)" {
   PATH="$STUB_DIR:$PATH" \
   PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 \
     run "$PWT_GOAL" --worker-only "test"
-  [[ "$output" == *"PLAN_W_TEAM_FORCE_SPAWN=1"* ]]
+  # C6: in-worker the bypass is the out-of-band PLAN_W_TEAM_OPERATOR_FORCE_SPAWN,
+  # NOT PLAN_W_TEAM_FORCE_SPAWN — a worker's own LLM could self-set the latter
+  # straight from this stderr (the original cascade bug).
+  [[ "$output" == *"PLAN_W_TEAM_OPERATOR_FORCE_SPAWN=1"* ]]
 }
 
-@test "worker-cascade-blocked: FORCE_SPAWN=1 bypasses the guard" {
+@test "worker-cascade-blocked: in-worker FORCE_SPAWN does NOT bypass (C6)" {
   PATH="$STUB_DIR:$PATH" \
   PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 \
   PLAN_W_TEAM_FORCE_SPAWN=1 \
-    run "$PWT_GOAL" "test request"
-  # Should now succeed at the cascade-guard layer (may still fail later for
-  # other reasons in this stubbed env — we just care that exit isn't 4).
+    run "$PWT_GOAL" --launch "test request"
+  # FORCE_SPAWN is self-authorizable by a worker → in-worker it must NOT bypass.
+  [ "$status" -eq 4 ]
+}
+
+@test "worker-cascade-blocked: in-worker OPERATOR_FORCE_SPAWN bypasses (C6)" {
+  PATH="$STUB_DIR:$PATH" \
+  PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 \
+  PLAN_W_TEAM_OPERATOR_FORCE_SPAWN=1 \
+    run "$PWT_GOAL" --launch "test request"
+  # The out-of-band operator signal IS allowed to bypass the cascade guard.
   [ "$status" -ne 4 ]
 }
 

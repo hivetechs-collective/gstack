@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"text","text":"Reading goal state."}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"{\"stage\":\"retro-complete\",\"workflow_lock\":\"done\",\"slug\":\"escq-feature\"}"}]}}

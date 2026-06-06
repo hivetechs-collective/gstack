@@ -450,6 +450,103 @@ JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE
         PWT_WORKTREE_GC_TRUST_LOCKS=1 PATH="$R/_gh:$PATH" bash "$GC" --json 2>/dev/null )
 assert_eq "trusted lock → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" trustlock-feat)"
 
+# ── helper: give a repo a real `origin` remote (bare) and push a branch ──────
+# Used by the SAFE-PRUNE-PUSHED (AC1) tests so `git branch -r --contains` sees the
+# worktree's HEAD on origin/*.
+add_origin() {
+    local root="$1"
+    local bare="$root/_origin.git"
+    [ -d "$bare" ] || git init -q --bare "$bare"
+    git -C "$root" remote add origin "$bare" 2>/dev/null || git -C "$root" remote set-url origin "$bare"
+}
+push_branch() {  # $1 root, $2 branch
+    git -C "$1" push -q origin "$2" 2>/dev/null
+    git -C "$1" fetch -q origin 2>/dev/null   # populate refs/remotes/origin/*
+}
+
+# ── Test 22 (AC1): pushed-not-merged worktree → SAFE-PRUNE-PUSHED ───────────
+echo "[22] AC1: pushed (origin-reachable) + unmerged + only-policy-churn → SAFE-PRUNE-PUSHED"
+R=$(new_repo); make_nogh "$R"; add_origin "$R"
+WT=$(add_worktree "$R" "pushed-feat")        # committed, NOT merged to main
+push_branch "$R" "worktree-pushed-feat"      # HEAD now on origin/*
+# add ONLY policy churn (.claude/*) — must still be reapable
+mkdir -p "$WT/.claude/commands/plan-w-team"
+echo "tooling" > "$WT/.claude/commands/plan-w-team/x.md"
+JSON=$(run_gc "$R" --json)
+assert_eq "pushed unmerged → SAFE-PRUNE-PUSHED" "SAFE-PRUNE-PUSHED" "$(class_of "$JSON" pushed-feat)"
+assert_eq "pushed origin_reachable flag true" "true" "$(field_of "$JSON" pushed-feat origin_reachable)"
+assert_eq "pushed dry-run action dry-remove" "dry-remove" "$(action_of "$JSON" pushed-feat)"
+assert_eq "pushed uncommitted flag false (only .claude churn)" "false" "$(field_of "$JSON" pushed-feat uncommitted)"
+# --execute reaps it like any SAFE-PRUNE (NOT orphan-gated)
+run_gc "$R" --execute --json >/dev/null
+assert_eq "pushed worktree removed under --execute (no --orphans-ok)" "no" "$([ -d "$WT" ] && echo yes || echo no)"
+
+# ── Test 23 (AC1 negative): pushed BUT real uncommitted work → UNSAFE-KEEP ──
+echo "[23] AC1 negative: pushed + REAL non-policy delta → UNSAFE-KEEP (not pruned)"
+R=$(new_repo); make_nogh "$R"; add_origin "$R"
+WT=$(add_worktree "$R" "pushedreal-feat")
+push_branch "$R" "worktree-pushedreal-feat"
+echo "real work" > "$WT/src.txt"             # NON-ignored real delta
+JSON=$(run_gc "$R" --json)
+assert_eq "pushed + real delta → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" pushedreal-feat)"
+assert_eq "pushed + real delta uncommitted true" "true" "$(field_of "$JSON" pushedreal-feat uncommitted)"
+
+# ── Test 24 (AC2): broadened dirty-exclusion (.claude + node_modules + dist) ─
+echo "[24] AC2: dirty only across .claude/ + node_modules/ + dist/ → treated clean"
+R=$(new_repo); make_nogh "$R"
+# Build the worktree manually so apps/web is TRACKED before the merge (real-repo
+# layout): then an untracked dist/ surfaces as "apps/web/dist/" rather than git
+# collapsing the whole untracked "apps/" to one porcelain line.
+WT="$R/.claude/worktrees/broaddirty-feat"
+git -C "$R" worktree add -q -b worktree-broaddirty-feat "$WT" >/dev/null 2>&1
+mkdir -p "$WT/apps/web"
+echo "tracked" > "$WT/apps/web/app.ts"
+echo "change" > "$WT/file-broaddirty-feat.txt"
+git -C "$WT" add apps/web/app.ts file-broaddirty-feat.txt >/dev/null 2>&1
+git -C "$WT" commit -qm "work + track apps/web" >/dev/null 2>&1
+git -C "$R" merge -q --no-ff worktree-broaddirty-feat -m "merge broaddirty" >/dev/null 2>&1
+mkdir -p "$WT/.claude/hooks" "$WT/node_modules/pkg" "$WT/apps/web/dist"
+echo x > "$WT/.claude/hooks/h.sh"
+echo y > "$WT/node_modules/pkg/index.js"
+echo z > "$WT/apps/web/dist/bundle.js"
+JSON=$(run_gc "$R" --json)
+assert_eq "broadened-ignore merged → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" broaddirty-feat)"
+assert_eq "broadened-ignore uncommitted false" "false" "$(field_of "$JSON" broaddirty-feat uncommitted)"
+# a single real edit alongside the ignored churn still blocks
+echo "real" > "$WT/README-change.txt"
+JSON=$(run_gc "$R" --json)
+assert_eq "real edit beside broadened churn → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" broaddirty-feat)"
+
+# ── Test 25 (AC5b): git-unregistered orphan dir → ORPHAN-ASK ────────────────
+echo "[25] AC5b: git-unregistered dir under .claude/worktrees/ → ORPHAN-ASK"
+R=$(new_repo); make_nogh "$R"
+ORPHAN="$R/.claude/worktrees/orphan-leftover"
+mkdir -p "$ORPHAN/node_modules"
+echo "dep" > "$ORPHAN/node_modules/x.js"      # only ignored content → no patch needed
+# NOTE: no TEST_MODE here so the registered-worktree check actually runs.
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_IGNORE_LOCKS=1 \
+        PATH="$R/_nogh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "unregistered dir → ORPHAN-ASK" "ORPHAN-ASK" "$(class_of "$JSON" orphan-leftover)"
+assert_eq "unregistered dir orphan_dir flag true" "true" "$(field_of "$JSON" orphan-leftover orphan_dir)"
+assert_eq "unregistered dir without --orphans-ok → keep-orphan" "keep-orphan" "$(action_of "$JSON" orphan-leftover)"
+
+# ── Test 26 (AC6): preserve-then-reap dumps a backup before forced removal ───
+echo "[26] AC6: orphan dir with REAL files → backup written before reap"
+R=$(new_repo); make_nogh "$R"
+ORPHAN="$R/.claude/worktrees/orphan-realwork"
+mkdir -p "$ORPHAN/src" "$ORPHAN/node_modules"
+echo "unique work" > "$ORPHAN/src/keep.ts"    # REAL non-ignored file
+echo "dep" > "$ORPHAN/node_modules/y.js"      # ignored
+( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_IGNORE_LOCKS=1 \
+  PATH="$R/_nogh:$PATH" bash "$GC" --execute --orphans-ok --json >/dev/null 2>&1 )
+assert_eq "orphan-realwork dir removed under --orphans-ok" "no" "$([ -d "$ORPHAN" ] && echo yes || echo no)"
+BACKUP_HIT=$(ls -d "$R"/.claude/state/hygiene-backups/orphan-realwork-*.files 2>/dev/null | head -1)
+assert_eq "preserve-then-reap wrote a backup .files dir" "yes" "$([ -n "$BACKUP_HIT" ] && [ -f "$BACKUP_HIT/src/keep.ts" ] && echo yes || echo no)"
+MANIFEST_HIT=$(ls "$R"/.claude/state/hygiene-backups/orphan-realwork-*.manifest.txt 2>/dev/null | head -1)
+assert_eq "preserve-then-reap wrote a manifest" "yes" "$([ -n "$MANIFEST_HIT" ] && echo yes || echo no)"
+# node_modules (ignored) must NOT be copied
+assert_eq "ignored node_modules NOT preserved" "no" "$([ -n "$BACKUP_HIT" ] && [ -e "$BACKUP_HIT/node_modules/y.js" ] && echo yes || echo no)"
+
 echo ""
 echo "── results: $PASS passed, $FAIL failed ──"
 [ "$FAIL" -eq 0 ]

@@ -5,7 +5,7 @@ Authoritative reference for PWT-T5b: the deterministic Stop-hook evaluator that 
 Spec: `docs/specs/pwt-t5b-goal-evaluator.md`
 Evaluator hook: `.claude/hooks/plan-w-team-goal-evaluator.sh` (Stop event)
 Helper: `.claude/scripts/plan-w-team-surface-status.sh` (emits status blocks the evaluator reads)
-State file: `.claude/state/plan-w-team-goal-<SLUG>.json` (written by skill at top-of-pipeline, deleted at retro-complete)
+State file: `.claude/state/plan-w-team-goal-<SLUG>.json` (written by skill at top-of-pipeline, deleted at retro-complete). For autonomous bg workers it is **also seeded at spawn by `pwt-goal.sh --worker-only` (PWT-WT2)** so the anti-skip anchor is active from t=0 even if the worker never reaches the manifest's top-of-pipeline activation — closing the 2026-06-02 regression where a worktree-isolated worker (no state file anywhere → evaluator "No active goal → exit 0") stopped short of its DoD. The seed is keyed by `SLUG_GUESS` in the launching checkout's `.claude/state/`; `await-terminal.sh` resolves it main-then-worktree (see `shared/supervisor-protocol.md` Wait mechanism + `docs/specs/supervisor-wait-worktree-aware.md`).
 Kill switch: `PLAN_W_TEAM_DISABLE_GOAL=1` — hook exits 0 without evaluation
 Companion: `shared/supervisor-protocol.md` (supervisor's per-turn summary block — second evaluator sensor)
 Anthropic docs (for context — we no longer use `/goal`): https://code.claude.com/docs/en/goal

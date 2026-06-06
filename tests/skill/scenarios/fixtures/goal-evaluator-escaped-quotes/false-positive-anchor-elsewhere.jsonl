@@ -1,0 +1,9 @@
+{"type":"assistant","message":{"content":[{"type":"text","text":"The push-ack gate is documented in goal-conditions.md and pending_escalations may list [\"push-ack\"]."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Meanwhile our run status: {\"stage\":\"step-3\",\"slug\":\"escq-feature\"}"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"filler line 1 with no anchors"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"filler line 2 with no anchors"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"filler line 3 with no anchors"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"filler line 4 with no anchors"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"filler line 5 with no anchors"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"filler line 6 with no anchors"}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"filler line 7 with no anchors"}]}}

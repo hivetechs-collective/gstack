@@ -353,18 +353,81 @@ filter_in_scope() {
     esac
 }
 
+# ─── registered-worktree check (AC5b) ─────────────────────────────────────
+# A directory under .claude/worktrees/ is a REGISTERED worktree iff it appears as a
+# "worktree <path>" entry in `git worktree list --porcelain`. A leftover dir that is
+# NOT registered (e.g. an esbuild/Metro service's cwd whose parent session died and
+# whose `git worktree remove` never ran) would otherwise have its `git -C <dir>`
+# commands resolve UP to the main checkout's .git and be misclassified against the
+# main branch. We detect these as git-unregistered ORPHAN dirs instead.
+is_registered_worktree() {
+    local wt_path="$1"
+    [ -z "$WORKTREE_LIST_PORCELAIN" ] && return 1
+    local real_wt
+    real_wt="$(realpath "$wt_path" 2>/dev/null || echo "$wt_path")"
+    printf '%s\n' "$WORKTREE_LIST_PORCELAIN" | REG_TARGET="$real_wt" python3 -c '
+import sys, os
+target = os.environ.get("REG_TARGET","")
+try:
+    target = os.path.realpath(target)
+except Exception:
+    pass
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if line.startswith("worktree "):
+        p = line[len("worktree "):]
+        try:
+            rp = os.path.realpath(p)
+        except Exception:
+            rp = p
+        if rp == target:
+            sys.exit(0)
+sys.exit(1)
+' 2>/dev/null
+    return $?
+}
+
+# ─── origin-reachability check (AC1 — SAFE-PRUNE-PUSHED) ───────────────────
+# HEAD is "pushed" (work preserved on the remote / in an open PR) iff the worktree's
+# current HEAD commit is contained in ANY origin/* ref. This is STRONGER than the
+# branch-name-exists ORIGIN_GONE check: it confirms the exact local commit is on the
+# remote, so reclaiming the worktree loses nothing. Used for the push-not-merge
+# lifecycle where SAFE-PRUNE-MERGED never fires (founder-gated merge).
+origin_reachable() {
+    local wt_path="$1"
+    local sha
+    sha="$(git -C "$wt_path" rev-parse HEAD 2>/dev/null || echo "")"
+    [ -z "$sha" ] && return 1
+    # `git branch -r --contains <sha>` lists remote-tracking refs containing the
+    # commit; any `origin/` line means it is on origin. Run from the main checkout
+    # so the full remote-tracking ref set is visible.
+    git -C "$MAIN_CHECKOUT" branch -r --contains "$sha" 2>/dev/null \
+        | sed 's/^[* ]*//' | grep -q '^origin/'
+}
+
 # ─── classification ───────────────────────────────────────────────────────
 classify_one() {
-    # Sets globals: CLASS, BRANCH, REASON, LAST_COMMIT_AGE_DAYS, UNCOMMITTED, MERGED, OPEN_PR, IN_USE, ACTIVE_RUN, OUTSIDE, ORIGIN_GONE, MERGED_BY
+    # Sets globals: CLASS, BRANCH, REASON, LAST_COMMIT_AGE_DAYS, UNCOMMITTED, MERGED, OPEN_PR, IN_USE, ACTIVE_RUN, OUTSIDE, ORIGIN_GONE, MERGED_BY, ORIGIN_REACHABLE, ORPHAN_DIR
     local wt_path="$1"
     CLASS=""; BRANCH=""; REASON=""; LAST_COMMIT_AGE_DAYS=""; UNCOMMITTED=0
     MERGED=0; OPEN_PR=0; IN_USE=0; ACTIVE_RUN=0; OUTSIDE=0; MERGED_BY=""; ORIGIN_GONE=0
-    LOCKED=0; STALE_LOCK=0; IN_USE_SOURCE=""
+    LOCKED=0; STALE_LOCK=0; IN_USE_SOURCE=""; ORIGIN_REACHABLE=0; ORPHAN_DIR=0
 
     if ! is_under_worktrees_dir "$wt_path"; then
         CLASS="REFUSED-OUTSIDE-CLAUDE-WORKTREES"
         REASON="path is outside .claude/worktrees/ — invariant 1 refusal"
         OUTSIDE=1
+        return 0
+    fi
+
+    # AC5b: a dir present on disk but NOT registered as a git worktree is an orphan
+    # (its session died without `git worktree remove`). Classify ORPHAN-ASK so it is
+    # only reapable under --orphans-ok; never run the main-repo-resolving git checks
+    # on it. (TEST_MODE skips porcelain — fixtures always use real worktrees.)
+    if [ "${PWT_WORKTREE_GC_TEST_MODE:-0}" != "1" ] && ! is_registered_worktree "$wt_path"; then
+        CLASS="ORPHAN-ASK"
+        REASON="git-unregistered orphan dir under .claude/worktrees/ (no worktree registration) — needs --orphans-ok"
+        ORPHAN_DIR=1
         return 0
     fi
 
@@ -382,9 +445,23 @@ classify_one() {
     # dirty forever and block GC. We strip porcelain lines whose path is under an
     # ignore prefix, so only REAL source/doc edits set UNCOMMITTED. Configurable
     # via PWT_WORKTREE_GC_DIRTY_IGNORE (colon-separated prefixes; empty disables).
+    # AC2 (push-not-merge hardening, 2026-06-06): the default ignore set is
+    # BROADENED beyond ".claude/state/" because repo policy is to NEVER commit the
+    # synced tooling layer (.claude/* identical across every checkout) nor
+    # regenerable build trees. Without this, a pushed-but-unmerged worktree shows
+    # "dirty = 48-52 files" (all .claude/*) forever and pins itself UNSAFE-KEEP —
+    # the accumulation Fix #1/#2 target. Tokens are either:
+    #   • PREFIX tokens (contain "/" e.g. ".claude/", "ios/Pods/"): match by
+    #     equality or startswith (anchored at the worktree root).
+    #   • SEGMENT tokens (bare name, no "/", e.g. "node_modules", "build", "dist",
+    #     "DerivedData", ".expo"): match if the name appears as ANY path segment
+    #     (covers monorepo nesting like apps/web/build/, packages/x/node_modules/).
+    # ".claude/" subsumes the old ".claude/state/" default. Override replaces the
+    # whole set (empty disables). bash 3.2 + zsh safe (no arrays in the shell path;
+    # the matcher runs in python).
     local porcelain real_dirty ignore_prefixes
     porcelain="$(git -C "$wt_path" status --porcelain 2>/dev/null || echo "")"
-    ignore_prefixes="${PWT_WORKTREE_GC_DIRTY_IGNORE-.claude/state/}"
+    ignore_prefixes="${PWT_WORKTREE_GC_DIRTY_IGNORE-.claude/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist}"
     if [ -z "$porcelain" ]; then
         UNCOMMITTED=0
     elif [ -z "$ignore_prefixes" ]; then
@@ -392,8 +469,20 @@ classify_one() {
     else
         real_dirty="$(printf '%s\n' "$porcelain" | IGNORE_PREFIXES="$ignore_prefixes" python3 -c '
 import sys, os
-prefixes = [p for p in os.environ.get("IGNORE_PREFIXES", "").split(":") if p]
+toks = [p for p in os.environ.get("IGNORE_PREFIXES", "").split(":") if p]
+prefixes = [t for t in toks if "/" in t]                 # anchored path-prefix tokens
+segments = [t.strip("/") for t in toks if "/" not in t]  # any-depth segment tokens
 q = chr(34)
+def ignored(path):
+    for pre in prefixes:                                 # prefix: eq or startswith at root
+        if path == pre.rstrip("/") or path.startswith(pre):
+            return True
+    if segments:                                         # segment: name at any depth
+        parts = path.split("/")
+        for seg in segments:
+            if seg in parts:
+                return True
+    return False
 for line in sys.stdin:
     line = line.rstrip(chr(10))
     if not line.strip():
@@ -404,7 +493,7 @@ for line in sys.stdin:
     path = path.strip()
     if len(path) >= 2 and path[0] == q and path[-1] == q:
         path = path[1:-1]            # unquote paths with special chars
-    if any(path == pre.rstrip("/") or path.startswith(pre) for pre in prefixes):
+    if ignored(path):
         continue
     print(line)                      # a REAL (non-ignored) change survives
 ' 2>/dev/null)"
@@ -450,6 +539,11 @@ for line in sys.stdin:
     if git -C "$MAIN_CHECKOUT" show-ref --quiet --verify "refs/remotes/origin/$BRANCH" 2>/dev/null; then
         ORIGIN_GONE=0
     fi
+
+    # AC1: origin-reachability — is the worktree's exact HEAD commit on origin/*?
+    # This is the push-not-merge signal: committed work is preserved on the remote /
+    # in the open PR, so the worktree is reclaimable even though it never merged.
+    if origin_reachable "$wt_path"; then ORIGIN_REACHABLE=1; fi
 
     # In-use check (live claude session whose cwd / worktreePath is this dir)
     if is_in_use "$wt_path"; then IN_USE=1; IN_USE_SOURCE="session"; fi
@@ -532,6 +626,23 @@ for line in sys.stdin:
     if [ "$ACTIVE_RUN" = "1" ]; then
         CLASS="UNSAFE-KEEP"; REASON="registered in active /plan-w-team run"; return 0
     fi
+
+    # AC1 — SAFE-PRUNE-PUSHED: HEAD reachable from origin/* (work preserved on the
+    # remote / open PR) AND not in-use / not real-uncommitted (those returned above)
+    # / not an in-flight active run. This is the push-not-merge reclaim path: in
+    # consumer repos the standing directive is "push branch + open PR, never merge",
+    # so SAFE-PRUNE-MERGED never fires and these pile up. Reapable under --execute
+    # like the other SAFE-PRUNE-* classes (NOT orphan-gated — nothing is lost since
+    # the commits are on origin). Wins over the OPEN_PR keep below precisely because
+    # an open PR is exactly the preserved-on-remote state we now reclaim.
+    if [ "$ORIGIN_REACHABLE" = "1" ]; then
+        CLASS="SAFE-PRUNE-PUSHED"
+        REASON="HEAD reachable from origin/* (pushed; work preserved on remote)"
+        [ "$OPEN_PR" = "1" ] && REASON="$REASON; open PR"
+        [ "$STALE_LOCK" = "1" ] && REASON="$REASON; stale lock ignored"
+        return 0
+    fi
+
     if [ "$OPEN_PR" = "1" ]; then
         CLASS="UNSAFE-KEEP"; REASON="unmerged branch with open PR"; return 0
     fi
@@ -558,6 +669,114 @@ for line in sys.stdin:
     return 0
 }
 
+# ─── preserve-then-reap (AC6) ─────────────────────────────────────────────
+# Before any --force removal, back up REAL (non-policy per AC2's ignore set)
+# uncommitted work to a timestamped patch under .claude/state/hygiene-backups/ so an
+# aggressive reap can never silently lose unique work. Two cases:
+#   • git worktree (own toplevel == wt_path): dump `git diff HEAD` + a porcelain
+#     untracked/modified list, both filtered to NON-ignored paths.
+#   • git-unregistered orphan dir (AC5b): `git -C` resolves to the main repo, so we
+#     can't diff; instead dump a `find` manifest of non-ignored files AND copy those
+#     files into the backup so nothing real is lost. (node_modules/.claude/etc are
+#     ignored, so a typical orphan dir holding only deps preserves nothing — correct.)
+# Contract (echoed to STDERR only; never stdout — remove_one parses stdout):
+#   return 0  → nothing real to preserve, OR preserved successfully → safe to remove
+#   return 1  → content existed but the backup write FAILED → caller MUST skip rm
+# bash 3.2 + zsh safe.
+preserve_then_reap() {
+    local wt_path="$1"
+    local name backup_dir ts stamp had_content=0
+    name="$(basename "$wt_path")"
+    backup_dir="$MAIN_CHECKOUT/.claude/state/hygiene-backups"
+    ts="$(date -u +%Y%m%dT%H%M%SZ)"
+    stamp="$backup_dir/${name}-${ts}"
+
+    # Resolve the worktree's own toplevel (empty / != wt_path means NOT its own git WT)
+    local wt_top real_wt
+    wt_top="$(git -C "$wt_path" rev-parse --show-toplevel 2>/dev/null || echo "")"
+    real_wt="$(realpath "$wt_path" 2>/dev/null || echo "$wt_path")"
+    [ -n "$wt_top" ] && wt_top="$(realpath "$wt_top" 2>/dev/null || echo "$wt_top")"
+
+    local ignore_set="${PWT_WORKTREE_GC_DIRTY_IGNORE-.claude/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist}"
+
+    if [ -n "$wt_top" ] && [ "$wt_top" = "$real_wt" ]; then
+        # Genuine worktree → diff + untracked list, filtered to non-ignored paths.
+        local diff_out porcelain real_dirty
+        diff_out="$(git -C "$wt_path" diff HEAD 2>/dev/null || echo "")"
+        porcelain="$(git -C "$wt_path" status --porcelain 2>/dev/null || echo "")"
+        real_dirty="$(printf '%s\n' "$porcelain" | IGNORE_PREFIXES="$ignore_set" python3 -c '
+import sys, os
+toks=[p for p in os.environ.get("IGNORE_PREFIXES","").split(":") if p]
+prefixes=[t for t in toks if "/" in t]; segments=[t.strip("/") for t in toks if "/" not in t]
+def ig(p):
+    for pre in prefixes:
+        if p==pre.rstrip("/") or p.startswith(pre): return True
+    parts=p.split("/")
+    for s in segments:
+        if s in parts: return True
+    return False
+for line in sys.stdin:
+    line=line.rstrip("\n")
+    if not line.strip(): continue
+    path=line[3:] if len(line)>3 else ""
+    if " -> " in path: path=path.split(" -> ",1)[1]
+    path=path.strip().strip(chr(34))
+    if not ig(path): print(line)
+' 2>/dev/null)"
+        if [ -z "$diff_out" ] && [ -z "$real_dirty" ]; then
+            return 0   # clean (or only policy churn) — nothing real to preserve
+        fi
+        had_content=1
+        mkdir -p "$backup_dir" 2>/dev/null || { echo "[preserve] FAILED to mkdir $backup_dir — skipping rm of $name" >&2; return 1; }
+        {
+            printf '# preserve-then-reap %s\n# worktree: %s\n# at: %s\n\n## git diff HEAD\n' "$name" "$wt_path" "$ts"
+            printf '%s\n' "$diff_out"
+            printf '\n## untracked/modified (non-ignored)\n%s\n' "$real_dirty"
+        } > "${stamp}.patch" 2>/dev/null || { echo "[preserve] FAILED to write ${stamp}.patch — skipping rm of $name" >&2; return 1; }
+        echo "[preserve] backed up real delta of $name → ${stamp}.patch" >&2
+        return 0
+    fi
+
+    # Non-git orphan dir: manifest + copy of NON-ignored files only.
+    local manifest
+    manifest="$(cd "$wt_path" 2>/dev/null && find . -type f 2>/dev/null | IGNORE_PREFIXES="$ignore_set" python3 -c '
+import sys, os
+toks=[p for p in os.environ.get("IGNORE_PREFIXES","").split(":") if p]
+prefixes=[t for t in toks if "/" in t]; segments=[t.strip("/") for t in toks if "/" not in t]
+def ig(p):
+    p=p[2:] if p.startswith("./") else p
+    for pre in prefixes:
+        if p==pre.rstrip("/") or p.startswith(pre): return True
+    parts=p.split("/")
+    for s in segments:
+        if s in parts: return True
+    return False
+for line in sys.stdin:
+    line=line.rstrip("\n")
+    if line and not ig(line): print(line)
+' 2>/dev/null)"
+    if [ -z "$manifest" ]; then
+        return 0   # only ignored content (node_modules, etc) — nothing real to preserve
+    fi
+    had_content=1
+    mkdir -p "${stamp}.files" 2>/dev/null || { echo "[preserve] FAILED to mkdir ${stamp}.files — skipping rm of $name" >&2; return 1; }
+    printf '%s\n' "$manifest" > "${stamp}.manifest.txt" 2>/dev/null || { echo "[preserve] FAILED to write manifest — skipping rm of $name" >&2; return 1; }
+    # Copy each non-ignored file, preserving relative structure. Fail-safe: any copy
+    # failure aborts and signals "skip rm" so the source is never destroyed.
+    local f rel dest
+    while IFS= read -r f; do
+        [ -z "$f" ] && continue
+        rel="${f#./}"
+        dest="${stamp}.files/$rel"
+        mkdir -p "$(dirname "$dest")" 2>/dev/null || { echo "[preserve] FAILED dir for $rel — skipping rm of $name" >&2; return 1; }
+        cp -p "$wt_path/$rel" "$dest" 2>/dev/null || { echo "[preserve] FAILED copy $rel — skipping rm of $name" >&2; return 1; }
+    done <<EOF_MANIFEST
+$manifest
+EOF_MANIFEST
+    echo "[preserve] backed up orphan-dir files of $name → ${stamp}.files/ (manifest: ${stamp}.manifest.txt)" >&2
+    return 0
+}
+
 # ─── remove worktree + branch ─────────────────────────────────────────────
 remove_one() {
     local wt_path="$1"
@@ -568,6 +787,12 @@ remove_one() {
     if ! is_under_worktrees_dir "$wt_path"; then
         echo "refuse: path outside .claude/worktrees/ ($wt_path)" >&2
         return 1
+    fi
+    # AC6 preserve-then-reap: back up any REAL uncommitted delta BEFORE the
+    # destructive --force. Fail-safe — a failed backup SKIPS removal (echo "0 0").
+    if ! preserve_then_reap "$wt_path"; then
+        echo "0 0"
+        return 0
     fi
     # Release any lingering lock first so a single `--force` succeeds even on a
     # locked worktree (otherwise git refuses a locked tree without a double
@@ -664,7 +889,9 @@ for wt_path in "${WT_PATHS[@]:-}"; do
     # Decide action
     ACTION="keep"
     case "$CLASS" in
-        SAFE-PRUNE-MERGED|SAFE-PRUNE-IDLE)
+        SAFE-PRUNE-MERGED|SAFE-PRUNE-IDLE|SAFE-PRUNE-PUSHED)
+            # SAFE-PRUNE-PUSHED (AC1) is reaped like the other SAFE-PRUNE-* classes —
+            # NOT orphan-gated, because the work is preserved on origin.
             if [ "$MODE_EXECUTE" = "1" ]; then ACTION="remove"; else ACTION="dry-remove"; fi
             ;;
         ORPHAN-ASK)
@@ -699,11 +926,14 @@ for wt_path in "${WT_PATHS[@]:-}"; do
             KEPT=$((KEPT+1))
         fi
     else
-        if [ "$CLASS" = "SAFE-PRUNE-MERGED" ] || [ "$CLASS" = "SAFE-PRUNE-IDLE" ]; then
-            : # would-have-removed
-        else
-            KEPT=$((KEPT+1))
-        fi
+        case "$CLASS" in
+            SAFE-PRUNE-MERGED|SAFE-PRUNE-IDLE|SAFE-PRUNE-PUSHED)
+                : # would-have-removed (dry-run)
+                ;;
+            *)
+                KEPT=$((KEPT+1))
+                ;;
+        esac
     fi
 
     # JSON row
@@ -731,12 +961,14 @@ row = {
     "locked": sys.argv[18] == "1",
     "stale_lock": sys.argv[19] == "1",
     "in_use_source": sys.argv[20] or None,
+    "origin_reachable": sys.argv[21] == "1",
+    "orphan_dir": sys.argv[22] == "1",
 }
 sys.stdout.write(json.dumps(row))
 ' "$wt_path" "$name" "$BRANCH" "$CLASS" "$REASON" "$ACTION" \
   "$REMOVED_WT" "$REMOVED_BRANCH" "$UNCOMMITTED" "$MERGED" "$OPEN_PR" \
   "$IN_USE" "$ACTIVE_RUN" "${LAST_COMMIT_AGE_DAYS:-?}" "$MERGE_SOURCE" "${MERGED_BY:-}" "${ORIGIN_GONE:-0}" \
-  "${LOCKED:-0}" "${STALE_LOCK:-0}" "${IN_USE_SOURCE:-}" >> "$RESULTS_JSON_TMP"
+  "${LOCKED:-0}" "${STALE_LOCK:-0}" "${IN_USE_SOURCE:-}" "${ORIGIN_REACHABLE:-0}" "${ORPHAN_DIR:-0}" >> "$RESULTS_JSON_TMP"
 
     # Human table row
     if [ "$MODE_JSON" = "0" ]; then

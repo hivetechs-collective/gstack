@@ -18,8 +18,8 @@ REVIEW_STAGE_FILE="$COMMANDS_DIR/04-fix-first-review.md"
   [ -f "$AGENT_FILE" ]
 }
 
-@test "test-gap-analyzer AC2: agent frontmatter declares model: claude-opus-4-7" {
-  run grep -E '^model: claude-opus-4-7' "$AGENT_FILE"
+@test "test-gap-analyzer AC2: agent frontmatter declares model: claude-opus-4-8" {
+  run grep -E '^model: claude-opus-4-8' "$AGENT_FILE"
   assert_success
 }
 

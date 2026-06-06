@@ -1,0 +1,2 @@
+{"type":"assistant","message":{"content":[{"type":"text","text":"Hit a hard gate."}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"Supervisor status: {\"stage\":\"step-6-ship\",\"pending_escalations\":[\"push-ack\"],\"slug\":\"escq-feature\",\"note\":\"awaiting user push acknowledgement\"}"}]}}

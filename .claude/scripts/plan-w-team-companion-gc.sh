@@ -77,7 +77,93 @@ WORKTREES_DIR="$MAIN_CHECKOUT/.claude/worktrees"
 PANE_DISPLAY_MARKER=".claude/hooks/utils/pane-display.py"
 PWT_WATCH_MARKER=".claude/scripts/pwt-watch.sh"
 
+# AC5a (build-daemon reaping, 2026-06-06): long-lived dev/build SERVICES (esbuild
+# --service, Metro, vite, rollup -w, webpack --watch, nodemon, tsc --watch) spawned
+# inside a worktree session are NOT reaped when the session dies. The 2026-06-02
+# incident found an `esbuild --service` running 4d16h rooted in an orphaned,
+# git-unregistered worktree dir. These are matched by an extended-regex over argv
+# AND gated by a STRICT cwd check: only reaped when the process's cwd resolves
+# under .claude/worktrees/<dir>/ AND that <dir> is DEAD (gone from disk OR not a
+# registered git worktree). A build daemon in the MAIN checkout, or in a live
+# worktree, is never touched. SAME-UID guard still applies. Override the matcher
+# with PWT_COMPANION_GC_BUILD_DAEMON_RE.
+BUILD_DAEMON_RE="${PWT_COMPANION_GC_BUILD_DAEMON_RE:-esbuild|[Mm]etro|react-native/.*start|/vite( |$)|vite/bin|rollup .*-w|rollup .*--watch|webpack .*--watch|nodemon|tsc .*--watch|jest .*--watch}"
+
 MY_UID="$(id -u)"
+
+# ─── process cwd resolver (AC5a) ──────────────────────────────────────────
+# Portable: /proc on Linux, lsof on macOS. Test stub: PWT_COMPANION_GC_TEST_CWD_MAP
+# is a file of "<pid> <cwd>" lines used in place of a real lookup.
+proc_cwd() {
+    local pid="$1"
+    if [ -n "${PWT_COMPANION_GC_TEST_CWD_MAP:-}" ] && [ -f "$PWT_COMPANION_GC_TEST_CWD_MAP" ]; then
+        awk -v p="$pid" '$1==p {sub($1 FS,""); print; exit}' "$PWT_COMPANION_GC_TEST_CWD_MAP"
+        return 0
+    fi
+    if [ -r "/proc/$pid/cwd" ]; then
+        readlink "/proc/$pid/cwd" 2>/dev/null && return 0
+    fi
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1
+    fi
+    return 0
+}
+
+# ─── is the worktree subdir holding this cwd DEAD? (AC5a) ──────────────────
+# Echoes the worktree dir NAME when cwd is under .claude/worktrees/<dir> AND <dir>
+# is dead (gone from disk OR not a registered git worktree); empty otherwise.
+WORKTREE_LIST_PORCELAIN_CACHE=""
+__load_wt_porcelain() {
+    [ -n "$WORKTREE_LIST_PORCELAIN_CACHE" ] && return 0
+    if [ -n "${PWT_COMPANION_GC_TEST_REGISTERED_WT:-}" ]; then
+        WORKTREE_LIST_PORCELAIN_CACHE="$(cat "$PWT_COMPANION_GC_TEST_REGISTERED_WT" 2>/dev/null)"
+    else
+        WORKTREE_LIST_PORCELAIN_CACHE="$(git -C "$MAIN_CHECKOUT" worktree list --porcelain 2>/dev/null || echo "")"
+    fi
+    [ -z "$WORKTREE_LIST_PORCELAIN_CACHE" ] && WORKTREE_LIST_PORCELAIN_CACHE="__none__"
+}
+dead_worktree_for_cwd() {
+    local cwd="$1"
+    [ -z "$cwd" ] && return 0
+    local real_cwd real_wtdir
+    real_cwd="$(realpath "$cwd" 2>/dev/null || echo "$cwd")"
+    real_wtdir="$(realpath "$WORKTREES_DIR" 2>/dev/null || echo "$WORKTREES_DIR")"
+    case "$real_cwd" in
+        "$real_wtdir"/*) : ;;
+        *) return 0 ;;   # not under .claude/worktrees → never a candidate
+    esac
+    local rest wtname wtpath
+    rest="${real_cwd#"$real_wtdir"/}"
+    wtname="${rest%%/*}"
+    [ -z "$wtname" ] && return 0
+    wtpath="$real_wtdir/$wtname"
+    if [ ! -d "$wtpath" ]; then
+        echo "$wtname"; return 0    # dir gone → dead
+    fi
+    __load_wt_porcelain
+    if [ "$WORKTREE_LIST_PORCELAIN_CACHE" = "__none__" ]; then
+        return 0   # no porcelain → treat present dir conservatively as ALIVE
+    fi
+    local real_wtpath
+    real_wtpath="$(realpath "$wtpath" 2>/dev/null || echo "$wtpath")"
+    if printf '%s\n' "$WORKTREE_LIST_PORCELAIN_CACHE" | REG_T="$real_wtpath" python3 -c '
+import sys,os
+t=os.environ.get("REG_T","")
+try: t=os.path.realpath(t)
+except Exception: pass
+for line in sys.stdin:
+    line=line.rstrip("\n")
+    if line.startswith("worktree "):
+        p=line[len("worktree "):]
+        try: rp=os.path.realpath(p)
+        except Exception: rp=p
+        if rp==t: sys.exit(0)
+sys.exit(1)
+' 2>/dev/null; then
+        return 0   # registered → ALIVE
+    fi
+    echo "$wtname"; return 0   # present but unregistered → dead orphan dir
+}
 
 # ─── gather ps output (pid, uid, full args) ──────────────────────────────
 get_ps() {
@@ -220,7 +306,16 @@ while IFS= read -r line; do
     case "$args" in
         *"$PANE_DISPLAY_MARKER"*) kind="pane-display" ;;
         *"$PWT_WATCH_MARKER"*)    kind="pwt-watch" ;;
-        *) continue ;;   # WHITELIST: ignore everything else
+        *)
+            # AC5a: build/dev SERVICE daemons are whitelisted ONLY when their argv
+            # matches BUILD_DAEMON_RE. The cwd-under-dead-worktree gate (below) is
+            # what actually authorizes a kill, so the regex can be liberal.
+            if printf '%s' "$args" | grep -Eq "$BUILD_DAEMON_RE"; then
+                kind="build-daemon"
+            else
+                continue   # WHITELIST: ignore everything else
+            fi
+            ;;
     esac
 
     # SAME-UID guard
@@ -230,7 +325,25 @@ while IFS= read -r line; do
         continue
     fi
 
-    if [ "$kind" = "pane-display" ]; then
+    if [ "$kind" = "build-daemon" ]; then
+        # Reap ONLY when cwd is under a DEAD worktree dir (gone or unregistered).
+        bd_cwd="$(proc_cwd "$pid")"
+        bd_dead="$(dead_worktree_for_cwd "$bd_cwd")"
+        [ -n "$SCOPE_SID" ] && [ "$bd_dead" != "$SCOPE_SID" ] && continue
+        SCANNED=$((SCANNED+1))
+        if [ -n "$bd_dead" ]; then
+            if [ "$MODE_EXECUTE" = "1" ]; then
+                kill "$pid" 2>/dev/null || true
+                KILLED=$((KILLED+1))
+                append_row "$kind" "$pid" "$bd_dead" "killed" "build daemon rooted in dead worktree dir ($bd_dead)" "" "0"
+            else
+                append_row "$kind" "$pid" "$bd_dead" "would-kill" "build daemon rooted in dead worktree dir ($bd_dead)" "" "0"
+            fi
+        else
+            KEPT=$((KEPT+1))
+            append_row "$kind" "$pid" "" "keep" "build daemon cwd not under a dead worktree (main repo or live worktree)" "" "0"
+        fi
+    elif [ "$kind" = "pane-display" ]; then
         agent_id="$(extract_agent_id "$args")"
         [ -n "$SCOPE_SID" ] && [ "$agent_id" != "$SCOPE_SID" ] && continue
         SCANNED=$((SCANNED+1))

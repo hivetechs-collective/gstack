@@ -56,16 +56,41 @@ printf '%s' "$(DISK_BUDGET_STUB_DF=$(mkdf 41943040 50) "$SCRIPT" 'run gradlew as
 PWTGOAL="$(cd "$(dirname "$0")" && pwd)/pwt-goal.sh"
 if [ -x "$PWTGOAL" ]; then
   GROOT="$TMP/proj"; mkdir -p "$GROOT/.claude/worktrees"
-  GENV="PLAN_W_TEAM_DISABLE_RAM_GATE=1 PLAN_W_TEAM_DISABLE_FAIR_SHARE=1 PWT_RAM_CLAIMS_REGISTRY=$TMP/claims.jsonl PWT_PROJECT_ROOT_OVERRIDE=$GROOT CLAUDE_PROJECT_DIR=$GROOT"
+  # GENV pins the capacity-gate env so these integration tests are HERMETIC
+  # regardless of the caller's environment. A /plan-w-team bg worker exports
+  # PLAN_W_TEAM_DISABLE_WORKTREE_CAP=1 + PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1; if the
+  # suite runs under such a session (or the pre-commit gate fires inside one) those
+  # would silently disable the cap (skipping the AC3 assertions) and trip the PWT-DS2
+  # cascade guard (exit 4). We re-enable the cap (=0) and neutralize the cascade
+  # signal (empty, which the guard's ="1" check treats as off). PLAN_W_TEAM_FORCE_SPAWN=1
+  # bypasses the double-spawn flag guard so a hermetic spawn path is deterministic.
+  GENV="PLAN_W_TEAM_DISABLE_RAM_GATE=1 PLAN_W_TEAM_DISABLE_FAIR_SHARE=1 PWT_RAM_CLAIMS_REGISTRY=$TMP/claims.jsonl PWT_PROJECT_ROOT_OVERRIDE=$GROOT CLAUDE_PROJECT_DIR=$GROOT PLAN_W_TEAM_DISABLE_WORKTREE_CAP=0 PLAN_W_TEAM_DISABLE_PROMPT_ROUTE= PLAN_W_TEAM_FORCE_SPAWN=1"
 
   # [7] free_gb < floor → spawn refused, exit 5
   env $GENV DISK_BUDGET_STUB_DF="$(mkdf 8388608 92)" bash "$PWTGOAL" --worker-only "integration low disk" >/dev/null 2>&1
   [ "$?" -eq 5 ] && ok "pwt-goal refuses spawn when free_gb < floor (exit 5)" || bad "low-disk spawn not refused"
 
-  # [8] worktree count >= cap → spawn refused, exit 5 (disk gate disabled to isolate the cap)
+  # [8] AC3: over-cap + REAL disk pressure → hard refuse exit 5 (disk-aware cap).
+  # The spawn-level disk gate is disabled to isolate the CAP's own disk consult;
+  # GC-retry disabled so the 10 unregistered dirs aren't churned.
   i=1; while [ "$i" -le 10 ]; do mkdir -p "$GROOT/.claude/worktrees/agent-$i"; i=$((i+1)); done
-  env $GENV PLAN_W_TEAM_DISABLE_DISK_GATE=1 bash "$PWTGOAL" --worker-only "integration cap" >/dev/null 2>&1
-  [ "$?" -eq 5 ] && ok "pwt-goal refuses spawn above PWT_MAX_WORKTREES (exit 5)" || bad "over-cap spawn not refused"
+  env $GENV PLAN_W_TEAM_DISABLE_DISK_GATE=1 PWT_CAP_GC_RETRY_DISABLE=1 \
+      DISK_BUDGET_STUB_DF="$(mkdf 8388608 92)" bash "$PWTGOAL" --worker-only "integration cap pressure" >/dev/null 2>&1
+  [ "$?" -eq 5 ] && ok "AC3: over-cap + disk pressure → exit 5" || bad "over-cap+pressure not refused"
+
+  # [8b] AC3: over-cap + HEALTHY disk → soft nudge, spawn ALLOWED (dry-run).
+  out8b=$(env $GENV PLAN_W_TEAM_DISABLE_DISK_GATE=1 PWT_CAP_GC_RETRY_DISABLE=1 PWT_SPAWN_DRY_RUN=1 \
+      DISK_BUDGET_STUB_DF="$(mkdf 52428800 50)" bash "$PWTGOAL" --worker-only "integration cap healthy" 2>/dev/null)
+  rc8b=$?
+  { [ "$rc8b" -eq 0 ] && printf '%s' "$out8b" | grep -q SPAWN_DRY_RUN_OK; } \
+    && ok "AC3: over-cap + healthy disk → spawn allowed (soft nudge)" || bad "over-cap+healthy not allowed (rc=$rc8b out=$out8b)"
+
+  # [8c] AC3: auto-GC-retry fires when the cap trips (marker on stderr).
+  git -C "$GROOT" init -q 2>/dev/null || true
+  err8c=$(env $GENV PLAN_W_TEAM_DISABLE_DISK_GATE=1 PWT_SPAWN_DRY_RUN=1 \
+      DISK_BUDGET_STUB_DF="$(mkdf 52428800 50)" bash "$PWTGOAL" --worker-only "integration cap gc retry" 2>&1 >/dev/null)
+  printf '%s' "$err8c" | grep -q 'auto-GC-retry' \
+    && ok "AC3: cap trip triggers auto-GC-retry" || bad "auto-GC-retry marker missing"
 else
   echo "  ⊘ pwt-goal.sh integration skipped (not found)"
 fi

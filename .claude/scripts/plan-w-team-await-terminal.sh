@@ -52,16 +52,54 @@ if [ -z "$SLUG" ] && [ -z "$WORKER_SID" ]; then
   exit 2
 fi
 
-PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-STATE_DIR="${STATE_DIR_OVERRIDE:-$PROJECT_ROOT/.claude/state}"
-GOAL="$STATE_DIR/plan-w-team-goal-${SLUG}.json"
+# PROJECT_ROOT honors PWT_PROJECT_ROOT_OVERRIDE (test-friendly, consistent with
+# pwt-goal.sh) before falling back to the worktree-aware git toplevel.
+PROJECT_ROOT="${PWT_PROJECT_ROOT_OVERRIDE:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 EXT="$PROJECT_ROOT/.claude/scripts/claude-agents-extended.sh"
+
+# ── Worktree-aware goal-state resolution (per-tick) ─────────────────────────
+# Spec: docs/specs/supervisor-wait-worktree-aware.md. PWT-WT1 (2026-06-02) made
+# `pwt-goal --worker-only` spawn the worker with `claude --bg --worktree`, so the
+# worker runs INSIDE .claude/worktrees/<slug>/ and may write its goal-state there
+# rather than in the launching MAIN checkout. The 1.24.0 event-driven wait (587d577)
+# resolved GOAL ONCE from the main checkout, so the PRIMARY terminal trigger could
+# never fire for a worktree-isolated worker — degrading to the WORKER_GONE +
+# 30-min-heartbeat backstops. Resolve each tick (the file can also appear AFTER the
+# wait starts), in precedence:
+#   1. explicit --state-dir override (highest — deterministic; used by tests + Step 3c)
+#   2. main  <root>/.claude/state/plan-w-team-goal-<SLUG>.json
+#   3. worktree fallback: first <root>/.claude/worktrees/*/.claude/state/plan-w-team-goal-<SLUG>.json
+#   4. default to (2)'s path (may not exist yet — keep watching / heartbeat re-arm)
+# Bash 3.2-safe: no nullglob; an unmatched glob yields the literal pattern, which the
+# `[ -f ]` guard rejects. Detection is purely file-based, so a worker that goes IDLE
+# at terminal (never exits) is still detected via terminal_state — independent of the
+# WORKER_GONE liveness path, which is PRESERVED below as a backstop (not removed).
+__resolve_goal_file() {
+  [ -z "$SLUG" ] && return 0
+  if [ -n "$STATE_DIR_OVERRIDE" ]; then
+    printf '%s\n' "$STATE_DIR_OVERRIDE/plan-w-team-goal-${SLUG}.json"
+    return 0
+  fi
+  local main_goal="$PROJECT_ROOT/.claude/state/plan-w-team-goal-${SLUG}.json"
+  if [ -f "$main_goal" ]; then
+    printf '%s\n' "$main_goal"
+    return 0
+  fi
+  local f
+  for f in "$PROJECT_ROOT"/.claude/worktrees/*/.claude/state/plan-w-team-goal-${SLUG}.json; do
+    [ -f "$f" ] && { printf '%s\n' "$f"; return 0; }
+  done
+  printf '%s\n' "$main_goal"
+}
 
 elapsed=0
 gone_streak=0
 while :; do
   # (1) PRIMARY — terminal/halt via goal-state (reliable: the evaluator writes it).
-  if [ -n "$SLUG" ] && [ -f "$GOAL" ]; then
+  #     Re-resolve each tick: the worktree-isolated worker may create the file after
+  #     this wait started, or write it inside its worktree rather than the main checkout.
+  GOAL="$(__resolve_goal_file)"
+  if [ -n "$SLUG" ] && [ -n "$GOAL" ] && [ -f "$GOAL" ]; then
     TS=$(jq -r '.terminal_state // ""' "$GOAL" 2>/dev/null || echo "")
     if [ -n "$TS" ] && [ "$TS" != "null" ]; then
       TR=$(jq -r '.terminal_reason // ""' "$GOAL" 2>/dev/null || echo "")

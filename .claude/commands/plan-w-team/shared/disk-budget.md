@@ -85,3 +85,17 @@ can't wedge a run, while a genuine low-disk reading always refuses.
 
 See also: `docs/operations/worktree-lifecycle.md` (GC + companion-process reaping)
 and `shared/ram-budget.md` (the sibling RAM gate this mirrors).
+
+## Disk-aware worktree cap + standing hygiene sweep (1.32.0)
+
+The `PWT_MAX_WORKTREES` count cap (PWT-DISK2 in `pwt-goal.sh`) is no longer a hard
+wall. When it trips it (a) auto-runs `plan-w-team-worktree-gc.sh --execute` once and
+re-counts, then (b) consults this gate: it hard-refuses (exit 5) only on real disk
+pressure (`BLOCK`/`AT_CAPACITY`); a healthy `df` (`SPAWN_OK`/`REDUCE`/fail-open
+`null`) ALLOWS the spawn with a warning. Knobs: `PWT_CAP_GC_RETRY_DISABLE=1` skips
+the auto-GC step; `PWT_SPAWN_DRY_RUN=1` runs all gates then prints `SPAWN_DRY_RUN_OK`
+without spawning (used by the disk-budget integration tests).
+
+`plan-w-team-hygiene-sweep.sh` composes this gate with both GCs for the supervisor's
+standing pre-flight + per-wake hygiene; see
+[`docs/operations/worktree-lifecycle.md`](../../../docs/operations/worktree-lifecycle.md).

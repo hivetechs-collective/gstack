@@ -21,6 +21,156 @@ Entries are newest-first.
 
 ---
 
+## [1.32.0] — 2026-06-06 (87a8c40)
+
+- feat(worktree-gc-bg-daemon-hardening): harden the disk-hygiene GC + bg-daemon
+  resume for the **push-not-merge** lifecycle (founder-gated merge — branches are
+  pushed + PR'd, never merged). Seven fixes, all EXTENSIONS of existing
+  mechanisms (spec: `docs/specs/worktree-gc-bg-daemon-hardening.md`):
+  - **AC1 SAFE-PRUNE-PUSHED** — `classify_one()` reaps a worktree whose HEAD is
+    reachable from any `origin/*` ref (work preserved on the remote / open PR) when
+    the only uncommitted delta is policy-churn; reapable under `--execute` like the
+    other SAFE-PRUNE-\* classes (not orphan-gated). Closes the "14 worktrees all
+    UNSAFE-KEEP, 0 reaped" accumulation.
+  - **AC2 broadened dirty-exclusion** — the GC "real uncommitted work?" predicate
+    now excludes all of `.claude/`, `node_modules`, `ios/Pods/`, `android/.gradle/`,
+    `build`, `DerivedData`, `.expo`, `dist` (prefix + any-depth-segment matcher),
+    not just `.claude/state/`. Only a delta OUTSIDE that set sets `UNCOMMITTED=1`.
+  - **AC3 disk-aware worktree cap** — `pwt-goal.sh` PWT-DISK2 cap is now a soft
+    nudge: on trip it auto-runs the improved GC `--execute` once, re-counts, then
+    consults `disk-budget.sh` — hard-refuse (exit 5) ONLY on real disk pressure
+    (BLOCK/AT_CAPACITY); healthy `df` allows the spawn. `PWT_SPAWN_DRY_RUN=1` added.
+  - **AC4 bg-worker resume staleness self-exit** — `pwt-goal.sh
+--resume-staleness-check` + new `SessionStart` hook
+    `plan-w-team-bg-resume-guard.sh`: a resumed worker whose goal-state is terminal
+    OR whose target branch is already merged/PR'd self-exits instead of re-running
+    (prevents the duplicate/conflicting push to an open PR).
+  - **AC5 orphan-dir + leaked build-daemon reaping** — `plan-w-team-companion-gc.sh`
+    reaps esbuild/Metro/vite/rollup/webpack/watcher daemons rooted in a DEAD
+    worktree dir (gone or git-unregistered; WHITELIST + SAME-UID preserved); the GC
+    classifies git-unregistered orphan dirs `ORPHAN-ASK`.
+  - **AC6 preserve-then-reap** — `remove_one()` dumps `git diff HEAD` + untracked
+    list (or an orphan-dir file manifest+copy, ignore-set filtered) to
+    `.claude/state/hygiene-backups/` before any `--force` removal carrying real
+    delta; a failed dump SKIPS the removal (fail-safe).
+  - **AC7 standing hygiene sweep** — new `plan-w-team-hygiene-sweep.sh` composes
+    the GCs + disk-budget into one dry-run-by-default sweep emitting a one-line
+    summary for the supervisor's per-wake transcript + pre-flight.
+  - Tests extend the existing corpus (worktree-gc +6, companion-gc +4, disk-budget
+    +2/AC3, new bg-resume-guard +9, new hygiene-sweep +15); zsh array-safe, bash
+    3.2 compatible; new script + hook added to the sync allowlist.
+## [1.31.1] — 2026-06-06 (b3b2614)
+
+PATCH — **Integration cap-pressure test** for the four `pwt-goal.sh` capacity gates
+(`.claude/scripts/pwt-goal-capacity-gates.test.sh`). Drives the gate WIRING under pressure
+through the real `--worker-only` spawn path and asserts refuse/bypass/ordering for each gate —
+closing the integration-coverage gap left by the unit-level `ram-budget.test.sh` /
+`disk-budget.test.sh` (the budget _scripts_) and the misleadingly-named
+`pwt-goal-cap-enforcement.test.sh` (only the 4000-char directive cap). Test-only; no behavior change.
+
+- RAM (PWT-RAM1, exit 5), Disk (PWT-DISK1, exit 5), Worktree-count (PWT-DISK2, exit 5),
+  Fair-share (PWT-RAM2, exit 6): each gate trips → exit code + **zero** spawns + diagnostic stderr;
+  each documented `PLAN_W_TEAM_DISABLE_*` override bypasses → spawn proceeds.
+- Gate-ordering assertion (RAM short-circuits before disk) + all-clear positive control with every
+  gate active and healthy.
+- Hermetic: scrubs every `PLAN_W_TEAM_DISABLE_*` kill-switch the ambient worker session exports
+  (a `--worker-only` worker runs inside a worktree and the launcher sets
+  `PLAN_W_TEAM_DISABLE_WORKTREE_CAP=1`), so the gates — not a leaked env var — decide each outcome.
+  Budget scripts driven host-independently via their `*_STUB_*` knobs; fake `claude` on PATH counts spawns.
+- Spec: `docs/specs/integration-cap-pressure.md` (AC1–AC10). Auto-discovered by `tests/skill/run.sh`;
+  full suite green (bats + 61 shell integration tests).
+
+## [1.31.0] — 2026-06-03 (15d477b)
+
+MINOR — **Consolidated Gotchas reference (`shared/gotchas.md`)**, added as the single
+discoverable surface for the skill's recurring cross-cutting failure points. Outcome of an
+honest evaluation of `/plan-w-team` against Anthropic's "Lessons from building Claude Code: how
+we use skills" blog (per-lesson report at
+`docs/operations/pwt-skills-blog-evaluation-2026-06-03.md`).
+
+- The blog names a Gotchas section as the single highest-value part of a skill. The skill had
+  rich hard-won failure knowledge (PWT-DS1/DS2 double-spawn guards, harness-drops-`additionalContext`,
+  `--bg` needs explicit `--worktree`, Agent-tool model-alias-only, `mkdir`-not-`flock`, CHANGELOG
+  SHA off-by-one, bash 3.2, `claude agents --json` flakiness, rsync same-size skip, sync
+  allowlist, state-artifact registry) but it was **scattered** across stage files, inline
+  comments, and memories — `grep -ri gotcha` returned 1 hit.
+- New `.claude/commands/plan-w-team/shared/gotchas.md` consolidates 12 cross-cutting gotchas
+  (G1–G12), each with what-bites-you / why / do-instead / canonical `file:line` source, plus an
+  "Adding a gotcha" maintenance protocol. Advertised from the manifest Shared Resources table.
+- Purely additive: no stage flow, pause site, state-artifact schema, or supervisor protocol
+  changed. Pre-bump worker sessions are unaffected. Full skill test suite stays green.
+- The other 9 blog lessons evaluated as ALREADY-SATISFIED or NOT-APPLICABLE (command-style
+  skill, not a distributed plugin) with `file:line` evidence in the report — no manufactured
+  changes.
+
+## [1.30.0] — 2026-06-03 (af6dd73)
+
+MINOR — **Identity-based supervisor yield (PWT-SUP-YIELD-SID)** in the goal
+evaluator. Closes the recurring friction where an ORIGIN chat that _becomes_ a
+supervisor mid-session is dragged into Stop-hook busy-poll every turn: the
+pre-existing yield was env-only (`PLAN_W_TEAM_SUPERVISOR_SESSION=1`), which such a
+session cannot set in its own launch env — and 1.29.0's PWT-WT2 worsened it by
+reliably seeding the goal-state where the hook always finds it.
+
+- `feat`: the evaluator now reads `SELF_SID` from the Stop-hook input's
+  `session_id` and, per blocking goal, compares it against the goal-state's
+  `worker_sid` (already recorded by PWT-WT2). **Only the OWNING worker blocks and
+  runs to terminal; any other session (supervisor/observer) YIELDS** and is
+  re-woken event-driven by its background `await-terminal` loop. The env-flag yield
+  is preserved as a parallel path.
+- `fix` (safety, from adversarial verification `wf_9cab85b2`): `worker_sid` is
+  normalized (trim all whitespace + lowercase) and ownership is established ONLY by
+  a token starting with **8 hex chars** — anything else (empty, short, non-hex,
+  whitespace-only/padded) is treated as UN-OWNABLE → **fail safe to BLOCK**, never
+  yield. This closes a CRITICAL hole where a whitespace-padded `worker_sid`
+  (e.g. `"  5de5b9ac"`) would make even the GENUINE owner wrongly yield.
+- **Sacred invariant verified** across 4 independent red-team angles + 10 bats
+  cases (`tests/skill/scenarios/goal-evaluator-sup-yield-sid.bats`): owning worker /
+  in-session lead / un-ownable goal / empty-SID **always BLOCK**. Accepted-by-design
+  (INFORMATIONAL): the 8-hex first-prefix collision (≈ 1/4.3e9, and in the safe
+  block direction).
+
+## [1.29.0] — 2026-06-03 (ef2cbc0)
+
+MINOR — **Supervisor-wait worktree-awareness + goal-state anti-skip activation for
+`--worker-only` bg workers** (brief `supervisor-wait-worktree-aware`, spec
+`docs/specs/supervisor-wait-worktree-aware.md`). Fixes the collision between two
+prior upgrades: the 1.24.0 event-driven supervisor wait (`587d577`,
+`plan-w-team-await-terminal.sh`) watched the MAIN checkout's goal-state file, while
+PWT-WT1 (2026-06-02) made `pwt-goal --worker-only` run the worker inside
+`.claude/worktrees/<slug>/`. Result: the PRIMARY `terminal_state` trigger could never
+fire for a worktree-isolated worker (degraded to the `WORKER_GONE` + 30-min-heartbeat
+backstops), AND the `--worker-only` path never seeded a goal-state file at all — so the
+self-hosted goal-evaluator saw "No active goal → exit 0" and nothing blocked a premature
+stop. Concrete evidence: the 1.28.0 build-artifact worker `c68e27ac` pushed to origin
+then went idle BEFORE its consumer-sync DoD; the supervisor finished the sync by hand.
+Additive — the `WORKER_GONE`/heartbeat backstops and the existing `await-terminal.bats`
+suite are preserved.
+
+- `fix` **`plan-w-team-await-terminal.sh` worktree-aware (PWT-WT2)** — resolves the
+  goal-state file **each loop tick** in precedence: explicit `--state-dir` → main
+  `<root>/.claude/state/` → worktree fallback
+  `<root>/.claude/worktrees/*/.claude/state/plan-w-team-goal-<SLUG>.json`. Detection is
+  purely file-based, so a worker that goes IDLE at terminal (never exits) is still woken
+  via `terminal_state` — independent of the `WORKER_GONE` liveness path. Adds
+  `PWT_PROJECT_ROOT_OVERRIDE` for test-friendly root resolution. Bash 3.2-safe (no
+  nullglob; `[ -f ]` guard rejects an unmatched literal glob).
+- `fix` **`pwt-goal.sh --worker-only` seeds the goal-state file (PWT-WT2)** — generalizes
+  the `--supervisor-goal` mirror so EVERY worker-only spawn writes
+  `plan-w-team-goal-<SLUG_GUESS>.json` (terminal_state:null) into the launching checkout's
+  `.claude/state/` at spawn. The anti-skip anchor is now active from t=0 regardless of
+  whether the worker LLM runs the manifest's PWT-T5b activation; the worker's own evaluator
+  finds it via `FALLBACK_STATE_DIR`, and the supervisor's `await-terminal.sh` resolves it.
+  Fail-open: a failed seed never blocks the spawn.
+- `docs` — manifest Step 3c, `shared/supervisor-protocol.md` Wait mechanism, and
+  `shared/goal-conditions.md` document the worktree-aware resolution + spawn-time seed.
+- `test` — `tests/skill/cases/await-terminal.bats` +4 cases (worktree-isolated SUCCESS
+  without heartbeat, main-present precedence, explicit `--state-dir` wins, no-goal shadow
+  path); `tests/skill/scenarios/worker-only-seeds-goalstate.bats` asserts the spawn-time
+  seed. Existing terminal/worker-gone/heartbeat/§3.1 cases stay green.
+
+---
+
 ## [1.28.0] — 2026-06-03 (411e1a6)
 
 MINOR — **Build cleanup preserves installables, cleans only intermediates**
