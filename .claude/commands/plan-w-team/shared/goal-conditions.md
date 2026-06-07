@@ -101,6 +101,24 @@ Both blocks contain machine-readable JSON. The evaluator greps for specific anch
 
 **No `TIME_OR_TURN_CAP` terminal state**: the only valid termination signals are goal-success (above), the hard-gate / low-confidence anchors, and `API_HALT` (a delegated child that died on a transient API error). The evaluator does not track turn count or wall-clock and will not auto-stop a run for taking too long. If the pipeline truly stalls without producing those signals, the user halts it manually (`/goal clear` or session interrupt).
 
+### `post-ship-complete` SUCCESS precondition (A5, 1.33.0)
+
+A full-lifecycle run must not reach `SUCCESS` having silently skipped documentation. Step 8
+retro §8d checks for the Step-7 artifact `plan-w-team-postship-$SLUG.json` **before** the
+`retro-complete` anchor is emitted:
+
+- **Artifact present** → §8d reads it and scores doc hygiene (the real A4 reader). Proceed.
+- **Artifact absent on a full run that added public surface** → `post-ship-complete` is NOT
+  satisfied: §8d scores doc-hygiene `n/a (docs-skipped)` and surfaces the precondition note
+  so the operator sees Step 7 did not run. Pairs with the §7f net-new-surface gate
+  (`06-post-ship.md`) — together they ensure docs are not skipped on the path to SUCCESS.
+- **`--ship-only` / `--retro` flows** that legitimately never run Step 7 are exempt (no
+  public-surface diff to document); the score is `n/a` without a finding.
+
+This is the artifact-exists precondition the brief (gap A5) requires: previously nothing
+verified the post-ship artifact existed before SUCCESS, so a run could reach `retro-complete`
+with zero docs and no failing signal.
+
 ## The Condition (copy-paste template)
 
 When `/plan-w-team` opens `/goal`, it uses this condition verbatim (with `<SLUG>` substituted):

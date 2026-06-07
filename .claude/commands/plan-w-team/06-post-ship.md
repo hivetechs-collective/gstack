@@ -76,10 +76,10 @@ echo "$AUDIT_CANDIDATES"
 
 | Classification                                          | Action                     | Concrete examples                                                                                                                                            |
 | ------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Mechanical update (paths, command names, config keys)   | Auto-update without asking         | Version number bump in 3 places; CLI flag rename `--foo` → `--bar`; config key rename in YAML examples; copy a stable config table that already moved        |
-| Substantive change (architecture description, workflow) | Route through orchestrator         | New auth flow needs README's "How It Works" rewritten; ARCHITECTURE.md sequence diagram now wrong; CONTRIBUTING needs a new step                             |
-| New section needed                                      | Route through orchestrator         | Brand-new public API needs its own README section; new env var needs a row in `docs/configuration.md`                                                        |
-| No change required                                      | Skip silently                      | Doc references the changed code only by stable identifier (e.g. "the user service") that still resolves; docs in unrelated module unaffected by this feature |
+| Mechanical update (paths, command names, config keys)   | Auto-update without asking | Version number bump in 3 places; CLI flag rename `--foo` → `--bar`; config key rename in YAML examples; copy a stable config table that already moved        |
+| Substantive change (architecture description, workflow) | Route through orchestrator | New auth flow needs README's "How It Works" rewritten; ARCHITECTURE.md sequence diagram now wrong; CONTRIBUTING needs a new step                             |
+| New section needed                                      | Route through orchestrator | Brand-new public API needs its own README section; new env var needs a row in `docs/configuration.md`                                                        |
+| No change required                                      | Skip silently              | Doc references the changed code only by stable identifier (e.g. "the user service") that still resolves; docs in unrelated module unaffected by this feature |
 
 For substantive changes and new sections, route through the orchestrator instead of pausing for user input:
 
@@ -104,6 +104,67 @@ DOC_DECISION=$(route_orchestrator post-ship-docs-target "$SLUG" \
 > **Mechanical:** v1.4.3 → v1.5.0. README quickstart shows `npm install foo@1.4.3`. Update to `npm install foo@1.5.0`. Three other places mention 1.4.3. Update all four. No prompt needed.
 >
 > **Substantive:** v1.5.0 introduces a new `--profile` flag that changes how the CLI resolves config. The README's "How It Works" section explains the old (single-profile) behavior. The lead must decide: does the README still target single-profile users (keep), get rewritten as multi-profile-first (substantive change), or grow a sibling section (new section)? Ask the user.
+
+## 7a-bis. Net-New Surface Scan (A1/A6/C2 — complements §7a, does NOT replace it)
+
+The §7a audit above greps **existing** docs for a changed file's basename. It is
+structurally blind to genuinely-NEW surface: a brand-new script/hook/module/CLI-flag/
+env-var that no doc references yet produces **zero candidates** and is silently
+skipped. This complementary scan enumerates net-new public surface directly from the
+diff (`git diff --diff-filter=A` + added-line symbol/flag/env-var extraction) and
+requires each item to map to a doc target OR be explicitly waived.
+
+```bash
+SLUG="<feature-slug>"
+BASE_REF="origin/${BASE_BRANCH:-main}"
+.claude/scripts/plan-w-team-netnew-surface.sh --range "${BASE_REF}..HEAD" --slug "$SLUG"
+NETNEW_RC=$?   # 0 = all documented/waived; 1 = UNDOCUMENTED residual; 2 = error
+```
+
+What it flags (see `docs/operations/pwt-doc-secret-handling.md` for the full model):
+
+- A **new public file** that no doc references → `UNDOCUMENTED`.
+- A **new hook/script** (`.claude/hooks/**`, `.claude/scripts/**`, `scripts/**`) that
+  no `docs/operations/*` page names → `UNDOCUMENTED` (gap A6 — this repo documents
+  every hook/script under `docs/operations/`; write the page now).
+- A **new env var / exported symbol / CLI flag** in added lines that no doc references
+  → `UNDOCUMENTED`.
+
+For each `UNDOCUMENTED` item, either (a) add the doc target (a row in the config
+reference, a `docs/operations` page, a README section), or (b) record an explicit
+waiver in `.claude/state/plan-w-team-docs-waived-$SLUG.txt` (one path/token per line)
+when the item legitimately needs no doc. Both the residual count and the waiver list
+are persisted in the §7e artifact and consumed by the §7f gate and retro §8d.
+
+**Infra glob touched (C2):** if the diff touches an infra surface from
+`shared/governance-tags.md` (`wrangler.toml`, `*.tf`, `**/k8s/**`, …), a
+runbook/config-reference update is REQUIRED — the same net-new-surface obligation
+applies to infra even when no brand-new file is added. Record the runbook path in the
+§7e artifact's `infra_runbook` field (or a waiver).
+
+```bash
+# Detect infra-glob touches in the diff (C2):
+INFRA_HITS=$(git diff --name-only "${BASE_REF}..HEAD" \
+  | grep -Ei '(^|/)(wrangler\.toml|.*\.tf|.*\.tfvars)$|/(k8s|kubernetes|terraform|cloudformation)/' || true)
+[ -n "$INFRA_HITS" ] && echo "C2: infra changed — runbook/config-reference update required:" && echo "$INFRA_HITS"
+```
+
+## 7a-ter. Secret-Handling Documentation (C1)
+
+If this feature introduced a **new secret-bearing variable** (the §1c credential
+signal fired in the spec — a new runtime secret / env var the code reads), it MUST
+ship a secret-handling doc deliverable, because nothing else tells an operator the
+secret exists, where to set it, or how to rotate it:
+
+1. an **`.env.example` row** (or sample-env entry) for the new variable, with a
+   placeholder value (never a real secret — the §6a-ter scan + B1 write-time scan
+   enforce this); AND
+2. a **provisioning / rotation / never-commit note** in the runbook or config
+   reference (`docs/operations/*` or the repo's configuration doc).
+
+Record the deliverable path in the §7e artifact's `secret_handling_doc` field. See
+`shared/secret-safety.md §Secret-Handling Documentation Duty` for the checklist. If
+the feature introduced no new secret, set the field to `"n/a"`.
 
 ## 7b. Cross-Document Consistency Check
 
@@ -207,12 +268,27 @@ cat > "$ARTIFACT" <<EOF
     "carried_forward": [],
     "closed_during_impl": [],
     "obsolete": []
-  }
+  },
+  "netnew_surface": {
+    "scan_rc": ${NETNEW_RC:-0},
+    "undocumented": [],
+    "waived": [],
+    "infra_runbook": "n/a"
+  },
+  "secret_handling_doc": "n/a"
 }
 EOF
 
 echo "✓ post-ship artifact written: $ARTIFACT"
 ```
+
+Populate the new fields from §7a-bis / §7a-ter before writing:
+
+- `netnew_surface.scan_rc` — exit code of `plan-w-team-netnew-surface.sh` (0 clean, 1 residual).
+- `netnew_surface.undocumented` — the list of residual `UNDOCUMENTED` items NOT waived (empty on a clean run). **This is the field retro §8d and the §7f gate key off.**
+- `netnew_surface.waived` — items waived via `plan-w-team-docs-waived-$SLUG.txt` (audit trail).
+- `netnew_surface.infra_runbook` — runbook/config path updated for a C2 infra change, or `"n/a"`.
+- `secret_handling_doc` — `.env.example`/runbook path for a C1 new-secret deliverable, or `"n/a"`.
 
 Step 8 retro reads this file in §8d to score "documentation hygiene" without re-running the audit. If the artifact is missing, retro scores §8d as `n/a (docs-skipped)` and notes the skip in the friction log.
 
@@ -224,6 +300,19 @@ Do **not** mark Step 7 complete if any of the following are true:
 - A `POSSIBLE DRIFT` from §7b is unresolved and not on the deferral list
 - A spec deferred item is missing context-needed-to-resume in TODOS.md
 - The post-ship artifact (§7e) was not written
+- **(A1/A6)** §7a-bis reports residual `UNDOCUMENTED` net-new surface that is neither documented nor waived — i.e. `netnew_surface.undocumented` in the §7e artifact is non-empty. Add the doc target or record an explicit waiver, then re-run the scan. (Soft override: `PLAN_W_TEAM_NETNEW_DISABLE=1` downgrades this to a warning — use only with a recorded reason.)
+- **(C1)** The feature introduced a new secret-bearing variable (spec §1c credential signal) but `secret_handling_doc` is `"n/a"` / missing — there is no `.env.example` row + provisioning/rotation note. Write the deliverable (§7a-ter) before completing.
+- **(C2)** The diff touched an infra glob (`shared/governance-tags.md`) but `netnew_surface.infra_runbook` is `"n/a"` / missing — no runbook/config-reference update accompanies the infra change.
+
+```bash
+# §7f net-new / secret-doc / infra refusal check (reads the §7e artifact):
+ART=".claude/state/plan-w-team-postship-$SLUG.json"
+if [ "${PLAN_W_TEAM_NETNEW_DISABLE:-}" != "1" ] \
+   && [ "$(jq -r '.netnew_surface.undocumented | length' "$ART" 2>/dev/null || echo 0)" -gt 0 ]; then
+  echo "✗ §7f: net-new surface is UNDOCUMENTED — add docs or waive. See $ART .netnew_surface.undocumented" >&2
+  exit 1
+fi
+```
 
 Each of these is a known leak point: the doc-debt that "we'll get to it" rarely gets gotten to. Catching it at this stage costs minutes; catching it three sprints later costs a re-investigation.
 

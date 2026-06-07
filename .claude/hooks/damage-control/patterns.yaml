@@ -269,74 +269,29 @@ noDeletePaths:
   - "CLAUDE.md"
 
 # =============================================================================
-# SECRET DETECTION - Block/warn when secrets appear in content
-# Applied to tool_input content during PreToolUse
-# =============================================================================
+# SECRET DETECTION - Block when live secrets appear in Write/Edit content
+# Applied to tool_input content during PreToolUse (Write|Edit).
+#
+# SINGLE SOURCE OF TRUTH (1.33.0, gap B1): the write-time content scan is NOT
+# driven by an inline regex list here — it is enforced by `check_secret_content`
+# in `damage-control.sh`, which delegates to `.claude/scripts/secret-scan.sh`
+# (the same scanner pre-commit, the ship-gate, and sync use). That scanner owns
+# the authoritative pattern catalog, placeholder suppression (token-adjacency,
+# gap B3), the auto-generated-catalog skip, per-feature allow-files, and token
+# redaction. Keeping a second regex list here was DEAD CONFIG that drifted from
+# the scanner (e.g. an OpenAI `sk-[a-zA-Z0-9]{20,}` here vs `sk-[A-Za-z0-9]{48,}`
+# in the scanner; missing Paddle/Resend/SMTP2Go/Cloudflare). It was removed so the
+# advertised posture matches the real, enforced behavior.
+#
+# To change which patterns block at write-time, edit the PATTERNS catalog in
+# `.claude/scripts/secret-scan.sh` (and keep `shared/secret-safety.md` in sync
+# via `make secret-doc-sync`). Do NOT re-add a parallel list here.
+#
+# Kill switch: DAMAGE_CONTROL_DISABLE_SECRET_CONTENT=1 (plus the harness-level
+# CLAUDE_DISABLED_HOOKS / CLAUDE_HOOK_PROFILE).
 secretDetection:
-  - name: "AWS Access Key"
-    pattern: "AKIA[A-Z0-9]{16}"
-    action: block
-    message: "Potential AWS access key detected in content"
-
-  - name: "GitHub Token"
-    pattern: "gh[pousr]_[A-Za-z0-9_]{36,}"
-    action: block
-    message: "Potential GitHub token detected in content"
-
-  - name: "OpenAI API Key"
-    pattern: "sk-[a-zA-Z0-9]{20,}"
-    action: block
-    message: "Potential OpenAI API key detected in content"
-
-  - name: "JWT Token"
-    pattern: "eyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}"
-    action: warn
-    message: "Potential JWT detected in content"
-
-  - name: "Private Key"
-    pattern: "-----BEGIN.*PRIVATE KEY-----"
-    action: block
-    message: "Private key content detected"
-
-  - name: "Anthropic API Key"
-    pattern: "sk-ant-[a-zA-Z0-9_-]{20,}"
-    action: block
-    message: "Potential Anthropic API key detected in content"
-
-  - name: "Stripe Secret Key"
-    pattern: "sk_live_[a-zA-Z0-9]{20,}"
-    action: block
-    message: "Potential Stripe secret key detected in content"
-
-  - name: "Stripe Publishable Key"
-    pattern: "pk_live_[a-zA-Z0-9]{20,}"
-    action: warn
-    message: "Potential Stripe publishable key detected in content"
-
-  - name: "Slack Token"
-    pattern: "xox[bpras]-[A-Za-z0-9-]{10,}"
-    action: block
-    message: "Potential Slack token detected in content"
-
-  - name: "GCP Service Account"
-    pattern: "\"type\"\\s*:\\s*\"service_account\""
-    action: block
-    message: "Potential GCP service account JSON detected"
-
-  - name: "Azure Connection String"
-    pattern: "DefaultEndpointsProtocol=https?;Account"
-    action: block
-    message: "Potential Azure storage connection string detected"
-
-  - name: "GitLab Token"
-    pattern: "glpat-[A-Za-z0-9_-]{20,}"
-    action: block
-    message: "Potential GitLab personal access token detected"
-
-  - name: "Generic Secret"
-    pattern: "(secret|password|api_key)\\s*[:=]\\s*[\"'][^\"']{8,}"
-    action: warn
-    message: "Potential hardcoded secret detected"
+  enforced_by: ".claude/hooks/damage-control/damage-control.sh::check_secret_content"
+  pattern_source: ".claude/scripts/secret-scan.sh"  # authoritative catalog
 
 # =============================================================================
 # SENSITIVE PATHS - Additional path-based restrictions

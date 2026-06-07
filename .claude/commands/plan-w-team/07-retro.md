@@ -130,7 +130,94 @@ of non-determinism (and pass 100/100) is a Fail.
 A Fail here means the workflow shipped against its own governance — record it as a retro
 finding and a memory candidate (§8j) so the next run tightens enforcement.
 
-## 8d. Streak Tracking
+## 8c-bis. Workspace / State Secret Sweep (B2, 1.33.0)
+
+The ship-gate secret scan covers the committed diff, but `.claude/state/*.json`, the
+captured test-output log (`plan-w-team-test-output-$SLUG.log`), and other run artifacts
+are never scanned — a secret can land there (a tool dumping an env var into a state file,
+a stack trace echoing a token into the test log) and sit unscanned. This advisory pass
+runs `secret-scan.sh` over the workspace state before retro completes. It SURFACES hits
+(so the operator can scrub them) but does not block — the enforcing leak-prevention gates
+are the ship-time scans; this is the defense-in-depth backstop the audit (gap B2) asked for.
+
+```bash
+SLUG="<feature-slug>"
+SECRET_SCANNER=".claude/scripts/secret-scan.sh"
+if [ -x "$SECRET_SCANNER" ] && [ "${PLAN_W_TEAM_DISABLE_WORKSPACE_SCAN:-}" != "1" ]; then
+  # Scan run state + logs. secret-scan.sh skips binary/oversize (>1 MB) files and reports
+  # the skip count (B2 surfaced-skip); placeholder suppression (B3) keeps this low-noise.
+  SWEEP_TARGETS=$(ls .claude/state/plan-w-team-*-"$SLUG".json \
+                     .claude/state/plan-w-team-test-output-"$SLUG".log 2>/dev/null || true)
+  if [ -n "$SWEEP_TARGETS" ]; then
+    # shellcheck disable=SC2086
+    if "$SECRET_SCANNER" --paths $SWEEP_TARGETS >/tmp/pwt-wssweep.$$ 2>&1; then
+      echo "§8c-bis workspace secret sweep: clean"
+    else
+      echo "⚠ §8c-bis workspace secret sweep FOUND a live secret in run state/logs — scrub before archiving:"
+      cat /tmp/pwt-wssweep.$$ >&2
+    fi
+    rm -f /tmp/pwt-wssweep.$$
+  fi
+fi
+```
+
+Kill switch: `PLAN_W_TEAM_DISABLE_WORKSPACE_SCAN=1`. The >1 MB / binary silent-skip is also
+surfaced in the Step-6 ship-gate failure-modes table (`05-ship.md`) so it is no longer a
+buried footnote (gap B2).
+
+## 8d. Documentation Hygiene + Streak Tracking
+
+### Documentation Hygiene (Post-Ship Reader — A4, 1.33.0)
+
+**This is the REAL §8d reader for the Step-7 post-ship artifact.** Before 1.33.0 this
+section was streak-tracking only, while `06-post-ship.md` claimed retro §8d "consumes
+`plan-w-team-postship-$SLUG.json` to score doc hygiene" — a phantom: no reader existed,
+and the `handoff` orphan-reader gate false-passed because the reader_grep matched the
+writer file's own prose. This block reads the artifact and scores doc hygiene; the
+`symmetry-check.sh` A4 fix now requires the reader to live in a non-writer file (here).
+
+```bash
+SLUG="<feature-slug>"
+POSTSHIP=".claude/state/plan-w-team-postship-${SLUG}.json"
+RETRO_STATE=".claude/state/plan-w-team-retro-${SLUG}.json"
+
+if [ ! -f "$POSTSHIP" ]; then
+  # A5: post-ship-complete precondition — the artifact MUST exist before retro scores
+  # hygiene. A missing artifact means Step 7 did not run (or was skipped); score n/a and
+  # note the skip in the friction log rather than silently passing.
+  echo "§8d doc-hygiene: n/a (docs-skipped — no post-ship artifact at $POSTSHIP)"
+  DOC_HYGIENE_SCORE="null"
+else
+  # Read the artifact the post-ship stage wrote (the real consumer the registry promises).
+  UNDOC=$(jq -r '.netnew_surface.undocumented | length' "$POSTSHIP" 2>/dev/null || echo 0)
+  WAIVED=$(jq -r '.netnew_surface.waived | length' "$POSTSHIP" 2>/dev/null || echo 0)
+  DRIFTS_DEFERRED=$(jq -r '.consistency.drifts_deferred | length' "$POSTSHIP" 2>/dev/null || echo 0)
+  SECRET_DOC=$(jq -r '.secret_handling_doc // "n/a"' "$POSTSHIP" 2>/dev/null || echo "n/a")
+  BACKLOG=$(jq -r '.todos.backlog_health // "unknown"' "$POSTSHIP" 2>/dev/null || echo unknown)
+  # Score 5 (clean) down to 1 (residual undocumented surface at ship).
+  if [ "$UNDOC" -gt 0 ]; then DOC_HYGIENE_SCORE=1
+  elif [ "$DRIFTS_DEFERRED" -gt 0 ]; then DOC_HYGIENE_SCORE=3
+  else DOC_HYGIENE_SCORE=5; fi
+  echo "§8d doc-hygiene: score=$DOC_HYGIENE_SCORE (undocumented=$UNDOC, waived=$WAIVED, drifts_deferred=$DRIFTS_DEFERRED, secret_doc=$SECRET_DOC, backlog=$BACKLOG)"
+  # A residual UNDOCUMENTED at ship is a fix-immediately signal (the §7f gate should have
+  # caught it) — record it as a retro finding + memory candidate per §8a's fix-now rule.
+  if [ "$UNDOC" -gt 0 ]; then
+    echo "⚠ §8d: $UNDOC net-new surface item(s) shipped UNDOCUMENTED — investigate why §7f did not block"
+  fi
+fi
+# Persist the score into the retro state for the streak/quality rollup.
+if [ -f "$RETRO_STATE" ]; then
+  TMP=$(mktemp)
+  jq --arg s "$DOC_HYGIENE_SCORE" '.quality_signals.doc_hygiene = ($s | if . == "null" then null else tonumber end)' \
+    "$RETRO_STATE" > "$TMP" 2>/dev/null && mv "$TMP" "$RETRO_STATE" || rm -f "$TMP"
+fi
+```
+
+If the artifact is missing, retro scores §8d doc-hygiene as `n/a (docs-skipped)` and the
+A5 precondition note is surfaced — `retro-complete` must not be emitted on a run that was
+supposed to produce docs but has no post-ship artifact (see §8 cleanup precondition).
+
+### Streak Tracking
 
 Track across features (persists in task metadata). Read `shared/artifact-storage.md` for streak data format.
 
@@ -620,6 +707,13 @@ fi
 if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
   rm -f "$SUP_LOG"
   rm -f ".claude/state/plan-w-team-goal-${SLUG}.json"   # T5b goal evaluator state (idempotent)
+  # B4 (1.33.0): remove this run's retired secret-scan allow-file so it cannot mask a
+  # real secret at the same path:line in a FUTURE run. (pre-commit-quality.sh's age check
+  # is the backstop for abandoned features; this is the clean per-run retirement the
+  # "remove retired allow-files in retro" instruction always promised.) Also drop the
+  # net-new-surface docs-waiver list — both are per-run curation, not durable state.
+  rm -f ".claude/state/plan-w-team-secret-scan-allow-${SLUG}"   # B4 retired allow-file
+  rm -f ".claude/state/plan-w-team-docs-waived-${SLUG}.txt"     # A1/A6 per-run waiver
 
   # Janitor pass: sweep up any OTHER terminal-state goal files left by runs
   # that stopped before reaching their own retro (early halt, crash, mismatched

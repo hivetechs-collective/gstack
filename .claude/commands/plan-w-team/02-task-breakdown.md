@@ -312,6 +312,42 @@ The `N.s` review uses `shared/access-control-invariants.md` (INV-1…INV-5) as i
 
 **Cost discipline**: `N.s` is a review pass, not a re-implementation. If `security-expert` finds high-severity issues, the orchestrator routes the fix-vs-defer decision through `pass-2-ask` (see `04-fix-first-review.md`) rather than letting `N.s` rewrite `N.b`. **Exception**: a confirmed high-severity broken-access-control finding in the diff's own touched code (A01 / API1 / API3 / API5 — cross-tenant IDOR, privilege-field/mass-assignment, or bypass-token) is **gating, not deferrable** — it is a Pass-1 CRITICAL that blocks ship per `04-fix-first-review.md` §5d-ter and `05-ship.md` §6c-ter.
 
+## Paired Task Protocol (documentation) — Documentation Coverage Extension (A2, 1.33.0)
+
+The STE non-UI protocol pairs an `N.a` test task with each `N.b` implementation task so net-new code ships with tests. There was no documentation analog, so net-new **public surface** (a new script/hook/module, exported symbol, CLI flag, or env var) historically shipped undocumented (audit gap A2). This block adds the paired `N.d` documentation task.
+
+EMIT a paired `N.d` when:
+
+```
+scope ∈ {BACKEND, INFRASTRUCTURE, SCRIPTS, LIBRARY, API} (or UI feature)
+AND mode == "add"
+AND the task introduces NET-NEW public surface:
+    a new public-surface file (script/hook/module),
+    OR a new exported/public symbol,
+    OR a new long CLI flag (--foo-bar),
+    OR a new environment variable.
+```
+
+| Task  | Role                                                                                                               | Blocked by | Scope (mirrors parent task) | Agent                  |
+| ----- | ------------------------------------------------------------------------------------------------------------------ | ---------- | --------------------------- | ---------------------- |
+| `N.d` | Document the net-new surface implemented by `N.b` (README / config-reference / `docs/operations` page / CHANGELOG) | `N.b`      | `DOCS`                      | `documentation-expert` |
+
+**Rules** (mirror the `N.a`/`N.s` paired-task blocks):
+
+- `N.d` runs against the implemented `N.b` output. `blockedBy: ["<N.b-task-id>"]` is MANDATORY — you document what shipped, not what was specced.
+- The target is **operational documentation**, not the spec. `docs/specs/` does NOT satisfy `N.d` (the spec describes intent; the doc serves the next operator/consumer).
+- A new **hook or script** (`.claude/hooks/**`, `.claude/scripts/**`, `scripts/**`) additionally REQUIRES a `docs/operations/*` page that names it (gap A6).
+- A task that introduces a **new secret-bearing env var** additionally requires the C1 secret-handling deliverable (`.env.example` row + provisioning/rotation/never-commit note — see `shared/secret-safety.md §Secret-Handling Documentation Duty`).
+- An **infra-glob** change (`shared/governance-tags.md` Infra config / Secrets-env-wiring rows) requires a runbook/config-reference update (gap C2).
+
+**Single-task exceptions** (no `N.d` pairing):
+
+- `mode == "refactor"` / `mode == "config"` (pure) — no net-new public surface introduced.
+- `mode == "docs"` — the task IS the documentation.
+- A net-new item that legitimately needs no doc (an internal helper) is recorded in the run's waiver file `.claude/state/plan-w-team-docs-waived-<SLUG>.txt` rather than via an `N.d` task; the waiver is auditable in the post-ship artifact.
+
+**Enforcement**: `plan-w-team-netnew-surface.sh` (post-ship §7a-bis/§7f) reports any unwaived `UNDOCUMENTED` net-new item as a residual that blocks Step 7; the §6c-quater ship doc gate refuses a ship that adds public surface with no CHANGELOG/doc/waiver. The default doc-coverage AC (`shared/sprint-contracts.md`) is the spec-level companion to this task-level pairing.
+
 ## Hot-Path Overlay (STE Extension)
 
 For any task touching a **hot-path file** — defined as ANY of:

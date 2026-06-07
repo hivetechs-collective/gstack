@@ -147,7 +147,7 @@ The table below is **auto-generated** from `.claude/scripts/secret-scan.sh` by `
 | `openai`             | `sk-[A-Za-z0-9]{48,}`                                              | Revoke at platform.openai.com/api-keys                                                                               |
 | `stripe-live-secret` | `sk_live_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/apikeys                                                                                 |
 | `stripe-test-secret` | `sk_test_[a-zA-Z0-9]{20,}`                                         | Roll at dashboard.stripe.com/test/apikeys                                                                            |
-| `stripe-live-pub`    | `pk_live_[a-zA-Z0-9]{20,}`                                         | Stripe publishable key — confirm intent before committing                                                          |
+| `stripe-live-pub`    | `pk_live_[a-zA-Z0-9]{20,}`                                         | Stripe publishable key — confirm intent before committing                                                            |
 | `slack`              | `xox[baprs]-[A-Za-z0-9-]{10,}`                                     | Revoke at api.slack.com/apps                                                                                         |
 | `gitlab-pat`         | `glpat-[A-Za-z0-9_-]{20,}`                                         | Revoke at gitlab.com/-/profile/personal_access_tokens                                                                |
 | `azure-conn`         | `DefaultEndpointsProtocol=https;AccountName=`                      | Rotate Azure storage account keys                                                                                    |
@@ -157,7 +157,7 @@ The table below is **auto-generated** from `.claude/scripts/secret-scan.sh` by `
 | `resend`             | `re_[A-Za-z0-9]{20,}`                                              | Revoke at resend.com/api-keys                                                                                        |
 | `smtp2go`            | `api-[a-f0-9]{32}`                                                 | Revoke at app.smtp2go.com/settings/                                                                                  |
 | `cloudflare-token`   | `cfut_[A-Za-z0-9]{20,}`                                            | Roll at dash.cloudflare.com/profile/api-tokens (committed 2026-05-25 in cleanscale #465 — scanner had no CF pattern) |
-| `jwt`                | `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}` | JWT in code — if live session/signing token, rotate issuer secret                                                  |
+| `jwt`                | `eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}` | JWT in code — if live session/signing token, rotate issuer secret                                                    |
 | `private-key`        | `-----BEGIN [A-Z ]*PRIVATE KEY-----`                               | Rotate private key; revoke if used in production                                                                     |
 
 <!-- END AUTO-GENERATED: secret-patterns -->
@@ -298,6 +298,58 @@ Document these here rather than hiding them behind "TODO" comments in the scanne
 - **The placeholder heuristic is lexical, not semantic.** A line like `secret = retrieve_from_vault()` is correctly suppressed (contains `RETRIEVE_`) but so is the typo `RETRIEVE_sk_live_...`. This is the known false negative from §Placeholder Heuristic rule 3.
 - **Binary files are skipped.** The scanner skips files that fail `grep -Iq ''` (binary sniff) or exceed `--max-filesize` (default 1 MB). A secret hidden inside a JPEG EXIF field is not caught.
 - **Scanner invocation is the responsibility of the integration point.** `pre-commit-quality.sh` invokes the scanner; if the hook is disabled or skipped, Layer 1 is disabled. The ship gate (Layer 2) is the safety net — do not assume a hook bypass is innocent.
+
+## Secret-Handling Documentation Duty (C1/C2, 1.33.0)
+
+The three scanner layers above prevent a secret VALUE from leaking. They do nothing
+about the **operational documentation** a new secret-bearing variable needs — how it
+is provisioned, rotated, and kept out of git. Audit gap C1: a feature could introduce
+a brand-new `FOO_API_TOKEN`, wire it correctly, pass every scan, and ship with **no
+`.env.example` row and no provisioning/rotation note**, leaving the next operator to
+reverse-engineer it. C2 is the infra-config sibling: an infra-glob change (the
+`governance-tags.md` infra catalog — `wrangler.toml`, `*.tf`, `k8s/**`, …) ships
+without a runbook/config-reference update.
+
+### When the duty fires
+
+The duty fires when the **§1c credential signal** trips during specification — i.e.
+the feature introduces a NEW secret-bearing env var (a var whose name matches the
+secret-bearing heuristic: `*_TOKEN`, `*_KEY`, `*_SECRET`, `*_PASSWORD`,
+`*_API_KEY`, `*_CREDENTIAL*`, or a provider-prefixed var like `STRIPE_*`,
+`CLOUDFLARE_*`, `AWS_*`). It is the documentation analog of the §6a-ter scan: the
+scan stops the value leaking; this duty stops the **knowledge** gap.
+
+### The required deliverable (C1)
+
+When the signal fires, the run MUST ship an operational secret-handling deliverable:
+
+1. **`.env.example` row** — the variable NAME with a placeholder value (a placeholder
+   that the §Placeholder Heuristic suppresses, e.g. `FOO_API_TOKEN=YOUR_FOO_TOKEN`),
+   so the next operator knows the var exists and what shape it takes.
+2. **Provisioning + rotation + never-commit note** — in the repo's runbook
+   (`docs/operations/DEPLOY_RUNBOOK.md` when present) or a config reference: where the
+   token is obtained, how it is rotated, and that it is never committed (it lives in
+   the headless `0600` `deploy.env` per `no-github-actions.md §"Deploy Secret Access"`).
+
+`docs/specs/` does **not** satisfy this — the deliverable is operational
+documentation an on-call operator reaches for, not the feature spec.
+
+### The required deliverable (C2)
+
+When the diff touches an infra-glob surface from `governance-tags.md` (Infra config
+or Secrets / env wiring rows), the run MUST update a runbook or config reference that
+describes the changed surface. This rides the net-new-surface mechanism
+(`plan-w-team-netnew-surface.sh` requires a `docs/operations/*` page for new
+hooks/scripts; the infra-runbook requirement is its config-surface analog).
+
+### Enforcement
+
+`06-post-ship.md §7f` refuses to mark Step 7 complete when the §1c credential signal
+fired but no secret-handling deliverable is present in the diff (C1), or when an
+infra-glob surface changed without a runbook/config-reference touch (C2). The signal
+is recorded in the spec at §1c and re-checked at post-ship; the duty is auditable in
+the post-ship artifact (`secret_handling_doc`, `netnew_surface.infra_runbook`). Full
+operator-facing writeup: [`docs/operations/pwt-doc-secret-handling.md §"Secret-handling documentation duty (C1/C2)"`](../../../docs/operations/pwt-doc-secret-handling.md).
 
 ## References
 

@@ -348,6 +348,75 @@ check_file_path() {
 }
 
 # =============================================================================
+# WRITE/EDIT CONTENT SECRET SCAN (B1 — make the advertised defense real)
+# =============================================================================
+# 03-execute.md advertises an active Edit/Write secret-content blocker, and
+# patterns.yaml carried a `secretDetection:` block — but the Write|Edit case only
+# ever ran check_file_path (a PATH check). The content was never scanned, so a
+# live secret could be written into any non-zeroAccess file and sit in the tree /
+# logs / transcripts until commit time. This wires the REAL defense: extract the
+# content the tool is about to write and run it through secret-scan.sh — the
+# single source of truth (placeholder suppression incl. the B3 token-adjacency
+# fix, auto-generated-catalog skip, per-feature allow-files, redaction). A live
+# hit blocks the Write/Edit. Kill switch: DAMAGE_CONTROL_DISABLE_SECRET_CONTENT=1
+# (and the harness-level CLAUDE_DISABLED_HOOKS / CLAUDE_HOOK_PROFILE still apply).
+SECRET_SCANNER="$SCRIPT_DIR/../../scripts/secret-scan.sh"
+
+# Extract the content field the tool will write: `content` (Write) or
+# `new_string` (Edit). Robust to multi-line / escaped JSON: jq → python3 →
+# single-line grep/sed fallback. Always succeeds (may print empty).
+extract_tool_content() {
+    local out=""
+    if command -v jq >/dev/null 2>&1; then
+        out=$(printf '%s' "$INPUT" | jq -r '.tool_input.content // .tool_input.new_string // empty' 2>/dev/null || true)
+        [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        out=$(printf '%s' "$INPUT" | python3 -c 'import sys, json
+try:
+    d = json.load(sys.stdin); ti = d.get("tool_input", {})
+    sys.stdout.write(ti.get("content") or ti.get("new_string") or "")
+except Exception:
+    pass' 2>/dev/null || true)
+        [ -n "$out" ] && { printf '%s' "$out"; return 0; }
+    fi
+    printf '%s' "$INPUT" \
+      | grep -oE '"(content|new_string)"[[:space:]]*:[[:space:]]*"[^"]*"' \
+      | sed -E 's/.*:[[:space:]]*"(.*)"/\1/' || true
+}
+
+check_secret_content() {
+    [ "${DAMAGE_CONTROL_DISABLE_SECRET_CONTENT:-}" = "1" ] && return 0
+    [ -x "$SECRET_SCANNER" ] || return 0   # scanner missing → fail open (path check already ran)
+    local content
+    content=$(extract_tool_content)
+    [ -z "$content" ] && return 0
+    local tmp
+    tmp=$(mktemp -t dc-secret.XXXXXX 2>/dev/null) || return 0
+    printf '%s' "$content" > "$tmp"
+    # Aggregate per-feature allow-files (same single source of truth pre-commit
+    # uses), rooted at the payload cwd or the hook's own repo as fallback.
+    local cwd agg="" allow
+    cwd=$(get_cwd)
+    [ -n "$cwd" ] || cwd="$(cd "$SCRIPT_DIR/../../.." 2>/dev/null && pwd)"
+    for allow in "$cwd"/.claude/state/plan-w-team-secret-scan-allow-*; do
+        [ -f "$allow" ] || continue
+        [ -z "$agg" ] && agg=$(mktemp -t dc-allow.XXXXXX 2>/dev/null)
+        [ -n "$agg" ] && cat "$allow" >> "$agg"
+    done
+    local rc=0
+    if [ -n "$agg" ]; then
+        "$SECRET_SCANNER" --allow "$agg" --paths "$tmp" >/dev/null 2>&1 || rc=$?
+    else
+        "$SECRET_SCANNER" --paths "$tmp" >/dev/null 2>&1 || rc=$?
+    fi
+    rm -f "$tmp" "$agg" 2>/dev/null || true
+    if [ "$rc" -eq 1 ]; then
+        respond "block" "Live secret in Write/Edit content" "⛔ BLOCKED: a live secret pattern was detected in the content you are about to write. Use a placeholder (e.g. YOUR_KEY_HERE) or an environment-variable reference instead of a hardcoded secret. (damage-control content scan via secret-scan.sh)" "secret-content"
+    fi
+}
+
+# =============================================================================
 # MAIN LOGIC
 # =============================================================================
 
@@ -364,6 +433,7 @@ case "$TOOL_NAME" in
         if [ -n "$path" ]; then
             check_file_path "$path" "write"
         fi
+        check_secret_content
         ;;
 
     Read)

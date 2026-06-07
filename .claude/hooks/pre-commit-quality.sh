@@ -65,13 +65,35 @@ SECRET_SCANNER="$SCRIPT_DIR/../scripts/secret-scan.sh"
 # file under `.claude/state/` is merged into a temp allow-file for the scanner.
 # Tradeoff: stale allow-files from abandoned features can mask real secrets
 # during pre-commit; ship-gate (Step 6a-ter) runs with only the current feature's
-# allow-file and catches that class of drift. Remove retired allow-files during
-# Step 8 retro.
+# allow-file and catches that class of drift.
+#
+# STALENESS CONTROL (1.33.0, gap B4): an allow-file from a long-abandoned feature
+# could permanently mask a real secret at the same path:line. Allow-files older
+# than PLAN_W_TEAM_ALLOW_MAX_AGE_DAYS (default 30) are SKIPPED (not aggregated)
+# and a warning naming the stale file is surfaced — the entry stops suppressing,
+# so a real secret there is caught again. Retired allow-files are also deleted in
+# Step 8 retro (07-retro.md cleanup `rm -f` set). Set the env to 0 to disable the
+# age check (aggregate all), or to a smaller number to tighten.
 SCAN_ARGS=(--staged)
 ALLOW_AGG=""
+ALLOW_MAX_AGE_DAYS="${PLAN_W_TEAM_ALLOW_MAX_AGE_DAYS:-30}"
+_now_epoch=$(date +%s 2>/dev/null || echo 0)
+_file_mtime() {  # portable mtime (macOS stat -f, GNU stat -c)
+    stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
+}
 # shellcheck disable=SC2125
 for allow in .claude/state/plan-w-team-secret-scan-allow-*; do
     [ -f "$allow" ] || continue
+    if [ "$ALLOW_MAX_AGE_DAYS" != "0" ] && [ "$_now_epoch" -gt 0 ]; then
+        _mtime=$(_file_mtime "$allow")
+        if [ "$_mtime" -gt 0 ]; then
+            _age_days=$(( (_now_epoch - _mtime) / 86400 ))
+            if [ "$_age_days" -gt "$ALLOW_MAX_AGE_DAYS" ]; then
+                WARNINGS+=("stale secret-scan allow-file skipped (${_age_days}d > ${ALLOW_MAX_AGE_DAYS}d): $allow — remove it in retro or refresh it")
+                continue
+            fi
+        fi
+    fi
     if [ -z "$ALLOW_AGG" ]; then
         ALLOW_AGG=$(mktemp -t secret-scan-allow.XXXXXX)
         trap 'rm -f "$ALLOW_AGG"' EXIT

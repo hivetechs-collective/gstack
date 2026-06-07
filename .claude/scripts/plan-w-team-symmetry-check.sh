@@ -46,6 +46,12 @@ SCOPE=(
   ".claude/scripts/"
   ".claude/hooks/"
 )
+# Test hook (A4): PWT_SYMMETRY_SCOPE overrides the code scope with a colon-separated
+# list of paths. Used by plan-w-team-symmetry-check-phantom.test.sh to drive the
+# phantom-reader detection against crafted fixtures. Unset in production.
+if [ -n "${PWT_SYMMETRY_SCOPE:-}" ]; then
+  IFS=':' read -r -a SCOPE <<< "$PWT_SYMMETRY_SCOPE"
+fi
 EXCLUDES=(
   "--glob=!.claude/commands/plan-w-team/shared/state-artifacts.md"
   "--glob=!.claude/scripts/plan-w-team-symmetry-check.sh"
@@ -125,6 +131,58 @@ while IFS= read -r line; do
         ;;
     esac
     continue
+  fi
+
+  # A4 anti-phantom (1.33.0): the reader matched SOMEWHERE — but a `handoff`/`enforcing`
+  # artifact whose only "reader" is a BARE-FILENAME MENTION inside the WRITER's own
+  # MARKDOWN stage file is a phantom reader (prose describing the artifact, not a real
+  # consumer). This is exactly how the post-ship→retro §8d handoff false-passed green for
+  # months: `06-post-ship.md` prose said "retro §8d consumes plan-w-team-postship-….json"
+  # while no §8d reader existed. We flag it ONLY when ALL of:
+  #   (a) mode is enforcing/handoff;
+  #   (b) writer_grep ≠ reader_grep — an identical pattern is a same-symbol artifact
+  #       referenced by one variable across stages (legit), not a phantom;
+  #   (c) reader_grep is a BARE filename pattern (contains no `=`) — the weakest possible
+  #       proof of a reader. A real reader assigns it to a variable (`VAR="…path"`) or
+  #       reads it (`-f "$VAR"`), which contains `=`; those are exempt;
+  #   (d) every reader-matching file ALSO matches writer_grep AND is markdown (.md).
+  #   (e) reader_grep is a SELF-MENTION of this artifact's own path — i.e. the
+  #       de-escaped reader_grep is a substring of the `pattern` (artifact path)
+  #       column. The postship phantom's reader_grep (`plan-w-team-postship-\$SLUG\.json`)
+  #       IS the artifact's own filename, so a bare mention of it proves nothing.
+  #       An arbitrary DISTINCT reader token (e.g. a real cross-stage symbol that is
+  #       not the artifact's own name) is a genuine reader even when colocated with
+  #       the writer, so it is exempt — this keeps the existing reader/writer
+  #       symmetry fixtures green (brief A4: "must keep existing checks green").
+  # Code-file (.sh) readers and `VAR=`-style readers are unaffected → existing checks stay
+  # green (verified: this flags ONLY the postship phantom on the pre-1.33.0 tree). (brief A4)
+  case "$reader_grep" in *=*) reader_is_bare=false ;; *) reader_is_bare=true ;; esac
+  # (e) self-mention test: strip ERE escapes from reader_grep, then require it to be
+  # a substring of the artifact path. bash 3.2 substring via case glob.
+  reader_unesc=$(printf '%s' "$reader_grep" | sed 's/\\//g')
+  reader_is_self_mention=false
+  if [ -n "$reader_unesc" ]; then
+    case "$pattern" in *"$reader_unesc"*) reader_is_self_mention=true ;; esac
+  fi
+  if { [ "$mode" = "enforcing" ] || [ "$mode" = "handoff" ]; } \
+     && [ "$writer_grep" != "$reader_grep" ] && $reader_is_bare && $reader_is_self_mention; then
+    reader_files=$(rg -l "${EXCLUDES[@]}" -- "$reader_grep" "${SCOPE[@]}" 2>/dev/null | sort -u || true)
+    writer_files=$(rg -l "${EXCLUDES[@]}" -- "$writer_grep" "${SCOPE[@]}" 2>/dev/null | sort -u || true)
+    non_writer_readers=$(comm -23 <(printf '%s\n' "$reader_files" | sed '/^$/d') \
+                                  <(printf '%s\n' "$writer_files" | sed '/^$/d') 2>/dev/null || true)
+    if [ -z "$non_writer_readers" ] && [ -n "$reader_files" ]; then
+      all_md=true
+      while IFS= read -r rf; do
+        [ -n "$rf" ] || continue
+        case "$rf" in *.md) ;; *) all_md=false ;; esac
+      done <<RF
+$reader_files
+RF
+      if $all_md; then
+        orphans+=("$pattern [mode=$mode] (phantom reader: reader_grep matches ONLY the writer's own markdown — no real consumer)")
+        continue
+      fi
+    fi
   fi
 
   ok_count=$((ok_count + 1))

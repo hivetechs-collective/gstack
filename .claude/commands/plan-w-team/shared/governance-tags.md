@@ -23,6 +23,23 @@ The list is intentionally narrow. Anything not enumerated here is presumed rever
 
 The list is matched via standard glob semantics (`**/` recurses, `*` matches any path segment, `?` matches a single char). Path comparison is case-sensitive on Linux/macOS (filesystem behavior aside).
 
+### Infra-runbook documentation duty (C2, 1.33.0)
+
+The **Infra config** and **Secrets / env wiring** rows above are not only merge
+one-way-doors — they are also a **documentation** one-way-door. A change to
+`wrangler.toml` / `*.tf` / `k8s/**` (or to `.env*` / `secrets/**` wiring) that ships
+without a runbook or config-reference update leaves the next operator to
+reverse-engineer the new infra surface from the diff (audit gap C2).
+
+When a diff touches one of those two rows, the run MUST update a `docs/operations/*`
+runbook or a config reference describing the changed surface. This is enforced at
+post-ship via the net-new-surface mechanism
+(`plan-w-team-netnew-surface.sh` — `06-post-ship.md §7a-bis`/§7f): an infra-glob
+change with no operational-doc touch and no waiver is an UNDOCUMENTED residual that
+blocks Step 7 completion. The companion secret-handling duty (a new secret-bearing
+env var needs an `.env.example` row + provisioning/rotation note, C1) lives in
+[`secret-safety.md §"Secret-Handling Documentation Duty"`](./secret-safety.md).
+
 ## How the Supervisor Uses This
 
 ```bash

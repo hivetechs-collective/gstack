@@ -129,6 +129,16 @@ PLACEHOLDER_MARKERS=(
 )
 
 # Returns 0 if the line should be suppressed as a placeholder.
+#
+# NOTE (B3, 1.33.0): this whole-line check is RETAINED only as a cheap pre-filter
+# for the diff-mode fast path (a line with NO marker anywhere cannot be a
+# placeholder, so we can skip the per-token work). It is NOT authoritative for
+# suppression — the authoritative, token-adjacency-aware decision is
+# is_placeholder_token() below. The old design suppressed an ENTIRE line if any
+# marker appeared ANYWHERE on it, so a real secret on a line that merely also
+# contained `EXAMPLE_`/`SAMPLE_`/`REDACTED` (e.g. in a trailing comment) was
+# silently dropped in both enforcing gates. See shared/secret-safety.md and the
+# adversarial-audit brief gap B3.
 is_placeholder_line() {
   local line="$1"
   local marker
@@ -136,6 +146,48 @@ is_placeholder_line() {
     case "$line" in
       *"$marker"*) return 0 ;;
     esac
+  done
+  return 1
+}
+
+# Returns 0 if the MATCHED TOKEN (not merely the line) is a placeholder. B3 fix:
+# require a placeholder marker to be ADJACENT TO or CONTAINED WITHIN the matched
+# token, rather than appearing anywhere on the line. "Adjacent" = the marker's
+# nearest occurrence is separated from the token by at most PLACEHOLDER_GAP
+# non-alphanumeric separator characters (`=`, `:`, `"`, `_`, `-`, `<`, space, …);
+# "contained" = the token itself embeds the marker (e.g. `sk-ant-EXAMPLE_xxxx`,
+# `AKIAEXAMPLE0000000000`). A real high-entropy secret on a line whose ONLY marker
+# is in a distant comment is therefore NOT suppressed. bash 3.2 safe (parameter
+# expansion + integer math only; no `declare -A`, no regex with dynamic patterns).
+PLACEHOLDER_GAP="${SECRET_SCAN_PLACEHOLDER_GAP:-3}"
+is_placeholder_token() {
+  local line="$1" token="$2" marker
+  [ -z "$token" ] && return 1
+  # (a) token contains the marker → genuine placeholder (overlap).
+  for marker in "${PLACEHOLDER_MARKERS[@]}"; do
+    case "$token" in *"$marker"*) return 0 ;; esac
+  done
+  # (b) adjacency by character distance. Locate the token (first occurrence).
+  local pre="${line%%"$token"*}"
+  # No occurrence (token came from a transformed copy) → cannot judge adjacency;
+  # treat as NOT a placeholder (fail-safe toward reporting).
+  [ "$pre" = "$line" ] && return 1
+  local tok_start=${#pre}
+  local tok_end=$(( tok_start + ${#token} ))
+  for marker in "${PLACEHOLDER_MARKERS[@]}"; do
+    local mpre="${line%%"$marker"*}"
+    [ "$mpre" = "$line" ] && continue   # marker absent
+    local m_start=${#mpre}
+    local m_end=$(( m_start + ${#marker} ))
+    local gap
+    if [ "$m_end" -le "$tok_start" ]; then
+      gap=$(( tok_start - m_end ))          # marker before token
+    elif [ "$m_start" -ge "$tok_end" ]; then
+      gap=$(( m_start - tok_end ))          # marker after token
+    else
+      return 0                              # overlap → placeholder
+    fi
+    [ "$gap" -le "$PLACEHOLDER_GAP" ] && return 0
   done
   return 1
 }
@@ -216,10 +268,12 @@ scan_text() {
       if [[ -n "$catalog_lines" ]] && printf '%s\n' "$catalog_lines" | grep -qxF "$linenum"; then
         continue
       fi
-      is_placeholder_line "$content" && continue
       local token
       token=$(printf '%s' "$content" | grep -oE "$regex" | head -1)
       [[ -z "$token" ]] && continue
+      # B3: suppress ONLY when the marker is adjacent to / inside the token,
+      # not merely somewhere on the line.
+      is_placeholder_token "$content" "$token" && continue
       emit_finding "$label" "$linenum" "$name" "$token" "$remediation"
     done <<< "$matches"
   done
@@ -307,17 +361,19 @@ case "$MODE" in
           # Inside the auto-generated catalog block: self-documentation, not a leak.
           if [[ "$in_catalog" == 1 ]]; then current_line=$((current_line + 1)); continue; fi
           added="${raw#+}"
-          if ! is_placeholder_line "$added"; then
-            for entry in "${PATTERNS[@]}"; do
-              name="${entry%%|*}"
-              rest="${entry#*|}"
-              regex="${rest%%|*}"
-              remediation="${rest#*|}"
-              token=$(printf '%s' "$added" | grep -oE "$regex" 2>/dev/null | head -1 || true)
-              [[ -z "$token" ]] && continue
-              emit_finding "$current_file" "$current_line" "$name" "$token" "$remediation"
-            done
-          fi
+          for entry in "${PATTERNS[@]}"; do
+            name="${entry%%|*}"
+            rest="${entry#*|}"
+            regex="${rest%%|*}"
+            remediation="${rest#*|}"
+            token=$(printf '%s' "$added" | grep -oE "$regex" 2>/dev/null | head -1 || true)
+            [[ -z "$token" ]] && continue
+            # B3: token-adjacency placeholder check (not whole-line) — a real
+            # secret on a line whose only marker is in a distant comment is NOT
+            # suppressed; matches scan_text() behavior for --staged/--paths.
+            is_placeholder_token "$added" "$token" && continue
+            emit_finding "$current_file" "$current_line" "$name" "$token" "$remediation"
+          done
           current_line=$((current_line + 1))
           ;;
         ' '*) current_line=$((current_line + 1)) ;;

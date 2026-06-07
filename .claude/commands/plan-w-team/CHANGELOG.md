@@ -21,6 +21,58 @@ Entries are newest-first.
 
 ---
 
+## [1.33.0] — 2026-06-07 (aa7fe9d)
+
+- feat(doc-secret-handling-gaps): close the 24 documentation-handling and
+  secret-handling gaps found by the 2026-06-07 adversarial audit. Every fix
+  EXTENDS an existing mechanism — none weakens a pre-existing enforcing gate
+  (brief: `.claude/state/pwt-brief-doc-secret-handling-gaps.md`; spec:
+  `docs/specs/pwt-doc-secret-handling-gaps.md`; ops page:
+  `docs/operations/pwt-doc-secret-handling.md`).
+  - **A1/A6/C2 net-new surface doc scan** — new `plan-w-team-netnew-surface.sh`
+    complements the §7a per-file doc audit (which is structurally blind to
+    genuinely-new surface). Detects added public-surface files, env vars, exported
+    symbols, and CLI flags over a git range; new hooks/scripts additionally require
+    a `docs/operations/*` page (A6); infra-glob changes require a runbook touch
+    (C2). Waiver file `.claude/state/plan-w-team-docs-waived-<SLUG>.txt`.
+  - **A2 default doc-coverage AC + `N.d` doc-pairing** — `shared/sprint-contracts.md`
+    gains a default doc-coverage AC for `add`-mode code tasks (the doc analog of the
+    STE test-coverage default); `02-task-breakdown.md` gains the paired `N.d`
+    documentation task protocol.
+  - **A3 documentation ship gate** — new `plan-w-team-doc-ship-gate.sh`, wired at
+    `05-ship.md §6c-quater`, refuses a ship that adds net-new public surface with no
+    CHANGELOG/doc/waiver. Mirrors the access-control/credential-wall gate pattern
+    (thin wrapper around a tested script).
+  - **A4 real §8d post-ship reader + phantom-reader guard** — `07-retro.md §8d` now
+    reads the post-ship artifact and scores doc hygiene (was a phantom writer);
+    `plan-w-team-symmetry-check.sh` excludes the writer file from reader matching so
+    a markdown-only self-reference no longer counts as a real consumer.
+  - **A5 `post-ship-complete` precondition** — `shared/goal-conditions.md` +
+    `07-retro.md` require the post-ship artifact to exist before `retro-complete`.
+  - **B1 write-time secret content scan** — `damage-control.sh` now scans Edit/Write
+    content through `secret-scan.sh` (the single source of truth) and BLOCKS on a
+    live secret; the dead `secretDetection:` regex list in `patterns.yaml` was
+    replaced with a pointer to the scanner (advertised defense made real).
+  - **B2 binary/over-size skip surfaced** — the ship-gate §6a-ter failure-modes
+    table documents that a binary/>1 MB skip is a coverage GAP, not a pass; the
+    retro §8c-bis workspace/state secret sweep re-surfaces persistent skips.
+  - **B3 token-adjacency placeholder suppression** — `secret-scan.sh`'s
+    `is_placeholder_token` suppresses a marker only when it is contained in, or
+    within `SECRET_SCAN_PLACEHOLDER_GAP` chars of, the matched token (not anywhere
+    on the line).
+  - **B4 allow-file staleness check** — `pre-commit-quality.sh` skips + WARNs on a
+    secret-scan allow-file older than `PLAN_W_TEAM_ALLOW_MAX_AGE_DAYS` (default 30);
+    retro cleans up the run's allow + waiver files.
+  - **C1/C2 secret-handling documentation duty** — `01-specification.md §1c`,
+    `shared/secret-safety.md`, and `shared/governance-tags.md` require a secret-
+    handling deliverable (`.env.example` row + provisioning/rotation note) when a
+    new secret-bearing env var is introduced, and a runbook/config-reference update
+    for infra-glob changes; `06-post-ship.md §7f` enforces both at post-ship.
+  - Tests: 6 new `.test.sh` corpora (netnew-surface, doc-ship-gate,
+    symmetry-check-phantom, secret-scan placeholder-adjacency, damage-control
+    secret-content, pre-commit allow-file staleness); all new `.claude/scripts/*`
+    added to `sync-to-project.sh` allowlist (drift detector green, 38/38).
+
 ## [1.32.0] — 2026-06-06 (87a8c40)
 
 - feat(worktree-gc-bg-daemon-hardening): harden the disk-hygiene GC + bg-daemon
@@ -59,6 +111,7 @@ Entries are newest-first.
   - Tests extend the existing corpus (worktree-gc +6, companion-gc +4, disk-budget
     +2/AC3, new bg-resume-guard +9, new hygiene-sweep +15); zsh array-safe, bash
     3.2 compatible; new script + hook added to the sync allowlist.
+
 ## [1.31.1] — 2026-06-06 (b3b2614)
 
 PATCH — **Integration cap-pressure test** for the four `pwt-goal.sh` capacity gates

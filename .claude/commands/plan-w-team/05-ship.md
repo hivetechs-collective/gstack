@@ -291,12 +291,13 @@ fi
 
 ### Failure modes and what they mean
 
-| Scanner output               | What it means                                           | What to do                                                                                                                                |
-| ---------------------------- | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
-| `LIVE SECRET: <file>:<line>` | Pattern-shape match not suppressed by placeholder rules | Remove the value, rotate the credential upstream, re-stage. If test fixture, see override below.                                          |
-| Exit 1 on `--staged` only    | Secret is in the final commit's staging area            | `git reset HEAD <file>` + remediate, then re-stage clean content.                                                                         |
-| Exit 1 on `--diff` only      | Secret is in an earlier commit on this branch           | History rewrite required. Run `git filter-repo --replace-text` or rebase to edit the offending commit. Force-push must be explicit.       |
-| Exit 2                       | Scanner itself errored (bad args, internal failure)     | Read stderr. This is a scanner bug or a bad invocation — do NOT bypass by touching the allow file. Fix the scanner invocation and re-run. |
+| Scanner output                                     | What it means                                                                                                                               | What to do                                                                                                                                                                                                                                                                                                     |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LIVE SECRET: <file>:<line>`                       | Pattern-shape match not suppressed by placeholder rules                                                                                     | Remove the value, rotate the credential upstream, re-stage. If test fixture, see override below.                                                                                                                                                                                                               |
+| Exit 1 on `--staged` only                          | Secret is in the final commit's staging area                                                                                                | `git reset HEAD <file>` + remediate, then re-stage clean content.                                                                                                                                                                                                                                              |
+| Exit 1 on `--diff` only                            | Secret is in an earlier commit on this branch                                                                                               | History rewrite required. Run `git filter-repo --replace-text` or rebase to edit the offending commit. Force-push must be explicit.                                                                                                                                                                            |
+| Exit 2                                             | Scanner itself errored (bad args, internal failure)                                                                                         | Read stderr. This is a scanner bug or a bad invocation — do NOT bypass by touching the allow file. Fix the scanner invocation and re-run.                                                                                                                                                                      |
+| `SKIP (binary)` / `SKIP (>max-filesize)` on stderr | A staged file was NOT scanned because it is binary or exceeds `--max-filesize` (default 1 MB) — a coverage GAP, not a clean result (gap B2) | The exit code reflects only the files that WERE scanned. A secret hidden in a large/binary blob is invisible here. Confirm the skipped file genuinely carries no secret (manually or with a content-aware tool); the §8c-bis retro workspace sweep re-surfaces persistent skips. Never treat a skip as a pass. |
 
 <!-- PWT-T2: secret-scan-allow is classified as `user` in the orchestrator classifier
      table. This pause site is INTENTIONALLY kept as a user decision because adding
@@ -744,6 +745,26 @@ echo "✓ Ship gate 6c-ter: no unresolved high-severity access-control findings"
 ```
 
 **No ship-side override.** Every other gate has a `user`-acked escape hatch; this one deliberately does not. A confirmed live access-control exploit cannot be allow-listed at ship time. The only way past is to change the verdict at review (Step 5): fix the finding, or demonstrate it is not exploitable (e.g. the surface is provably QA-scoped via `assertQaScoped`), which downgrades its severity and removes it from `access_control_high_unresolved`. This keeps the override where the evidence is — in the review, not the push.
+
+## 6c-quater. Documentation Ship Gate (A3 — ENFORCING when net-new public surface added)
+
+The secret/coverage/security gates above all refuse a ship that adds _code_ without the matching defense. There was no analog for _documentation_, so net-new public surface (a new script/hook/module, exported symbol, CLI flag, env var) could ship with no CHANGELOG or doc touch at all (audit gap A3). This gate closes that hole. It delegates to a standalone, tested script (same pattern as the access-control and credential-wall gates — a thin wrapper around a script with a `.test.sh` corpus, not embedded bash that can rot):
+
+```bash
+# §6c-quater Documentation Ship Gate (A3). Fails closed (exit 1) when the branch
+# diff adds net-new public surface AND no CHANGELOG/doc was touched AND no waiver
+# covers it. Honors PLAN_W_TEAM_NETNEW_DISABLE=1 (advisory mode). The script
+# resolves the range from origin/<base>..HEAD; pass --slug for the waiver lookup.
+if ! .claude/scripts/plan-w-team-doc-ship-gate.sh --slug "$SLUG"; then
+  echo "✗ Ship gate 6c-quater: net-new public surface added with no CHANGELOG/doc/waiver."
+  echo "  Document the new surface (README / config-reference / docs/operations / CHANGELOG),"
+  echo "  or record a waiver in .claude/state/plan-w-team-docs-waived-$SLUG.txt, then re-run."
+  exit 1
+fi
+echo "✓ Ship gate 6c-quater: documentation accompanies net-new public surface"
+```
+
+This is the ship-time bookend to the post-ship §7a-bis net-new-surface scan: §6c-quater blocks the _push_ of undocumented surface; §7a-bis/§7f block marking _Step 7 complete_ with an undocumented residual. The A2 default doc-coverage AC is the spec-level companion. The gate is advisory (warn-not-block) only when `PLAN_W_TEAM_NETNEW_DISABLE=1` is set — an incident escape hatch, not a routine bypass.
 
 ## 6d. Version Bump (if applicable)
 

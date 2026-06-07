@@ -36,6 +36,12 @@ Testable assertions. Each must be verifiable by the evaluator without subjective
 
 This default applies to BACKEND/INFRASTRUCTURE/SCRIPTS/LIBRARY/API code-adding tasks and to UI features. Omit only for: refactor-only (covered by existing tests), docs-only, and pure config tasks. Document the omission inline if needed: `<!-- coverage-delta AC omitted: docs-only -->`. The `coverage_delta` metric is computed by Step 6 (after the coverage runner emits the post-run %) against the BASE_SHA coverage %.
 
+**Default doc-coverage AC for `add`-mode code tasks (A2, 1.33.0)** — the test-coverage default above has no documentation analog, so net-new public surface historically shipped undocumented (audit gap A2). For the SAME task set (`add`-mode BACKEND/INFRASTRUCTURE/SCRIPTS/LIBRARY/API and UI features) include a `doc coverage` AC by default:
+
+- [ ] AC<n>: Every net-new public file/symbol/CLI-flag/env-var added by this task maps to a doc target (a README / config-reference / `docs/operations` page or a CHANGELOG entry) OR is explicitly waived — verified by `plan-w-team-netnew-surface.sh` reporting **zero unwaived `UNDOCUMENTED` items** at post-ship (§7a-bis) and the §6c-quater ship doc gate passing.
+
+Same omission rule: skip for refactor-only / docs-only / pure-config (`<!-- doc-coverage AC omitted: <reason> -->`). A new hook/script additionally needs a `docs/operations/*` page (A6). A feature that introduces a new secret-bearing env var additionally needs the C1 secret-handling deliverable (`.env.example` row + provisioning/rotation note).
+
 ### Quality Rubrics
 
 Gradable criteria on a 1-5 scale. Each rubric has anchor descriptions so the evaluator scores consistently.
