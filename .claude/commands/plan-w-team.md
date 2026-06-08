@@ -455,6 +455,29 @@ trap "${EXISTING_TRAP:+${EXISTING_TRAP}; }rm -rf \"$WORKFLOW_LOCK_DIR\"" EXIT
 
 **Resume contract**: `--resume` and `--ship-only` must reuse the same SLUG and re-acquire the lock here. If the lock is held by a different live PID, that's a real conflict — surface it; don't silently overwrite.
 
+### Pre-Flight: Recursive Follow-Ups Carry-Forward (surfacing)
+
+Surface any OPEN follow-ups that a PRIOR run's Step 8 retro queued (the
+recursive-improvement loop, retro §8j-decies). This is the "informed retro → next run is
+better" closure: findings captured last time are shown now so they get addressed, not
+forgotten. Read-only and fail-open — never blocks the run.
+
+```bash
+FOLLOWUPS_LOG=".claude/state/plan-w-team-recursive-followups.jsonl"
+if [ -f "$FOLLOWUPS_LOG" ] && command -v jq >/dev/null 2>&1; then
+  OPEN=$(jq -rs '[.[] | select(.status=="open")] | length' "$FOLLOWUPS_LOG" 2>/dev/null || echo 0)
+  if [ "${OPEN:-0}" -gt 0 ]; then
+    echo "🔁 $OPEN open recursive-improvement follow-up(s) from prior retros — consider folding into this run's scope:"
+    jq -rs '[.[] | select(.status=="open")] | .[-5:][] | "   • [\(.slug)] \(.text)"' "$FOLLOWUPS_LOG" 2>/dev/null || true
+    echo "   (resolve one by appending a {status:\"done\"} row or editing it; this is advisory, not a gate.)"
+  fi
+fi
+```
+
+These follow-ups are advisory carry-forward, not a hard gate — the user decides whether a
+given improvement belongs in this run's scope or a later one. The list is the durable memory
+that makes the skill improve across runs rather than only within one.
+
 ### Step 0: Scope Challenge
 
 Read `.claude/commands/plan-w-team/00-scope-challenge.md` and execute it.
@@ -518,6 +541,8 @@ Split model tiers by cognitive demand to conserve daily allowance. Builder agent
 | Ship pipeline      | Lead  | lead session      | lead-invoked mechanical steps                  | Version bump, changelog, push (~5% of tokens)  |
 | Retro              | Lead  | lead session      | lead-invoked metrics phase                     | Metrics collection, streak tracking (minor)    |
 
+**This table is the single canonical tier→model-ID map for the skill.** Prose elsewhere should name the **tier** ("Brain tier" / "Hands tier") and point here; the literal model IDs live here and in agent-definition frontmatter only (see the frontmatter-pin exception below). A generation rollover is therefore a one-table edit here plus the unavoidable frontmatter-pin updates.
+
 > **Generation note (2026-05-28, v2.1.154):** Brain tier is **Opus 4.8** (`claude-opus-4-8`, alias `opus`), Hands tier is **Opus 4.7** (`claude-opus-4-7`). Opus 4.8 defaults to high effort and works independently for longer — see `shared/opus-4-7-practices.md`. Step-5 reviewers (`test-gap-analyzer`, `security-gap-analyzer`) and the planning `system-architect` are Brain-tier (4.8); `react-typescript-specialist` / `rust-backend-specialist` are Hands (4.7).
 
 ### How tier pinning works (IMPORTANT — read before editing Agent calls)
@@ -535,6 +560,8 @@ When a new model generation ships (the rollover applied for Opus 4.8 on 2026-05-
 - Update Brain-tier frontmatter pins to the new generation (e.g., next time `claude-opus-4-8` → `claude-opus-4-9`).
 - Demote the previous Brain model to the Hands tier (e.g., update `builder.md` to `claude-opus-4-8`).
 - Brain agents to bump: `team/evaluator`, `team/validator`, `team/supervisor`, `team/silent-failure-hunter`, `research-planning/test-gap-analyzer`, `research-planning/security-gap-analyzer`, `research-planning/system-architect`. Hands agents: `team/builder`, `implementation/react-typescript-specialist`, `implementation/rust-backend-specialist`.
+
+> **Frontmatter-pin exception — DO NOT centralize the pins.** The per-agent frontmatter `model:` pins are deliberately NOT collapsed into the canonical table above. The Agent tool accepts only the aliases `opus`/`sonnet`/`haiku`, so the full model ID MUST live in each agent's frontmatter to drive the Brain/Hands split — that frontmatter is the one place a literal model ID is load-bearing. A future maintainer who "helpfully" replaces the frontmatter pins with a pointer to this table would silently break the tier split (every agent would run on the lead's alias). Centralize the **prose** references to tier names; never centralize the **pins**.
 
 ### Boris Cherny's Opus 4.7 Practices
 

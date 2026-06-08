@@ -357,6 +357,47 @@ __pwt_safe_slug() {
     printf '%s-%s\n' "$body" "$hash"
 }
 
+# ─── MAIN-REPO ROOT (worktree-robust) ───────────────────────────────────────
+# Resolve the PRIMARY checkout root — the directory under which
+# `claude --bg --worktree <name>` materializes worktrees (git registers every
+# worktree against the COMMON git dir, so the worktree always lives at
+# <main-repo>/.claude/worktrees/<name>, regardless of the CWD the launcher was
+# invoked from).
+#
+# THIS IS THE ROOT-CAUSE FIX for the 2026-06-07 "stops short of ship" incident
+# (run 10ac5920): the --worker-only seed previously used PROJECT_ROOT, resolved
+# via `git rev-parse --show-toplevel`, which returns the CALLER's worktree when
+# the launcher runs from inside a stale sibling worktree (pwt-evaluate-...). The
+# goal-state seed then landed in the wrong worktree and the worker's anti-skip
+# anchor was inert. `--git-common-dir` resolves the main checkout correctly even
+# from inside a sibling worktree (verified: returns <main>/.git absolute), so
+# the seed reaches the worktree the worker will actually run in.
+#
+# Resolution order:
+#   1. $PWT_PROJECT_ROOT_OVERRIDE (test-only; the sandbox IS the main repo)
+#   2. dirname(git --git-common-dir)  — worktree-robust main checkout
+#   3. git --show-toplevel            — last-resort (not in a worktree)
+#   4. $PROJECT_ROOT / $PWD           — fail-open
+__pwt_main_repo_root() {
+    if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+        printf '%s\n' "$PWT_PROJECT_ROOT_OVERRIDE"
+        return 0
+    fi
+    local cdir root
+    cdir=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+    if [ -n "$cdir" ]; then
+        case "$cdir" in
+            /*) root=$(dirname "$cdir") ;;
+            *)  root=$(cd "$(dirname "$cdir")" 2>/dev/null && pwd || echo "") ;;
+        esac
+    fi
+    if [ -z "${root:-}" ] || [ ! -e "$root/.git" ]; then
+        root=$(git rev-parse --show-toplevel 2>/dev/null || echo "")
+    fi
+    [ -z "$root" ] && root="${PROJECT_ROOT:-$PWD}"
+    printf '%s\n' "$root"
+}
+
 # ─── SKILL VERSION + COMMIT SHA ─────────────────────────────────────────────
 # Captures which /plan-w-team release produced this run so any bug surfaced
 # after the fact can be traced back to the exact skill version. Recorded into
@@ -1250,9 +1291,42 @@ if [ "$LAUNCH" = "1" ]; then
         # Fail-open: a failed seed never blocks the (already-succeeded) spawn — the
         # worker's PWT-T5b activation remains a second path to the file. The worker
         # injects feature_specific_done_criteria into THIS file in its Step 1 §1.5.
-        if [ -n "$PROJECT_ROOT" ] && [ -d "$PROJECT_ROOT/.claude/state" ]; then
-            SEED_GOAL_FILE="$PROJECT_ROOT/.claude/state/plan-w-team-goal-${SLUG_GUESS}.json"
-            SEED_NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+        #
+        # ROOT-CAUSE FIX (2026-06-07, run 10ac5920): the seed previously targeted
+        # $PROJECT_ROOT, resolved via `git rev-parse --show-toplevel`. When this
+        # launcher runs from inside a STALE SIBLING worktree (e.g. the origin chat
+        # sat in pwt-evaluate-...), --show-toplevel returns the CALLER's worktree,
+        # NOT the worker's freshly-created pwt-<slug> worktree. The seed landed in
+        # the wrong directory; the worker's goal-evaluator (which reads its own
+        # $PWD/.claude/state and $CLAUDE_PROJECT_DIR/.claude/state) never saw it,
+        # the anti-skip anchor was inert, and the worker stopped freely after
+        # commit+push — never reaching Step 6 ship or Step 8 retro.
+        #
+        # The fix derives the worker's runtime location the SAME way
+        # `claude --bg --worktree <name>` does (git-common-dir → MAIN_REPO_ROOT,
+        # correct even from inside a sibling worktree) and seeds:
+        #   (1) the worker's OWN runtime worktree state dir (PRIMARY) — but only
+        #       when that worktree already exists on disk (claude --bg created it
+        #       during startup, before returning the SID). We never pre-create it,
+        #       or claude's later `git worktree add` would collide on a non-empty
+        #       path. This is what the worker's evaluator finds via PWD_STATE_DIR.
+        #   (2) the canonical MAIN_REPO_ROOT/.claude/state (ALWAYS) — await-terminal
+        #       resolves this on its main path, and the worker's goal-evaluator
+        #       resolves it via the git-common-dir MAIN lookup (defense-in-depth
+        #       Fix B), so the anchor is active even if the worktree-race ever
+        #       leaves (1) unwritten. The :0:60 truncation MUST match the
+        #       --worktree flag (${WT_NAME:0:60}) so the path lands on the real
+        #       worktree, not a truncation miss.
+        MAIN_REPO_ROOT=$(__pwt_main_repo_root)
+        SEED_NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+        # Emit a goal-state JSON into a target state dir (fail-open). Defined here
+        # (post-spawn) so SLUG_GUESS / WORKER_SID / SKILL_* are in scope.
+        __pwt_emit_goal_state() {
+            local dir="$1" file
+            [ -n "$dir" ] || return 0
+            mkdir -p "$dir" 2>/dev/null || return 0
+            file="$dir/plan-w-team-goal-${SLUG_GUESS}.json"
             if command -v jq >/dev/null 2>&1; then
                 jq -n \
                     --arg slug "$SLUG_GUESS" \
@@ -1261,13 +1335,25 @@ if [ "$LAUNCH" = "1" ]; then
                     --arg skill_version "$SKILL_VERSION" \
                     --arg skill_commit_sha "$SKILL_COMMIT_SHA" \
                     '{slug:$slug, started_at:$started_at, terminal_state:null, terminal_reason:null, worker_sid:$worker_sid, skill_version:$skill_version, skill_commit_sha:$skill_commit_sha, feature_specific_done_criteria:[]}' \
-                    > "$SEED_GOAL_FILE" 2>/dev/null || true
+                    > "$file" 2>/dev/null || true
             else
                 printf '{"slug":"%s","started_at":"%s","terminal_state":null,"terminal_reason":null,"worker_sid":"%s","skill_version":"%s","skill_commit_sha":"%s","feature_specific_done_criteria":[]}\n' \
                     "$SLUG_GUESS" "$SEED_NOW_ISO" "$WORKER_SID" "$SKILL_VERSION" "$SKILL_COMMIT_SHA" \
-                    > "$SEED_GOAL_FILE" 2>/dev/null || true
+                    > "$file" 2>/dev/null || true
             fi
-            [ -f "$SEED_GOAL_FILE" ] && echo "  goal-state seed:    $SEED_GOAL_FILE  (anti-skip anchor active)" >&2
+            [ -f "$file" ] && echo "  goal-state seed:    $file  (anti-skip anchor active)" >&2
+        }
+
+        if [ -n "$MAIN_REPO_ROOT" ]; then
+            # (1) worker runtime worktree — only if it already exists (race-safe).
+            if [ "${PWT_DISABLE_WORKER_WORKTREE:-0}" != "1" ] && [ -n "${WT_NAME:-}" ]; then
+                WORKER_WT_ROOT="$MAIN_REPO_ROOT/.claude/worktrees/${WT_NAME:0:60}"
+                if [ -d "$WORKER_WT_ROOT" ]; then
+                    __pwt_emit_goal_state "$WORKER_WT_ROOT/.claude/state"
+                fi
+            fi
+            # (2) canonical main-repo state dir — always.
+            __pwt_emit_goal_state "$MAIN_REPO_ROOT/.claude/state"
         fi
 
         # ─── --supervisor-goal: mirror goal state to origin .claude/state/ ────

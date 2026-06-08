@@ -31,8 +31,17 @@
 # and defeats stall detection).
 #
 # Usage:
-#   supervisor-progress-check.sh [--state PATH] [--threshold N]
+#   supervisor-progress-check.sh [--slug SLUG] [--state PATH] [--threshold N]
 #                                [--transcript PATH] [--spec PATH]
+#
+# SLUG SCOPING (2026-06-07 hermeticity fix): pass --slug to write a PER-RUN
+# snapshot at .claude/state/supervisor-progress-<slug>.json carrying a `slug`
+# field. The goal-evaluator anti-park reader (__antipark_state) reads ONLY the
+# current run's slug-keyed file, so a stale/foreign run's snapshot can never
+# contaminate another run's Stop decision. Without --slug (legacy callers) the
+# global .claude/state/supervisor-progress.json is written with slug="" — the
+# slug-keyed reader ignores it (fail-open), so the gate is simply inert. An
+# explicit --state always wins over the slug-derived default.
 # Env: PWT_AUTONOMY_PROFILE (strict|relaxed; unset=strict=today's exact behavior),
 #      STALL_THRESHOLD (overrides profile; strict 2 / relaxed 4),
 #      PWT_INFLIGHT_MMIN (overrides profile; strict 30 / relaxed 60),
@@ -58,15 +67,24 @@ THRESHOLD="${STALL_THRESHOLD:-$_def_threshold}"
 INFLIGHT_MMIN="${PWT_INFLIGHT_MMIN:-$_def_inflight_mmin}"
 TRANSCRIPT="${CLAUDE_TRANSCRIPT_PATH:-}"
 SPEC=""
+SLUG=""
+STATE_EXPLICIT=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --state)      STATE="${2:-$STATE}"; shift 2 ;;
+        --slug)       SLUG="${2:-}"; shift 2 ;;
+        --state)      STATE="${2:-$STATE}"; STATE_EXPLICIT=1; shift 2 ;;
         --threshold)  THRESHOLD="${2:-$THRESHOLD}"; shift 2 ;;
         --transcript) TRANSCRIPT="${2:-}"; shift 2 ;;
         --spec)       SPEC="${2:-}"; shift 2 ;;
         *) shift ;;
     esac
 done
+# Slug-scope the snapshot path unless an explicit --state was given. The reader
+# (goal-evaluator __antipark_state) resolves the SAME slug-keyed filename, so the
+# writer/reader stay in lockstep. Empty slug → legacy global default.
+if [ -n "$SLUG" ] && [ "$STATE_EXPLICIT" -eq 0 ]; then
+    STATE=".claude/state/supervisor-progress-${SLUG}.json"
+fi
 mkdir -p "$(dirname "$STATE")" 2>/dev/null || true
 
 # Auto-detect the run's AC source (newest spec/AC-snapshot) when not supplied.
@@ -140,6 +158,7 @@ fi
 cat > "$STATE" <<EOF
 {
   "ts": "$now",
+  "slug": "$SLUG",
   "mainCommits": $main_commits,
   "acsPassed": $acs_passed,
   "acsTotal": $acs_total,

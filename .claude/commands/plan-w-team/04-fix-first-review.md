@@ -294,11 +294,11 @@ If neither trigger fires, skip to **§5b (single-reviewer Pass 1)** unchanged �
 
 Spawn **three parallel reviewers**, each focused on an independent dimension. Use `Agent` calls with `run_in_background: true` and rely on completion notifications (per `shared/opus-4-7-practices.md` §4). Reviewers are **Brain-tier** (`model: opus` → Opus 4.8 — e.g. `security-expert`, `code-review-expert`; pinned via the agent's frontmatter, **not** via the Agent tool's `model` parameter, which only accepts aliases per the rule in `plan-w-team.md` Model Strategy). Reviewers read and report; they do not synthesize. Synthesis is the lead's job.
 
-| Slot | Agent (frontmatter-pinned)             | Focus                                                            | Skip If                                                                      |
-| ---- | -------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| 1    | `security-expert`                      | SQL safety, auth, secrets, LLM trust boundaries, OWASP top-10    | Never (always include — security is the highest-cost class to miss)          |
-| 2    | `code-review-expert`                   | Test coverage gaps, complexity, dependency audit, technical debt | Never                                                                        |
-| 3    | **Domain specialist (lead picks one)** | Feature-specific quality (see selection table below)             | Skip if no task has matching scope tag — fall back to fan-out of 2 reviewers |
+| Slot | Agent (frontmatter-pinned)             | Focus                                                                                                                                                                            | Skip If                                                                      |
+| ---- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| 1    | `security-expert`                      | SQL safety, auth, secrets, LLM trust boundaries, OWASP top-10                                                                                                                    | Never (always include — security is the highest-cost class to miss)          |
+| 2    | `code-review-expert`                   | Test coverage gaps, complexity, dependency audit, technical debt, **cross-codebase reuse / duplication** (new code that re-implements an existing function/helper/util/constant) | Never                                                                        |
+| 3    | **Domain specialist (lead picks one)** | Feature-specific quality (see selection table below)                                                                                                                             | Skip if no task has matching scope tag — fall back to fan-out of 2 reviewers |
 
 **Domain specialist selection** (lead chooses based on the feature's scope tags from Step 2):
 
@@ -333,10 +333,13 @@ What to report:
   - A list of CRITICAL findings (blocks ship) with file:line refs and a one-sentence justification each
   - A list of INFORMATIONAL findings (nice to fix, not blocking) — keep this short
   - Findings OUTSIDE your remit MUST be reported as "out of remit: pass to another reviewer" (the lead synthesizes)
-What NOT to do:
+What NOT to do (each trap paired with the desired shape — keep the negative, write the positive):
   - Do not edit files. Do not auto-fix. Read-only review.
+    - Good: report `file:line` + a one-sentence fix in prose; the lead or the auto-fix builder applies it.
   - Do not duplicate the diff in your response — file:line + one sentence is enough.
+    - Good: `src/api/jobs.ts:142 — missing tenant predicate on the by-id update`.
   - Do not score the AC contract — that's the evaluator's job (Step 4b).
+    - Good: stay in your remit; surface anything AC-shaped as `## Out of Remit` for the lead to route.
 Return format: structured markdown with `## CRITICAL`, `## INFORMATIONAL`, `## Out of Remit` headings.
 ```
 
@@ -440,14 +443,15 @@ When the diff contains no data-mutating endpoint and matches no content signal, 
 > in Pass 2 is NOT note-eligible: it escalates to fix-now under §5-0 (fix→deploy→retest→
 > verify-GREEN→note). You may not advance with such an item merely "noted".
 
-| Check                  | What to Look For                                                         |
-| ---------------------- | ------------------------------------------------------------------------ |
-| Dead code              | New functions never called, unreachable branches introduced in this diff |
-| Magic numbers          | Unexplained numeric literals                                             |
-| Missing error handling | Unhappy paths not covered                                                |
-| Stale comments         | Comments that no longer match the code                                   |
-| N+1 queries            | Database queries in loops                                                |
-| Unused imports         | Imports added but not used                                               |
+| Check                      | What to Look For                                                                                                                                                                                                                                                                                                                                      |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Dead code                  | New functions never called, unreachable branches introduced in this diff                                                                                                                                                                                                                                                                              |
+| Cross-codebase duplication | New code that re-implements a function/helper/util/constant that **already exists** elsewhere (not just dead NEW code). Grep the codebase by name and by concept for near-duplicates; prefer consolidation. Runs in the DEFAULT Pass-2 path — see the `consolidate-into-existing` routing option in §5d. (Reuse-first rule: `shared/reuse-first.md`.) |
+| Magic numbers              | Unexplained numeric literals                                                                                                                                                                                                                                                                                                                          |
+| Missing error handling     | Unhappy paths not covered                                                                                                                                                                                                                                                                                                                             |
+| Stale comments             | Comments that no longer match the code                                                                                                                                                                                                                                                                                                                |
+| N+1 queries                | Database queries in loops                                                                                                                                                                                                                                                                                                                             |
+| Unused imports             | Imports added but not used                                                                                                                                                                                                                                                                                                                            |
 
 ## 5c-bis. Retroactive Test-Gap Analysis (STE Extension)
 
@@ -597,12 +601,24 @@ Such a finding MUST NOT enter the §5d-bis `TaskCreate({ … feature_area: "retr
 
 This is the **one** carve-out to "retroactive, never blocks": confirmed live access-control exploits gate; everything else (medium/low severity, untouched-sibling gaps, missing-test coverage) stays retroactive.
 
+## 5c-ter. Opt-In Mechanical Clone Scan (M3 — default OFF)
+
+An OPT-IN duplication scan gated exactly like `deep-audit` (`shared/deep-audit.md`): default OFF, no-op when disabled, **no hard dependency**. It complements the human/agent duplication remit (M1) with a mechanical clone detector for breadth.
+
+```bash
+# Default OFF — set PLAN_W_TEAM_CLONE_SCAN=1 to opt in. No-op (exit 0) otherwise.
+PLAN_W_TEAM_CLONE_SCAN=1 .claude/scripts/plan-w-team-reuse-clone-scan.sh --paths "<changed dirs>"
+```
+
+The script runs `jscpd` if it is already installed (PATH or `npx --no-install`) and **degrades gracefully (exit 0) when the tool is absent** — it never adds a required dependency and never blocks ship. Findings are advisory: review the reported clones and consolidate per `shared/reuse-first.md` (route via the §5d `consolidate-into-existing` option). When unset, this sub-step is byte-for-byte a no-op — the default Step-5 path is unchanged.
+
 ## 5d. Fix-First Heuristic — Classify Each Finding
 
-| Classification | Action                         | Examples                                                                                                                                                                       |
-| -------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **AUTO-FIX**   | Fix immediately without asking | Unused imports, stale comments, missing indexes (non-schema-changing), trivial N+1 queries that don't alter API shape                                                          |
-| **ASK**        | Present to user for decision   | **Dead code removal** (callers may be dynamic or in other repos), security policy decisions, race condition fixes that change behavior, architectural changes, design patterns |
+| Classification                | Action                                                                                                  | Examples                                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **AUTO-FIX**                  | Fix immediately without asking                                                                          | Unused imports, stale comments, missing indexes (non-schema-changing), trivial N+1 queries that don't alter API shape                                                                                                                                                                                                                                                                   |
+| **ASK**                       | Present to user for decision                                                                            | **Dead code removal** (callers may be dynamic or in other repos), security policy decisions, race condition fixes that change behavior, architectural changes, design patterns                                                                                                                                                                                                          |
+| **CONSOLIDATE-INTO-EXISTING** | Require merging new code into an existing implementation instead of keeping a duplicate (reuse finding) | A new helper/util/constant re-implements one that already exists — import/extend the canonical one and delete the duplicate. ASK-leaning when it changes call sites or public shape; AUTO-FIX only for a trivially-identical private duplicate. This is the reuse counterpart to "Dead code removal" — that deletes unused NEW code; this de-duplicates code copied from EXISTING code. |
 
 **Why dead code is ASK, not AUTO-FIX**: The reviewer sees only this repo. A function that looks unreferenced here may be called by a sibling repo, a dynamic dispatch table, a test harness, or a public API. Deleting it is a one-way door. Show the user, let them confirm.
 
@@ -616,7 +632,7 @@ for finding in "${ASK_FINDINGS[@]}"; do
   DECISION=$(route_orchestrator pass-2-ask "$SLUG" \
     "finding=$finding" \
     "finding_type=$FINDING_TYPE" \
-    "options=fix,defer,escalate-to-user")
+    "options=fix,consolidate-into-existing,defer,escalate-to-user")
   # If orchestrator returns "escalate-to-user", batch for user ASK.
   # Otherwise, apply the orchestrator's decision (fix or defer).
 done

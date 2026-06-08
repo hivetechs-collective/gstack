@@ -201,12 +201,15 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
      // Do NOT set `model:` here. The Agent tool's enum accepts only aliases
      // (opus/sonnet/haiku) and would override the specialist's frontmatter pin.
      // Tier selection happens in the agent-definition file (e.g., builder.md
-     // has `model: claude-opus-4-7` for Hands tier). See SKILL.md Model Strategy.
+     // carries the Hands-tier `model:` pin in frontmatter). See the Model Strategy
+     // table in the skill manifest (plan-w-team.md) for the canonical tier→model-ID map.
      prompt: "You are rules-builder. Claim tasks from the pool and implement them.
 
      Read `.claude/commands/plan-w-team/shared/self-regulation.md` for WTF-likelihood
-     tracking, regression attribution, commit discipline, EDIT ATOMICITY, and TYPE
-     PRESERVATION rules. Follow them exactly.
+     tracking, regression attribution, commit discipline, EDIT ATOMICITY, TYPE
+     PRESERVATION, and CODE PRESERVATION (reuse-first) rules. Follow them exactly.
+     Also read `.claude/commands/plan-w-team/shared/reuse-first.md` — the reuse-first
+     rule (grep-before-write; prefer reuse/extend over re-implementing).
 
      If your task writes/mutates data or adds a route/handler, also read
      `.claude/commands/plan-w-team/shared/secure-by-default.md` and follow it as hard
@@ -228,6 +231,23 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
      - If your task description includes `creates_types`, create those types EXACTLY as
        specified. Another builder may create identical types — this is intentional for
        merge deduplication.
+
+     CODE PRESERVATION (critical — prevents code bloat from reinventing what exists):
+     - The TYPE rules above are the type-level case of a general rule: BEFORE writing a
+       new function, helper, utility, constant, enum, or config value, GREP for an
+       existing one and prefer call / import / extend over re-implementing.
+     - Concrete grep-before-write (adapt to the language):
+         Grep pattern='function <name>|const <name> =|def <name>|fn <name>' glob='**/*.{ts,js,py,rs,go}'
+         Grep pattern='export (async )?(function|const) ' glob='**/*.{ts,js}'   # existing exported helpers
+         Grep pattern='<DOMAIN_NOUN>'  # e.g. 'formatCurrency', 'slugify', 'retry' — search by concept, not just exact name
+       If a match covers your need, import/call it. If it almost covers it, EXTEND it
+       (new param with a default, a thin wrapper) rather than copy-pasting a variant.
+     - Positive exemplar (do this): your task needs currency formatting → you Grep and
+       find `formatCurrency()` in `src/util/money.ts` → you `import { formatCurrency }`
+       and call it. Negative (do NOT): you write a fresh `function fmtMoney(...)` inline
+       that duplicates it — that is the reuse-ignored anti-pattern (+15% WTF, below).
+     - This rule is the reuse-first rule embedded so it travels into your worktree; the
+       canonical statement is `shared/reuse-first.md`.
 
      FILE OPERATION DISCIPLINE (critical — prevents accidental rewrites):
      - Check your task's `files_touched` annotations: `(create)` = new file, `(modify)` = existing
@@ -645,7 +665,8 @@ while iteration < max_iterations:
       # Do NOT set `model:` here. The Agent tool's enum accepts only aliases
       # (opus/sonnet/haiku) and would override the evaluator's frontmatter pin.
       # Brain-tier pinning lives in .claude/agents/team/evaluator.md frontmatter
-      # (`model: claude-opus-4-8`). See SKILL.md Model Strategy → API note.
+      # (the Brain-tier `model:` pin). See the Model Strategy table in the skill
+      # manifest (plan-w-team.md) → "How tier pinning works".
       prompt: "You are the evaluator. Read your instructions at
         .claude/agents/team/evaluator.md
 

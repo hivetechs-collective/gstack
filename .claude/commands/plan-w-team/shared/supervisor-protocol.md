@@ -17,7 +17,7 @@ The supervisor is a persistent Brain-tier agent that owns Step 3-4 dispatch for 
 - **A caller** of `route_orchestrator` for pause-site classification (NOT a replacement)
 - **A user-escalator** only on 3 hard-gate sites (push-ack, secret-scan-allow, scope-unlock-for-drift)
 - **An audit-logger** via supervisor-actions JSONL
-- **A transcript-surfacer** via per-turn summary block (the contract T5 `/goal` evaluator will consume)
+- **A transcript-surfacer** via per-turn summary block (the contract the shipped `/goal` evaluator consumes)
 
 ### Process Tree & Shared Artifacts
 
@@ -137,7 +137,7 @@ Cleanup: `07-retro.md` removes on `RETRO_SUCCESS=1`
 
 ## Transcript-Surfacing Summary Block
 
-Required at the **end of every turn** the supervisor emits. This is the contract T5 `/goal` evaluator will consume — the Haiku evaluator cannot run tools, so it judges progress from what the supervisor surfaces in conversation.
+Required at the **end of every turn** the supervisor emits. This is the contract the shipped `/goal` evaluator consumes — when Anthropic's `/goal` Haiku evaluator is active it cannot run tools, so it judges progress from what the supervisor surfaces in conversation; the self-hosted Stop-hook greps the same block deterministically.
 
 ### Block format
 
@@ -169,14 +169,14 @@ Required at the **end of every turn** the supervisor emits. This is the contract
 
 The block is JSON inside a `summary`-tagged fenced block because:
 
-- **Machine-readable** for T5 evaluator (jq can extract fields)
+- **Machine-readable** for the `/goal` evaluator (jq can extract fields)
 - **Human-readable** in the conversation transcript (it's pretty-printable)
 - **Greppable** for retro analysis (`grep -A1 '```summary'`)
-- **Stable** — schema is one-way once T5 ships; field additions are safe, renames are not
+- **Stable** — the schema is a shipped one-way contract; field additions are safe, renames are not
 
 ### Why each turn
 
-T5 `/goal` evaluator fires after every supervisor turn. If the summary block is missing, the evaluator must treat that turn as non-progress. The supervisor's job is to make every turn observable.
+The `/goal` evaluator fires after every supervisor turn. If the summary block is missing, the evaluator must treat that turn as non-progress. The supervisor's job is to make every turn observable.
 
 ## Delegation Contract (supervisor ↔ router)
 
@@ -238,7 +238,7 @@ Exit 2 from the wrapper signals "fall through to Pattern A/B" — `03-execute.md
 | Action log path EACCES                                | Warn to stderr, continue dispatch; logging is observability, never a gate                                                                            |
 | Builder agent crashes (hook writes `event=error`)     | Treat error event as completion for spawn-capacity accounting; mark task as failed in `TaskList`                                                     |
 | Supervisor's own session compacts mid-dispatch        | The supervisor-actions log is the recovery anchor — Step 1 of any `--resume` invocation: read the log to reconstruct dispatched state                |
-| Supervisor forgets summary block for one turn         | Next turn MUST emit it immediately; Step 5 review flags missing-summary streaks (T5 evaluator will too, once shipped)                                |
+| Supervisor forgets summary block for one turn         | Next turn MUST emit it immediately; Step 5 review flags missing-summary streaks (the `/goal` evaluator flags them too)                               |
 
 ## Where This Runs
 
@@ -248,7 +248,7 @@ Exit 2 from the wrapper signals "fall through to Pattern A/B" — `03-execute.md
 | `07-retro.md` §8j-quater              | Reads supervisor-actions log; scores supervisor decision health 1-5; cleans up log on `RETRO_SUCCESS=1`              |
 | `shared/orchestrator-interception.md` | Notes (in §Where This Runs) that supervisor is a caller of `route_orchestrator`, not a replacement                   |
 | `shared/state-artifacts.md`           | Registers `plan-w-team-supervisor-actions-$SLUG.jsonl` as mode `handoff`                                             |
-| Future T5 `/goal` wrapper             | Evaluator reads transcript summary blocks each turn to judge progress                                                |
+| `/goal` evaluator (shipped)           | Evaluator reads transcript summary blocks each turn to judge progress                                                |
 
 ## Parent-Child Terminal Propagation (2026-05-20)
 
@@ -422,7 +422,12 @@ The origin-chat supervisor's polling loop has three responsibilities per tick, i
 Before anything else, run the mechanical self-check:
 
 ```bash
-.claude/scripts/supervisor-progress-check.sh
+.claude/scripts/supervisor-progress-check.sh --slug "$SLUG"
+# --slug "$SLUG" is REQUIRED (2026-06-07 hermeticity fix): it writes the snapshot to
+# the run's own .claude/state/supervisor-progress-<slug>.json (carrying a slug field),
+# which the goal-evaluator anti-park reader scopes to. WITHOUT --slug the writer falls
+# back to the legacy global supervisor-progress.json and the slug-keyed reader ignores
+# it (fail-open) — so the anti-park gate goes inert. Always pass the run's SLUG.
 # The script resolves its own stall threshold from PWT_AUTONOMY_PROFILE / STALL_THRESHOLD
 # (strict/unset = 2, relaxed = 4); do NOT pass `--threshold "${STALL_THRESHOLD:-2}"` here
 # — that hardcodes 2 and would make PWT_AUTONOMY_PROFILE=relaxed inert. Pass --threshold
@@ -433,7 +438,8 @@ Before anything else, run the mechanical self-check:
 
 It snapshots objective, user-verifiable metrics (branch commit count, AC-PASS
 count from the run's spec roll-up, open-PR count), diffs them against the prior
-tick in `.claude/state/supervisor-progress.json`, and emits a verdict:
+tick in the run's slug-keyed `.claude/state/supervisor-progress-<slug>.json`, and
+emits a verdict:
 
 | Verdict                       | Meaning                                           | Supervisor action                                                                                             |
 | ----------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
@@ -447,6 +453,23 @@ tick in `.claude/state/supervisor-progress.json`, and emits a verdict:
 Step-1 spec ACs still failing + Step-2 tasks not yet done. On `STALL-ALERT` the
 supervisor pulls its next item **only** from there; it never improvises
 off-target work to manufacture motion.
+
+**Enforced at the Stop decision, not just advised here (PWT-ANTIPARK, 2026-06-07).**
+This Step-0 check used to be a rule the supervisor was trusted to run each tick — a
+supervisor that simply _stopped_ (rather than running another tick) bypassed it and
+silently parked (the 2026-06-07 cleanscale incident: false-green caught + reverted,
+then parked in "recalibration" with 5/6 epics unbuilt). The slug-keyed snapshot
+`supervisor-progress-<slug>.json` this script writes is now ALSO read by the
+goal-evaluator Stop hook (scoped to the current run's slug only — see the
+hermeticity note in `shared/goal-conditions.md §Anti-Park Gate`): a supervisor
+yield while `verdict=STALL-ALERT ∧ backlog>0` is **blocked**,
+forcing re-dispatch/escalation instead of a silent park. So "monitoring-only tick =
+failure while backlog>0" is now a gate, not only prose. See
+`shared/goal-conditions.md §Anti-Park Gate`, `shared/self-regulation.md §Supervisor
+Self-Regulation`, and `docs/operations/supervisor-no-park-rootcause-2026-06-07.md`.
+Kill switch `PLAN_W_TEAM_DISABLE_ANTIPARK=1` (fail-open). This does NOT replace the
+supervisor running this check each tick — running it is what keeps the snapshot
+fresh so the enforced gate has an accurate signal.
 
 **Effort-escalation rung (REQ-3 — autonomous "go deeper when stuck").** On
 `STALL-ALERT` (or a `LOW_CONFIDENCE_STREAK`), before re-attempting the next backlog
@@ -743,4 +766,4 @@ When extending the supervisor (e.g. for T5 integration):
 3. Update `07-retro.md` §8j-quater if the new field affects scoring.
 4. Update the symmetry-check registry row if the on-disk path or pattern changes.
 5. Add a test case in `plan-w-team-supervisor-route.test.sh` if it affects the wrapper.
-6. If the change touches the **summary block schema**, document the version bump in this file (the block is a one-way contract once T5 ships).
+6. If the change touches the **summary block schema**, document the version bump in this file (the block is a shipped one-way contract).

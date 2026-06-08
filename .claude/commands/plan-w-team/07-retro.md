@@ -715,13 +715,17 @@ if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
   rm -f ".claude/state/plan-w-team-secret-scan-allow-${SLUG}"   # B4 retired allow-file
   rm -f ".claude/state/plan-w-team-docs-waived-${SLUG}.txt"     # A1/A6 per-run waiver
 
-  # Janitor pass: sweep up any OTHER terminal-state goal files left by runs
-  # that stopped before reaching their own retro (early halt, crash, mismatched
-  # SLUG). Without this, stale SUCCESS files accumulate in .claude/state/.
-  # See plan-w-team-cleanup-stale-goals.sh for the contract — fail-open,
-  # idempotent, never blocks retro completion.
-  if [ -x .claude/scripts/plan-w-team-cleanup-stale-goals.sh ]; then
-    .claude/scripts/plan-w-team-cleanup-stale-goals.sh --quiet 2>/dev/null || true
+  # Janitor pass: sweep up leftover SUCCESS goal files — this run's now-shipped
+  # state plus any older SUCCESS files from runs whose own retro cleanup never
+  # fired. Uses the SINGLE reconciled janitor (plan-w-team-cleanup-stale-goal-states.sh,
+  # also called by session-start): it removes ONLY terminal_state=SUCCESS and
+  # PRESERVES USER_ESCALATION_HALT / LOW_CONFIDENCE_STREAK / DEAD goal-states for
+  # inspection. (Previously this called a second all-terminal cleaner that deleted
+  # those escalation/dead states across OTHER runs — a cross-run data-loss bug fixed
+  # 2026-06-08 by collapsing to one SUCCESS-only janitor.) Fail-open, idempotent,
+  # never blocks retro completion.
+  if [ -x .claude/scripts/plan-w-team-cleanup-stale-goal-states.sh ]; then
+    .claude/scripts/plan-w-team-cleanup-stale-goal-states.sh --quiet 2>/dev/null || true
   fi
 
   # Canonical run-manifest + stage-event stream are per-run state — remove them
@@ -951,6 +955,79 @@ else
   echo "  → If folded≈0 across several runs, the fan-out is not earning its cost;"
   echo "    keep PLAN_W_TEAM_SPEC_FANOUT default-OFF. If consistently >0 on real"
   echo "    requirement/AC gaps, that is the evidence to promote it toward default-ON."
+fi
+```
+
+## 8j-decies. Recursive-Improvement Capture (EVERY full run — Deliverable 3)
+
+This is the section that makes recursive improvement a **guaranteed property of every
+run**, not an optional, remembered-only step. The §8j-bis…octies scorers above capture
+SUCCESS-oriented signals, and §8i logs friction _only_ when self-assessment <8 — so a run
+that "felt fine" surfaces no struggles, and no section checks this run's best-practice
+**adherence against the prior run** to flag a regression. This block closes both gaps. It
+runs on **every full run** (not gated on score) and is strictly ADDITIVE — it consumes the
+retro JSON the §8j sections already wrote and never mutates their outputs.
+
+Run the capture helper, passing this run's honest self-assessment plus any
+weaknesses / struggles / gaps / follow-ups the lead observed (these are the qualitative
+signals no scorer can compute — the lead surfaces them from the run's actual experience):
+
+```bash
+SLUG="<feature-slug>"
+.claude/scripts/plan-w-team-retro-capture.sh --slug "$SLUG" \
+  --self-assessment "<0-10 from §8i, or omit to read from retro JSON>" \
+  --weakness  "<a real weakness/struggle this run exposed>"   `# repeatable; omit if none` \
+  --gap       "<a coverage/spec/process gap this run exposed>" `# repeatable; omit if none` \
+  --follow-up "<a concrete next-run improvement>"             `# repeatable; omit if none`
+```
+
+The helper:
+
+1. Reads the run's best-practice adherence (`bypass_rate`, `doc_hygiene`, `untracked_hygiene`)
+   from the retro JSON and **compares it to the most-recent prior run** (rolling history at
+   `.claude/state/plan-w-team-retro-capture-history.jsonl`). Any signal that dropped vs the
+   prior run sets `regression_flag: true` and names the regressed signal.
+2. Always emits a capture record (empty `weaknesses`/`gaps`/`follow_ups` arrays are valid —
+   an honest "no struggles this run" is a real datum, never a skipped block).
+3. Turns findings into **queued follow-ups**: each `--follow-up`, plus auto follow-ups for a
+   `<8` self-assessment and for any regression, is appended to the durable cross-run queue
+   `.claude/state/plan-w-team-recursive-followups.jsonl` (status `open`). This is the
+   "informed retro → next run is better" loop — the next run's preflight surfaces these.
+4. When self-assessment `<8`, emits `investigate_and_update` — a concrete instruction to
+   investigate the lowest signal and update the responsible stage file, **not just a number**
+   (the §8i rule, now enforced as a structured field + a queued follow-up).
+
+Persist the capture into the retro JSON for the rollup (advisory; never fatal):
+
+```bash
+RETRO_STATE=".claude/state/plan-w-team-retro-${SLUG}.json"
+CAPTURE=".claude/state/plan-w-team-retro-capture-${SLUG}.json"
+if [ -f "$RETRO_STATE" ] && [ -f "$CAPTURE" ] && command -v jq >/dev/null 2>&1; then
+  TMP=$(mktemp "${RETRO_STATE}.tmp.XXXXXX")
+  jq --slurpfile c "$CAPTURE" '.quality_signals.recursive_capture = $c[0]' \
+    "$RETRO_STATE" > "$TMP" 2>/dev/null && mv "$TMP" "$RETRO_STATE" || rm -f "$TMP"
+fi
+```
+
+**Mandatory follow-through (not advisory):** if the capture record has `regression_flag: true`
+OR `investigate_and_update != null`, the run MUST act on it before emitting `retro-complete` —
+either fix it now (preferred, per the fix-immediately rule) or confirm the auto-queued
+follow-up is recorded in the cross-run log. A regression in a best-practice signal is the
+exact "best-practice regression" the brief asks every retro to catch.
+
+Report in retro:
+`Recursive capture: weaknesses=<N> gaps=<N> follow_ups=<N> regression=<bool> self_assessment=<N>`.
+
+**Kill switch:** `PLAN_W_TEAM_DISABLE_RECURSIVE_CAPTURE=1` skips this block (the helper is
+observability and stays safe to call; invocation here is optional in that mode).
+
+**Cleanup (per-run vs durable):** on a successful retro, remove only the per-run capture file
+— the rolling `*-history.jsonl` and `*-recursive-followups.jsonl` are **cross-run durable**
+state (the whole point is to compare against and carry forward), so they are NEVER deleted here.
+
+```bash
+if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
+  rm -f ".claude/state/plan-w-team-retro-capture-${SLUG}.json"
 fi
 ```
 

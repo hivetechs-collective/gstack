@@ -32,7 +32,7 @@
 #   2  bad usage
 set -u
 
-SLUG=""; WORKER_SID=""; STATE_DIR_OVERRIDE=""
+SLUG=""; WORKER_SID=""; STATE_DIR_OVERRIDE=""; PRINT_GOAL_FILE=0
 INTERVAL="${PWT_AWAIT_INTERVAL_S:-10}"
 HEARTBEAT="${PWT_AWAIT_HEARTBEAT_S:-1800}"
 GONE_CONFIRM="${PWT_AWAIT_GONE_CONFIRM:-2}"
@@ -43,6 +43,11 @@ while [ $# -gt 0 ]; do
     --state-dir) STATE_DIR_OVERRIDE="${2:-}"; shift 2 ;;
     --interval) INTERVAL="${2:-10}"; shift 2 ;;
     --heartbeat) HEARTBEAT="${2:-1800}"; shift 2 ;;
+    # Non-looping diagnostic seam: resolve the goal-state file path and exit.
+    # Used by the seed-path regression test (and handy for debugging which
+    # same-slug worktree the supervisor would watch). Does NOT enter the watch
+    # loop, so it can never hang.
+    --print-goal-file) PRINT_GOAL_FILE=1; shift ;;
     *) shift ;;
   esac
 done
@@ -68,12 +73,31 @@ EXT="$PROJECT_ROOT/.claude/scripts/claude-agents-extended.sh"
 # wait starts), in precedence:
 #   1. explicit --state-dir override (highest — deterministic; used by tests + Step 3c)
 #   2. main  <root>/.claude/state/plan-w-team-goal-<SLUG>.json
-#   3. worktree fallback: first <root>/.claude/worktrees/*/.claude/state/plan-w-team-goal-<SLUG>.json
+#   3. worktree fallback: <root>/.claude/worktrees/*/.claude/state/plan-w-team-goal-<SLUG>.json,
+#      SID-DISAMBIGUATED — when --worker-sid is given and ≥2 worktrees carry a
+#      same-slug goal-state, prefer the one whose .worker_sid matches (defense-in-depth
+#      Fix B for the 2026-06-07 seed-path incident: a stale sibling worktree may carry
+#      a same-slug goal-state from a prior run, so first-match could watch the wrong one).
 #   4. default to (2)'s path (may not exist yet — keep watching / heartbeat re-arm)
+# MAIN_ROOT (git-common-dir) is also searched so a supervisor that itself runs inside a
+# worktree (PROJECT_ROOT=its own worktree) still sees the main checkout's worktrees.
 # Bash 3.2-safe: no nullglob; an unmatched glob yields the literal pattern, which the
 # `[ -f ]` guard rejects. Detection is purely file-based, so a worker that goes IDLE
 # at terminal (never exits) is still detected via terminal_state — independent of the
 # WORKER_GONE liveness path, which is PRESERVED below as a backstop (not removed).
+__await_main_root() {
+  local cdir root
+  cdir=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+  if [ -n "$cdir" ]; then
+    case "$cdir" in
+      /*) root=$(dirname "$cdir") ;;
+      *)  root=$(cd "$(dirname "$cdir")" 2>/dev/null && pwd || echo "") ;;
+    esac
+  fi
+  [ -n "${root:-}" ] && [ -e "$root/.git" ] && { printf '%s\n' "$root"; return 0; }
+  printf '%s\n' "$PROJECT_ROOT"
+}
+
 __resolve_goal_file() {
   [ -z "$SLUG" ] && return 0
   if [ -n "$STATE_DIR_OVERRIDE" ]; then
@@ -85,12 +109,38 @@ __resolve_goal_file() {
     printf '%s\n' "$main_goal"
     return 0
   fi
-  local f
-  for f in "$PROJECT_ROOT"/.claude/worktrees/*/.claude/state/plan-w-team-goal-${SLUG}.json; do
-    [ -f "$f" ] && { printf '%s\n' "$f"; return 0; }
+  # Also consider the true main checkout (PROJECT_ROOT may be a worktree).
+  local mroot mroot_goal
+  mroot="$(__await_main_root)"
+  if [ -n "$mroot" ] && [ "$mroot" != "$PROJECT_ROOT" ]; then
+    mroot_goal="$mroot/.claude/state/plan-w-team-goal-${SLUG}.json"
+    [ -f "$mroot_goal" ] && { printf '%s\n' "$mroot_goal"; return 0; }
+  fi
+  # Worktree fallback with SID disambiguation. Gather same-slug matches across
+  # both PROJECT_ROOT's and the main checkout's worktrees; if --worker-sid is set,
+  # return the SID-matching file; otherwise return the first match.
+  local f first="" want="${WORKER_SID:0:8}" wsid
+  for f in \
+      "$PROJECT_ROOT"/.claude/worktrees/*/.claude/state/plan-w-team-goal-${SLUG}.json \
+      "$mroot"/.claude/worktrees/*/.claude/state/plan-w-team-goal-${SLUG}.json; do
+    [ -f "$f" ] || continue
+    [ -z "$first" ] && first="$f"
+    if [ -n "$want" ]; then
+      wsid=$(jq -r '.worker_sid // ""' "$f" 2>/dev/null | tr -d '[:space:]' | cut -c1-8)
+      if [ -n "$wsid" ] && [ "$wsid" = "$want" ]; then
+        printf '%s\n' "$f"; return 0
+      fi
+    fi
   done
+  [ -n "$first" ] && { printf '%s\n' "$first"; return 0; }
   printf '%s\n' "$main_goal"
 }
+
+# Non-looping diagnostic seam (--print-goal-file): resolve and exit, never watch.
+if [ "${PRINT_GOAL_FILE:-0}" = "1" ]; then
+  __resolve_goal_file
+  exit 0
+fi
 
 elapsed=0
 gone_streak=0

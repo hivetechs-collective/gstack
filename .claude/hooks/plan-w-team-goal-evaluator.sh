@@ -106,6 +106,72 @@ if ! command -v jq >/dev/null 2>&1; then
     exit 0
 fi
 
+# ── ISO8601-or-mtime → epoch helper (portable, bash 3.2) ──────────────────────
+# Used by the stale-snapshot guard below. Tries GNU `date -d` then BSD/macOS
+# `date -j -f`. Emits epoch seconds on success, empty on failure (caller decides).
+__iso_to_epoch() {
+    local iso="$1"
+    [ -z "$iso" ] && return 0
+    date -u -d "$iso" +%s 2>/dev/null && return 0
+    date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null && return 0
+    return 0
+}
+
+# ── Anti-park signal reader (PWT-ANTIPARK, 2026-06-07) ────────────────────────
+# Promotes feedback_supervisor_progress_objective from prose to an ENFORCED gate
+# by letting the Stop hook consult the objective progress snapshot that
+# supervisor-progress-check.sh writes. Echoes one line:
+#   "<backlogKnown> <backlog> <verdict> <stallStreak>".
+#
+# SLUG-SCOPED (2026-06-07 hermeticity fix): the snapshot is keyed PER-RUN as
+# `supervisor-progress-<slug>.json`, and $1 is the CURRENT run's SLUG. A snapshot
+# written by another run (or a stale dead run) therefore can NEVER drive this run's
+# Stop decision — the prior global, non-slug-keyed `supervisor-progress.json` read
+# let a stale May-28 file (verdict STALLED, backlog 9) contaminate a live run's U18
+# (the defect this fixes). Three independent fail-open guards, any of which yields
+# NO signal (empty output → caller behaves byte-for-byte as pre-fix):
+#   1. No slug arg, or no slug-keyed file        → empty.
+#   2. Snapshot's own `slug` field != current    → empty (foreign-slug guard).
+#   3. Snapshot older than PWT_ANTIPARK_MAX_AGE_S → empty (stale guard; ts, else
+#      file mtime). A dead run's STALLED verdict must not haunt a new run forever.
+# The gate can only ever ADD a block where the run was about to silently park; it
+# never removes an existing block and never relaxes a terminal.
+# Kill switch: PLAN_W_TEAM_DISABLE_ANTIPARK=1 → always empty (feature off).
+# Staleness threshold: PWT_ANTIPARK_MAX_AGE_S (default 3600s = 1h).
+__antipark_state() {
+    [ "${PLAN_W_TEAM_DISABLE_ANTIPARK:-}" = "1" ] && return 0
+    local slug="${1:-}"
+    [ -z "$slug" ] && return 0
+    local d f=""
+    for d in "$STATE_DIR" "$FALLBACK_STATE_DIR"; do
+        if [ -f "$d/supervisor-progress-${slug}.json" ]; then
+            f="$d/supervisor-progress-${slug}.json"; break
+        fi
+    done
+    [ -z "$f" ] && return 0
+    # Foreign-slug guard: the snapshot's own slug must equal the current run's.
+    # (A corrupt file yields empty snap_slug → mismatch → ignored, fail-open.)
+    local snap_slug
+    snap_slug=$(jq -r '.slug // ""' "$f" 2>/dev/null || echo "")
+    [ "$snap_slug" != "$slug" ] && return 0
+    # Stale-snapshot guard: ignore snapshots older than PWT_ANTIPARK_MAX_AGE_S.
+    # Prefer the embedded ISO `ts`; fall back to file mtime if ts is unparseable.
+    local max_age snap_ts snap_epoch now_epoch age
+    max_age="${PWT_ANTIPARK_MAX_AGE_S:-3600}"
+    snap_ts=$(jq -r '.ts // ""' "$f" 2>/dev/null || echo "")
+    snap_epoch=$(__iso_to_epoch "$snap_ts")
+    if [ -z "$snap_epoch" ]; then
+        snap_epoch=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo "")
+    fi
+    if [ -n "$snap_epoch" ] && [ "$snap_epoch" -gt 0 ] 2>/dev/null; then
+        now_epoch=$(date -u +%s)
+        age=$(( now_epoch - snap_epoch ))
+        [ "$age" -ge "$max_age" ] 2>/dev/null && return 0
+    fi
+    # Corrupt JSON → jq fails → empty (fail-open). Defaults guard missing keys.
+    jq -r '"\(.backlogKnown // 0) \(.backlog // 0) \(.verdict // "") \(.stallStreak // 0)"' "$f" 2>/dev/null || true
+}
+
 # Transcript: Claude Code passes the path in the hook input
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)
 
@@ -341,6 +407,24 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
                 REASON=""
                 # Will be picked up by the BLOCK_REASON branch below
                 CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but feature-specific criteria unmet: ${UNMET_DESCRIPTIONS}. Continue pipeline until each criterion appears in transcript (typically as 'AC<N>: PASS' lines emitted by Step 5 review and Step 6 ship)."
+            fi
+        else
+            # PWT-ANTIPARK (AC2) — empty/missing AC contract ≠ done while backlog remains.
+            # An empty feature_specific_done_criteria array must NOT let the generic
+            # retro-complete anchor trivially fire SUCCESS when the objective progress
+            # snapshot reports an unmet backlog (the multi-epic program trap: epics
+            # unbuilt, no AC contract, a stray retro-complete would otherwise win).
+            # Fail-open: no snapshot / kill-switch → generic SUCCESS as today (T5b).
+            AP_STATE=$(__antipark_state "$SLUG")
+            if [ -n "$AP_STATE" ]; then
+                AP_BK=$(echo "$AP_STATE" | awk '{print $1}')
+                AP_BL=$(echo "$AP_STATE" | awk '{print $2}')
+                if [ "${AP_BK:-0}" = "1" ] && [ "${AP_BL:-0}" -gt 0 ] 2>/dev/null; then
+                    TERMINAL=""
+                    REASON=""
+                    CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but the feature-AC contract is EMPTY and objective backlog=${AP_BL} remains (supervisor-progress.json). An empty AC contract is treated as not-done while unblocked backlog remains (PWT-ANTIPARK AC2). Drain the backlog or encode remaining work as ACs, then re-emit retro-complete. Kill switch: PLAN_W_TEAM_DISABLE_ANTIPARK=1."
+                    echo "[goal-evaluator] SLUG=$SLUG empty-AC-not-done: withholding SUCCESS (backlog=${AP_BL}, PWT-ANTIPARK)" >&2
+                fi
             fi
         fi
     fi
@@ -688,6 +772,40 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     fi
 done
 
+# PWT-ANTIPARK yield gate (2026-06-07) — promote feedback_supervisor_progress_objective
+# from PROSE to an ENFORCED gate at the terminal-decision site. A supervisor session is
+# normally allowed to YIELD (sleep) in the two branches below, on the assumption that its
+# background await-loop will re-wake and re-dispatch. But when the objective progress
+# snapshot says STALL-ALERT with backlog>0 (N flat ticks while unblocked work remains),
+# a yield is a PARK — the exact 2026-06-07 cleanscale defect (run stopped with epics
+# A/B/D/E/F unbuilt). Block it instead, so the supervisor is dragged back to RE-DISPATCH
+# the next unblocked backlog item OR escalate a genuine hard-gate, never silently stop.
+# The instant a dispatch moves a metric (commit/PR/AC) or touches a worktree, the
+# progress verdict flips to PROGRESSING/IN-FLIGHT and the yield is permitted again
+# (self-correcting). A single capability-blocked item (deploy token missing) is NOT one
+# of the 3 registered hard-gates, so it never produces USER_ESCALATION_HALT and this gate
+# keeps the run building the rest — single-item-blocker partitioning by construction.
+# FAIL-OPEN: no snapshot / kill-switch (PLAN_W_TEAM_DISABLE_ANTIPARK=1) → ANTIPARK_BLOCK
+# stays 0 and the yields behave byte-for-byte as before. This NEVER blocks a worker
+# (workers don't take the yield path) and never relaxes an existing block or terminal.
+ANTIPARK_BLOCK=0
+if [ -n "$BLOCK_REASON" ]; then
+    # $SLUG holds the last-iterated goal's slug (single-goal is the norm); the
+    # slug-keyed snapshot read therefore scopes to this run only.
+    AP_STATE=$(__antipark_state "$SLUG")
+    if [ -n "$AP_STATE" ]; then
+        AP_BK=$(echo "$AP_STATE" | awk '{print $1}')
+        AP_BL=$(echo "$AP_STATE" | awk '{print $2}')
+        AP_VERDICT=$(echo "$AP_STATE" | awk '{print $3}')
+        if [ "${AP_BK:-0}" = "1" ] && [ "${AP_BL:-0}" -gt 0 ] 2>/dev/null && [ "$AP_VERDICT" = "STALL-ALERT" ]; then
+            ANTIPARK_BLOCK=1
+            BLOCK_REASON="ANTI-PARK: objective progress is STALL-ALERT with backlog=${AP_BL} unmet — a supervisor yield here would be a silent park (the 2026-06-07 incident). RE-DISPATCH the next unblocked backlog item OR escalate a genuine hard-gate (push-ack/secret-scan-allow/scope-unlock-for-drift); do NOT stop while safe unblocked work remains. Kill switch: PLAN_W_TEAM_DISABLE_ANTIPARK=1. (suppressed yield; original reason: ${BLOCK_REASON})"
+            echo "[goal-evaluator] anti-park: STALL-ALERT + backlog=${AP_BL} → blocking supervisor yield (re-dispatch/escalate, PWT-ANTIPARK)" >&2
+            dbg "anti-park engaged: verdict=$AP_VERDICT backlog=$AP_BL → ANTIPARK_BLOCK=1"
+        fi
+    fi
+fi
+
 # PWT-SUP-YIELD — a SUPERVISOR/origin session YIELDS instead of being blocked.
 # A session that marks itself PLAN_W_TEAM_SUPERVISOR_SESSION=1 is SUPERVISING
 # spawned workers, not driving a pipeline itself — its job is to WAIT. So it
@@ -704,7 +822,7 @@ done
 # for the supervisor. The heartbeat re-arm in the await-loop still wakes the
 # supervisor periodically to run its Step-0 progress/stall check, so a stalled
 # worker is NOT masked.
-if [ -n "$BLOCK_REASON" ] && [ "${PLAN_W_TEAM_SUPERVISOR_SESSION:-0}" = "1" ]; then
+if [ -n "$BLOCK_REASON" ] && [ "${PLAN_W_TEAM_SUPERVISOR_SESSION:-0}" = "1" ] && [ "$ANTIPARK_BLOCK" != "1" ]; then
     echo "[goal-evaluator] supervisor session (PLAN_W_TEAM_SUPERVISOR_SESSION=1) → yield, not block. Re-wake event-driven via plan-w-team-await-terminal.sh. (suppressed: $BLOCK_REASON)" >&2
     exit 0
 fi
@@ -718,8 +836,15 @@ fi
 # set PLAN_W_TEAM_SUPERVISOR_SESSION in its launch env. The owning worker (SID
 # match → OWNS_BLOCKING=1) and any un-ownable goal (no worker_sid →
 # BLOCKING_GOAL_UNOWNABLE=1) still BLOCK, so "the worker runs to terminal" holds.
+# ANTI-PARK GUARD (mirrors the env-flag path at the PWT-SUP-YIELD gate above): when
+# objective progress is STALL-ALERT with unmet backlog (ANTIPARK_BLOCK=1), even a
+# non-owning supervisor must NOT yield — that is the silent park the gate exists to
+# prevent, and this SID path is the dominant mid-session origin-chat supervisor case
+# (it cannot set PLAN_W_TEAM_SUPERVISOR_SESSION in its launch env), so without this
+# guard the whole PWT-ANTIPARK protection is bypassed exactly where it matters most.
 if [ -n "$BLOCK_REASON" ] && [ -n "$SELF_SID" ] \
-   && [ "$OWNS_BLOCKING" = "0" ] && [ "$BLOCKING_GOAL_UNOWNABLE" = "0" ]; then
+   && [ "$OWNS_BLOCKING" = "0" ] && [ "$BLOCKING_GOAL_UNOWNABLE" = "0" ] \
+   && [ "$ANTIPARK_BLOCK" != "1" ]; then
     echo "[goal-evaluator] non-owning session (SID ${SELF_SID:0:8} != every blocking goal's worker_sid) → supervisor yield, not block. Event-driven re-wake via plan-w-team-await-terminal.sh. (suppressed: $BLOCK_REASON)" >&2
     exit 0
 fi

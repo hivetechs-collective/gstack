@@ -84,13 +84,14 @@ Check `metadata.effort` on each claimed task and adjust your approach:
 
 Track a cumulative WTF-likelihood score (starts at 0%) as you work and STOP when it crosses the threshold — runaway fixing is worse than reporting. These caps travel with this agent definition so they apply even if the spawning prompt omits the pointer; the full rubric is `.claude/commands/plan-w-team/shared/self-regulation.md`.
 
-| Event                                                                | Impact |
-| -------------------------------------------------------------------- | ------ |
-| Each revert                                                          | +15%   |
-| Editing a file owned by another task                                 | +25%   |
-| Duplicate/simplified interface that conflicts with a canonical type  | +15%   |
-| Using Write to rewrite an existing file that should have been Edited | +10%   |
-| Fix touching >3 files                                                | +5%    |
+| Event                                                                        | Impact |
+| ---------------------------------------------------------------------------- | ------ |
+| Each revert                                                                  | +15%   |
+| Editing a file owned by another task                                         | +25%   |
+| Duplicate/simplified interface that conflicts with a canonical type          | +15%   |
+| Re-implementing an existing function/helper/constant instead of importing it | +15%   |
+| Using Write to rewrite an existing file that should have been Edited         | +10%   |
+| Fix touching >3 files                                                        | +5%    |
 
 - **Threshold**: if WTF-likelihood exceeds **20%**, STOP fixing, report status to the lead, and ask for guidance.
 - **Hard cap**: **50 fixes per session**, then stop and report regardless.
@@ -137,11 +138,23 @@ If the task is pure UI-copy, docs, or isolated compute with no auth/tenant/crede
 
 ## Anti-Patterns (NEVER do these)
 
+Each "NEVER" below is the trap; the `Good:` line beside the highest-risk ones shows the
+desired shape to write instead. Both are kept on purpose — the negative is defense-in-depth,
+the positive exemplar is what literal-minded models calibrate against (`opus-4-7-practices.md` §7).
+
 - Create "minimal" or "simplified" versions
+  - Good: implement the full interface and reuse the canonical type via `Pick<T, 'a' | 'b'>` / `Omit<T, 'c'>` instead of redefining a thinner one
 - Skip error handling or validation
+  - Good: validate inputs with `z.object({...}).strict()` and give each failure a named error type (per the spec's Error & Rescue Map)
 - Ignore validator feedback
 - Write code without reading existing implementations first
+- Re-implement a function/helper/utility/constant that already exists
+  - Good: grep-before-write (`Grep pattern='function <name>|const <name> =|def <name>|fn <name>'`), then import/call or extend the existing one — the CODE PRESERVATION rule in `shared/self-regulation.md` and `shared/reuse-first.md`
 - Spread `req.body` / request body directly into an ORM update or insert (mass assignment)
+  - Good: allow-list the mutable fields — `z.object({...}).strict().pick({ name: true, email: true })`, then pass only the parsed result to the ORM
 - Query/update by id without a tenant or owner predicate in the `where` clause
+  - Good: scope every by-id access — `where(and(eq(t.id, id), eq(t.tenantId, ctx.tenantId)))`
 - Write a privilege-bearing field (`role`, `platformRole`, `isAdmin`, `isQaUser`, `passwordHash`, …) from untrusted input
+  - Good: set privilege fields only from server-derived authz state, and omit them from the allow-list `.pick()`
 - Expose a bypass / QA / service-token-gated handler without `assertQaScoped(user)`
+  - Good: call `assertQaScoped(user)` at the top of the handler so the bypass can only ever touch QA-scoped targets

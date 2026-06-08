@@ -21,6 +21,247 @@ Entries are newest-first.
 
 ---
 
+## [1.40.0] — 2026-06-08 (4263454)
+
+Finishes + ships the disk-hygiene WIP the 2026-06-08 deep-audit flagged (the user
+directed "finish & ship it properly" rather than leave it fenced). The audit confirmed
+the WIP was duplicative, un-allowlisted, and breaking capacity-gate AC1; all three are
+resolved here. No enforcing gate weakened; the GC change is additive + fail-CLOSED.
+
+- **feat(disk-hygiene)**: land the worktree-GC mid-flight-reap fix (the 2026-06-07
+  incident — a supervised worker that PUSHED in Step 6 had its worktree reaped before
+  Steps 6b-8 could run). `plan-w-team-worktree-gc.sh`'s live-session check now (a) uses
+  a NEW canonical probe `pwt-live-session-cwds.sh` (`claude agents --json`, replacing the
+  old `ps | grep argv` heuristic that could not see a `claude --bg` worker whose argv is
+  `…/<ver> --bg-spare /tmp/…`), and (b) **fails CLOSED**: if the probe can't run (claude
+  unavailable / unparseable), no reclaimable (merged/pushed/idle) worktree is reaped — a
+  missed reap is cheap, an erroneous one orphans a live run. `classify_one` gains a
+  `LIVE_QUERY_FAILED → UNSAFE-KEEP` guard + a `live_query_failed` JSON field; test seam
+  `PWT_WORKTREE_GC_TEST_QUERY_FAILED=1`. GC test +2 non-tautological cases (T27 pushed +
+  live-owner → KEEP; T28 probe-unavailable → reclaim-nothing), each with a contrast case
+  (78 assertions). New `pwt-live-session-cwds.test.sh` (8 cases) pins the probe's own
+  contract: QUERY_FAIL seam, missing-binary, `[]`→empty, live/dead-mix filter, non-list,
+  malformed, empty-output, OVERRIDE. Both new scripts added to the sync allowlist (they
+  ship together — the GC hard-depends on the helper, so a split would fail-close all
+  consumers' GC).
+- **refactor(dedup)**: removed the untracked WIP `pwt-hygiene-sweep.sh`(.test.sh) — a
+  redundant reimplementation of the reclaim predicate (on-origin + churn-only +
+  fail-closed live-owner) that the committed `plan-w-team-hygiene-sweep.sh` composer
+  already delegates to `plan-w-team-worktree-gc.sh` + `plan-w-team-companion-gc.sh` (plus
+  a dead orphan-companion block whose output was discarded). Its only divergence — a more
+  aggressive dirty-ignore pattern — was deliberately NOT adopted; the GC's conservative
+  `.claude/state/`-only default is the safer, tested behavior.
+- **test(cap-gate)**: `pwt-goal-capacity-gates.test.sh`'s fake-claude now answers the GC's
+  `agents --json` liveness probe with `[]` and does NOT count it as a spawn, so AC1
+  (worktree-cap-under-disk-pressure) is no longer polluted by the new in-place GC probe
+  (the probe runs faithfully, as in production; it's just not miscounted as a spawn).
+
+## [1.39.0] — 2026-06-08 (b3d78a9)
+
+Deep-audit follow-up. A 50-agent Workflow review of the whole 1.28.0→1.38.0 change
+surface (code-duplication, correctness-vs-intent, no-regression) found the shipped work
+largely sound — the reuse-protection suite (H1–M3) is genuinely wired, not prose no-ops —
+but surfaced one CRITICAL committed defect and one duplication-with-conflict. Both fixed
+here; both ADDITIVE (the anti-park fix mirrors an existing guard; the janitor reconcile
+keeps the SUCCESS-only behavior both callers already wanted).
+
+- **fix(anti-park, CRITICAL)**: the identity-based supervisor yield (PWT-SUP-YIELD-SID) in
+  `.claude/hooks/plan-w-team-goal-evaluator.sh` omitted the anti-park guard that the
+  env-flag yield path already carried. A non-owning **mid-session origin-chat supervisor**
+  — the dominant NL-/plan-w-team mode, which cannot set `PLAN_W_TEAM_SUPERVISOR_SESSION`
+  in its launch env — therefore `exit 0`'d on `STALL-ALERT` + `backlog>0`, silently parking
+  and DEFEATING PWT-ANTIPARK exactly where it was built to protect (the 2026-06-07 cleanscale
+  incident, re-introduced via the SID path). Added the missing
+  `&& [ "$ANTIPARK_BLOCK" != "1" ]` to the SID-yield condition so it blocks when anti-park
+  engages. The 1.36.0/1.37.0 anti-park gate test only ever ran the env path with
+  `session_id:""`, which is why this shipped green — added regression coverage
+  (`plan-w-team-antipark-gate.test.sh` AC1-SID + AC1-SID-control; +`write_goal_sid`/
+  `run_sid_session` harness; gate test now 16 assertions).
+- **refactor(janitor)**: reconciled two contradictory stale-goal-state cleaners into ONE.
+  The deleted `plan-w-team-cleanup-stale-goals.sh` removed ALL terminal states over an
+  unscoped glob, so a retro from one run would delete ANOTHER run's `USER_ESCALATION_HALT` /
+  `LOW_CONFIDENCE_STREAK` / `DEAD` goal-state meant for inspection. `07-retro.md` now calls
+  the SUCCESS-only janitor `plan-w-team-cleanup-stale-goal-states.sh` (also used by
+  session-start; gained a `--quiet` flag for a clean drop-in) — which matches the retro
+  comment's own stated intent ("stale SUCCESS files accumulate") and preserves
+  escalation/dead/null. No common-case behavior change (this run's shipped state is SUCCESS
+  → still cleaned). Sync allowlist + dry-run list trimmed; the deleted script's test removed.
+- The uncommitted disk-hygiene WIP (`plan-w-team-worktree-gc.sh` mod, untracked
+  `pwt-hygiene-sweep.sh` / `pwt-live-session-cwds.sh`) was audited but left fenced: it is
+  duplicative (`pwt-hygiene-sweep.sh` re-implements the committed hygiene composer + GC),
+  un-allowlisted, and the GC mod breaks capacity-gate AC1 — it must not ship as-is. Tracked
+  separately; not part of this release.
+
+## [1.38.0] — 2026-06-08 (0a26131)
+
+- feat(reuse-protection): close the code-reuse / anti-duplication protection gaps —
+  the skill previously protected only TYPE reuse (inlined spawn-prompt block) and
+  intra-run task collisions (Stage-2 gates), but not function/helper/module-level
+  reuse (brief: `.claude/state/pwt-brief-reuse-protection-gaps.md`; spec:
+  `docs/specs/plan-w-team-reuse-protection.md`). Every change EXTENDS a cited
+  existing mechanism — no enforcing gate weakened. HIGH + MED gaps:
+  - **H1**: mandatory "Existing-Code Survey / Reuse Audit" spec-template section
+    (`01-specification.md`) + ENFORCING Step-1 freeze pre-condition
+    (`plan-w-team-reuse-audit-gate.sh`, mirrors the Step-2 coupling-ack gate).
+    Kill switch `PLAN_W_TEAM_DISABLE_REUSE_AUDIT=1`. Dogfooded: this run's own
+    spec carries a filled-in Reuse Audit.
+  - **H2**: builder spawn-prompt TYPE PRESERVATION broadened to CODE PRESERVATION
+    (`03-execute.md`) — grep-before-write for functions/helpers/utils/constants/
+    enums; TYPE rules kept verbatim; positive exemplar; +15% WTF penalty in
+    `shared/self-regulation.md` + `team/builder.md`.
+  - **H3**: reuse-first rule embedded in a SYNCED skill artifact
+    (`shared/reuse-first.md`) so it reaches worktree-isolated builders + consumer
+    repos — no longer dependent on user-global CLAUDE.md.
+  - **M1**: Step-5 reviewer reuse/duplication remit by default + a
+    `consolidate-into-existing` Pass-2 routing option (`04-fix-first-review.md`).
+  - **M2**: cross-feature / recent-commit overlap scan at Step 0
+    (`plan-w-team-reuse-overlap-scan.sh`) — deterministic, bash 3.2, fail-open,
+    no network; findings feed the H1 Reuse Audit.
+  - **M3**: opt-in mechanical clone scan gated like deep-audit
+    (`plan-w-team-reuse-clone-scan.sh`, `PLAN_W_TEAM_CLONE_SCAN=1`, default OFF,
+    no hard dependency, no-op when absent).
+  - 3 new scripts added to the `sync-to-project.sh` allowlist; 3 new `.test.sh`
+    regression suites (21 cases) join the skill suite. LOW gaps recorded as
+    follow-ups (out of scope per brief).
+
+## [1.37.0] — 2026-06-07 (d8e83d3)
+
+- fix(antipark-hermeticity): slug-scope the anti-park progress read + ship-time VERSION rebump —
+  the two gaps the 2026-06-07 session (which shipped 1.35.0 + 1.36.0) surfaced
+  (brief: `.claude/state/pwt-brief-antipark-hermeticity-and-version-collision.md`;
+  spec: `docs/specs/antipark-hermeticity-version-rebump.md`). Both recorded in the
+  1.34.0 recursive-follow-up log.
+  - **Gap 1 — anti-park read hermeticity (correctness).** 1.36.0's `__antipark_state` reader in
+    `plan-w-team-goal-evaluator.sh` read a GLOBAL, non-slug-keyed `supervisor-progress.json`, so a
+    stale/foreign run's snapshot drove the current run's Stop decision — a stale May-28 file
+    (`verdict:STALLED, backlog:9`) made goal-evaluator U18 (empty-criteria → backward-compat SUCCESS)
+    return null on a live checkout. **Fix:** the snapshot is now slug-keyed
+    (`supervisor-progress-<slug>.json`); the writer (`supervisor-progress-check.sh --slug "$SLUG"`,
+    carries a `slug` field) and reader stay in lockstep; the reader fails open on a missing,
+    foreign-slug, or stale (`PWT_ANTIPARK_MAX_AGE_S`, default 1h) snapshot. A snapshot from another
+    run can never drive this run's terminal/yield decision. New hermeticity regression test
+    (`plan-w-team-antipark-hermeticity.test.sh`) plants a stray global + foreign-slug + stale
+    same-slug file in the real `.claude/state/` and proves the current run is unaffected and the
+    suite stays green. Kill switch `PLAN_W_TEAM_DISABLE_ANTIPARK=1` unchanged.
+  - **Gap 2 — concurrent-run VERSION collision.** Two `/plan-w-team` runs off the same base both
+    bumped VERSION to the same value (the 1.35.0 collision). **Fix:** Step 6 ship now re-derives the
+    version from main's CURRENT VERSION at ship time (not the spawn-time snapshot) via a deterministic
+    helper `plan-w-team-next-version.sh` (resolution: `origin/main` → `main` → working tree). So a run
+    that started at 1.36.0 but ships after a sibling landed 1.37.0 emits 1.38.0 — no collision, no
+    cross-run coordination. Regression test `plan-w-team-next-version.test.sh` (hermetic git sandbox)
+    proves the rebump and includes an explicit control showing the old spawn-snapshot bump would have
+    collided. Documented in `shared/versioning.md §Concurrent runs` + `05-ship.md §6d`.
+  - Docs in lockstep: `shared/goal-conditions.md §Anti-Park Gate` (+ `PWT_ANTIPARK_MAX_AGE_S` env row),
+    `shared/supervisor-protocol.md §Step 0` (the `--slug "$SLUG"` invocation is now required).
+  - Tests: `plan-w-team-antipark-gate.test.sh` updated to slug-keyed (still 13/13), 2 new test files
+    added (8 + 9 cases). All 3 new `.claude/scripts/*` added to the `sync-to-project.sh` allowlist.
+    bash 3.2 compatible. Honesty floor (C3) + worktree isolation NOT weakened.
+
+## [1.36.0] — 2026-06-07 (91e98e9)
+
+- feat(supervisor-no-park): PWT-ANTIPARK — promote `feedback_supervisor_progress_objective`
+  from prose to an enforced gate so a supervised run never artificially parks/stalls while
+  unblocked backlog remains (brief: `.claude/state/pwt-brief-supervisor-no-park-keep-driving.md`;
+  spec: `docs/specs/supervisor-no-park.md`; root cause:
+  `docs/operations/supervisor-no-park-rootcause-2026-06-07.md`).
+  - **Root cause (cleanscale 2026-06-07):** a supervised multi-epic run caught a worker's
+    fabricated "prod-verified GREEN", reverted it (honesty floor held), then PARKED in
+    "recalibration" with 5/6 epics unbuilt. The goal-evaluator's supervisor-yield paths
+    (`plan-w-team-goal-evaluator.sh` PWT-SUP-YIELD/-SID) let a supervisor session stop with a
+    live `BLOCK_REASON` (backlog remains) with zero backlog/progress awareness;
+    `supervisor-progress-check.sh` STALL-ALERT existed but was never consulted at the Stop decision.
+  - **Fix (additive, fail-open, kill-switched `PLAN_W_TEAM_DISABLE_ANTIPARK=1`):** the evaluator
+    now reads the objective progress snapshot `supervisor-progress.json` at the Stop decision via a
+    fail-open helper. (1) A supervisor yield with `verdict=STALL-ALERT ∧ backlog>0` is BLOCKED →
+    re-dispatch/escalate, never silent park. (2) An empty/missing AC contract is treated as not-done
+    while objective backlog remains (no trivial SUCCESS). (3) Single-item-blocker partitioning falls
+    out by construction — only the 3 registered hard-gates halt the whole run; a capability block keeps
+    the run building the rest. (4) New "Supervisor Self-Regulation" rules (issue-handling≠stop,
+    honesty-floor-without-paralysis) in `shared/self-regulation.md`.
+  - Honesty floor (C3 worker-mode ship-verdict anti-spoof) and worktree isolation are NOT weakened.
+  - Tests: `.claude/scripts/plan-w-team-antipark-gate.test.sh` (13 cases, bash 3.2). Docs:
+    `shared/goal-conditions.md §Anti-Park Gate`, `shared/supervisor-protocol.md §Step 0`. New test
+    added to `sync-to-project.sh` allowlist. Incident recorded in the recursive-follow-up log.
+  - VERSION reconciled 1.35.0 → 1.36.0: this run was spawned in parallel off pre-1.35.0 main and collided on 1.35.0 with the seed-path fix (19e32f0); supervisor rebased the bump at merge.
+
+## [1.35.0] — 2026-06-07 (19e32f0)
+
+- fix(worker-only-stops-short-rootcause): fix the `--worker-only` "stops short of ship" root
+  cause and make the worker self-ship (brief:
+  `.claude/state/pwt-brief-worker-only-stops-short-rootcause.md`; spec:
+  `docs/specs/worker-only-stops-short-rootcause.md`). Recorded as the first entry in the
+  1.34.0 recursive-follow-up log (the run that built the capture skipped its own retro —
+  exactly the gap the capture exists to catch).
+  - **Root cause (Deliverable 1A) — seed where the worker runs.** `pwt-goal.sh --worker-only`
+    seeded the anti-skip goal-state into `$PROJECT_ROOT/.claude/state`, where `PROJECT_ROOT`
+    came from `git rev-parse --show-toplevel`. Invoked from inside a STALE SIBLING worktree
+    (run `10ac5920`: origin chat sat in `pwt-evaluate-…`), `--show-toplevel` returned the
+    CALLER's worktree, not the worker's freshly-created `pwt-apply-…` worktree → the seed
+    landed in the wrong dir → the worker's goal-evaluator never found it → the anti-skip
+    anchor (1.29.0) was inert → the worker stopped freely after commit+push, never reaching
+    Step 6 ship or Step 8 retro. New `__pwt_main_repo_root` helper resolves the main checkout
+    via `git --git-common-dir` (correct even from inside a sibling worktree); the seed now
+    lands in (1) the worker's OWN runtime worktree state dir
+    (`<main>/.claude/worktrees/<WT_NAME:0:60>/.claude/state`, race-safe — only when that
+    worktree already exists) AND (2) the canonical `<main>/.claude/state` (always). `:0:60`
+    truncation matches the `--worktree` flag so the path lands on the real worktree.
+  - **Defense-in-depth (Deliverable 1B) — SID-disambiguated lookup.**
+    `plan-w-team-await-terminal.sh::__resolve_goal_file` now also searches the true main
+    checkout (via git-common-dir, so a supervisor that itself runs in a worktree still sees
+    the main checkout's worktrees) and, when ≥2 worktrees carry a same-slug goal-state,
+    prefers the one whose `worker_sid` matches `--worker-sid`. Added a non-looping
+    `--print-goal-file` diagnostic seam.
+  - **Worker self-ship (Deliverable 2) — Step 6 self-merges to `main`.** `05-ship.md`:
+    `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` now AUTO-CLEARS the §6g push-ack gate (it was set by
+    pwt-goal but never consumed — the worker either hand-touched the ack or blocked), and a
+    new §6g-ter self-merges the PR to `main` (`gh pr merge --admin|--auto --squash
+--delete-branch`, CI-aware) for **reversible** PRs in **autonomous** mode, then reclaims
+    the worktree via `plan-w-team-worktree-on-merge.sh`. One-way-door (`DO NOT MERGE`) PRs stay
+    human-gated; interactive runs open the PR and stop, unchanged. Fail-soft: a failed merge
+    surfaces and continues to retro (never `exit 1` — that was the original stop-short trap).
+    Kill switch `PWT_DISABLE_SELF_MERGE=1`.
+  - **Regression test**: `.claude/scripts/pwt-goal-worker-seed-path.test.sh` (bash 3.2,
+    hermetic git sandbox with a real stale sibling worktree) asserts seeded path == worker
+    runtime worktree/slug (not the caller's), main-repo copy carries the worker SID, `:0:60`
+    truncation parity, the `PWT_DISABLE_WORKER_WORKTREE=1` main-only path, and await-terminal
+    SID disambiguation. Added to the `sync-to-project.sh` allowlist.
+  - Worktree isolation (#6) and the supervisor-merge boundary were NOT touched — the worker
+    self-ships; the supervisor is not relied upon to merge.
+  - VERSION 1.34.0 → 1.35.0.
+
+## [1.34.0] — 2026-06-07 (f400558)
+
+- feat(dogfood-retro-and-safe-prompt-fixes): apply the regression-free findings from the
+  2026-06-07 Claude-prompts-Claude evaluation and harden Step 8 retro for guaranteed
+  recursive improvement (brief: `.claude/state/pwt-brief-dogfood-retro-and-safe-prompt-fixes.md`;
+  spec: `docs/specs/dogfood-retro-safe-prompt-fixes.md`; report:
+  `docs/operations/claude-prompts-claude-evaluation-2026-06-07.md`).
+  - **F3 — positive exemplars (additive)**: paired the highest-risk negative anti-patterns in
+    `team/builder.md` and `04-fix-first-review.md` with one-line `Good:` exemplars of the
+    desired shape. Every pre-existing negative retained (defense-in-depth); positive exemplars
+    per `opus-4-7-practices.md` §7.
+  - **F6 — stale forward-looking phrasing (cosmetic)**: corrected `team/supervisor.md:131`
+    ("future T5 /goal Haiku evaluator" → the shipped deterministic self-hosted Stop-hook +
+    Anthropic's Haiku evaluator) and repo-grep-fixed every other "future T5"/"will consume"/
+    "once T5 ships" site across `shared/supervisor-protocol.md` and `shared/fleet-manager.md`
+    that described already-shipped behavior.
+  - **F2-docs — tier-name prose + canonical table (docs only)**: softened non-load-bearing
+    literal model-ID prose in `03-execute.md`, `shared/opus-4-7-practices.md` to tier names
+    pointing at the SKILL.md Model Strategy table (now marked the single canonical tier→ID
+    map), and added an explicit **frontmatter-pin exception** so a future maintainer never
+    centralizes the pins. Frontmatter `model:` pins UNCHANGED (the tier split depends on them).
+  - **F1/F5/F7 — recorded, NOT applied**: each behavior-affecting redundancy-removal teed up as
+    a scope-challenge candidate (principle weakened + regression surface + PROCEED/DEFER/KILL)
+    in `docs/specs/pwt-findings-f1-f5-f7-scope-challenge.md`. Verdict is the user's.
+  - **Deliverable 3 — recursive-improvement capture (every full run)**: new retro §8j-decies +
+    `plan-w-team-retro-capture.sh` (+ tests) ALWAYS capture weaknesses/struggles/gaps, check
+    this run's best-practice adherence against the PRIOR run (regression flag), and queue
+    follow-ups into a durable cross-run log surfaced at the next run's preflight. Self-assessment
+    `<8` now emits a structured `investigate_and_update` instruction + a queued follow-up, not
+    just a number. Strictly additive; advisory (R10 — never fails the retro).
+  - VERSION 1.33.0 → 1.34.0; `plan-w-team-retro-capture.sh`/`.test.sh` added to the
+    `sync-to-project.sh` allowlist.
+
 ## [1.33.0] — 2026-06-07 (aa7fe9d)
 
 - feat(doc-secret-handling-gaps): close the 24 documentation-handling and

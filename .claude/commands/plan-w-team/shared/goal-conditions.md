@@ -436,13 +436,72 @@ The chain is at most as deep as the user's original mission; PWT-DS2 prevents ar
 
 ## Kill Switch Contract
 
-| Env var                      | Default               | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| ---------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PLAN_W_TEAM_DISABLE_GOAL=1` | unset                 | Skip top-of-pipeline `/goal` open entirely; pipeline runs as today (lead-driven turn-by-turn polling)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `PWT_GOAL_EVALUATOR_DEBUG=1` | unset                 | Evaluator prints per-detector diagnostics to stderr (which signal ran, what matched). Also `--debug`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `PWT_AUTONOMY_PROFILE`       | `strict` (when unset) | Autonomy-constant profile for the supervisor loop (C6 pilot). `strict`/unset = byte-for-byte today (STALL_THRESHOLD 2, in-flight window 30 min, idle 300 s). `relaxed` loosens to STALL_THRESHOLD 4, in-flight 60 min, idle 900 s — for long-horizon Opus-4.8 runs that legitimately cook longer between landings. Explicit `STALL_THRESHOLD` / `PWT_INFLIGHT_MMIN` / `PLAN_W_TEAM_IDLE_THRESHOLD_S` always override the profile. Adds **NO** self-report grace tick — STALL-ALERT stays purely objective. Consumed by `.claude/scripts/supervisor-progress-check.sh`. |
+| Env var                          | Default               | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| -------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PLAN_W_TEAM_DISABLE_GOAL=1`     | unset                 | Skip top-of-pipeline `/goal` open entirely; pipeline runs as today (lead-driven turn-by-turn polling)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `PLAN_W_TEAM_DISABLE_ANTIPARK=1` | unset                 | Disable the PWT-ANTIPARK gate (§Anti-Park Gate below). The supervisor yield + empty-AC SUCCESS-withholding revert to pre-2026-06-07 behavior. Fail-open default: with the var unset, the gate is also a no-op whenever the run's slug-keyed `.claude/state/supervisor-progress-<slug>.json` is absent, foreign-slug, stale, or corrupt.                                                                                                                                                                                                                                |
+| `PWT_ANTIPARK_MAX_AGE_S`         | `3600`                | Staleness threshold for the slug-keyed anti-park snapshot. A `supervisor-progress-<slug>.json` older than this (by its embedded `ts`, else file mtime) is IGNORED (fail-open) so a dead run's STALLED verdict cannot haunt a new run. Consumed by `__antipark_state` in `.claude/hooks/plan-w-team-goal-evaluator.sh`.                                                                                                                                                                                                                                                 |
+| `PWT_GOAL_EVALUATOR_DEBUG=1`     | unset                 | Evaluator prints per-detector diagnostics to stderr (which signal ran, what matched). Also `--debug`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `PWT_AUTONOMY_PROFILE`           | `strict` (when unset) | Autonomy-constant profile for the supervisor loop (C6 pilot). `strict`/unset = byte-for-byte today (STALL_THRESHOLD 2, in-flight window 30 min, idle 300 s). `relaxed` loosens to STALL_THRESHOLD 4, in-flight 60 min, idle 900 s — for long-horizon Opus-4.8 runs that legitimately cook longer between landings. Explicit `STALL_THRESHOLD` / `PWT_INFLIGHT_MMIN` / `PLAN_W_TEAM_IDLE_THRESHOLD_S` always override the profile. Adds **NO** self-report grace tick — STALL-ALERT stays purely objective. Consumed by `.claude/scripts/supervisor-progress-check.sh`. |
 
 The kill switch only affects the `/goal` invocation in the skill md. The `plan-w-team-surface-status.sh` helper is unaffected — it remains observability infrastructure (status blocks still appear in the transcript whether or not `/goal` is active).
+
+## Anti-Park Gate (PWT-ANTIPARK, 2026-06-07)
+
+Promotes `feedback_supervisor_progress_objective` from prose to an **enforced**
+gate at the goal-evaluator's terminal/yield decision. Root cause + design:
+`docs/operations/supervisor-no-park-rootcause-2026-06-07.md`; spec:
+`docs/specs/supervisor-no-park.md`; supervisor rules:
+`shared/self-regulation.md §Supervisor Self-Regulation`.
+
+**The defect it closes:** the supervisor-yield paths
+(`plan-w-team-goal-evaluator.sh` PWT-SUP-YIELD / PWT-SUP-YIELD-SID) let a
+supervisor session stop with a live `BLOCK_REASON` (run not terminal, backlog
+remains) on the unverified assumption that an await-loop will re-wake it. When the
+supervisor parked after handling an issue, the yield silently permitted the stop —
+the 2026-06-07 cleanscale "parked in recalibration, lost dev time" incident.
+
+**Integration seam:** the evaluator reads the objective progress snapshot via a
+small fail-open helper (`__antipark_state`, jq, never grep-on-JSON). The snapshot
+is **slug-scoped** (2026-06-07 hermeticity fix): `supervisor-progress-check.sh`
+writes `.claude/state/supervisor-progress-<slug>.json` when invoked with
+`--slug "$SLUG"` (carrying a `slug` field), and the reader resolves ONLY the
+current run's slug-keyed file. This closes a cross-run contamination bug — the
+original global, non-slug-keyed `supervisor-progress.json` let a stale/foreign
+run's snapshot (e.g. a dead run's `verdict:STALLED, backlog:9`) drive an unrelated
+run's Stop decision. Three fail-open guards, any of which yields no signal:
+(1) no slug-keyed file for the current run; (2) the snapshot's own `slug` field
+differs from the current run (foreign-slug guard); (3) the snapshot is older than
+`PWT_ANTIPARK_MAX_AGE_S` (default 3600s — stale guard, via the embedded `ts` or
+file mtime). A snapshot from another run, or a dead run's old verdict, can never
+drive this run's terminal/yield decision. Two decision points consult it:
+
+| Gate                      | When it fires                                                                                                                       | Effect                                                                                                                                                                                              |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Yield gate**            | A supervisor session would yield (`BLOCK_REASON` set) AND the snapshot says `verdict=STALL-ALERT` with `backlogKnown=1 ∧ backlog>0` | The yield is BLOCKED (the hook emits `{"decision":"block",...}` citing ANTI-PARK) so the supervisor must re-dispatch the next unblocked item or escalate a genuine hard-gate — never silently park. |
+| **Empty-AC SUCCESS gate** | Generic SUCCESS anchors present, `feature_specific_done_criteria` empty/missing, AND snapshot says `backlogKnown=1 ∧ backlog>0`     | SUCCESS is withheld (empty AC contract ≠ done while backlog remains).                                                                                                                               |
+
+**Self-correcting:** the instant a dispatch moves an objective metric (commit, open
+PR, AC-PASS) or touches an agent worktree, `supervisor-progress-check.sh` flips the
+verdict to `PROGRESSING`/`IN-FLIGHT`/`BACKLOG-CLEAR` and the yield is permitted
+again — so a supervisor that is legitimately waiting on cooking work is never
+blocked; only a genuine park (flat ticks + backlog>0) is.
+
+**Single-item-blocker partitioning** falls out for free: only the 3 registered
+hard-gate sites produce `USER_ESCALATION_HALT`; a capability block (deploy token
+missing) is not one of them, so it never halts the run — the anti-park gate keeps
+the run building the rest of the backlog while that one item is parked-with-escalation.
+
+**Fail-open + kill switch:** `PLAN_W_TEAM_DISABLE_ANTIPARK=1` disables both gates.
+With the var unset, the gates are STILL no-ops whenever the snapshot is absent or
+corrupt (an in-session `/plan-w-team` with no supervisor tick, or a fresh run). The
+gate can only ADD a block where the run was about to silently park; it never
+removes an existing block, never relaxes a terminal, and never weakens the C3
+honesty-floor anti-spoof. Regression coverage:
+`.claude/scripts/plan-w-team-antipark-gate.test.sh` (13 cases) +
+`.claude/scripts/plan-w-team-antipark-hermeticity.test.sh` (slug-scope /
+foreign-slug / stale-guard, proving the suite stays green even with a stray
+`supervisor-progress.json` present in the real `.claude/state/`).
 
 ## /goal Unavailability Fallback
 

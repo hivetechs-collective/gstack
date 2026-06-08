@@ -33,6 +33,18 @@ Brief description. Include dream state mapping:
 - [ ] Requirement 1
 - [ ] Requirement 2
 
+## Existing-Code Survey / Reuse Audit (MANDATORY — H1)
+
+Before freezing the spec, survey the codebase (Grep/Explore) for existing implementations that overlap this feature — functions, helpers, utilities, modules, types, constants, enums. List each candidate with a **REUSE / EXTEND / BUILD-NEW** verdict and a one-line rationale. This is the written counterpart to the Step-0 premise question "can we achieve 80% of the value from what exists?" — it puts the reuse-vs-build decision on paper instead of leaving it implicit.
+
+| Candidate existing implementation | Location (path:line / grep) | Overlap | Verdict (REUSE/EXTEND/BUILD-NEW) | Rationale                  |
+| --------------------------------- | --------------------------- | ------- | -------------------------------- | -------------------------- |
+| `formatCurrency()`                | `src/util/money.ts:12`      | exact   | REUSE                            | import the existing helper |
+
+**Empty is allowed ONLY with an explicit statement** — e.g. "Surveyed the codebase; nothing overlaps this feature." — never silently blank. Any cross-feature / recent-commit overlaps surfaced by the Step-0 overlap scan (`00-scope-challenge.md` §0f) MUST be folded in here.
+
+**Enforced**: the Step-1 freeze gate (`plan-w-team-reuse-audit-gate.sh`, run as a pre-condition before the AC Snapshot below) refuses to freeze the spec when this section is missing or blank-without-statement. See `shared/reuse-first.md` for the reuse-first rule this section operationalizes. Kill switch: `PLAN_W_TEAM_DISABLE_REUSE_AUDIT=1`.
+
 ## UI Tier Profile & Test Plan (UI features only)
 
 Populate this block when `ui_scope_flag == true` from §0e. Skip entirely for non-UI features — the rest of the spec template is unchanged.
@@ -301,6 +313,24 @@ Skip the block ONLY for features touching none of the above (pure docs, pure UI-
 Any security/access-control acceptance criteria belong **inside** the AC block below, so they are captured by the SHA256 freeze. Designing the invariants in here is the point: a confirmed high-severity broken-access-control finding against this declared surface is **GATING at Step 6 ship** (`05-ship.md` §6c-ter) — it blocks the push and is NOT retroactive (`04-fix-first-review.md` §5d-ter).
 
 **Secret-handling documentation duty (C1, 1.33.0).** The first trigger above — a feature that reads/writes/mints a credential — also raises a _documentation_ obligation, not just a threat-model one. When the feature introduces a **new secret-bearing env var** (a var whose name matches the secret-bearing heuristic: `*_TOKEN`, `*_KEY`, `*_SECRET`, `*_PASSWORD`, `*_API_KEY`, `*_CREDENTIAL*`, or a provider-prefixed var like `STRIPE_*` / `CLOUDFLARE_*` / `AWS_*`), the spec MUST record that a secret-handling deliverable is owed at ship: an `.env.example` row (placeholder value) **plus** a provisioning / rotation / never-commit note in the runbook or config reference. Note it here as a checklist item (e.g. "C1 deliverable: `FOO_API_TOKEN` → `.env.example` + DEPLOY_RUNBOOK rotation note"). This is enforced at post-ship — `06-post-ship.md §7f` refuses to mark Step 7 complete when this signal fired but no secret-handling doc is present in the diff. The full duty (including the C2 infra-glob analog) lives in `shared/secret-safety.md §Secret-Handling Documentation Duty`. `docs/specs/` does NOT satisfy it — the deliverable is operational documentation.
+
+## Reuse-Audit Freeze Pre-Condition (ENFORCING — H1)
+
+Before snapshotting (freezing) the Acceptance Criteria below, the `## Existing-Code Survey / Reuse Audit` section (above) MUST be present and non-blank. This mirrors the Step-2 scope-lock coupling-ack pre-condition (`02-task-breakdown.md` §Scope Lock Artifact) — the freeze refuses to proceed otherwise, making the reuse-vs-build decision a conscious, audited gate rather than a step the lead can forget.
+
+```bash
+SLUG="<feature-slug>"
+SPEC="docs/specs/${SLUG}.md"
+if ! .claude/scripts/plan-w-team-reuse-audit-gate.sh --spec "$SPEC"; then
+  echo "✗ Step-1 freeze refused: Reuse Audit section missing/blank in $SPEC"
+  echo "  Fill in the 'Existing-Code Survey / Reuse Audit' section with"
+  echo "  REUSE/EXTEND/BUILD-NEW verdicts (or an explicit 'nothing overlaps'"
+  echo "  statement), OR set PLAN_W_TEAM_DISABLE_REUSE_AUDIT=1 to bypass."
+  exit 1
+fi
+```
+
+The gate exits `0` (pass / kill switch), `1` (section missing or blank — refuse freeze), or `2` (spec file not found — author the spec first). Kill switch `PLAN_W_TEAM_DISABLE_REUSE_AUDIT=1` is consistent with the `PLAN_W_TEAM_DISABLE_*` family and lets a docs-only / trivial run bypass the gate. See `shared/reuse-first.md` for the underlying rule.
 
 ## Acceptance Criteria Snapshot (MANDATORY — integrity gate)
 

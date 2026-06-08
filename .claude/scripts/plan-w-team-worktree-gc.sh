@@ -53,13 +53,26 @@
 #   PWT_WORKTREE_GC_TRUST_LOCKS=1  legacy behavior: ANY lock == in-use hard-keep
 #   PWT_WORKTREE_GC_DIRTY_IGNORE   colon-separated path prefixes whose dirtiness is
 #                                  ignored (default ".claude/state/"; empty disables)
+#   PWT_LIVE_SESSION_CWDS_SCRIPT   override path to pwt-live-session-cwds.sh (the
+#                                  canonical `claude agents --json` liveness probe)
+#   PWT_WORKTREE_GC_TEST_QUERY_FAILED=1  test seam: simulate a failed liveness
+#                                  probe (sets the fail-closed flag) without a fake
+#                                  claude binary
 #
 # Safety invariants (uniform across all paths):
 #   1. NEVER touch worktrees outside .claude/worktrees/ (resolved real-path check).
 #   2. NEVER remove a worktree with REAL uncommitted changes (dirtiness outside
 #      the PWT_WORKTREE_GC_DIRTY_IGNORE prefixes).
-#   3. NEVER remove a worktree currently in-use (claude-agents-extended.sh cwd
-#      field) or holding a lock backed by a live session / recent activity.
+#   3. NEVER remove a worktree currently in-use: a LIVE claude session (background
+#      OR interactive) whose cwd is the worktree — the canonical signal is
+#      pwt-live-session-cwds.sh (`claude agents --json`), with claude-agents-
+#      extended.sh as an additive subagent-worktreePath source — or holding a lock
+#      backed by a live session / recent activity.
+#   3b. FAIL-CLOSED: if the liveness probe cannot run (claude unavailable / timeout
+#      / unparseable), NEVER reap a reclaimable (merged/pushed/idle) worktree. A
+#      worker that pushed in Step 6 still has Steps 6b-8 to run; reaping it the
+#      instant HEAD reaches origin orphaned it (2026-06-07 incident). A missed reap
+#      is cheap; an erroneous one orphans a live run.
 #   4. NEVER force-delete a branch with unmerged commits unless --orphans-ok.
 #   5. IDEMPOTENT: re-running on clean repo = exit 0, no changes.
 #
@@ -68,6 +81,12 @@
 
 set -u
 set -o pipefail
+
+# Resolve this script's own directory so co-located helpers (pwt-live-session-cwds.sh)
+# are found regardless of whether the sibling-but-synced-separately .claude/ layer in
+# the MAIN_CHECKOUT is current. The GC and its helper ship + sync together, so the
+# script's own dir is the most reliable place to find the helper.
+GC_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 
 # ─── disabled? ────────────────────────────────────────────────────────────
 if [ "${PWT_WORKTREE_GC_DISABLE:-0}" = "1" ]; then
@@ -178,13 +197,53 @@ fi
 # the worktree we're about to delete. A test stub can inject this list via
 # PWT_WORKTREE_GC_TEST_LIVE_CWDS (newline-separated) to exercise is_in_use
 # without a live claude binary.
+# LIVE_QUERY_FAILED is the FAIL-CLOSED signal (2026-06-07 mid-flight-reap fix):
+# when the live-session probe cannot be performed we must NOT reap any reclaimable
+# worktree, because absence of a matching path no longer proves absence of a live
+# owner. classify_one's guard converts every SAFE-PRUNE-* candidate to UNSAFE-KEEP
+# while this is set. The two test seams (TEST_LIVE_CWDS / TEST_MODE) keep it 0 so
+# the existing SAFE-PRUNE tests still fire — only a REAL failed probe sets it.
 LIVE_CWDS=""
-if [ -n "${PWT_WORKTREE_GC_TEST_LIVE_CWDS:-}" ]; then
+LIVE_QUERY_FAILED=0
+if [ "${PWT_WORKTREE_GC_TEST_QUERY_FAILED:-0}" = "1" ]; then
+    # Test seam: simulate a failed liveness probe without a fake claude binary.
+    LIVE_QUERY_FAILED=1
+elif [ -n "${PWT_WORKTREE_GC_TEST_LIVE_CWDS:-}" ]; then
     LIVE_CWDS="$PWT_WORKTREE_GC_TEST_LIVE_CWDS"
 elif [ "${PWT_WORKTREE_GC_TEST_MODE:-0}" != "1" ]; then
+    # ── Canonical live-session source: `claude agents --json` via the shared
+    #    helper (directive 2026-06-07). Returns the cwd of every live bg/interactive
+    #    session, or the __QUERY_FAILED__ token if the probe could not run. A
+    #    supervised worker that pushed in Step 6 is a live background session whose
+    #    cwd IS this worktree; it MUST keep its worktree through Steps 6b-8.
+    LIVE_HELPER="${PWT_LIVE_SESSION_CWDS_SCRIPT:-}"
+    if [ -z "$LIVE_HELPER" ]; then
+        # Prefer the sibling next to THIS script; fall back to MAIN_CHECKOUT's copy.
+        if [ -n "$GC_SCRIPT_DIR" ] && [ -x "$GC_SCRIPT_DIR/pwt-live-session-cwds.sh" ]; then
+            LIVE_HELPER="$GC_SCRIPT_DIR/pwt-live-session-cwds.sh"
+        else
+            LIVE_HELPER="$MAIN_CHECKOUT/.claude/scripts/pwt-live-session-cwds.sh"
+        fi
+    fi
+    if [ -x "$LIVE_HELPER" ]; then
+        _live_out="$("$LIVE_HELPER" 2>/dev/null || printf '__QUERY_FAILED__\n')"
+        if printf '%s\n' "$_live_out" | grep -qx '__QUERY_FAILED__'; then
+            LIVE_QUERY_FAILED=1
+        else
+            LIVE_CWDS="$_live_out"
+        fi
+    else
+        # Canonical helper missing → cannot confirm liveness → fail closed.
+        LIVE_QUERY_FAILED=1
+    fi
+    # Secondary (ADDITIVE) source: claude-agents-extended.sh also surfaces the
+    # per-subagent worktreePath that the plain agents list doesn't carry. It only
+    # ADDS protected paths — it never clears the fail-closed flag. If the canonical
+    # probe failed but this one succeeds with data, we keep the fail-closed posture
+    # (conservative) while still protecting any extra paths it found.
     AGENTS_EXTENDED="${PWT_WORKTREE_GC_AGENTS_EXTENDED:-$MAIN_CHECKOUT/.claude/scripts/claude-agents-extended.sh}"
     if [ -x "$AGENTS_EXTENDED" ]; then
-        LIVE_CWDS="$("$AGENTS_EXTENDED" 2>/dev/null \
+        _ext_cwds="$("$AGENTS_EXTENDED" 2>/dev/null \
             | python3 -c '
 import json, sys
 try:
@@ -197,6 +256,10 @@ for entry in (data if isinstance(data, list) else []):
         if v:
             print(v)
 ' 2>/dev/null || true)"
+        if [ -n "$_ext_cwds" ]; then
+            LIVE_CWDS="${LIVE_CWDS:+$LIVE_CWDS
+}$_ext_cwds"
+        fi
     fi
 fi
 
@@ -616,6 +679,20 @@ for line in sys.stdin:
         CLASS="UNSAFE-KEEP"; REASON="uncommitted changes"; return 0
     fi
 
+    # ── FAIL-CLOSED liveness guard (directive 2026-06-07) ──────────────────────
+    # If the live-session probe could not run, we cannot prove this worktree has NO
+    # live owning session, so we must NOT auto-reap it. A supervised worker that
+    # pushed in Step 6 (HEAD now on origin/* → would classify SAFE-PRUNE-PUSHED)
+    # still has Steps 6b-8 to run; reaping it here orphans the run. A missed reap is
+    # cheap (next run, with a working probe, reclaims it); an erroneous reap is not.
+    # IN_USE / UNCOMMITTED already returned above; this only blocks the auto-reap
+    # classes (MERGED / PUSHED / IDLE) and never weakens an existing keep.
+    if [ "${LIVE_QUERY_FAILED:-0}" = "1" ]; then
+        CLASS="UNSAFE-KEEP"
+        REASON="live-session probe unavailable — fail-closed (cannot confirm no live owner)"
+        return 0
+    fi
+
     if [ "$MERGED" = "1" ]; then
         CLASS="SAFE-PRUNE-MERGED"
         REASON="branch merged (source: ${MERGED_BY:-unknown})"
@@ -963,12 +1040,14 @@ row = {
     "in_use_source": sys.argv[20] or None,
     "origin_reachable": sys.argv[21] == "1",
     "orphan_dir": sys.argv[22] == "1",
+    "live_query_failed": sys.argv[23] == "1",
 }
 sys.stdout.write(json.dumps(row))
 ' "$wt_path" "$name" "$BRANCH" "$CLASS" "$REASON" "$ACTION" \
   "$REMOVED_WT" "$REMOVED_BRANCH" "$UNCOMMITTED" "$MERGED" "$OPEN_PR" \
   "$IN_USE" "$ACTIVE_RUN" "${LAST_COMMIT_AGE_DAYS:-?}" "$MERGE_SOURCE" "${MERGED_BY:-}" "${ORIGIN_GONE:-0}" \
-  "${LOCKED:-0}" "${STALE_LOCK:-0}" "${IN_USE_SOURCE:-}" "${ORIGIN_REACHABLE:-0}" "${ORPHAN_DIR:-0}" >> "$RESULTS_JSON_TMP"
+  "${LOCKED:-0}" "${STALE_LOCK:-0}" "${IN_USE_SOURCE:-}" "${ORIGIN_REACHABLE:-0}" "${ORPHAN_DIR:-0}" \
+  "${LIVE_QUERY_FAILED:-0}" >> "$RESULTS_JSON_TMP"
 
     # Human table row
     if [ "$MODE_JSON" = "0" ]; then

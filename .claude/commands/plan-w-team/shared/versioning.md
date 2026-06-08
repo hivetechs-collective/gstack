@@ -48,6 +48,34 @@ as PATCH (the conservative default — never silently MAJOR).
 If a commit explicitly bumps `VERSION` already (the hook detects this by
 checking whether `VERSION` is staged), the hook is a no-op.
 
+## Concurrent runs — ship-time rebump (PWT-VERSION-COLLISION, 2026-06-07)
+
+Two `/plan-w-team` runs spawned off the same base will each capture the same
+spawn-time `VERSION`. If both bump from that snapshot, they pick the **same** next
+version → a `VERSION` + `CHANGELOG` merge conflict and a manual rebase (observed
+2026-06-07: both runs grabbed 1.35.0). The fix: **at Step 6 ship, re-derive the
+next version from main's CURRENT `VERSION` at ship time — after fetching/rebasing
+onto the latest main — not the spawn-time snapshot.**
+
+The deterministic helper is `.claude/scripts/plan-w-team-next-version.sh`:
+
+```bash
+# Resolves the authoritative current VERSION on the merge target (origin/main →
+# main → working tree), computes the bump, and (with --write) overwrites VERSION.
+NEXT=$(.claude/scripts/plan-w-team-next-version.sh --bump minor --write)
+# e.g. run A shipped 1.37.0 while run B was working → B reads main=1.37.0 → 1.38.0
+```
+
+So if run A shipped 1.37.0 while run B was still working, run B's ship reads
+main=1.37.0 and ships 1.38.0 — no collision, and no cross-run coordination needed.
+The `CHANGELOG` entry is headed with the rebumped version and inserted newest-first
+relative to whatever is now on main, so two concurrent runs produce two stacked
+entries rather than a conflict on the same header. Step 6 (`05-ship.md` §6d) invokes
+the helper. Regression coverage: `.claude/scripts/plan-w-team-next-version.test.sh`
+(hermetic git sandbox: spawn-snapshot 1.36.0 + main now 1.37.0 → ships 1.38.0, with
+an explicit control proving the old spawn-snapshot bump would have collided at
+1.37.0). bash 3.2 compatible.
+
 ## Where the Version Surfaces
 
 | Surface                                                                          | Field(s)                                                         |

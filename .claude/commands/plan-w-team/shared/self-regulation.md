@@ -2,17 +2,75 @@
 
 These rules apply to every builder agent spawned during execution.
 
+> The **builder** rules begin at WTF-Likelihood below. The **supervisor**
+> self-regulation rules (anti-park, issue-handling≠stop, single-item-blocker
+> partitioning, honesty-floor-without-paralysis) are in the section immediately
+> below — they govern the dispatch loop, not the builders.
+
+## Supervisor Self-Regulation (anti-park) — PWT-ANTIPARK
+
+These four rules govern the supervisor / origin-chat dispatch loop. They exist
+because of the 2026-06-07 cleanscale incident: a supervisor correctly caught a
+worker's fabricated "prod-verified GREEN", reverted it (honesty floor held), then
+**parked** in "recalibration" and stopped with 5 of 6 epics unbuilt — one blocked
+deploy gate halted the entire run including large safe unblocked work. Root cause:
+`docs/operations/supervisor-no-park-rootcause-2026-06-07.md`.
+
+The first three are now **enforced** at the goal-evaluator's Stop/yield decision
+(not merely advised): the evaluator reads the objective progress snapshot
+`.claude/state/supervisor-progress.json` (written by `supervisor-progress-check.sh`)
+and refuses a supervisor yield that would be a silent park. Kill switch for the
+enforced gate: `PLAN_W_TEAM_DISABLE_ANTIPARK=1` (fail-open to pre-fix behavior).
+
+1. **Backlog-aware non-stop invariant.** Do NOT stop (yield/park) while the run's
+   own backlog has unblocked, unattempted, or failed-but-retriable work. SUCCESS
+   requires the backlog drained OR every remaining item provably blocked by a
+   genuine hard-gate. An **empty/missing feature-AC contract is not-done, not
+   done** — a stray `retro-complete` with no ACs and a non-zero objective backlog
+   does NOT satisfy SUCCESS (enforced: goal-evaluator empty-AC branch). This is
+   the promotion of `feedback_supervisor_progress_objective` from prose to a gate:
+   a monitoring-only / "recalibration" tick while `backlog>0` is a DEFECT the run
+   must self-correct, never a valid resting state.
+
+2. **Single-item-blocker partitioning.** A per-item capability or hard-gate block
+   (deploy token missing, secret-scan-allow, push-ack, a one-way door on item X)
+   parks **that item only, with an escalation surfaced** — it does NOT halt the
+   run. Keep dispatching every other unblocked backlog item. "Can't deploy" must
+   never stop "can still build epics A–F." Only the 3 registered hard-gate sites
+   (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`) produce a
+   whole-run `USER_ESCALATION_HALT`; a capability block is NOT one of them and
+   therefore keeps the run building the rest (enforced by construction — the
+   anti-park gate blocks the park while backlog remains).
+
+3. **Issue-handling ≠ stop.** Catching a defect — a fabricated green, reverted
+   work, a failed verify, a flaky test — triggers **harden the gate + re-queue the
+   item + keep building the rest**, NEVER a whole-run halt. Catching a problem is
+   the system working, not a terminal event. After you revert a bad change, your
+   very next action is to dispatch the next unblocked item, not to "recalibrate"
+   and wait.
+
+4. **Honesty floor without paralysis.** Workers MUST emit honest 🟡 and MUST NOT
+   self-certify unverifiable claims (e.g. "prod-verified GREEN" with no deploy
+   capability). The evaluator/validator MUST reject self-reported green lacking
+   independent evidence — the C3 worker-mode ship-verdict anti-spoof
+   (`plan-w-team-goal-evaluator.sh`, honored only when the EVALUATOR wrote the
+   terminal) stays in force and is NOT weakened. But rejecting a false-green
+   **re-queues the verification and keeps the build loop running** — it never
+   parks. Reject the claim, re-queue the proof, keep building. Honesty is a reason
+   to redo the verification, never a reason to stop the program.
+
 ## WTF-Likelihood Score
 
 Track a cumulative WTF-likelihood score, starting at 0%:
 
-| Event                                    | Impact |
-| ---------------------------------------- | ------ |
-| Each revert                              | +15%   |
-| Each fix touching >3 files               | +5%    |
-| Touching files unrelated to current task | +20%   |
-| After 15 fixes, each additional fix      | +1%    |
-| If all remaining issues are Low severity | +10%   |
+| Event                                                                        | Impact |
+| ---------------------------------------------------------------------------- | ------ |
+| Each revert                                                                  | +15%   |
+| Each fix touching >3 files                                                   | +5%    |
+| Touching files unrelated to current task                                     | +20%   |
+| Re-implementing an existing function/helper/constant instead of importing it | +15%   |
+| After 15 fixes, each additional fix                                          | +1%    |
+| If all remaining issues are Low severity                                     | +10%   |
 
 **Threshold**: If WTF-likelihood exceeds 20%, STOP fixing, report status, ask lead for guidance.
 
@@ -99,6 +157,21 @@ duplicate interfaces is the #1 cause of post-merge type conflicts.
 | Import types from their canonical location, not from re-exports | Prevents circular dependency issues                      |
 
 **WTF impact**: Creating a duplicate/simplified interface that conflicts with an existing canonical type adds **+15%** to WTF-likelihood (same as a revert — it causes equivalent rework).
+
+## Code Preservation Discipline
+
+Type Preservation (above) is the type-level case of a broader rule: **do not reinvent code that already exists.** Before writing a new function, helper, utility, constant, enum, or config value, builders MUST grep for an existing one and prefer call / import / extend over re-implementing. This is the canonical reuse-first rule (`shared/reuse-first.md`), embedded here so it travels into worktree-isolated builders.
+
+| Rule                                                                          | Rationale                                       |
+| ----------------------------------------------------------------------------- | ----------------------------------------------- |
+| Grep for an existing function/helper/util before writing a new one            | Prevents code bloat + divergent duplicate logic |
+| Prefer import/call over copy-paste; extend (new param/wrapper) over fork      | Single source of truth; one place to fix bugs   |
+| Search by concept, not just exact name (`formatCurrency`, `slugify`, `retry`) | Near-duplicates hide behind different names     |
+| If you must duplicate (genuinely different semantics), say why in the commit  | Makes the deliberate exception auditable        |
+
+**Positive exemplar**: task needs currency formatting → grep finds `formatCurrency()` in `src/util/money.ts` → `import` and call it. **Anti-pattern**: writing a fresh `fmtMoney()` that duplicates it.
+
+**WTF impact**: Re-implementing an existing function/helper/constant instead of importing it adds **+15%** to WTF-likelihood (same as the type rule — it causes equivalent rework + bloat).
 
 ## Shared File Discipline
 

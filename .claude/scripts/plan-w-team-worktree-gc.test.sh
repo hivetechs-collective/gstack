@@ -547,6 +547,56 @@ assert_eq "preserve-then-reap wrote a manifest" "yes" "$([ -n "$MANIFEST_HIT" ] 
 # node_modules (ignored) must NOT be copied
 assert_eq "ignored node_modules NOT preserved" "no" "$([ -n "$BACKUP_HIT" ] && [ -e "$BACKUP_HIT/node_modules/y.js" ] && echo yes || echo no)"
 
+# ── Test 27 (mid-flight-reap fix): pushed + LIVE owning session → UNSAFE-KEEP ───
+# The 2026-06-07 incident exactly: a supervised worker PUSHED in Step 6 (HEAD on
+# origin/* → would classify SAFE-PRUNE-PUSHED) but is STILL a live bg session whose
+# cwd is the worktree (Steps 6b-8 pending). It must be KEPT, not reaped. Test 22
+# proves the pushed→reap path; this proves the live-owner override of THAT path.
+# Non-tautological: deleting the IN_USE precedence over SAFE-PRUNE-PUSHED flips this
+# to SAFE-PRUNE-PUSHED/dry-remove and the assertions fail.
+echo "[27] mid-flight-reap: pushed + live owning session → UNSAFE-KEEP (not reaped)"
+R=$(new_repo); make_nogh "$R"; add_origin "$R"
+WT=$(add_worktree "$R" "pushedlive-feat")
+push_branch "$R" "worktree-pushedlive-feat"
+# inject the worktree path as a live session cwd (simulates `claude agents --json`)
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_IGNORE_LOCKS=1 \
+        PWT_WORKTREE_GC_TEST_LIVE_CWDS="$WT" PATH="$R/_nogh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "pushed + live owner → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" pushedlive-feat)"
+assert_eq "pushed + live owner in_use true" "true" "$(field_of "$JSON" pushedlive-feat in_use)"
+assert_eq "pushed + live owner action keep" "keep" "$(action_of "$JSON" pushedlive-feat)"
+# CONTRAST: same fixture, NO live owner (query OK + empty) → SAFE-PRUNE-PUSHED reap
+JSON=$(run_gc "$R" --json)   # TEST_MODE=1 → empty live cwds, query considered OK
+assert_eq "pushed + NO live owner → SAFE-PRUNE-PUSHED" "SAFE-PRUNE-PUSHED" "$(class_of "$JSON" pushedlive-feat)"
+# --execute with a live owner must NOT remove the worktree
+( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_IGNORE_LOCKS=1 \
+  PWT_WORKTREE_GC_TEST_LIVE_CWDS="$WT" PATH="$R/_nogh:$PATH" bash "$GC" --execute --json >/dev/null 2>&1 )
+assert_eq "pushed + live owner survives --execute" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+
+# ── Test 28 (fail-closed): liveness probe unavailable → reclaim NOTHING ──────────
+# When the `claude agents --json` probe cannot run we cannot prove a worktree has NO
+# live owner, so even a merged/pushed/idle worktree must be KEPT. This is the
+# fail-CLOSED guard that replaces the old fail-OPEN behaviour (empty probe result =>
+# "reap everything") that caused the incident. Non-tautological: the contrast case
+# (probe OK) reaps the very same fixture, and removing the LIVE_QUERY_FAILED guard
+# flips the fail-closed case back to SAFE-PRUNE-* and the assertions fail.
+echo "[28] fail-closed: liveness probe unavailable → UNSAFE-KEEP, --execute removes nothing"
+R=$(new_repo); make_nogh "$R"; add_origin "$R"
+WT=$(add_worktree "$R" "failclosed-feat")
+push_branch "$R" "worktree-failclosed-feat"
+# probe FAILED → fail-closed keep (note: NO TEST_MODE so the guard path is live)
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_IGNORE_LOCKS=1 \
+        PWT_WORKTREE_GC_TEST_QUERY_FAILED=1 PATH="$R/_nogh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "probe-failed pushed → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" failclosed-feat)"
+assert_eq "probe-failed live_query_failed flag true" "true" "$(field_of "$JSON" failclosed-feat live_query_failed)"
+# --execute under a failed probe must remove NOTHING
+( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_IGNORE_LOCKS=1 \
+  PWT_WORKTREE_GC_TEST_QUERY_FAILED=1 PATH="$R/_nogh:$PATH" bash "$GC" --execute --json >/dev/null 2>&1 )
+assert_eq "probe-failed worktree survives --execute" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+# CONTRAST: probe OK (TEST_MODE empty) → the SAME fixture is reaped
+JSON=$(run_gc "$R" --json)
+assert_eq "probe-OK same fixture → SAFE-PRUNE-PUSHED" "SAFE-PRUNE-PUSHED" "$(class_of "$JSON" failclosed-feat)"
+assert_eq "probe-OK live_query_failed flag false" "false" "$(field_of "$JSON" failclosed-feat live_query_failed)"
+
 echo ""
 echo "── results: $PASS passed, $FAIL failed ──"
 [ "$FAIL" -eq 0 ]

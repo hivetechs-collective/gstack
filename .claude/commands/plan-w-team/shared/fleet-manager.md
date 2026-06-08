@@ -137,7 +137,7 @@ The hook NEVER blocks an agent spawn. The reader NEVER crashes /plan-w-team.
 
 ## Adding a New Event Type
 
-If a future enhancement (T4 supervisor, T5 /goal wrapper) needs a new event:
+If a new consumer (the supervisor dispatch, the `/goal` evaluator) or a future enhancement needs a new event:
 
 1. Add a row to the JSONL Schema table in this file with the event name, required fields, and source.
 2. Update `fleet-writer.sh`'s `case "$EVENT_NAME"` block.

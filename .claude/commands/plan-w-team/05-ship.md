@@ -786,6 +786,24 @@ VERSION_DECISION=$(route_orchestrator version-bump-major-vs-minor "$SLUG" \
   "options=PATCH,MINOR,MAJOR")
 ```
 
+**Concurrent-run safety — rebump from CURRENT main, not the spawn snapshot
+(PWT-VERSION-COLLISION).** Once the bump KIND is chosen, derive the new version
+number from main's CURRENT `VERSION` at ship time (after fetch/rebase), NOT the
+`VERSION` captured when this run started. This is the difference between two
+concurrent runs colliding on the same version and stacking cleanly. Use the
+deterministic helper:
+
+```bash
+# Reads the authoritative current VERSION on the merge target (origin/main → main →
+# working tree), applies $VERSION_DECISION, and writes the rebumped VERSION file.
+NEXT_VERSION=$(.claude/scripts/plan-w-team-next-version.sh \
+  --bump "$(printf '%s' "$VERSION_DECISION" | tr '[:upper:]' '[:lower:]')" --write)
+echo "  rebumped VERSION → $NEXT_VERSION (from current main, not spawn snapshot)"
+```
+
+Head the new `CHANGELOG.md` entry with `$NEXT_VERSION` and insert it newest-first.
+Rationale + the regression test live in `shared/versioning.md §Concurrent runs`.
+
 <!-- Original: MINOR and MAJOR bumps asked the user. Orchestrator decides based
      on diff classification (breaking changes, new API surface, feature scope).
      Fall-through: AskUserQuestion if router unavailable. -->
@@ -865,8 +883,14 @@ For non-UI features on the same repo (e.g., a backend-only PR), omit the ledger 
 
 `git push` is a shared-state action. Require an explicit acknowledgment file or user confirmation before pushing. This guards against spurious `--ship-only` re-runs pushing partial state.
 
+**Autonomous-run auto-clear (PLAN_W_TEAM_AUTO_APPROVE_PUSH).** A `pwt-goal.sh --worker-only` worker (and the `--launch` path) exports `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` into the worker env precisely so the push-ack gate clears WITHOUT a human pause — the whole point of an unattended run. Before this was consumed (1.35.0), the var was set but inert: the worker either hand-`touch`ed the ack file (brittle, LLM-dependent) or blocked here and stopped short of ship. Auto-create the ack file when the env signal is present so the autonomous push proceeds deterministically. Interactive runs (var unset) are unchanged — they still require the explicit opt-in.
+
 ```bash
 ACK_FILE=".claude/state/plan-w-team-ack-$SLUG"
+if [ ! -f "$ACK_FILE" ] && [ "${PLAN_W_TEAM_AUTO_APPROVE_PUSH:-0}" = "1" ]; then
+  : > "$ACK_FILE"
+  echo "✓ push-ack auto-cleared (PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 — autonomous run)"
+fi
 if [ ! -f "$ACK_FILE" ]; then
   echo "Ship gate 6g: no push acknowledgment."
   echo "Create $ACK_FILE (empty) or confirm with the user before pushing."
@@ -1039,6 +1063,65 @@ The supervisor's merge-gate uses these signals via the matrix:
 The Step 5 reviewer enforces this by checking, for any PR carrying `DO NOT MERGE`: either a governance-tag surface matched in the diff, OR a `supervisor-reviewer-delegation:` HTML comment exists in the PR body. Neither present → CRITICAL.
 
 Read `shared/artifact-storage.md` for review log and streak tracking formats.
+
+## 6g-ter. Worker Self-Merge to main (autonomous + reversible only) — Deliverable 2 (1.35.0)
+
+**Why this exists.** Until 1.35.0 the worker pushed its branch + opened a PR and then **stopped**, leaving the merge to the supervisor/human. In an unattended `pwt-goal.sh --worker-only` run there is no separate bg supervisor — the origin chat is the live supervisor — and the 2026-06-07 incident (run `10ac5920`) showed the worker stopping short of ship entirely (the anti-skip anchor was inert; see `pwt-goal.sh` seed-path fix). The end state of a clean autonomous run MUST be **work on `main`, branch + worktree reclaimed, without supervisor hand-merging** (brief Deliverable 2). The worker self-ships.
+
+**This does NOT weaken the human-owned one-way-door gate.** Self-merge fires ONLY for **reversible** PRs (no `DO NOT MERGE` label). A one-way-door surface (governance-tag match, §6g label block above) keeps the label and is surfaced to the human exactly as before — self-merge is skipped for it. And it fires ONLY in autonomous mode (`PLAN_W_TEAM_AUTO_APPROVE_PUSH=1`); interactive runs open the PR and stop, unchanged.
+
+```bash
+# Gate 1: autonomous mode only. Interactive runs leave the PR for the human.
+if [ "${PLAN_W_TEAM_AUTO_APPROVE_PUSH:-0}" != "1" ]; then
+  echo "ℹ self-merge skipped: interactive run (PLAN_W_TEAM_AUTO_APPROVE_PUSH unset) — PR left for review"
+elif [ "${PWT_DISABLE_SELF_MERGE:-0}" = "1" ]; then
+  echo "ℹ self-merge skipped: PWT_DISABLE_SELF_MERGE=1 (kill switch)"
+else
+  # Gate 2: reversible only — a DO NOT MERGE label means a one-way-door surface
+  # (or explicit supervisor-reviewer delegation). Those stay human-gated.
+  PR_LABELS=$(gh pr view --json labels --jq '[.labels[].name] | join(",")' 2>/dev/null || echo "")
+  if printf '%s' "$PR_LABELS" | grep -q 'DO NOT MERGE'; then
+    echo "⚠ self-merge skipped: PR carries 'DO NOT MERGE' (one-way-door / delegation) — surfaced to human"
+  else
+    # CI-aware merge form (mirrors supervisor-protocol §CI-Aware Action Hierarchy
+    # rows 5-7). A real GitHub Actions build/test/deploy workflow → --auto (GitHub
+    # waits for required checks). Local-Makefile / no CI (the no-github-actions.md
+    # canonical, and this repo) → --admin (local gates already passed pre-push at
+    # §6b). Detection: any workflow YAML with an on: push|pull_request trigger.
+    CI_MODE="none"
+    if [ -d .github/workflows ]; then
+      if grep -rlE '^[[:space:]]*on:|pull_request|[[:space:]]push:' .github/workflows/*.y*ml 2>/dev/null \
+         | grep -q .; then
+        CI_MODE="github-actions"
+      fi
+    fi
+    if [ "$CI_MODE" = "github-actions" ]; then
+      MERGE_FLAGS="--auto --squash --delete-branch"
+    else
+      MERGE_FLAGS="--admin --squash --delete-branch"
+    fi
+    echo "→ worker self-merge (reversible, autonomous, ci_mode=$CI_MODE): gh pr merge $MERGE_FLAGS"
+    if gh pr merge $MERGE_FLAGS 2>&1; then
+      echo "✅ worker self-merged to $DEFAULT_BRANCH (no supervisor hand-merge)"
+      # Reclaim the worktree + fast-forward the primary checkout. The helper
+      # enforces its own safety invariants (containment, uncommitted/in-use,
+      # ff-only) and safe-skips rather than failing — calling it here is safe.
+      if [ -x .claude/scripts/plan-w-team-worktree-on-merge.sh ] && [ -n "${WORKTREE_PATH:-}" ]; then
+        .claude/scripts/plan-w-team-worktree-on-merge.sh "$WORKTREE_PATH" "$BRANCH" "$SLUG" \
+          | jq -r '"✓ post-merge reclaim: " + (.reason // "n/a")' 2>/dev/null || true
+      fi
+    else
+      # Fail-SOFT: do NOT exit 1 (that would trip the §6-0a minimal-retro trap and
+      # stop the run short — the very failure mode this fixes). The branch is pushed
+      # and the PR is open; surface for the supervisor/human and continue to retro.
+      echo "⚠ self-merge did not complete (gh error / protected branch / required checks pending)."
+      echo "   The PR is open and pushed — supervisor or human can merge. Continuing to post-ship + retro."
+    fi
+  fi
+fi
+```
+
+**Verification (AC5).** A clean reversible autonomous run reaches `✅ worker self-merged to <default>` here, then §6h reclaim leaves the tree on `main`. Verified short of a full multi-hour live run by: (a) the directive is unconditional on the autonomous+reversible path (quoted above); (b) the push-ack auto-clear (§6g) removes the only human pause between green tests and this merge; (c) the existing `plan-w-team-worktree-on-merge.sh` ff-only reclaim is reused, not reinvented.
 
 ## 6g-bis. Build-Artifact Hygiene (E7 — reclaim before the worktree lingers)
 

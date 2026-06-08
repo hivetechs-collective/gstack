@@ -116,6 +116,20 @@ SCOPE_MODE=$(route_orchestrator scope-challenge-mode "$SLUG" \
      Orchestrator decides based on feature description + complexity signals.
      Fall-through: AskUserQuestion with the same options if router unavailable. -->
 
+## 0f. Cross-Feature / Recent-Commit Overlap Scan (M2)
+
+The Stage-2 collision gates are intra-run only. Nothing else checks whether THIS feature duplicates a module a **prior run / recent commit / sibling spec** already added. Run a lightweight, deterministic, **fail-open** scan (no network) and fold any findings into the Step-1 Reuse Audit (H1). This is the cross-feature counterpart of the in-feature reuse-first rule (`shared/reuse-first.md`).
+
+```bash
+# Derive a few concept keywords + the module paths this feature will touch
+# (from the feature description / CURRENT→THIS PLAN mapping above).
+.claude/scripts/plan-w-team-reuse-overlap-scan.sh \
+  --terms "<concept keywords e.g. alerting notification retry>" \
+  --paths "<module paths e.g. src/alerts src/notify>"
+```
+
+The scan greps recent commit subjects + `docs/specs/*.md` titles/filenames for the terms and reports the last commit that touched each path. It **always exits 0** (advisory — never blocks Step 0). Every `overlap(...)` line it prints becomes a candidate row the lead must address in the Step-1 Reuse Audit with a REUSE / EXTEND / BUILD-NEW verdict. No findings → proceed. (Deterministic, bash 3.2, no network — safe in any environment.)
+
 ## Output
 
 Proceed / Proceed with modifications / Recommend against (with reasoning). If proceeding, carry the taste calibration, door labels, and dream state mapping forward into the spec.

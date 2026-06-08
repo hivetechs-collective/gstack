@@ -21,8 +21,15 @@
 # Usage:
 #   plan-w-team-cleanup-stale-goal-states.sh                    # silent unless removals
 #   plan-w-team-cleanup-stale-goal-states.sh --verbose          # log every action
+#   plan-w-team-cleanup-stale-goal-states.sh --quiet            # suppress even the summary
 #   plan-w-team-cleanup-stale-goal-states.sh --dry-run          # list, don't delete
 #   STATE_DIR=/path/to/state plan-w-team-cleanup-stale-goal-states.sh   # override
+#
+# This is the SINGLE stale-goal-state janitor (reconciled 2026-06-08): both
+# session-start (no args) and 07-retro.md (--quiet) call it. It only ever removes
+# terminal_state=SUCCESS and PRESERVES escalation/dead/null, so neither caller can
+# delete a goal-state another run left for inspection. (Replaces the second
+# all-terminal cleaner plan-w-team-cleanup-stale-goals.sh, removed in the same change.)
 #
 # Exit code: always 0 (best-effort; never block session start)
 
@@ -31,10 +38,12 @@ set -u
 STATE_DIR="${STATE_DIR:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)}/.claude/state}"
 VERBOSE=0
 DRY_RUN=0
+QUIET=0
 
 for arg in "$@"; do
     case "$arg" in
         --verbose|-v) VERBOSE=1 ;;
+        --quiet|-q) QUIET=1 ;;
         --dry-run|-n) DRY_RUN=1 ;;
         --help|-h)
             sed -nE 's/^# ?//; 1,/^$/p' "$0" | head -40
@@ -80,7 +89,7 @@ for f in "$STATE_DIR"/plan-w-team-goal-*.json; do
     fi
 done
 
-if [ "$REMOVED" -gt 0 ] && [ "$DRY_RUN" != "1" ]; then
+if [ "$REMOVED" -gt 0 ] && [ "$DRY_RUN" != "1" ] && [ "$QUIET" != "1" ]; then
     echo "🧹 cleaned $REMOVED stale SUCCESS goal-state file(s)"
 fi
 
