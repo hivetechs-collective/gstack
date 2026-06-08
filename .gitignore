@@ -22,3 +22,14 @@ bun.lock
 .claude/state/plan-usage-cache.json
 .claude/state/usage-breakdown-cache.json
 .claude/state/version-uplift-pending.flag
+
+# Claude /plan-w-team test corpus + per-run state (synced/vendored — not tracked in consumers)
+tests/skill/cases/
+tests/skill/scenarios/
+.claude/scripts/*.test.sh
+.claude/scripts/*.test.ts
+.claude/hooks/*.test.sh
+.claude/state/plan-w-team-credwall-*.json
+.claude/state/pwt-brief-*.md
+.claude/state/plan-w-team-ship-verdict-*
+.claude/state/supervisor-progress-*.json
