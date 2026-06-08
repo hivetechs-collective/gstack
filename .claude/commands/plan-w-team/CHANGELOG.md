@@ -21,6 +21,46 @@ Entries are newest-first.
 
 ---
 
+## [1.41.0] — 2026-06-08 (7b70927)
+
+End-to-end cleanup hardening. A 27-agent deep evaluation (prompted by recurring Helm/
+WhatsApp "🔴 CleanRev Intake Failed … could not detach HEAD" alerts) root-caused the
+failure and found two adjacent stale-leak classes. The recent mac-mini reset cleared the
+_snapshot_ but NOT the mechanism — confirmed recurring. All three fixes are additive.
+
+- **fix(sync, recurrence root-cause)**: the CleanRev intake cron's `git pull --rebase
+--autostash` (cleanscale `scripts/intake/run-cron.sh`) aborts whenever claude-pattern's
+  synced test corpus sits UNTRACKED in a consumer while `origin` tracks the same path —
+  the sync COPIES `tests/skill/*.bats` (rsync) + `.claude/scripts/*.test.sh` (cp) into the
+  consumer working tree but never commits them, and `--autostash` only saves _tracked_
+  mods. Extended the consumer-side gitignore self-heal in `sync-to-project.sh` (the idiom
+  that already untracks per-session caches) to ignore the synced test corpus
+  (`tests/skill/cases/`, `tests/skill/scenarios/`, `.claude/scripts|hooks/*.test.sh`) +
+  per-run state classes (`plan-w-team-credwall-*.json`, `pwt-brief-*.md`, ship-verdict,
+  `supervisor-progress-*`). An ignored untracked file is silently OVERWRITTEN on checkout
+  (no abort) and never gets committed — eliminating the "could not detach HEAD" class.
+  Source repo never syncs to itself, so its own tracked corpus is untouched; append-only,
+  so already-tracked consumer copies stay tracked. Regression test
+  `tests/skill/cases/sync-gitignore-test-corpus.bats` proves the git mechanism
+  (ignored→overwrite vs un-ignored→abort).
+- **fix(worktree-gc, stale-leak)**: the GC dirty-ignore set omitted the synced tooling
+  layer, so a merged/pushed worktree whose only dirt was synced `tests/skill/`/`docs/
+operations/` files was pinned `UNSAFE-KEEP` forever and never reclaimed (live: cleanscale
+  2 merged, parts 4, helm 4 stuck). Added `tests/skill/` + `docs/operations/` to the
+  `PWT_WORKTREE_GC_DIRTY_IGNORE` default at both sites (`plan-w-team-worktree-gc.sh:527`
+  - `:777`). Genuine product dirt still pins (only the synced layer is ignored), and only
+    merged/pushed worktrees are eligible. Regression test `worktree-gc.test.sh` T18b
+    (synced-tooling-only dirt → SAFE-PRUNE-MERGED; contrast T18 keeps a real edit → KEEP).
+- **fix(retro, cross-run stale-block)**: the credential-wall artifact was never deleted at
+  retro and the ship gate (6a-quinquies) globs `plan-w-team-credwall-*.json` blocking on
+  any `resolved:false`, so a stale/false-positive wall failed the NEXT run's ship gate
+  closed (reproduced: gate exit=1). `07-retro.md` now removes the run's credwall marker
+  (slug + the legacy literal `active`) on success — reaching retro means we shipped past
+  that gate, so the wall is resolved/moot.
+- Deferred (recorded in the recursive-follow-up log): WT-2 (share the GC dirty-ignore into
+  `on-merge.sh` invariant-2 — backstopped by the periodic GC), WT-5 (retro worktree-scoped
+  untracked sweep), SA-4 (broaden the stale-state janitor beyond SUCCESS goal-states).
+
 ## [1.40.0] — 2026-06-08 (4263454)
 
 Finishes + ships the disk-hygiene WIP the 2026-06-08 deep-audit flagged (the user

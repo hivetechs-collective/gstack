@@ -519,12 +519,16 @@ classify_one() {
     #   • SEGMENT tokens (bare name, no "/", e.g. "node_modules", "build", "dist",
     #     "DerivedData", ".expo"): match if the name appears as ANY path segment
     #     (covers monorepo nesting like apps/web/build/, packages/x/node_modules/).
-    # ".claude/" subsumes the old ".claude/state/" default. Override replaces the
-    # whole set (empty disables). bash 3.2 + zsh safe (no arrays in the shell path;
-    # the matcher runs in python).
+    # ".claude/" subsumes the old ".claude/state/" default. "tests/skill/" and
+    # "docs/operations/" are the rest of the claude-pattern-SYNCED tooling layer:
+    # like .claude/, a consumer receives them by sync (never develops them), so a
+    # merged/pushed worktree whose ONLY dirt is synced .bats/test/doc files would
+    # otherwise be pinned UNSAFE-KEEP forever and never reclaimed (2026-06-08 leak).
+    # Override replaces the whole set (empty disables). bash 3.2 + zsh safe (no arrays
+    # in the shell path; the matcher runs in python).
     local porcelain real_dirty ignore_prefixes
     porcelain="$(git -C "$wt_path" status --porcelain 2>/dev/null || echo "")"
-    ignore_prefixes="${PWT_WORKTREE_GC_DIRTY_IGNORE-.claude/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist}"
+    ignore_prefixes="${PWT_WORKTREE_GC_DIRTY_IGNORE-.claude/:tests/skill/:docs/operations/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist}"
     if [ -z "$porcelain" ]; then
         UNCOMMITTED=0
     elif [ -z "$ignore_prefixes" ]; then
@@ -774,7 +778,7 @@ preserve_then_reap() {
     real_wt="$(realpath "$wt_path" 2>/dev/null || echo "$wt_path")"
     [ -n "$wt_top" ] && wt_top="$(realpath "$wt_top" 2>/dev/null || echo "$wt_top")"
 
-    local ignore_set="${PWT_WORKTREE_GC_DIRTY_IGNORE-.claude/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist}"
+    local ignore_set="${PWT_WORKTREE_GC_DIRTY_IGNORE-.claude/:tests/skill/:docs/operations/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist}"
 
     if [ -n "$wt_top" ] && [ "$wt_top" = "$real_wt" ]; then
         # Genuine worktree → diff + untracked list, filtered to non-ignored paths.

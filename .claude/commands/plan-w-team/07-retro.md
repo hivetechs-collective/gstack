@@ -714,6 +714,14 @@ if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
   # net-new-surface docs-waiver list — both are per-run curation, not durable state.
   rm -f ".claude/state/plan-w-team-secret-scan-allow-${SLUG}"   # B4 retired allow-file
   rm -f ".claude/state/plan-w-team-docs-waived-${SLUG}.txt"     # A1/A6 per-run waiver
+  # SA-2 (2026-06-08): retire this run's credential-wall artifact. The ship gate
+  # (6a-quinquies) GLOBS plan-w-team-credwall-*.json and blocks on ANY resolved:false,
+  # so a stale/false-positive wall left behind fails the NEXT run's ship gate closed
+  # (reproduced live: gate exit=1 on a leftover marker). Reaching retro means we shipped
+  # past that gate, so the wall is resolved or moot → safe to remove. Clean this run's
+  # slug AND the legacy literal "active" the detector defaults to when no slug is known.
+  rm -f ".claude/state/plan-w-team-credwall-${SLUG}.json"       # SA-2 per-run credential-wall marker
+  rm -f ".claude/state/plan-w-team-credwall-active.json"        # SA-2 legacy default-slug marker
 
   # Janitor pass: sweep up leftover SUCCESS goal files — this run's now-shipped
   # state plus any older SUCCESS files from runs whose own retro cleanup never

@@ -377,6 +377,31 @@ JSON=$(run_gc "$R" --json)
 assert_eq "real-edit merged → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" realdirty-feat)"
 assert_eq "real-edit uncommitted flag true" "true" "$(field_of "$JSON" realdirty-feat uncommitted)"
 
+# ── Test 18b: ignore-path dirty — synced TOOLING layer (tests/skill, docs/operations) ─
+# Like .claude/, the consumer RECEIVES tests/skill/*.bats + docs/operations/*.md by
+# sync and never develops them. A merged worktree dirty ONLY in those synced paths was
+# pinned UNSAFE-KEEP forever (the 2026-06-08 worktree-accumulation leak) — it must now
+# classify SAFE-PRUNE-MERGED. Non-tautological: the contrast (Test 18) keeps a genuine
+# edit, and removing tests/skill//docs/operations/ from the dirty-ignore set flips this
+# back to UNSAFE-KEEP.
+echo "[18b] dirty only in synced tooling layer (tests/skill, docs/operations) → SAFE-PRUNE-MERGED"
+R=$(new_repo); make_nogh "$R"
+# Mirror a real consumer that already TRACKS the synced tooling dirs (cleanscale has
+# the whole tests/skill framework committed). git collapses a FULLY-untracked dir to
+# "?? tests/", so tracked siblings are required for a new untracked file to surface
+# with its full "tests/skill/cases/..." path (which the dirty-ignore prefix matches).
+mkdir -p "$R/tests/skill/cases" "$R/docs/operations"
+echo seed > "$R/tests/skill/cases/.gitkeep"
+echo seed > "$R/docs/operations/.gitkeep"
+git -C "$R" add tests/skill/cases/.gitkeep docs/operations/.gitkeep >/dev/null 2>&1
+git -C "$R" commit -qm "seed synced tooling dirs (tracked)" >/dev/null 2>&1
+WT=$(add_worktree "$R" "synceddirty-feat" merge)
+echo '@test "x" { :; }'      > "$WT/tests/skill/cases/new-from-sync.bats"   # synced, untracked
+echo 'synced doc'           > "$WT/docs/operations/new-from-sync.md"        # synced, untracked
+JSON=$(run_gc "$R" --json)
+assert_eq "synced-tooling-only-dirty merged → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" synceddirty-feat)"
+assert_eq "synced-tooling-only-dirty uncommitted flag false" "false" "$(field_of "$JSON" synceddirty-feat uncommitted)"
+
 # Helper: run GC WITHOUT ignoring locks (exercises stale-lock logic). Still uses
 # TEST_MODE=1 so the live-session scan is empty — lock liveness comes only from
 # commit recency. gh stub (passed via PATH) supplies merged-ness.
