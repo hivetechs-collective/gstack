@@ -422,10 +422,42 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
     # consumer repo that hasn't synced yet) — fall back to raw `claude agents`.
     _STATUSLINE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     _EXT_WRAPPER="$_STATUSLINE_DIR/scripts/claude-agents-extended.sh"
-    if [ -x "$_EXT_WRAPPER" ]; then
-      "$_EXT_WRAPPER" 2>/dev/null > "$bg_cache.tmp" && mv "$bg_cache.tmp" "$bg_cache" 2>/dev/null
-    else
-      claude agents --json 2>/dev/null > "$bg_cache.tmp" && mv "$bg_cache.tmp" "$bg_cache" 2>/dev/null
+    # Stale-while-revalidate: refresh in a DETACHED background process and
+    # render THIS pass from the existing cache. Claude Code cancels an
+    # in-flight statusline command whenever a new update trigger fires
+    # (refreshInterval or any conversation event), so a synchronous refresh
+    # that outlives the trigger gap is killed mid-run: the cache never
+    # commits, every render restarts cold, and everything printed after this
+    # section (plan / usage / today lines) never appears. Busy sessions hit
+    # that loop permanently. Detached (own process group via set -m) the
+    # refresh survives the cancellation and a later pass picks up the result.
+    #
+    # Stampede guard: a marker file skips re-spawning while a refresh is in
+    # flight; a marker older than 60s is treated as orphaned and reclaimed.
+    # Worst case on the claim race is one duplicate refresher — harmless,
+    # both commit atomically via mv of unique tmp files.
+    _bg_marker="$bg_cache.refreshing"
+    _marker_age=999
+    if [ -f "$_bg_marker" ]; then
+      _marker_age=$(( $(date +%s) - $(stat -f %m "$_bg_marker" 2>/dev/null || echo 0) ))
+    fi
+    if [ "$_marker_age" -gt 60 ]; then
+      : > "$_bg_marker" 2>/dev/null
+      rm -f "$bg_cache.tmp" 2>/dev/null  # reap pre-fix orphan (sync refresh killed mid-write)
+      _refresh_via=""
+      [ -x "$_EXT_WRAPPER" ] && _refresh_via="$_EXT_WRAPPER"
+      (
+        set -m 2>/dev/null
+        nohup bash -c '
+          cache="$1"; wrapper="$2"; out="$cache.tmp.$$"
+          if [ -n "$wrapper" ]; then
+            "$wrapper" > "$out" 2>/dev/null
+          else
+            claude agents --json > "$out" 2>/dev/null
+          fi && [ -s "$out" ] && mv "$out" "$cache" 2>/dev/null
+          rm -f "$out" "$cache.refreshing" 2>/dev/null
+        ' _ "$bg_cache" "$_refresh_via" </dev/null >/dev/null 2>&1 &
+      ) 2>/dev/null
     fi
   fi
   own_sid=""

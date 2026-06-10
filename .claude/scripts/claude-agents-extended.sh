@@ -159,7 +159,13 @@ now_epoch=$(date +%s)
 subagents_json="[]"
 
 # Find candidate subagent JSONL files modified within the freshness window.
-# -mtime -1 keeps the find cheap (last 24h); we filter precisely below.
+# Pre-filter by mtime IN find itself, at minute granularity (FRESHNESS_SEC
+# rounded up plus one minute of slack); the loop below still applies the
+# precise seconds-level check. The previous -mtime -1 (24h) pre-filter let
+# hundreds of finished agents' files through on workflow-heavy days, and at
+# ~6 process spawns per candidate the wrapper took ~9s — longer than the
+# statusline trigger interval, so a synchronous cache refresh never survived
+# to completion on busy sessions.
 #
 # TWO depths are captured:
 #   - Agent-tool subagents sit directly under <sid>/subagents/agent-*.jsonl (depth 4).
@@ -170,10 +176,11 @@ subagents_json="[]"
 # "it says it's running but we don't capture it" gap. The two -path globs are
 # mutually exclusive (one demands `agent-` immediately after `subagents/`, the
 # other demands `workflows/wf_*/` first), so neither double-counts.
+FRESHNESS_MIN=$(( FRESHNESS_SEC / 60 + 1 ))
 candidates=$(find "$PROJECTS_DIR" -mindepth 4 -maxdepth 6 \
   \( -path '*/subagents/agent-*.jsonl' \
      -o -path '*/subagents/workflows/wf_*/agent-*.jsonl' \) \
-  -type f -mtime -1 2>/dev/null || true)
+  -type f -mmin "-$FRESHNESS_MIN" 2>/dev/null || true)
 
 if [ -n "$candidates" ]; then
   # Build entries one per line as compact JSON, then collect into an array.
@@ -211,6 +218,28 @@ if [ -n "$candidates" ]; then
     agent_id="${agent_id%.jsonl}"
     meta_file="${sub_dir}/agent-${agent_id}.meta.json"
 
+    # Terminal-state check FIRST — it's the cheapest gate (one stat) and on
+    # busy days the candidate list is dominated by already-finished agents,
+    # so running it before any jq keeps per-candidate cost at ~1 process for
+    # the common (stale) case instead of ~6.
+    #
+    # mtime is the authoritative signal. Active subagents append to their
+    # JSONL on every assistant turn / tool call / tool result, so a
+    # quiescent file (no writes in FRESHNESS_SEC) means the subagent is
+    # either done or stuck — both reasons to exclude.
+    #
+    # Why NOT use parent transcript tool_result matching: Claude Code 2.1.x
+    # async Agent tool calls emit a tool_result IMMEDIATELY upon launch with
+    # content "Async agent launched successfully." The real completion
+    # arrives later via task-notification, with no standard marker tying it
+    # back to the toolUseId. Using tool_result presence as terminal signal
+    # would mark every async subagent as terminal seconds after spawn.
+    file_mtime=$(stat -f %m "$subagent_file" 2>/dev/null || stat -c %Y "$subagent_file" 2>/dev/null || echo 0)
+    age=$(( now_epoch - file_mtime ))
+    if [ "$age" -gt "$FRESHNESS_SEC" ]; then
+      continue
+    fi
+
     # Claude Code 2.1.150 ships an .meta.json sidecar per subagent with
     # agentType, description, worktreePath, toolUseId. Prefer those over
     # parsing the JSONL — meta is stable, JSONL first-line is verbose prompt.
@@ -233,23 +262,6 @@ if [ -n "$candidates" ]; then
       if ! head -n 1 "$subagent_file" 2>/dev/null | jq -e 'type == "object"' >/dev/null 2>&1; then
         continue
       fi
-    fi
-
-    # Terminal-state check: mtime is the authoritative signal. Active
-    # subagents append to their JSONL on every assistant turn / tool call /
-    # tool result, so a quiescent file (no writes in FRESHNESS_SEC) means
-    # the subagent is either done or stuck — both reasons to exclude.
-    #
-    # Why NOT use parent transcript tool_result matching: Claude Code 2.1.x
-    # async Agent tool calls emit a tool_result IMMEDIATELY upon launch with
-    # content "Async agent launched successfully." The real completion
-    # arrives later via task-notification, with no standard marker tying it
-    # back to the toolUseId. Using tool_result presence as terminal signal
-    # would mark every async subagent as terminal seconds after spawn.
-    file_mtime=$(stat -f %m "$subagent_file" 2>/dev/null || stat -c %Y "$subagent_file" 2>/dev/null || echo 0)
-    age=$(( now_epoch - file_mtime ))
-    if [ "$age" -gt "$FRESHNESS_SEC" ]; then
-      continue
     fi
 
     # Parent's cwd is the canonical cwd for filter matching — that's where
