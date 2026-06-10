@@ -1,1 +1,0 @@
-{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"\n```status\n{\n  \"slug\": \"escq-feature\",\n  \"stage\": \"retro-complete\",\n  \"ts\": \"2026-05-25T16:00:00Z\",\n  \"workflow_lock\": \"done\",\n  \"ship_readiness_gate\": \"PASS\",\n  \"fleet\": {},\n  \"pending_escalations\": [],\n  \"low_confidence_routes\": 0\n}\n```\n"}]}}

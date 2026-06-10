@@ -130,6 +130,36 @@ feat: some change
 MSG
 ```
 
+### Staging: never `git add` a fixed multi-path list
+
+A `git add a b c` is **all-or-nothing**: if any one argument is a non-existent
+pathspec, git aborts the entire stage and nothing is added (sync-all incident
+"C" — a repo without `docs/operations/` killed the whole sync commit). Two rules:
+
+1. **Add per path with `|| true`** so a missing path cannot abort the rest:
+
+   ```bash
+   # ✅ each path isolated
+   for p in scripts/Makefile.template docs/operations/BOARD.md; do
+     git -C "$dir" add "$p" 2>/dev/null || true
+   done
+   # ❌ one bad pathspec aborts all of them
+   git -C "$dir" add scripts/Makefile.template docs/operations/BOARD.md
+   ```
+
+2. **Never stage a fixed path list that may include a source-only sibling.** A
+   recursive `git add .claude/` (or a hand-listed set) can sweep in paths that
+   must never ride the commit — per-run `.claude/state/*`, or a source-only
+   sibling like `.githooks/`. Scope the add with negative pathspecs and an
+   explicit allowlist:
+
+   ```bash
+   git -C "$dir" add -- .claude/ ':!.claude/state'   # state never rides a sync commit
+   ```
+
+   The shared sync-commit discipline (`.claude/scripts/sync-commit-lib.sh`)
+   encodes both rules — reuse it instead of hand-rolling a `git add` list.
+
 ### Canonical SLUG validator
 
 Feature names, branch-safe identifiers, and anything that lands in a filesystem

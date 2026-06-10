@@ -1,2 +1,0 @@
-{"type":"assistant","message":{"content":[{"type":"text","text":"Wrapping up the pipeline."}]}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"Final supervisor summary:\n```json\n{\"stage\":\"retro-complete\",\"workflow_lock\":\"done\",\"slug\":\"escq-feature\"}\n```\nPipeline complete."}]}}

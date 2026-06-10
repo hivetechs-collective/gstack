@@ -1,2 +1,0 @@
-{"type":"assistant","message":{"content":[{"type":"text","text":"Reading goal state (array form)."}]}}
-{"type":"user","message":{"content":[{"type":"tool_result","content":[{"type":"text","text":"{\"stage\":\"retro-complete\",\"workflow_lock\":\"done\",\"slug\":\"escq-feature\"}"}]}]}}

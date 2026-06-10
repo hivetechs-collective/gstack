@@ -21,6 +21,51 @@ Entries are newest-first.
 
 ---
 
+## [1.43.0] — 2026-06-10 (ead76d4)
+
+Sync-design review **ranks 4–8** (wave 2 of the 2026-06-09 sync-hardening review;
+ranks 1–3 shipped in `bbb1b98`). Closes the residual drift gaps that produced the
+A–G cleanscale incidents by making implicit, hand-maintained sync contracts
+declared and machine-checked. All additive; the deferred manifest-loop inversion
+was NOT attempted (it would blind both lint extractors).
+
+- feat (R4): derived drift-detection lints — `sync-script-references.bats` gains
+  an `all_tracked_runtime_scripts()` helper + a NOT_SYNCED carve-out (syncer trio
+  - secrets + source-only tooling) + a stale-carve-out sentinel; new source-only
+    `.claude/.sync-extra-manifest` (rsync-excluded) declares the 6 hand-cp'd
+    non-.claude assets, with `sync-extra-manifest.bats` asserting each has a `cp`
+    line AND a `Would copy:` echo plus a reverse unmanifested-hand-cp sentinel.
+- feat (R5): `tests/skill/scenarios.local/` corpus ownership boundary — a SIBLING
+  of `scenarios/` (the trailing-slash corpus gitignore can't match it, so it
+  stays consumer-tracked), discovered by BOTH `run.sh` and `run-scenarios.sh`;
+  one-shot idempotent reconciliation in `sync-to-project.sh` untracks only
+  source-owned corpus the consumer tracks (live from the source's own
+  `git ls-files`), fail-safe + self-sync-guarded + files kept on disk;
+  CONVENTIONS.md + README document the boundary.
+- feat (R6): state-leak guard brackets the single merged bats invocation in
+  `run.sh` — additive `comm -13` diff of `.claude/state` before/after, folds
+  `state_leaked`/`leaked_paths` into the verdict + archival JSON, skips without
+  git, `SKILL_SKIP_STATE_LEAK_GUARD` escape hatch; fixes CONVENTIONS.md's
+  previously-false "the harness verifies this" claim (would have caught the
+  dmarc-monitor watermark at authoring time).
+- feat (R7): shared commit discipline — source-only `.claude/scripts/sync-commit-lib.sh`
+  (no cp line) extracts the dirty-refusal + scoped-commit with a CORRECTED writer
+  manifest (drop dead repo-root `board*.sh`; add `Makefile.template` +
+  `build-cleanup-preserve-installables.md` — both written by sync but never
+  committed, a silent-dirt bug). Per-path `git add … || true` kills the
+  all-or-nothing pathspec abort (incident C); `sync-all-projects.sh` sources it;
+  `sync-to-project.sh` gains opt-in `--commit` (default OFF). `shared/shell-safety.md`
+  (synced) gains the staging rule.
+- feat (R8): setup-path safety parity — `setup-new-project.sh` gains `--checksum`,
+  the `SECRET_GUARD_FILTERS` leak set, and an inline-duplicated gitignore
+  self-heal (literal corpus patterns stay physically in `sync-to-project.sh` for
+  its grep contract); thin-wrapper inversion rejected.
+
+Regression coverage: 5 new BDD-named bats cases (r10 ratchet) + widened
+`sync-script-references.bats`; full `make test-skill` green (bats + 79 shell + 1
+TS) including the pre-1.42 corpus and the 11 rank-1-3 regressions (the ranks-1-3
+`state-deny` pin was repointed to the lib's new home, invariant unchanged).
+
 ## [1.42.0] — 2026-06-09 (e0dd34e)
 
 Full end-to-end skill evaluation (user-requested). A 118-agent audit workflow (18 scoped

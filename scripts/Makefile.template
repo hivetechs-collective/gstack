@@ -1,0 +1,112 @@
+# Local CI + admin-squash-merge + deploy — the GitHub Actions replacement.
+#
+# Shipped to every repo by /plan-w-team via the sync-to-project.sh allowlist
+# (like ci-alert.yml.template). This is a TEMPLATE: copy/merge it into your repo's
+# top-level `Makefile` (it is NOT auto-installed, so it never clobbers an existing
+# Makefile). Customize the `deploy` target for your repo's deploy command.
+#
+# Governance: GitHub Actions MUST NOT be used for build/CI/deploy. The local
+# `make ci` + `make merge` (admin-squash) workflow IS the CI/CD system of record.
+# See .claude/commands/plan-w-team/shared/no-github-actions.md and memories
+# project_no_github_actions / user_workflow_local_ci_workaround.
+#
+# `make ci`   — runs the same typecheck/lint/test gate a CI workflow would, locally, for $0.
+# `make merge PR=<n>` — admin-squash-merge (no GH-Actions status checks to wait on).
+# `make deploy` — per-repo deploy command (customize before use).
+
+.PHONY: help ci ci-quick test merge deploy preflight-deploy-account status
+
+help: ## Show available targets
+	@echo "Local CI + merge + deploy (GitHub Actions replacement)"
+	@echo ""
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
+
+# Toolchain auto-detection shared by ci / ci-quick / test. Detects the package
+# manager / build tool from lockfiles + manifests. Fails loud (exit 1) on an
+# unrecognized toolchain rather than silently passing.
+define DETECT_PM
+	if [ -f pnpm-lock.yaml ]; then PM=pnpm; \
+	elif [ -f yarn.lock ]; then PM=yarn; \
+	elif [ -f package-lock.json ] || [ -f package.json ]; then PM=npm; \
+	elif [ -f Cargo.toml ]; then PM=cargo; \
+	elif [ -f go.mod ]; then PM=go; \
+	else echo "✗ no recognized toolchain (pnpm/npm/yarn/cargo/go) — edit the ci target for this repo"; exit 1; fi
+endef
+
+ci: ## Run local CI (typecheck + lint + test) — required before any push/merge
+	@$(DETECT_PM); \
+	echo "→ toolchain: $$PM"; \
+	case "$$PM" in \
+	  pnpm) pnpm run typecheck --if-present && pnpm run lint --if-present && pnpm test ;; \
+	  yarn) yarn run typecheck 2>/dev/null || true; yarn run lint 2>/dev/null || true; yarn test ;; \
+	  npm)  npm run typecheck --if-present && npm run lint --if-present && npm test ;; \
+	  cargo) cargo check && cargo clippy -- -D warnings && cargo test ;; \
+	  go)   go build ./... && go vet ./... && go test ./... ;; \
+	esac; \
+	echo "✓ local CI complete"
+
+ci-quick: ## Fast check (typecheck + lint only, no tests)
+	@$(DETECT_PM); \
+	echo "→ toolchain: $$PM (quick)"; \
+	case "$$PM" in \
+	  pnpm) pnpm run typecheck --if-present && pnpm run lint --if-present ;; \
+	  yarn) yarn run typecheck 2>/dev/null || true; yarn run lint 2>/dev/null || true ;; \
+	  npm)  npm run typecheck --if-present && npm run lint --if-present ;; \
+	  cargo) cargo check && cargo clippy -- -D warnings ;; \
+	  go)   go build ./... && go vet ./... ;; \
+	esac; \
+	echo "✓ quick check complete"
+
+test: ## Run the test suite only
+	@$(DETECT_PM); \
+	case "$$PM" in \
+	  pnpm) pnpm test ;; \
+	  yarn) yarn test ;; \
+	  npm)  npm test ;; \
+	  cargo) cargo test ;; \
+	  go)   go test ./... ;; \
+	esac
+
+merge: ## Admin-squash-merge a PR (no GH-Actions checks to wait on): make merge PR=<number>
+	@command -v gh >/dev/null 2>&1 || { echo "✗ gh (GitHub CLI) not installed — required for admin-squash-merge"; exit 1; }
+	@gh auth status >/dev/null 2>&1 || { echo "✗ gh not authenticated — run: gh auth login"; exit 1; }
+	@if [ -z "$(PR)" ]; then echo "✗ usage: make merge PR=<number>"; exit 1; fi
+	@echo "→ admin-squash-merging PR #$(PR)..."
+	gh pr merge "$(PR)" --admin --squash --delete-branch
+	@echo "✓ PR #$(PR) merged (squash) and branch deleted"
+
+# ─── Deploy + headless secret access ────────────────────────────────────────
+# Deploy secrets come from ~/.config/<project>/deploy.env (0600, OUTSIDE the repo)
+# via scripts/load-deploy-env.sh — NOT GitHub Actions secrets (the no-github-actions
+# rule forbids Actions) and NOT the OS keychain (its GUI unlock prompt HANGS headless
+# /plan-w-team workers). Full standard:
+#   .claude/commands/plan-w-team/shared/no-github-actions.md §"Deploy Secret Access".
+#
+# CRITICAL: `preflight-deploy-account` runs in a SEPARATE process, so a token IT loads
+# does NOT propagate to the `deploy` recipe. Each deploy recipe MUST source the loader
+# INLINE so the child deploy CLI inherits the token (see the deploy recipe below).
+
+preflight-deploy-account: ## Guard: refuse to deploy onto the wrong account/target
+	@if [ -x scripts/preflight-deploy-account.sh ]; then \
+	  . scripts/load-deploy-env.sh 2>/dev/null; scripts/preflight-deploy-account.sh; \
+	else \
+	  echo "ℹ no scripts/preflight-deploy-account.sh yet — add one to block wrong-account deploys (recommended)"; \
+	fi
+
+deploy: preflight-deploy-account ## Deploy (CUSTOMIZE: source the loader INLINE, then your deploy cmd)
+	@if [ -f scripts/load-deploy-env.sh ]; then \
+	  echo "✗ deploy not customized. Replace this recipe body with the inline-loader pattern:"; \
+	  echo "      . scripts/load-deploy-env.sh && <provider-deploy-cmd>   # e.g. pnpm run deploy → wrangler"; \
+	else \
+	  echo "✗ deploy not wired. Adopt the headless deploy-secret standard:"; \
+	  echo "    1. scripts/setup-<provider>-token.sh → writes ~/.config/<project>/deploy.env (0600, never echoed)"; \
+	  echo "    2. scripts/load-deploy-env.sh        → loads it only when the token var is unset"; \
+	  echo "    3. this recipe:  . scripts/load-deploy-env.sh && <provider-deploy-cmd>"; \
+	  echo "  Least-privilege token scope only (single deploy cap, one account). See no-github-actions.md."; \
+	fi
+	@echo "  Deploy MUST stay local — do NOT add a GitHub Actions deploy workflow."
+	@exit 1
+
+status: ## Show local vs remote main HEAD
+	@echo "Local  main: $$(git rev-parse main 2>/dev/null | head -c 8 || echo '?')"
+	@echo "Remote main: $$(git rev-parse origin/main 2>/dev/null | head -c 8 || echo '?')"

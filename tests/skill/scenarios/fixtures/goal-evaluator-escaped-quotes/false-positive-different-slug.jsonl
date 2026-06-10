@@ -1,2 +1,0 @@
-{"type":"assistant","message":{"content":[{"type":"text","text":"Quoting the docs for reference."}]}}
-{"type":"assistant","message":{"content":[{"type":"text","text":"Example from the docs: {\"stage\":\"retro-complete\",\"workflow_lock\":\"done\",\"slug\":\"some-other-feature\"}"}]}}
