@@ -10,7 +10,7 @@ Wrap a feature request into a properly-formatted Anthropic `/goal` command that 
 
 ## What this does
 
-Takes your natural-language description of what you want done and outputs the exact `/goal` command string to paste at the start of a fresh `claude` session (or invokes `claude -p` for you with `--launch`).
+Takes your natural-language description of what you want done and outputs the exact `/goal` command string to paste at the start of a fresh `claude` session (or spawns a `claude --bg` worker for you with `--launch`).
 
 The pattern this enables:
 
@@ -79,7 +79,7 @@ Present the derived command in a fenced code block with clear copy instructions:
 
 ````
 Here's the /goal command for an autonomous run. Copy and paste at the start
-of a fresh `claude` session (or run via `claude -p "<paste>"`):
+of a fresh `claude` session (or run via `claude --bg "<paste>"`):
 
 ```
 /goal Use /plan-w-team to ...
@@ -92,7 +92,7 @@ You'll get pinged at hard-gate sites (push-ack, secret-scan-allow,
 scope-unlock-for-drift) — those intentionally require your confirmation.
 ````
 
-If `--launch` was specified, run `claude -p "<derived goal>"` directly instead of printing.
+If `--launch` was specified, the script spawns `claude --bg "<derived goal>"` itself instead of printing — do not also invoke `claude` manually.
 
 ## See also
 

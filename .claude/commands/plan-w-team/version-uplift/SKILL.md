@@ -91,7 +91,7 @@ Catalog surfaces (as of v1):
 
 - `hook-event` — PreToolUse, PostToolUse, Setup, PermissionRequest, etc.
 - `permission-syntax` — `Bash(*)`, `Agent(*)`, wildcards
-- `model-id` — `claude-opus-4-7`, `opus`/`sonnet`/`haiku` aliases
+- `model-id` — `claude-opus-4-8`, `opus`/`sonnet`/`haiku` aliases
 - `slash-command` — `/goal`, `/loop`, `/btw`, `/batch`, `/simplify`, `/fork`
 - `agent-tool` — Agent/Task launcher, worktree isolation
 - `bg-session` — `--bg`, `claude agents`, agent dashboard

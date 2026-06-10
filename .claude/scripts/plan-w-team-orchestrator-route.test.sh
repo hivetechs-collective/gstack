@@ -7,7 +7,7 @@
 #   - .claude/commands/plan-w-team/shared/orchestrator-interception.md (classifier)
 #   - state-artifacts.md registry row for plan-w-team-orchestrator-decisions-*.jsonl
 #
-# Spec refs: docs/specs/plan-w-team-orchestrator-interception-upgrade.md AC1-AC7
+# Spec refs: .claude/commands/plan-w-team/shared/orchestrator-interception.md (canonical; AC1-AC7)
 # Shell-safety patterns: .claude/commands/plan-w-team/shared/shell-safety.md
 # State artifact pattern: .claude/commands/plan-w-team/shared/state-artifacts.md
 #
@@ -717,7 +717,7 @@ test_ac8c() { _hard_gate_floor_case "scope-unlock-for-drift"; }
 # Main runner
 # ---------------------------------------------------------------------------
 printf 'plan-w-team-orchestrator-route.test.sh\n'
-printf '  Spec: docs/specs/plan-w-team-orchestrator-interception-upgrade.md AC1-AC7\n'
+printf '  Spec: shared/orchestrator-interception.md (canonical; AC1-AC7)\n'
 printf '  Mode: RED phase — all 7 tests SHOULD FAIL until PWT-T1b ships\n'
 printf '  Runner: pure bash (bats not used — not available in this environment)\n'
 printf '\n'

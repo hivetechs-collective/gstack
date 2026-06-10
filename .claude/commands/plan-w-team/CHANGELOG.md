@@ -21,6 +21,95 @@ Entries are newest-first.
 
 ---
 
+## [1.42.0] — 2026-06-09 (e0dd34e)
+
+Full end-to-end skill evaluation (user-requested). A 118-agent audit workflow (18 scoped
+auditors + adversarial 3-skeptic verification per high/critical finding + completeness-critic
+extra round) confirmed 53 findings across every layer — stages, shared docs, scripts, hooks,
+tests, sync, ops docs, agent definitions; 9 candidate findings were refuted and dropped. All
+53 fixed by a 17-agent disjoint-file-ownership fix fleet + lead follow-ups. Highlights
+(severity-ordered; full per-finding evidence lived in the audit run, summarized here):
+
+- **fix(sync, CRITICAL F1)**: `supervisor-merge-gate.sh` — the MUST-invoke deterministic
+  merge gate (supervisor-protocol §merge hierarchy, 05-ship §6g-ter) — was missing from the
+  sync allowlist AND invisible to the drift checker (non-`plan-w-team-*`/`pwt-*` name).
+  Every consumer-repo supervisor ran ungated merges (the 2026-05-22 cleanscale
+  `--admin`-bypass class). Now cp'd in both sync branches + pinned in
+  `REQUIRED_NONPREFIXED`. Same treatment for `secret-doc-sync.sh` (F18) and a pin for
+  `supervisor-progress-check.sh` (X-coord-5). **Systemic guard**: new
+  `tests/skill/cases/sync-script-references.bats` lints every runtime script referenced by
+  skill md against the sync inventory, so no future non-prefixed script can slip past.
+- **fix(pwt-goal, HIGH F2)**: the `--launch` path never seeded the anti-skip goal-state
+  anchor (seed lived inside the `--worker-only` branch only) — a `--launch` worker could
+  stop short after commit+push exactly like the pre-1.35.0 bug. The SEED THE GOAL-STATE
+  block (incl. `__pwt_emit_goal_state`) is hoisted above the branch so `--launch`,
+  `--worker-only`, and `--supervisor-goal` all dual-seed; launch-path seeding now asserted
+  in `pwt-goal-launch.test.sh`.
+- **fix(review, HIGH F3)**: §5a symmetry-check gate silently PASSED on exit 4 (orphan
+  reader — the checker's own most-severe verdict). Added the `4)` arm + `*)` catch-all
+  (fail-closed), matching the §8g-ter retro twin.
+- **fix(hooks-docs, HIGH F8)**: documented-but-dormant pre-commit protections clarified:
+  `versioning.md` now states the auto-bump hook fires only when installed into the active
+  hooks path (manual VERSION+CHANGELOG bump is authoritative); `CONVENTIONS.md` no longer
+  presents the dormant `.githooks/` guard as active (the live gate is
+  `pre-commit-quality.sh`'s `make test-skill` block).
+- **fix(gc-docs, HIGH X-docs-2 + X-docs-1/3/4/5)**: `worktree-lifecycle.md` reconciled to
+  the live GC: 10-token `PWT_WORKTREE_GC_DIRTY_IGNORE` default (was documented as
+  `.claude/state/`), fail-closed liveness guard (LIVE_QUERY_FAILED → UNSAFE-KEEP),
+  `PWT_STALE_LOCK_HOURS` default 6 (was 24/legacy name), SAFE-PRUNE-PUSHED row, companion-GC
+  build-daemon branch.
+- **fix(capacity, X-coord-1)**: `pwt-claims-cleanup.sh` rewrote the shared cross-repo
+  claims registry with NO lock, racing `pwt-ram-claim.sh`'s locked mutations on every
+  fair-share gate — lost-update class. Cleanup now takes the same `${REGISTRY}.lock`
+  mkdir-lock (fail-open skip on contention so spawn gates never block); concurrency
+  regression tests added (34/34).
+- **fix(pwt-goal, F23/X-e2e-1)**: directive-overflow file moved from the caller-worktree
+  (`--show-toplevel`, GC-reapable mid-run) to `__pwt_main_repo_root` — same worktree-robust
+  resolution the 1.35.0 seed fix used.
+- **fix(ship, F11/F12/F4)**: `plan-w-team-next-version.sh` self-fetches the merge target
+  before reading `origin/main:VERSION` (closing the stale-snapshot collision §6d claimed
+  was already handled); duplicate §6g-bis renumbered (Build-Artifact Hygiene →
+  §6g-quater); §6d rebump scoped to skill self-ship with an explicit consumer-repo
+  project-version path (consumer ships no longer bump the synced skill VERSION).
+- **feat(retro, F10/X-spawned-2/F36)**: Step 8 §8e gains the missing consumer for the
+  gap-analyzer handoff: retroactive-task closure rate, per-OWASP gap counts, and the three
+  token-cost rows (>40k pass-1 / >20k per analyzer) — advisory, never a gate. §5b-pre/
+  §5c-bis/§5d-bis and both analyzer agent bodies now cite the exact §8e location.
+- **feat(test-harness, F26)**: `run.sh` Phase 2b executes `*.test.ts`
+  (import-coupling pre-fork gate) via tsx — failures fail the suite; loud per-file
+  `[SKIP]` when no TS runner (consumer-safe), `SKILL_SKIP_TS_TESTS=1` escape hatch;
+  single-runner anti-fragmentation preserved. CONVENTIONS.md counts un-hardcoded (F27),
+  phantom R-10 naming-enforcement claim corrected (F28 — measured 19.9% compliance, so
+  documented as by-policy-not-enforced).
+- **fix(fleet, F16/F25)**: kill-switch/jq-absent summary shapes now key-identical to the
+  active path (`max_concurrent:0`, `parallelism_pct` dropped — zero consumers); new
+  writer→reader contract test `hooks/tests/plan-w-team-fleet-writer.test.sh` (12 cases).
+- **fix(watch, F45+)**: NEW pre-existing production bug found by the new
+  `pwt-watch.test.sh`: all five metric bullets used `printf "- …"` — bash printf parses
+  the leading dash as an option and `2>/dev/null` swallowed it, so completion summaries
+  NEVER carried AC/commit/task/file/score bullets. Fixed with `printf --` + regression
+  assertions (the test's own `grep -qF` needed the same `--` fix).
+- **fix(ram-budget, F17)**: PWT-RAM2 rollout completed in doc+tests: registry-first
+  counting documented, `PWT_RAM_CLAIMS_PATH`/`PWT_RAM_CLAIMS_REGISTRY` rows added, exit-6
+  fair-share row added; registry-fixture tests added (no more stub-only coverage).
+- **fix(consistency sweep, mediums/lows)**: supervisor default-ON corrected in
+  orchestrator-interception (phantom `PLAN_W_TEAM_SUPERVISOR=1` removed, F6); dollar-cost
+  evaluator budget replaced with Max-relevant context-%/no-progress signals (F9); DS1
+  window 60s→`PWT_DOUBLE_SPAWN_WINDOW_MIN` 3min in both docs (F21); `claude -p`→
+  `claude --bg` everywhere (F22); §8j-quater captures terminal_state before deleting the
+  goal state file §8j-quinquies reads (F13); slug-keyed `supervisor-progress-<slug>.json`
+  references fixed in self-regulation.md + the evaluator block message (F20/X-coord-3);
+  stale model-generation labels stripped to tier names per the manifest policy
+  (F32/X-spawned-3/5); 18→19 secret-pattern counts (F40); dead spec pointers repointed
+  (F19); line-number anchors converted to section-name anchors in gotchas/
+  board-integration/goal-conditions (F33); `--dry-run` made actually dry (two leaked cp
+  ops + one mkdir, F29); route-prompt header/injected-text drift fixed + mid-work-interrupt
+  limitation documented in-hook (F43/F44); resume-staleness STALE/UNKNOWN paths tested
+  (F42); event-schema 5→6 + field reconciliation (F39); CHANGELOG historical cites
+  normalized (F47); ops root-cause doc banner for 1.34.0-pinned line cites (X-docs-6/7);
+  10 shipped pwt-briefs archived to `docs/operations/briefs-archive/` with provenance
+  README (F30); `pwt-goal-capacity-gates.test.sh` + `pwt-watch.test.sh` wired into sync.
+
 ## [1.41.0] — 2026-06-08 (7b70927)
 
 End-to-end cleanup hardening. A 27-agent deep evaluation (prompted by recurring Helm/
@@ -47,10 +136,11 @@ _snapshot_ but NOT the mechanism — confirmed recurring. All three fixes are ad
   layer, so a merged/pushed worktree whose only dirt was synced `tests/skill/`/`docs/
 operations/` files was pinned `UNSAFE-KEEP` forever and never reclaimed (live: cleanscale
   2 merged, parts 4, helm 4 stuck). Added `tests/skill/` + `docs/operations/` to the
-  `PWT_WORKTREE_GC_DIRTY_IGNORE` default at both sites (`plan-w-team-worktree-gc.sh:527`
-  - `:777`). Genuine product dirt still pins (only the synced layer is ignored), and only
-    merged/pushed worktrees are eligible. Regression test `worktree-gc.test.sh` T18b
-    (synced-tooling-only dirt → SAFE-PRUNE-MERGED; contrast T18 keeps a real edit → KEEP).
+  `PWT_WORKTREE_GC_DIRTY_IGNORE` default at both sites (`plan-w-team-worktree-gc.sh`,
+  in `classify_one` + `preserve_then_reap`). Genuine product dirt still pins (only the
+  synced layer is ignored), and only
+  merged/pushed worktrees are eligible. Regression test `plan-w-team-worktree-gc.test.sh` T18b
+  (synced-tooling-only dirt → SAFE-PRUNE-MERGED; contrast T18 keeps a real edit → KEEP).
 - **fix(retro, cross-run stale-block)**: the credential-wall artifact was never deleted at
   retro and the ship gate (6a-quinquies) globs `plan-w-team-credwall-*.json` blocking on
   any `resolved:false`, so a stale/false-positive wall failed the NEXT run's ship gate
@@ -148,7 +238,7 @@ keeps the SUCCESS-only behavior both callers already wanted).
   - **H2**: builder spawn-prompt TYPE PRESERVATION broadened to CODE PRESERVATION
     (`03-execute.md`) — grep-before-write for functions/helpers/utils/constants/
     enums; TYPE rules kept verbatim; positive exemplar; +15% WTF penalty in
-    `shared/self-regulation.md` + `team/builder.md`.
+    `shared/self-regulation.md` + `.claude/agents/team/builder.md`.
   - **H3**: reuse-first rule embedded in a SYNCED skill artifact
     (`shared/reuse-first.md`) so it reaches worktree-isolated builders + consumer
     repos — no longer dependent on user-global CLAUDE.md.
@@ -277,10 +367,10 @@ keeps the SUCCESS-only behavior both callers already wanted).
   spec: `docs/specs/dogfood-retro-safe-prompt-fixes.md`; report:
   `docs/operations/claude-prompts-claude-evaluation-2026-06-07.md`).
   - **F3 — positive exemplars (additive)**: paired the highest-risk negative anti-patterns in
-    `team/builder.md` and `04-fix-first-review.md` with one-line `Good:` exemplars of the
+    `.claude/agents/team/builder.md` and `04-fix-first-review.md` with one-line `Good:` exemplars of the
     desired shape. Every pre-existing negative retained (defense-in-depth); positive exemplars
     per `opus-4-7-practices.md` §7.
-  - **F6 — stale forward-looking phrasing (cosmetic)**: corrected `team/supervisor.md:131`
+  - **F6 — stale forward-looking phrasing (cosmetic)**: corrected `.claude/agents/team/supervisor.md:131`
     ("future T5 /goal Haiku evaluator" → the shipped deterministic self-hosted Stop-hook +
     Anthropic's Haiku evaluator) and repo-grep-fixed every other "future T5"/"will consume"/
     "once T5 ships" site across `shared/supervisor-protocol.md` and `shared/fleet-manager.md`
@@ -650,7 +740,7 @@ tests that now DO exercise them:
   for 1.22.1→1.26.0 (each had cited the prior commit).
 - `fix` **§3.4**: renamed the duplicate `## 8j-octies` retro heading (fan-out →
   `8j-nonies`) + repointed its reader (state-artifacts.md) and the
-  `plan-w-team.md` §8j-bypass cross-ref.
+  `plan-w-team.md` bypass-rate cross-ref (live anchor: §8j-octies).
 - `fix` **§4 (C7 part-2)**: pinned `access-control-content-scan.sh` in the
   sync-allowlist drift guard's `REQUIRED_NONPREFIXED` set.
 
@@ -900,7 +990,7 @@ Spec: [`docs/specs/access-control-content-signal-gate.md`](../../../docs/specs/a
   and `security-gap-analyzer`.
 - `feat`: **`shared/secure-by-default.md`** (new) — write-side defaults (deny-by-default,
   `z.object({...}).strict()` + `.pick()` allow-lists, no `req.body` spread, scoped `where`,
-  `assertQaScoped()`); referenced by `03-execute.md` + `agents/team/builder.md`.
+  `assertQaScoped()`); referenced by `03-execute.md` + `.claude/agents/team/builder.md`.
 - `feat`: **`04-fix-first-review.md`** — §5b Access-Control Content-Signal Scan (Pass-1 CRITICAL),
   §5d-ter gating-not-retroactive rule, §5b CRITICAL table row, §5h `access_control_high_unresolved`
   frontmatter key; content-signal match overrides the `no-security-surfaces` analyzer skip.

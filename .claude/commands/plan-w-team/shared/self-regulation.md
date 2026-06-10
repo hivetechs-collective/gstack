@@ -17,8 +17,10 @@ deploy gate halted the entire run including large safe unblocked work. Root caus
 `docs/operations/supervisor-no-park-rootcause-2026-06-07.md`.
 
 The first three are now **enforced** at the goal-evaluator's Stop/yield decision
-(not merely advised): the evaluator reads the objective progress snapshot
-`.claude/state/supervisor-progress.json` (written by `supervisor-progress-check.sh`)
+(not merely advised): the evaluator reads the run's slug-keyed objective progress
+snapshot `.claude/state/supervisor-progress-<slug>.json` (written by
+`supervisor-progress-check.sh --slug "$SLUG"`) — guarded against foreign-slug and
+stale snapshots, fail-open, per `shared/goal-conditions.md` §Anti-Park Gate —
 and refuses a supervisor yield that would be a silent park. Kill switch for the
 enforced gate: `PLAN_W_TEAM_DISABLE_ANTIPARK=1` (fail-open to pre-fix behavior).
 

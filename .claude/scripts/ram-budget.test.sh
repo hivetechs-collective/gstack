@@ -216,6 +216,91 @@ test_t7_unsupported_platform_fails_open() {
     return 0
 }
 
+# T8: PWT-RAM2 — the shared claims registry is consulted FIRST for
+# bg_session_count (RAM_BUDGET_STUB_BG_COUNT unset/empty so the stub
+# short-circuit doesn't mask the registry path).  Row idiom matches the
+# script's `grep -c '"sid":"'` parse.  Also covers the legacy alias
+# PWT_RAM_CLAIMS_REGISTRY engaging when the canonical var is empty.
+test_t8_claims_registry_counts_rows() {
+    local vm; vm=$(make_vm_stat 524288 0 0)
+    local tmp; tmp=$(mktemp); echo "$vm" > "$tmp"
+    local reg; reg=$(mktemp)
+    cat > "$reg" <<'EOF'
+{"sid":"t8-aaa","repo":"repo-a","pid":111}
+{"sid":"t8-bbb","repo":"repo-b","pid":222}
+{"sid":"t8-ccc","repo":"repo-a","pid":333}
+EOF
+    local json_canonical json_alias
+    json_canonical=$(
+        RAM_BUDGET_PLATFORM_OVERRIDE=Darwin \
+        RAM_BUDGET_STUB_TOTAL_BYTES="$STUB_TOTAL_24GB" \
+        RAM_BUDGET_STUB_PAGESIZE="$STUB_PAGESIZE" \
+        RAM_BUDGET_STUB_VM_STAT="$tmp" \
+        RAM_BUDGET_STUB_BG_COUNT= \
+        PWT_RAM_CLAIMS_PATH="$reg" \
+        "$RAM_SCRIPT"
+    )
+    json_alias=$(
+        RAM_BUDGET_PLATFORM_OVERRIDE=Darwin \
+        RAM_BUDGET_STUB_TOTAL_BYTES="$STUB_TOTAL_24GB" \
+        RAM_BUDGET_STUB_PAGESIZE="$STUB_PAGESIZE" \
+        RAM_BUDGET_STUB_VM_STAT="$tmp" \
+        RAM_BUDGET_STUB_BG_COUNT= \
+        PWT_RAM_CLAIMS_PATH= \
+        PWT_RAM_CLAIMS_REGISTRY="$reg" \
+        "$RAM_SCRIPT"
+    )
+    rm -f "$tmp" "$reg"
+    assert_field "T8" "$json_canonical" '.bg_session_count' '3' || return 1
+    assert_field "T8" "$json_alias" '.bg_session_count' '3' || return 1
+    return 0
+}
+
+# T9: unreadable registry → CLI fallback engaged.  PATH is restricted to
+# /usr/bin:/bin so `claude` is deterministically absent (never installed
+# there) and the fallback soft-fails to 0; the verdict still computes.
+test_t9_unreadable_registry_falls_back() {
+    local vm; vm=$(make_vm_stat 524288 0 0)
+    local tmp; tmp=$(mktemp); echo "$vm" > "$tmp"
+    local json
+    json=$(
+        PATH=/usr/bin:/bin \
+        RAM_BUDGET_PLATFORM_OVERRIDE=Darwin \
+        RAM_BUDGET_STUB_TOTAL_BYTES="$STUB_TOTAL_24GB" \
+        RAM_BUDGET_STUB_PAGESIZE="$STUB_PAGESIZE" \
+        RAM_BUDGET_STUB_VM_STAT="$tmp" \
+        RAM_BUDGET_STUB_BG_COUNT= \
+        PWT_RAM_CLAIMS_PATH=/nonexistent/pwt-ram-claims.jsonl \
+        "$RAM_SCRIPT"
+    )
+    rm -f "$tmp"
+    assert_field "T9" "$json" '.bg_session_count' '0' || return 1
+    assert_field "T9" "$json" '.recommended_action' 'SPAWN_OK' || return 1
+    return 0
+}
+
+# T10: empty-but-readable registry → registry path answers 0 rows (the CLI
+# fallback is NOT consulted; an empty registry is an authoritative zero).
+test_t10_empty_registry_counts_zero() {
+    local vm; vm=$(make_vm_stat 524288 0 0)
+    local tmp; tmp=$(mktemp); echo "$vm" > "$tmp"
+    local reg; reg=$(mktemp)
+    : > "$reg"
+    local json
+    json=$(
+        RAM_BUDGET_PLATFORM_OVERRIDE=Darwin \
+        RAM_BUDGET_STUB_TOTAL_BYTES="$STUB_TOTAL_24GB" \
+        RAM_BUDGET_STUB_PAGESIZE="$STUB_PAGESIZE" \
+        RAM_BUDGET_STUB_VM_STAT="$tmp" \
+        RAM_BUDGET_STUB_BG_COUNT= \
+        PWT_RAM_CLAIMS_PATH="$reg" \
+        "$RAM_SCRIPT"
+    )
+    rm -f "$tmp" "$reg"
+    assert_field "T10" "$json" '.bg_session_count' '0' || return 1
+    return 0
+}
+
 # ── run all ─────────────────────────────────────────────────────────────────
 
 run_test "T1 macos_high_ram → SPAWN_OK" test_t1_macos_high_ram
@@ -225,6 +310,9 @@ run_test "T4 RAM_BUDGET_SESSION_COST_GB override reduces capacity" test_t4_sessi
 run_test "T5 bg_session_count stub propagates" test_t5_bg_count_stub
 run_test "T6 linux branch via /proc/meminfo stubs" test_t6_linux_branch
 run_test "T7 unsupported platform → null (fail-open)" test_t7_unsupported_platform_fails_open
+run_test "T8 PWT-RAM2 claims registry rows drive bg_session_count" test_t8_claims_registry_counts_rows
+run_test "T9 unreadable registry → CLI fallback (soft 0)" test_t9_unreadable_registry_falls_back
+run_test "T10 empty registry → authoritative 0 (no CLI consult)" test_t10_empty_registry_counts_zero
 
 echo ""
 echo "─────────────────────────────────────────────"

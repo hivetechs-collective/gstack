@@ -158,18 +158,18 @@ Draft items are lightweight but invisible to GitHub's core features. Issues unlo
 
 ## File-by-File Wiring
 
-Each `/plan-w-team` stage file has a **Board Integration** or **Board Update** section near the top. These sections contain the exact `board.sh` commands and comment templates that run automatically during that stage.
+Each `/plan-w-team` stage file has a **Board Integration** / **Board Update** / **Board Comment** section, cited below by exact section heading (stable across edits — line numbers drift). These sections contain the exact `board.sh` commands and comment templates that run automatically during that stage.
 
-| Stage              | File                       | Section                  | Board Operations                                                                   |
-| ------------------ | -------------------------- | ------------------------ | ---------------------------------------------------------------------------------- |
-| Step 1: Spec       | `01-specification.md:158`  | Board Integration (Auto) | `add` → create Issue with body; `move` → Todo; store `<!-- Board: #42 -->` in spec |
-| Step 2: Tasks      | `02-task-breakdown.md:129` | Board Integration (Auto) | `comment` → task checklist, strategy, effort estimate, files touched               |
-| Steps 3-4: Execute | `03-execute.md:21`         | Board Update (Auto)      | `move` → In Progress; `comment` → strategy, branch, task count, start time         |
-| Step 5: Review     | `04-fix-first-review.md:5` | Board Update (Auto)      | `move` → Review; `comment` → Pass 1/2 findings, auto-fix count, evaluator verdict  |
-| Step 6: Ship       | `05-ship.md:5`             | Board Update (Auto)      | `move` → Done; `comment` → PR link, tests, coverage, commits, version              |
-| Step 6: Ship       | `05-ship.md:87`            | Link PR to Board Issue   | `gh pr create` with `Closes #N` in body for auto-close chain                       |
-| Step 7: Post-Ship  | `06-post-ship.md:5`        | Board Comment (Auto)     | `comment` → docs updated, cross-doc consistency, deferred items                    |
-| Step 8: Retro      | `07-retro.md:5`            | Board Comment (Auto)     | `comment` → commits, lines, sessions, self-assessment, lessons                     |
+| Stage              | File                     | Section                  | Board Operations                                                                   |
+| ------------------ | ------------------------ | ------------------------ | ---------------------------------------------------------------------------------- |
+| Step 1: Spec       | `01-specification.md`    | Board Integration (Auto) | `add` → create Issue with body; `move` → Todo; store `<!-- Board: #42 -->` in spec |
+| Step 2: Tasks      | `02-task-breakdown.md`   | Board Integration (Auto) | `comment` → task checklist, strategy, effort estimate, files touched               |
+| Steps 3-4: Execute | `03-execute.md`          | Board Update (Auto)      | `move` → In Progress; `comment` → strategy, branch, task count, start time         |
+| Step 5: Review     | `04-fix-first-review.md` | Board Update (Auto)      | `move` → Review; `comment` → Pass 1/2 findings, auto-fix count, evaluator verdict  |
+| Step 6: Ship       | `05-ship.md`             | Board Update (Auto)      | `move` → Done; `comment` → PR link, tests, coverage, commits, version              |
+| Step 6: Ship       | `05-ship.md`             | Link PR to Board Issue   | `gh pr create` with `Closes #N` in body for auto-close chain                       |
+| Step 7: Post-Ship  | `06-post-ship.md`        | Board Comment (Auto)     | `comment` → docs updated, cross-doc consistency, deferred items                    |
+| Step 8: Retro      | `07-retro.md`            | Board Comment (Auto)     | `comment` → commits, lines, sessions, self-assessment, lessons                     |
 
 ### Supporting Files
 

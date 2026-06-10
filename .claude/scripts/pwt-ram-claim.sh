@@ -36,6 +36,7 @@ LOCK_DIR="${REGISTRY}.lock"
 IDLE_THRESHOLD="${PWT_FAIR_SHARE_IDLE_THRESHOLD:-300}"
 [[ "$IDLE_THRESHOLD" =~ ^[0-9]+$ ]] || IDLE_THRESHOLD=300
 
+# keep in sync with pwt-claims-cleanup.sh acquire_lock — same lock dir, same semantics
 acquire_lock() {
     local attempts=0
     while ! mkdir "$LOCK_DIR" 2>/dev/null; do

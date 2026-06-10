@@ -468,6 +468,74 @@ origin_reachable() {
         | sed 's/^[* ]*//' | grep -q '^origin/'
 }
 
+# ─── dirty-ignore policy (SHARED: classify_one + preserve_then_reap) ───────
+# Dirtiness confined to these paths is policy churn, not real work. The
+# dirtiness decision (classify_one) and the backup decision (preserve_then_reap)
+# MUST agree on BOTH the default set and the matcher — a one-sided edit
+# desynchronizes them (could classify clean-and-reapable at one site while the
+# other treats the same path as real dirt — the 2026-06-08 leak class; the
+# 1.41.0 fix had to patch both sites). Hence ONE default + ONE filter here.
+# AC2 (push-not-merge hardening, 2026-06-06): the default ignore set is
+# BROADENED beyond ".claude/state/" because repo policy is to NEVER commit the
+# synced tooling layer (.claude/* identical across every checkout) nor
+# regenerable build trees. Without this, a pushed-but-unmerged worktree shows
+# "dirty = 48-52 files" (all .claude/*) forever and pins itself UNSAFE-KEEP —
+# the accumulation Fix #1/#2 target. Tokens are either:
+#   • PREFIX tokens (contain "/" e.g. ".claude/", "ios/Pods/"): match by
+#     equality or startswith (anchored at the worktree root).
+#   • SEGMENT tokens (bare name, no "/", e.g. "node_modules", "build", "dist",
+#     "DerivedData", ".expo"): match if the name appears as ANY path segment
+#     (covers monorepo nesting like apps/web/build/, packages/x/node_modules/).
+# ".claude/" subsumes the old ".claude/state/" default. "tests/skill/" and
+# "docs/operations/" are the rest of the claude-pattern-SYNCED tooling layer:
+# like .claude/, a consumer receives them by sync (never develops them), so a
+# merged/pushed worktree whose ONLY dirt is synced .bats/test/doc files would
+# otherwise be pinned UNSAFE-KEEP forever and never reclaimed (2026-06-08 leak).
+# PWT_WORKTREE_GC_DIRTY_IGNORE overrides — it replaces the whole set (empty
+# disables). bash 3.2 + zsh safe (no arrays in the shell path; the matcher
+# runs in python).
+PWT_DIRTY_IGNORE_DEFAULT=".claude/:tests/skill/:docs/operations/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist"
+
+# Shared porcelain dirty-filter (python source). Contract at BOTH call sites:
+#   stdin:  `git status --porcelain` output
+#   env:    IGNORE_PREFIXES = colon-separated ignore tokens (as above)
+#   stdout: only the REAL (non-ignored) porcelain lines survive
+PWT_DIRTY_FILTER_PY='
+import sys, os
+toks = [p for p in os.environ.get("IGNORE_PREFIXES", "").split(":") if p]
+prefixes = [t for t in toks if "/" in t]                 # anchored path-prefix tokens
+segments = [t.strip("/") for t in toks if "/" not in t]  # any-depth segment tokens
+q = chr(34)
+def ignored(path):
+    for pre in prefixes:                                 # prefix: eq or startswith at root
+        if path == pre.rstrip("/") or path.startswith(pre):
+            return True
+    if segments:                                         # segment: name at any depth
+        parts = path.split("/")
+        for seg in segments:
+            if seg in parts:
+                return True
+    return False
+for line in sys.stdin:
+    line = line.rstrip(chr(10))
+    if not line.strip():
+        continue
+    path = line[3:] if len(line) > 3 else ""
+    if " -> " in path:               # renamed: take destination
+        path = path.split(" -> ", 1)[1]
+    path = path.strip()
+    if len(path) >= 2 and path[0] == q and path[-1] == q:
+        path = path[1:-1]            # unquote paths with special chars
+    if ignored(path):
+        continue
+    print(line)                      # a REAL (non-ignored) change survives
+'
+
+__pwt_dirty_ignore_filter() {
+    # $1 = ignore set (colon-separated); porcelain on stdin → REAL lines on stdout.
+    IGNORE_PREFIXES="$1" python3 -c "$PWT_DIRTY_FILTER_PY" 2>/dev/null
+}
+
 # ─── classification ───────────────────────────────────────────────────────
 classify_one() {
     # Sets globals: CLASS, BRANCH, REASON, LAST_COMMIT_AGE_DAYS, UNCOMMITTED, MERGED, OPEN_PR, IN_USE, ACTIVE_RUN, OUTSIDE, ORIGIN_GONE, MERGED_BY, ORIGIN_REACHABLE, ORPHAN_DIR
@@ -506,64 +574,19 @@ classify_one() {
     # Hooks rewrite .claude/state/* (e.g. bg-agents-cache.json) into every
     # worktree; counting that as "uncommitted work" would mark every worktree
     # dirty forever and block GC. We strip porcelain lines whose path is under an
-    # ignore prefix, so only REAL source/doc edits set UNCOMMITTED. Configurable
-    # via PWT_WORKTREE_GC_DIRTY_IGNORE (colon-separated prefixes; empty disables).
-    # AC2 (push-not-merge hardening, 2026-06-06): the default ignore set is
-    # BROADENED beyond ".claude/state/" because repo policy is to NEVER commit the
-    # synced tooling layer (.claude/* identical across every checkout) nor
-    # regenerable build trees. Without this, a pushed-but-unmerged worktree shows
-    # "dirty = 48-52 files" (all .claude/*) forever and pins itself UNSAFE-KEEP —
-    # the accumulation Fix #1/#2 target. Tokens are either:
-    #   • PREFIX tokens (contain "/" e.g. ".claude/", "ios/Pods/"): match by
-    #     equality or startswith (anchored at the worktree root).
-    #   • SEGMENT tokens (bare name, no "/", e.g. "node_modules", "build", "dist",
-    #     "DerivedData", ".expo"): match if the name appears as ANY path segment
-    #     (covers monorepo nesting like apps/web/build/, packages/x/node_modules/).
-    # ".claude/" subsumes the old ".claude/state/" default. "tests/skill/" and
-    # "docs/operations/" are the rest of the claude-pattern-SYNCED tooling layer:
-    # like .claude/, a consumer receives them by sync (never develops them), so a
-    # merged/pushed worktree whose ONLY dirt is synced .bats/test/doc files would
-    # otherwise be pinned UNSAFE-KEEP forever and never reclaimed (2026-06-08 leak).
-    # Override replaces the whole set (empty disables). bash 3.2 + zsh safe (no arrays
-    # in the shell path; the matcher runs in python).
+    # ignore prefix, so only REAL source/doc edits set UNCOMMITTED. Policy, token
+    # semantics, and the matcher live in the SHARED dirty-ignore block above
+    # (PWT_DIRTY_IGNORE_DEFAULT + __pwt_dirty_ignore_filter) — this dirtiness
+    # decision and preserve_then_reap's backup decision MUST stay in lockstep.
     local porcelain real_dirty ignore_prefixes
     porcelain="$(git -C "$wt_path" status --porcelain 2>/dev/null || echo "")"
-    ignore_prefixes="${PWT_WORKTREE_GC_DIRTY_IGNORE-.claude/:tests/skill/:docs/operations/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist}"
+    ignore_prefixes="${PWT_WORKTREE_GC_DIRTY_IGNORE-$PWT_DIRTY_IGNORE_DEFAULT}"
     if [ -z "$porcelain" ]; then
         UNCOMMITTED=0
     elif [ -z "$ignore_prefixes" ]; then
         UNCOMMITTED=1
     else
-        real_dirty="$(printf '%s\n' "$porcelain" | IGNORE_PREFIXES="$ignore_prefixes" python3 -c '
-import sys, os
-toks = [p for p in os.environ.get("IGNORE_PREFIXES", "").split(":") if p]
-prefixes = [t for t in toks if "/" in t]                 # anchored path-prefix tokens
-segments = [t.strip("/") for t in toks if "/" not in t]  # any-depth segment tokens
-q = chr(34)
-def ignored(path):
-    for pre in prefixes:                                 # prefix: eq or startswith at root
-        if path == pre.rstrip("/") or path.startswith(pre):
-            return True
-    if segments:                                         # segment: name at any depth
-        parts = path.split("/")
-        for seg in segments:
-            if seg in parts:
-                return True
-    return False
-for line in sys.stdin:
-    line = line.rstrip(chr(10))
-    if not line.strip():
-        continue
-    path = line[3:] if len(line) > 3 else ""
-    if " -> " in path:               # renamed: take destination
-        path = path.split(" -> ", 1)[1]
-    path = path.strip()
-    if len(path) >= 2 and path[0] == q and path[-1] == q:
-        path = path[1:-1]            # unquote paths with special chars
-    if ignored(path):
-        continue
-    print(line)                      # a REAL (non-ignored) change survives
-' 2>/dev/null)"
+        real_dirty="$(printf '%s\n' "$porcelain" | __pwt_dirty_ignore_filter "$ignore_prefixes")"
         if [ -n "$real_dirty" ]; then UNCOMMITTED=1; else UNCOMMITTED=0; fi
     fi
 
@@ -778,32 +801,16 @@ preserve_then_reap() {
     real_wt="$(realpath "$wt_path" 2>/dev/null || echo "$wt_path")"
     [ -n "$wt_top" ] && wt_top="$(realpath "$wt_top" 2>/dev/null || echo "$wt_top")"
 
-    local ignore_set="${PWT_WORKTREE_GC_DIRTY_IGNORE-.claude/:tests/skill/:docs/operations/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist}"
+    # SAME default + SAME matcher as classify_one's dirtiness decision (shared
+    # block above) — the backup decision must never desynchronize from it.
+    local ignore_set="${PWT_WORKTREE_GC_DIRTY_IGNORE-$PWT_DIRTY_IGNORE_DEFAULT}"
 
     if [ -n "$wt_top" ] && [ "$wt_top" = "$real_wt" ]; then
         # Genuine worktree → diff + untracked list, filtered to non-ignored paths.
         local diff_out porcelain real_dirty
         diff_out="$(git -C "$wt_path" diff HEAD 2>/dev/null || echo "")"
         porcelain="$(git -C "$wt_path" status --porcelain 2>/dev/null || echo "")"
-        real_dirty="$(printf '%s\n' "$porcelain" | IGNORE_PREFIXES="$ignore_set" python3 -c '
-import sys, os
-toks=[p for p in os.environ.get("IGNORE_PREFIXES","").split(":") if p]
-prefixes=[t for t in toks if "/" in t]; segments=[t.strip("/") for t in toks if "/" not in t]
-def ig(p):
-    for pre in prefixes:
-        if p==pre.rstrip("/") or p.startswith(pre): return True
-    parts=p.split("/")
-    for s in segments:
-        if s in parts: return True
-    return False
-for line in sys.stdin:
-    line=line.rstrip("\n")
-    if not line.strip(): continue
-    path=line[3:] if len(line)>3 else ""
-    if " -> " in path: path=path.split(" -> ",1)[1]
-    path=path.strip().strip(chr(34))
-    if not ig(path): print(line)
-' 2>/dev/null)"
+        real_dirty="$(printf '%s\n' "$porcelain" | __pwt_dirty_ignore_filter "$ignore_set")"
         if [ -z "$diff_out" ] && [ -z "$real_dirty" ]; then
             return 0   # clean (or only policy churn) — nothing real to preserve
         fi

@@ -249,6 +249,84 @@ assert_eq "legacy target NOT touched (still 1 line)" "1" "$(wc -l < "$REG_LEGACY
 assert_grep "legacy target unchanged" '"repo":"untouched"' "$REG_LEGACY"
 rm -rf "$TMP6"
 
+# ─── Test 7: lock held by live process → fail-open skip, registry untouched ──
+# Cleanup shares ${REGISTRY}.lock with pwt-ram-claim.sh remove/sweep. When the
+# lock is held by a LIVE process, cleanup must NOT block the fair-share gate or
+# rewrite the registry — it skips (fail-open, exit 0) and leaves every row,
+# including removable test-pattern rows, in place.
+echo "TEST 7: held lock (live owner) → cleanup skips fail-open, registry untouched"
+TMP7=$(mktemp -d)
+REG7="$TMP7/registry.jsonl"
+cat > "$REG7" <<EOF
+{"repo":"plan-w-team-test.ffffff","sid":"aaaa0001","started_at":"2026-06-09T00:00:00Z","estimated_gb":1.8,"priority":"normal"}
+{"repo":"claude-pattern","sid":"aaaa0002","started_at":"2026-06-09T00:00:01Z","estimated_gb":1.8,"priority":"normal"}
+EOF
+# Pre-acquire the lock as this (live) test process so stale-takeover can't fire.
+mkdir "$REG7.lock"
+echo "$$" > "$REG7.lock/pid"
+
+FAKEDIR7=$(make_failing_claude)
+PATH_SAVED="$PATH"
+PATH="$FAKEDIR7:$PATH"
+PWT_RAM_CLAIMS_PATH="$REG7" "$CLEANUP" --quiet 2>/dev/null
+EXIT7=$?
+PATH="$PATH_SAVED"
+rm -rf "$FAKEDIR7"
+rm -rf "$REG7.lock"
+
+assert_eq "exit 0 despite held lock (fail-open)" "0" "$EXIT7"
+assert_eq "registry untouched (still 2 lines)" "2" "$(wc -l < "$REG7" | tr -d ' ')"
+assert_grep "removable test-pattern row NOT removed while locked" 'plan-w-team-test.ffffff' "$REG7"
+rm -rf "$TMP7"
+
+# ─── Test 8: concurrent pwt-ram-claim add during cleanup window survives ─────
+# The X-coord-1 lost-update interleave: cleanup snapshot → concurrent add →
+# cleanup mv clobbers the add. With the shared lock, a cleanup started while
+# the lock is held blocks until release, so its snapshot INCLUDES the claim
+# appended during the window — the add must survive the rewrite.
+echo "TEST 8: claim added during cleanup's lock-wait window survives rewrite"
+RAMCLAIM="$SCRIPT_DIR/pwt-ram-claim.sh"
+if [ ! -x "$RAMCLAIM" ]; then
+    echo "FAIL: pwt-ram-claim.sh not executable at $RAMCLAIM" >&2
+    FAIL=$((FAIL + 1))
+    TOTAL=$((TOTAL + 1))
+else
+    TMP8=$(mktemp -d)
+    REG8="$TMP8/registry.jsonl"
+    cat > "$REG8" <<EOF
+{"repo":"plan-w-team-test.gggggg","sid":"bbbb0001","started_at":"2026-06-09T00:00:00Z","estimated_gb":1.8,"priority":"normal"}
+{"repo":"claude-pattern","sid":"bbbb0002","started_at":"2026-06-09T00:00:01Z","estimated_gb":1.8,"priority":"normal"}
+EOF
+    # Hold the lock (live owner) so the background cleanup blocks in acquire_lock.
+    mkdir "$REG8.lock"
+    echo "$$" > "$REG8.lock/pid"
+
+    FAKEDIR8=$(make_failing_claude)
+    PATH_SAVED="$PATH"
+    PATH="$FAKEDIR8:$PATH"
+    PWT_RAM_CLAIMS_PATH="$REG8" "$CLEANUP" --quiet 2>/dev/null &
+    CLEANUP_PID=$!
+    PATH="$PATH_SAVED"
+
+    # While cleanup is blocked on the lock, append a new claim (add is
+    # lock-free / append-only — exactly the racing writer from the finding).
+    sleep 0.5
+    PWT_RAM_CLAIMS_PATH="$REG8" "$RAMCLAIM" add concurrent-repo cccc0003 2>/dev/null
+
+    # Release the lock well inside cleanup's retry budget, then let it finish.
+    rm -rf "$REG8.lock"
+    wait "$CLEANUP_PID"
+    EXIT8=$?
+    rm -rf "$FAKEDIR8"
+
+    assert_eq "exit 0 after lock released" "0" "$EXIT8"
+    assert_eq "registry has 2 surviving rows" "2" "$(wc -l < "$REG8" | tr -d ' ')"
+    assert_grep "pre-existing real entry preserved" '"repo":"claude-pattern"' "$REG8"
+    assert_grep "concurrently-added claim survived rewrite" '"repo":"concurrent-repo"' "$REG8"
+    assert_not_grep "test-pattern row removed once unlocked" 'plan-w-team-test.gggggg' "$REG8"
+    rm -rf "$TMP8"
+fi
+
 # ─── Summary ─────────────────────────────────────────────────────────────────
 echo
 echo "─────────────────────────────────────────"

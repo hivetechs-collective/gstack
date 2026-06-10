@@ -36,6 +36,11 @@ The `.claude/hooks/pre-commit-pwt-version-bump.sh` hook auto-bumps `VERSION`
 based on the conventional-commit prefix of any commit that touches
 `.claude/commands/plan-w-team/**` or `.claude/scripts/pwt-goal.sh`:
 
+> **Caveat:** the auto-bump hook fires ONLY when installed into the active git
+> hooks path (`git config core.hooksPath`); with the default `.git/hooks` it is
+> NOT invoked. The manual `VERSION` + `CHANGELOG` bump is the authoritative,
+> always-required path — never assume the hook fired.
+
 | Prefix                                                                                      | Bump  |
 | ------------------------------------------------------------------------------------------- | ----- |
 | `feat(...)!:` / `BREAKING CHANGE` body trailer                                              | MAJOR |
@@ -54,8 +59,10 @@ Two `/plan-w-team` runs spawned off the same base will each capture the same
 spawn-time `VERSION`. If both bump from that snapshot, they pick the **same** next
 version → a `VERSION` + `CHANGELOG` merge conflict and a manual rebase (observed
 2026-06-07: both runs grabbed 1.35.0). The fix: **at Step 6 ship, re-derive the
-next version from main's CURRENT `VERSION` at ship time — after fetching/rebasing
-onto the latest main — not the spawn-time snapshot.**
+next version from main's CURRENT `VERSION` at ship time — not the spawn-time
+snapshot.** The helper self-fetches the merge target first (best-effort
+`git fetch --quiet origin <base>`; offline / no-remote it silently falls back
+to local refs), so no prior fetch/rebase step is required.
 
 The deterministic helper is `.claude/scripts/plan-w-team-next-version.sh`:
 
@@ -71,7 +78,10 @@ main=1.37.0 and ships 1.38.0 — no collision, and no cross-run coordination nee
 The `CHANGELOG` entry is headed with the rebumped version and inserted newest-first
 relative to whatever is now on main, so two concurrent runs produce two stacked
 entries rather than a conflict on the same header. Step 6 (`05-ship.md` §6d) invokes
-the helper. Regression coverage: `.claude/scripts/plan-w-team-next-version.test.sh`
+the helper — skill self-ships only (the ship diff touches
+`.claude/commands/plan-w-team/`); a consumer feature ship bumps the project's own
+version artifact and never the synced skill `VERSION`.
+Regression coverage: `.claude/scripts/plan-w-team-next-version.test.sh`
 (hermetic git sandbox: spawn-snapshot 1.36.0 + main now 1.37.0 → ships 1.38.0, with
 an explicit control proving the old spawn-snapshot bump would have collided at
 1.37.0). bash 3.2 compatible.

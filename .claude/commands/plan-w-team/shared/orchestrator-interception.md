@@ -5,7 +5,8 @@ orchestrator-interception upgrade. It maps every pause site in the pipeline
 (stages 00–07) to one of three verdicts and defines the contract by which the
 orchestrator returns its decision.
 
-Spec: `docs/specs/plan-w-team-orchestrator-interception-upgrade.md`
+Spec: folded into this doc — this file is the canonical spec for the upgrade
+(supervisor-caller contract: `docs/specs/pwt-t4-supervisor.md` R12)
 Router: `.claude/scripts/plan-w-team-orchestrator-route.sh`
 Tests: `.claude/scripts/plan-w-team-orchestrator-route.test.sh`
 
@@ -192,8 +193,9 @@ The script is called `route_orchestrator` in prose; on disk it is
 
 ## Relationship to the PWT-T4 Supervisor
 
-When `PLAN_W_TEAM_SUPERVISOR=1` is set, the persistent supervisor agent
-(`.claude/agents/team/supervisor.md`, PWT-T4) is a **caller** of
+The persistent supervisor agent (`.claude/agents/team/supervisor.md`,
+PWT-T4) is default-ON for parallel-builder runs (disable via
+`PLAN_W_TEAM_DISABLE_SUPERVISOR=1`) and is a **caller** of
 `route_orchestrator` — it does NOT replace it. The classifier table above
 remains the single source of truth for pause-site routing.
 

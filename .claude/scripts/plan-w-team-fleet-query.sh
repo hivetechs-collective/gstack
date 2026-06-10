@@ -3,8 +3,8 @@
 #
 # Subcommands:
 #   next-spawnable <slug>  → JSON array of task IDs ready to spawn (deps complete)
-#   running       <slug>   → JSON array of {agent_id, task_id?, spawned_at}
-#   completed     <slug>   → JSON array of {agent_id, task_id?, completed_at, duration_s}
+#   running       <slug>   → JSON array of {agent_id, task_id?}
+#   completed     <slug>   → JSON array of {agent_id, task_id?, spawned_at, completed_at}
 #   summary       <slug>   → object: {spawned, completed, failed, running, max_concurrent}
 #                            (parallelism % is computed by 07-retro.md from raw timeline)
 #
@@ -24,8 +24,8 @@ usage() {
 Usage: $0 <subcommand> <slug>
   next-spawnable <slug>   Task IDs whose deps are all complete
   running        <slug>   Currently-running agents
-  completed      <slug>   Completed agents with duration
-  summary        <slug>   Counts + parallelism efficiency
+  completed      <slug>   Completed agents with spawn/complete timestamps
+  summary        <slug>   Counts + max concurrent
 EOF
 }
 
@@ -39,7 +39,7 @@ fi
 
 if [ "${PLAN_W_TEAM_FLEET_DISABLE:-}" = "1" ]; then
     case "$SUBCOMMAND" in
-        summary) echo '{"spawned":0,"completed":0,"failed":0,"running":0,"parallelism_pct":0}' ;;
+        summary) echo '{"spawned":0,"completed":0,"failed":0,"running":0,"max_concurrent":0}' ;;
         *)       echo '[]' ;;
     esac
     exit 0
@@ -74,7 +74,7 @@ TASKS_DIR="${HOME}/.claude/tasks/${LIST_ID}"
 if ! command -v jq >/dev/null 2>&1; then
     echo "[fleet-query] ERROR: jq is required" >&2
     case "$SUBCOMMAND" in
-        summary) echo '{"spawned":0,"completed":0,"failed":0,"running":0,"parallelism_pct":0}' ;;
+        summary) echo '{"spawned":0,"completed":0,"failed":0,"running":0,"max_concurrent":0}' ;;
         *)       echo '[]' ;;
     esac
     exit 0

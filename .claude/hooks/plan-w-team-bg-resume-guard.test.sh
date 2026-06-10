@@ -5,7 +5,10 @@
 # (PWT_RESUME_GUARD_STOP_CMD writes the stopped sid to a file) so no real session is
 # signalled. Covers: STALE → stop requested + systemMessage; LIVE → no stop; UNKNOWN
 # → no stop (fail-open); disabled → no-op; plus an end-to-end path through the real
-# pwt-goal.sh --resume-staleness-check against a seeded terminal goal-state.
+# pwt-goal.sh --resume-staleness-check against a seeded terminal goal-state, the
+# checker's exit contract for a branch already merged to the default branch (STALE),
+# a gh-PR-MERGED branch via a stubbed gh (STALE), and a bare --sid matching no
+# goal-state (UNKNOWN fail-open).
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -113,6 +116,51 @@ if [ -x "$PWT_GOAL" ]; then
       bash "$GUARD" >/dev/null 2>&1
   sleep 0.3
   assert_eq "e2e non-terminal → stop NOT invoked" "no" "$([ -f "$STOPFILE" ] && echo yes || echo no)"
+
+  # Hermetic git sandbox helper for the checker's branch-shipped paths: a repo
+  # whose default branch is literally "main" (the checker falls back to "main"
+  # when refs/remotes/origin/HEAD is unset) plus one feature branch.
+  mkrepo() {  # $1 root, $2 feature branch, $3 merge? (yes|no)
+    ( cd "$1" || exit 99
+      git init -q . && git config user.email t@example.com && git config user.name t
+      git config commit.gpgsign false
+      echo a > f.txt && git add f.txt && git commit -qm init && git branch -M main
+      git checkout -qb "$2" && echo b >> f.txt && git commit -qam work
+      if [ "$3" = "yes" ]; then git checkout -q main && git merge -q --no-ff -m merge "$2"; fi
+    ) >/dev/null 2>&1
+  }
+
+  # [8] checker exit contract: branch already merged to default → STALE (exit 0)
+  echo "[8] checker: branch merged to main → STALE (exit 0)"
+  R=$(mkroot); mkrepo "$R" pwt-merged-run yes
+  ( cd "$R" && env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE \
+      PWT_PROJECT_ROOT_OVERRIDE="$R" \
+      bash "$PWT_GOAL" --resume-staleness-check --branch pwt-merged-run >/dev/null 2>&1 )
+  RC=$?
+  assert_eq "merged branch → exit 0 (STALE)" "0" "$RC"
+
+  # [9] checker exit contract: bare --sid matching no goal-state → UNKNOWN (exit 2)
+  #     (fail-open gate — no branch checks run against an unrecognized session)
+  echo "[9] checker: --sid with no goal-state → UNKNOWN (exit 2)"
+  R=$(mkroot)
+  ( cd "$R" && env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE \
+      PWT_PROJECT_ROOT_OVERRIDE="$R" \
+      bash "$PWT_GOAL" --resume-staleness-check --sid deadbeef >/dev/null 2>&1 )
+  RC=$?
+  assert_eq "unmatched bare --sid → exit 2 (UNKNOWN fail-open)" "2" "$RC"
+
+  # [10] checker exit contract: branch NOT merged locally but its PR is MERGED
+  #      (gh stubbed via PATH shim — hermetic, no network) → STALE (exit 0)
+  echo "[10] checker: unmerged branch, stubbed gh PR=MERGED → STALE (exit 0)"
+  R=$(mkroot); mkrepo "$R" pwt-pr-run no
+  mkdir -p "$R/bin"
+  printf '#!/usr/bin/env bash\n[ "$1" = "auth" ] && exit 0\n[ "$1" = "pr" ] && { echo MERGED; exit 0; }\nexit 0\n' > "$R/bin/gh"
+  chmod +x "$R/bin/gh"
+  ( cd "$R" && env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE \
+      PATH="$R/bin:$PATH" PWT_PROJECT_ROOT_OVERRIDE="$R" \
+      bash "$PWT_GOAL" --resume-staleness-check --branch pwt-pr-run >/dev/null 2>&1 )
+  RC=$?
+  assert_eq "gh PR MERGED → exit 0 (STALE)" "0" "$RC"
 else
   echo "  ⊘ e2e skipped (pwt-goal.sh not found)"
 fi

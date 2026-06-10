@@ -6,7 +6,7 @@
 # inline rule), and (for orchestrator routes) appends a JSONL row to the
 # per-SLUG decision log.
 #
-# Spec:        docs/specs/plan-w-team-orchestrator-interception-upgrade.md
+# Spec:        folded into the classifier doc below (it is the canonical spec)
 # Classifier:  .claude/commands/plan-w-team/shared/orchestrator-interception.md
 # Tests:       .claude/scripts/plan-w-team-orchestrator-route.test.sh
 # Registry:    .claude/commands/plan-w-team/shared/state-artifacts.md

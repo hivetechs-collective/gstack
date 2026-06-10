@@ -788,20 +788,45 @@ VERSION_DECISION=$(route_orchestrator version-bump-major-vs-minor "$SLUG" \
 
 **Concurrent-run safety — rebump from CURRENT main, not the spawn snapshot
 (PWT-VERSION-COLLISION).** Once the bump KIND is chosen, derive the new version
-number from main's CURRENT `VERSION` at ship time (after fetch/rebase), NOT the
-`VERSION` captured when this run started. This is the difference between two
-concurrent runs colliding on the same version and stacking cleanly. Use the
-deterministic helper:
+number from main's CURRENT `VERSION` at ship time, NOT the `VERSION` captured
+when this run started. The helper self-fetches the merge target first
+(best-effort `git fetch --quiet origin <base>`; offline / no-remote it silently
+falls back to local refs), so no prior fetch/rebase step is required. This is
+the difference between two concurrent runs colliding on the same version and
+stacking cleanly.
+
+**Scope guard — the rebump helper targets the SYNCED SKILL `VERSION`, so it runs
+ONLY for a skill self-ship.** The helper defaults to
+`.claude/commands/plan-w-team/VERSION`, which exists in EVERY consumer repo
+post-sync — an unguarded invocation in a consumer feature ship would wrongly
+bump the synced skill version. Gate it on the ship diff actually touching
+`.claude/commands/plan-w-team/`:
 
 ```bash
 # Reads the authoritative current VERSION on the merge target (origin/main → main →
-# working tree), applies $VERSION_DECISION, and writes the rebumped VERSION file.
-NEXT_VERSION=$(.claude/scripts/plan-w-team-next-version.sh \
-  --bump "$(printf '%s' "$VERSION_DECISION" | tr '[:upper:]' '[:lower:]')" --write)
-echo "  rebumped VERSION → $NEXT_VERSION (from current main, not spawn snapshot)"
+# working tree; the helper self-fetches it best-effort), applies $VERSION_DECISION,
+# and writes the rebumped VERSION file — but ONLY for a skill self-ship.
+# pwt-skill-selfship-guard: extracted verbatim by plan-w-team-next-version.test.sh — keep the next two lines intact
+SHIP_BASE=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || echo HEAD)
+SKILL_SELF_SHIP=$(git diff --name-only "$SHIP_BASE" HEAD -- .claude/commands/plan-w-team/ | grep -q . && echo yes || echo skip)
+if [ "$SKILL_SELF_SHIP" = "yes" ]; then
+  NEXT_VERSION=$(.claude/scripts/plan-w-team-next-version.sh \
+    --bump "$(printf '%s' "$VERSION_DECISION" | tr '[:upper:]' '[:lower:]')" --write)
+  echo "  rebumped skill VERSION → $NEXT_VERSION (from current main, not spawn snapshot)"
+else
+  echo "  consumer feature ship → synced skill VERSION left untouched"
+fi
 ```
 
-Head the new `CHANGELOG.md` entry with `$NEXT_VERSION` and insert it newest-first.
+In the `skip` case (any ship whose diff does NOT touch the skill — i.e. every
+consumer-repo feature ship), bump the PROJECT's own version artifact instead,
+following the project's existing conventions (`package.json` / `Cargo.toml` /
+`pyproject.toml` / `VERSION`), and head the CHANGELOG entry with THAT version.
+The synced skill `VERSION` must NEVER be bumped by a consumer feature ship — it
+tracks the skill release, not the project.
+
+On the self-ship path, head the new `CHANGELOG.md` entry with `$NEXT_VERSION`
+and insert it newest-first.
 Rationale + the regression test live in `shared/versioning.md §Concurrent runs`.
 
 <!-- Original: MINOR and MAJOR bumps asked the user. Orchestrator decides based
@@ -1123,7 +1148,7 @@ fi
 
 **Verification (AC5).** A clean reversible autonomous run reaches `✅ worker self-merged to <default>` here, then §6h reclaim leaves the tree on `main`. Verified short of a full multi-hour live run by: (a) the directive is unconditional on the autonomous+reversible path (quoted above); (b) the push-ack auto-clear (§6g) removes the only human pause between green tests and this merge; (c) the existing `plan-w-team-worktree-on-merge.sh` ff-only reclaim is reused, not reinvented.
 
-## 6g-bis. Build-Artifact Hygiene (E7 — reclaim before the worktree lingers)
+## 6g-quater. Build-Artifact Hygiene (E7 — reclaim before the worktree lingers)
 
 Once a build worker has **shipped** (PR opened/pushed, tests green) but the worktree
 is **awaiting merge** (the common `DO NOT MERGE` flow can hold it for hours/days), the

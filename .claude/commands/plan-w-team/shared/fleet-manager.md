@@ -8,7 +8,8 @@ dispatch in Step 3-4 and parallelism efficiency metrics in Step 8 retro.
 Spec: `docs/specs/pwt-supervisor-goal.md`
 Hook (writer): `.claude/hooks/plan-w-team-fleet-writer.sh`
 Reader: `.claude/scripts/plan-w-team-fleet-query.sh`
-Tests: `.claude/scripts/plan-w-team-fleet-query.test.sh`
+Tests: `.claude/scripts/plan-w-team-fleet-query.test.sh` (reader),
+`.claude/hooks/tests/plan-w-team-fleet-writer.test.sh` (writer + writer→reader contract)
 Registry: `shared/state-artifacts.md` (one row, mode `handoff`)
 
 ## Overview
@@ -95,7 +96,7 @@ authoritative record of the spawn intent.
 Environment variable `PLAN_W_TEAM_FLEET_DISABLE=1`:
 
 - Hook (`fleet-writer.sh`): exit 0 without appending to fleet log.
-- Reader (`fleet-query.sh`): return empty arrays for list subcommands, return zero-count object for `summary`. Exit 0.
+- Reader (`fleet-query.sh`): return empty arrays for list subcommands, return zero-count object for `summary` — key-identical to the active shape: `{"spawned":0,"completed":0,"failed":0,"running":0,"max_concurrent":0}`. Exit 0.
 
 The kill switch is **graceful degradation** — `/plan-w-team` still completes,
 just without fleet observability. Use during incident response or when
@@ -142,7 +143,7 @@ If a new consumer (the supervisor dispatch, the `/goal` evaluator) or a future e
 1. Add a row to the JSONL Schema table in this file with the event name, required fields, and source.
 2. Update `fleet-writer.sh`'s `case "$EVENT_NAME"` block.
 3. Update `fleet-query.sh`'s subcommand logic to handle the new event in `summary` and `running`/`completed` if applicable.
-4. Add a test case in `fleet-query.test.sh`.
+4. Add test cases in `fleet-query.test.sh` (reader) and `tests/plan-w-team-fleet-writer.test.sh` (writer).
 5. Update the symmetry-check registry row if the on-disk path changes.
 6. Document in retro (`07-retro.md §8j-ter`) how the new event affects metrics.
 

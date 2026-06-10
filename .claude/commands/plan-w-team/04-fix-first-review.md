@@ -217,6 +217,22 @@ EOF
       echo "✗ symmetry check environment failure — investigate before ship"
       exit 1
       ;;
+    4)
+      cat <<'EOF'
+✗ ORPHAN READER — code references a .claude/state/plan-w-team-* artifact
+  that has no registry entry. This is the inverse governance bug (and more
+  severe than a missing reader): the workflow consumes a file whose
+  writer↔reader contract was never declared, so nothing audits it.
+  FIX BEFORE SHIP: register the artifact in `shared/state-artifacts.md`
+  (writer_grep, reader_grep, mode) in the same commit as the reader, or
+  remove the stray reference.
+EOF
+      exit 1  # fail-closed
+      ;;
+    *)
+      echo "✗ symmetry check unknown exit $code — investigate before ship"
+      exit 1
+      ;;
   esac
 fi
 ```
@@ -365,7 +381,7 @@ Three parallel Brain-tier reviewers consume context. To keep this bounded:
 - Reviewers must be told "file:line + one sentence" per finding — verbose review prose is the cost spike.
 - Skip Slot 3 when no matching scope tag exists (table above).
 - For diffs <50 lines, **skip the fan-out entirely** even when triggered — the marginal value is below the agent-spawn overhead. Note this in `.claude/state/plan-w-team-pass1-synthesis-$SLUG.md` as `skipped_reason: small-diff`.
-- Track `pass1_reviewer_tokens` in retro 8e (Parallel Execution Health) — warning threshold: >40k tokens cumulative across reviewers.
+- Track `pass1_reviewer_tokens` in retro §8e "Retroactive-Coverage Closure & Gap-Analyzer Cost" — warning threshold: >40k tokens cumulative across reviewers.
 
 ### Manual Branch Review Outside /plan-w-team
 
@@ -464,7 +480,7 @@ DIFF_FILES=$(git diff --name-only "$BASE_SHA"..HEAD)
 EXISTING_TESTS=$(git ls-files | grep -E '\.(test|spec)\.[tj]sx?$|_test\.py$|tests?/' | sort -u)
 ```
 
-Invoke `test-gap-analyzer` (Brain-tier, Opus 4.8) with:
+Invoke `test-gap-analyzer` (Brain-tier) with:
 
 - `slug` — the /plan-w-team SLUG
 - `diff_files` — paths + line ranges from the diff
@@ -499,7 +515,7 @@ This task is QUEUED — it runs after Step 6 ship and before Step 8 retro. Do NO
 
 **When the analyzer is invoked**:
 
-- `findings_count > 0` AND any `severity: high` → the lead must schedule retroactive tasks before Step 8 retro. Step 8 reads `retroactive: true` task closure rate as a quality signal.
+- `findings_count > 0` AND any `severity: high` → the lead must schedule retroactive tasks before Step 8 retro. Step 8 reads `retroactive: true` task closure rate as a quality signal (§8e "Retroactive-Coverage Closure & Gap-Analyzer Cost").
 - `findings_count > 0` with only `severity: medium|low` → the lead MAY defer to a follow-up /plan-w-team run, but must record the report path in the retro frontmatter.
 - `findings_count == 0` → no action; record "test-gap-analyzer: clean" in the Step 5 status block.
 
@@ -509,7 +525,7 @@ This task is QUEUED — it runs after Step 6 ship and before Step 8 retro. Do NO
 - Docs-only diff (no code files touched) — skip.
 - Set `PLAN_W_TEAM_DISABLE_TEST_GAP_ANALYZER=1` as a per-run kill switch (advisory; document in the retro why).
 
-**Cost discipline**: track `test_gap_analyzer_tokens` in retro 8e. Warning threshold: >20k tokens per run. Tune by tightening the `module_root` scope (siblings-only, not transitive imports) before disabling the analyzer.
+**Cost discipline**: track `test_gap_analyzer_tokens` in retro §8e "Retroactive-Coverage Closure & Gap-Analyzer Cost". Warning threshold: >20k tokens per run. Tune by tightening the `module_root` scope (siblings-only, not transitive imports) before disabling the analyzer.
 
 **Why retroactive, not blocking**: test gaps in _existing_ (untouched-by-this-diff) sibling code are not the current PR's responsibility to fix — but they are this team's responsibility to track. Queuing them as retroactive tasks keeps Step 5 fast (no surprise re-implementation work mid-review) while preventing the gaps from being forgotten.
 
@@ -527,7 +543,7 @@ EXISTING_SEC_TESTS=$(git ls-files | grep -E '(security|auth|injection|xss|csrf|s
 OWASP_MAP=".claude/commands/plan-w-team/shared/owasp-top10-mapping.md"
 ```
 
-Invoke `security-gap-analyzer` (Brain-tier, Opus 4.8) with:
+Invoke `security-gap-analyzer` (Brain-tier) with:
 
 - `slug` — the /plan-w-team SLUG
 - `diff_files` — paths + line ranges from the diff
@@ -567,7 +583,7 @@ This task is QUEUED — it runs after Step 6 ship and before Step 8 retro. Do NO
 
 **When the analyzer is invoked**:
 
-- `findings_count > 0` AND any `severity: high` → the lead must schedule retroactive `N.t` tasks before Step 8 retro. Step 8 reads `retroactive: true` task closure rate as a quality signal AND tracks per-OWASP-category gap counts.
+- `findings_count > 0` AND any `severity: high` → the lead must schedule retroactive `N.t` tasks before Step 8 retro. Step 8 reads `retroactive: true` task closure rate as a quality signal AND tracks per-OWASP-category gap counts (both in §8e "Retroactive-Coverage Closure & Gap-Analyzer Cost").
 - `findings_count > 0` with only `severity: medium|low` → the lead MAY defer to a follow-up /plan-w-team run, but must record the report path in the retro frontmatter.
 - `findings_count == 0` → no action; record "security-gap-analyzer: clean" in the Step 5 status block.
 
@@ -578,7 +594,7 @@ This task is QUEUED — it runs after Step 6 ship and before Step 8 retro. Do NO
 - Diff touches NO files matching any OWASP category in `shared/owasp-top10-mapping.md` **AND** the diff matches no content signal (CS-1…CS-4) — skip; record `security-gap-analyzer: skipped (no-security-surfaces)`. **A content-signal match overrides this skip**: a privilege-bearing field write, a request-body spread into an ORM update/insert, a bypass/QA-token-gated handler, or a where/query-by-id without a tenant/owner predicate forces the analyzer to run AND raises a Pass-1 CRITICAL via the §5b Access-Control Content-Signal Scan — even when no filename matches a glob. (This is the structural fix for the 2026-06-01 escapes: `qa-sim.ts` and `jobs.ts` matched no glob, so the analyzer was skipped.)
 - Set `PLAN_W_TEAM_DISABLE_SECURITY_GAP_ANALYZER=1` as a per-run kill switch (advisory; document in the retro why).
 
-**Cost discipline**: track `security_gap_analyzer_tokens` in retro 8e. Warning threshold: >20k tokens per run (same threshold as `test_gap_analyzer_tokens`). Tune by tightening the `module_root` scope (siblings-only, not transitive imports) before disabling the analyzer.
+**Cost discipline**: track `security_gap_analyzer_tokens` in retro §8e "Retroactive-Coverage Closure & Gap-Analyzer Cost". Warning threshold: >20k tokens per run (same threshold as `test_gap_analyzer_tokens`). Tune by tightening the `module_root` scope (siblings-only, not transitive imports) before disabling the analyzer.
 
 **Why retroactive, not blocking**: security gaps in _existing_ (untouched-by-this-diff) sibling code are not the current PR's responsibility to fix — but they are this team's responsibility to track. Queuing them as retroactive `N.t` tasks keeps Step 5 fast (no surprise re-implementation work mid-review) while preventing security gaps from being forgotten. High-severity gaps in the diff's _own_ touched files DO block ship — those are flagged as Pass 1 CRITICAL findings (via the §5b Access-Control Content-Signal Scan) before this retroactive pass runs; see §5d-ter for the carve-out.
 

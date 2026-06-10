@@ -33,6 +33,32 @@
 set -u
 
 REGISTRY="${PWT_RAM_CLAIMS_PATH:-${PWT_RAM_CLAIMS_REGISTRY:-$HOME/.claude/state/pwt-ram-claims.jsonl}}"
+LOCK_DIR="${REGISTRY}.lock"
+
+# keep in sync with pwt-ram-claim.sh acquire_lock — same lock dir, same semantics
+acquire_lock() {
+    local attempts=0
+    while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+        attempts=$(( attempts + 1 ))
+        if [ "$attempts" -gt 50 ]; then
+            # Stale-lock recovery: if no PID file or owner is dead, reclaim.
+            local stale_pid=""
+            stale_pid=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+            if [ -z "$stale_pid" ] || ! kill -0 "$stale_pid" 2>/dev/null; then
+                rm -rf "$LOCK_DIR" 2>/dev/null
+                continue
+            fi
+            echo "ERR: pwt-claims-cleanup could not acquire lock $LOCK_DIR (held by PID $stale_pid)" >&2
+            return 1
+        fi
+        sleep 0.05 2>/dev/null || sleep 1
+    done
+    echo "$$" > "$LOCK_DIR/pid" 2>/dev/null || true
+}
+
+release_lock() {
+    rm -rf "$LOCK_DIR" 2>/dev/null
+}
 
 DRY_RUN=0
 QUIET=0
@@ -143,6 +169,19 @@ classify_line() {
     printf 'KEEP\n'
 }
 
+# Serialize the read→rewrite window against pwt-ram-claim.sh remove/sweep
+# (same ${REGISTRY}.lock mkdir lock). Without it, a concurrent add/remove
+# between our snapshot read and the Pass-2 mv is silently clobbered (lost
+# update). Contention degrades to skip-cleanup: this script runs --quiet on
+# every fair-share gate evaluation, so fail-open (registry untouched, exit 0)
+# rather than blocking the spawn gate. Live-SID collection above stays
+# OUTSIDE the lock — `claude agents` can be slow and is not a registry write.
+if ! acquire_lock; then
+    log "pwt-claims-cleanup: registry lock busy — skipping cleanup (fail-open)"
+    [ -n "$LIVE_SIDS_FILE" ] && rm -f "$LIVE_SIDS_FILE"
+    exit 0
+fi
+
 # Pass 1: classify and report.
 KEPT_FILE=$(mktemp)
 REMOVED_COUNT=0
@@ -166,6 +205,7 @@ done < "$REGISTRY"
 
 # Summary.
 if [ "$REMOVED_COUNT" = "0" ]; then
+    release_lock
     log "pwt-claims-cleanup: registry clean ($KEPT_COUNT entries, 0 removed)"
     rm -f "$KEPT_FILE" "$REMOVAL_REASONS"
     [ -n "$LIVE_SIDS_FILE" ] && rm -f "$LIVE_SIDS_FILE"
@@ -173,6 +213,7 @@ if [ "$REMOVED_COUNT" = "0" ]; then
 fi
 
 if [ "$DRY_RUN" = "1" ]; then
+    release_lock
     log "pwt-claims-cleanup: DRY-RUN would remove $REMOVED_COUNT / $((KEPT_COUNT + REMOVED_COUNT)) entries from $REGISTRY"
     [ "$QUIET" = "0" ] && cat "$REMOVAL_REASONS"
     rm -f "$KEPT_FILE" "$REMOVAL_REASONS"
@@ -183,17 +224,20 @@ fi
 # Pass 2: atomic rewrite (temp + rename).
 TMP_REG="${REGISTRY}.cleanup.$$"
 if ! mv "$KEPT_FILE" "$TMP_REG"; then
+    release_lock
     echo "pwt-claims-cleanup: failed to stage kept file" >&2
     rm -f "$REMOVAL_REASONS"
     [ -n "$LIVE_SIDS_FILE" ] && rm -f "$LIVE_SIDS_FILE"
     exit 1
 fi
 if ! mv "$TMP_REG" "$REGISTRY"; then
+    release_lock
     echo "pwt-claims-cleanup: failed to rename $TMP_REG → $REGISTRY" >&2
     rm -f "$TMP_REG" "$REMOVAL_REASONS"
     [ -n "$LIVE_SIDS_FILE" ] && rm -f "$LIVE_SIDS_FILE"
     exit 1
 fi
+release_lock
 
 log "pwt-claims-cleanup: removed $REMOVED_COUNT entries from $REGISTRY (kept $KEPT_COUNT)"
 [ "$QUIET" = "0" ] && cat "$REMOVAL_REASONS"

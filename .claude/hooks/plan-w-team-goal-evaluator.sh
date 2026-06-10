@@ -422,7 +422,7 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
                 if [ "${AP_BK:-0}" = "1" ] && [ "${AP_BL:-0}" -gt 0 ] 2>/dev/null; then
                     TERMINAL=""
                     REASON=""
-                    CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but the feature-AC contract is EMPTY and objective backlog=${AP_BL} remains (supervisor-progress.json). An empty AC contract is treated as not-done while unblocked backlog remains (PWT-ANTIPARK AC2). Drain the backlog or encode remaining work as ACs, then re-emit retro-complete. Kill switch: PLAN_W_TEAM_DISABLE_ANTIPARK=1."
+                    CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but the feature-AC contract is EMPTY and objective backlog=${AP_BL} remains (supervisor-progress-${SLUG}.json). An empty AC contract is treated as not-done while unblocked backlog remains (PWT-ANTIPARK AC2). Drain the backlog or encode remaining work as ACs, then re-emit retro-complete. Kill switch: PLAN_W_TEAM_DISABLE_ANTIPARK=1."
                     echo "[goal-evaluator] SLUG=$SLUG empty-AC-not-done: withholding SUCCESS (backlog=${AP_BL}, PWT-ANTIPARK)" >&2
                 fi
             fi
@@ -525,7 +525,7 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     # worst-precedence state to the parent.
     #
     # Precedence (low → high severity):
-    #   SUCCESS < LOW_CONFIDENCE_STREAK < USER_ESCALATION_HALT
+    #   SUCCESS < API_HALT < LOW_CONFIDENCE_STREAK < USER_ESCALATION_HALT
     # A halted worker must halt the parent (surface to user). A clean worker
     # satisfies parent SUCCESS. Mixed signals win toward the more severe.
     #

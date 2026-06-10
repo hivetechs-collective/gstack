@@ -100,6 +100,75 @@ SB=$(make_sandbox "1.37.0" "1.36.0")
 assert_eq "exit 1 on bad bump kind" "1" "$?"
 rm -rf "$SB"
 
+# ── F11: self-fetch — stale origin/main is refreshed before reading ──────────
+# Offline: the "remote" is a local bare repo (file path, no network). WORK's
+# origin/main remote-tracking ref is stale (1.36.0) while the remote's main is
+# 1.37.0; the helper's best-effort self-fetch must read the CURRENT 1.37.0 →
+# minor → 1.38.0 (a stale read would collide at 1.37.0).
+echo "F11: self-fetch refreshes stale origin/main (bare-repo remote, no network)"
+RB=$(mktemp -d)   # bare "remote"
+PUB=$(mktemp -d)  # publisher clone (advances the remote)
+WORK=$(mktemp -d) # consumer clone left with a stale remote-tracking ref
+(
+    git init -q --bare "$RB"
+    ( cd "$RB" && git symbolic-ref HEAD refs/heads/main )
+    git clone -q "$RB" "$PUB/repo"
+    cd "$PUB/repo" || exit 1
+    git config user.email t@t.local
+    git config user.name  tester
+    printf '1.36.0\n' > VERSION
+    git add VERSION
+    git commit -qm "1.36.0"
+    git branch -M main
+    git push -q origin main
+    git clone -q "$RB" "$WORK/repo"   # WORK's origin/main snapshots 1.36.0
+    printf '1.37.0\n' > VERSION
+    git commit -qam "1.37.0"
+    git push -q origin main           # remote main now 1.37.0; WORK still stale
+) >/dev/null 2>&1
+NEXT=$( cd "$WORK/repo" && "$HELPER" --bump minor --version-file VERSION )
+assert_eq "stale origin/main (1.36.0) self-fetched → reads 1.37.0 → 1.38.0" "1.38.0" "$NEXT"
+rm -rf "$RB" "$PUB" "$WORK"
+
+# ── F4 guard: consumer feature ship must NOT rebump the synced skill VERSION ──
+# Extracts the §6d skill-self-ship guard VERBATIM from 05-ship.md (so doc and
+# test cannot drift) and evaluates it in a sandbox mimicking a consumer repo:
+# a synced skill VERSION exists, but the ship diff does not touch the skill.
+echo "F4: §6d skill-self-ship guard evaluates 'skip' for a consumer feature ship"
+DOC="$SCRIPT_DIR/../commands/plan-w-team/05-ship.md"
+GUARD=$(grep -A2 'pwt-skill-selfship-guard:' "$DOC" 2>/dev/null | tail -2)
+if [ -z "$GUARD" ]; then
+    echo "  ✗ guard marker 'pwt-skill-selfship-guard:' not found in $DOC"; FAIL=$((FAIL + 1))
+else
+    SB=$(mktemp -d)
+    (
+        cd "$SB" || exit 1
+        git init -q
+        git config user.email t@t.local
+        git config user.name  tester
+        mkdir -p .claude/commands/plan-w-team
+        printf '1.41.0\n' > .claude/commands/plan-w-team/VERSION
+        printf 'v1\n' > app.txt
+        git add -A
+        git commit -qm "base: synced skill + app"
+        git branch -M main
+        git checkout -q -b feature
+        printf 'v2\n' > app.txt
+        git commit -qam "feat(app): consumer feature, skill untouched"
+    ) >/dev/null 2>&1
+    VERDICT=$( cd "$SB" && eval "$GUARD" >/dev/null 2>&1; printf '%s' "${SKILL_SELF_SHIP:-unset}" )
+    assert_eq "guard → skip (synced skill VERSION present, diff doesn't touch skill)" "skip" "$VERDICT"
+    # Control: a diff that DOES touch the skill flips the guard to 'yes'.
+    (
+        cd "$SB" || exit 1
+        printf '1.41.1\n' > .claude/commands/plan-w-team/VERSION
+        git commit -qam "fix(plan-w-team): skill self-ship"
+    ) >/dev/null 2>&1
+    VERDICT2=$( cd "$SB" && eval "$GUARD" >/dev/null 2>&1; printf '%s' "${SKILL_SELF_SHIP:-unset}" )
+    assert_eq "control: skill-touching diff → yes (self-ship rebumps)" "yes" "$VERDICT2"
+    rm -rf "$SB"
+fi
+
 # ── bash 3.2 cleanliness (no bash-4 error signatures) ─────────────────────────
 echo "bash 3.2: runs clean under /bin/bash"
 SB=$(make_sandbox "1.37.0" "1.36.0")

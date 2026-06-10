@@ -35,10 +35,10 @@ Per-session ceiling = 1.8 × 1.5 = **2.7 GB of free RAM required to spawn one mo
 
 ### bg_session_count
 
-Read from `claude agents --json`, filtering `kind == "background"`. Soft-fails to 0 when:
+The shared cross-repo claims registry is consulted FIRST and is machine-wide authoritative (PWT-RAM2): when `${PWT_RAM_CLAIMS_PATH:-${PWT_RAM_CLAIMS_REGISTRY:-~/.claude/state/pwt-ram-claims.jsonl}}` is readable, the count is its row count (`grep -c '"sid":"'`) — the registry sees workers spawned from OTHER repos on the same machine, which the CLI cannot. Only when the registry is absent or unreadable does the count fall back to `claude agents --json` via `claude-agents-extended.sh --bg-only` (raw `claude agents --json` filtered to `kind == "background"` when the wrapper isn't present). Subagents are intentionally excluded either way — they are a fraction of a bg session's footprint, and counting them would falsely refuse spawns. Soft-fails to 0 when:
 
-- the `claude` CLI is unavailable on `PATH`
-- `claude agents --json` returns non-JSON
+- the registry is unreadable AND the `claude` CLI is unavailable on `PATH`
+- the fallback call returns non-JSON
 - the call errors out
 
 A miscount of 0 is fail-open — the gate will be more permissive than it should, but it won't break `pwt-goal.sh`. The decision is intentional: a broken counter must not block the user's primary spawn path.
@@ -64,13 +64,15 @@ A `"note": "<reason>"` field accompanies fail-open output for diagnosability.
 
 ## Environment Overrides
 
-| Variable                         | Effect                                                                                                        |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `PLAN_W_TEAM_DISABLE_RAM_GATE=1` | `pwt-goal.sh` skips the RAM check entirely. Use when you've manually confirmed available RAM.                 |
-| `RAM_BUDGET_SESSION_COST_GB=<n>` | Override the default 1.8 GB per-session estimate.                                                             |
-| `RAM_BUDGET_SAFETY_FACTOR=<n>`   | Override the default 1.5x multiplier.                                                                         |
-| `RAM_BUDGET_PLATFORM_OVERRIDE=…` | (testing) Pin `Darwin` / `Linux` / arbitrary string regardless of `uname -s`.                                 |
-| `RAM_BUDGET_STUB_*`              | (testing) Inject deterministic vm_stat / sysctl / /proc/meminfo / claude-agents responses. See script header. |
+| Variable                         | Effect                                                                                                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `PLAN_W_TEAM_DISABLE_RAM_GATE=1` | `pwt-goal.sh` skips the RAM check entirely. Use when you've manually confirmed available RAM.                                        |
+| `RAM_BUDGET_SESSION_COST_GB=<n>` | Override the default 1.8 GB per-session estimate.                                                                                    |
+| `RAM_BUDGET_SAFETY_FACTOR=<n>`   | Override the default 1.5x multiplier.                                                                                                |
+| `PWT_RAM_CLAIMS_PATH=<path>`     | Canonical path of the shared claims registry consulted first for `bg_session_count`. Default `~/.claude/state/pwt-ram-claims.jsonl`. |
+| `PWT_RAM_CLAIMS_REGISTRY=<path>` | Legacy alias for `PWT_RAM_CLAIMS_PATH` (lower precedence; used only when the canonical var is unset/empty).                          |
+| `RAM_BUDGET_PLATFORM_OVERRIDE=…` | (testing) Pin `Darwin` / `Linux` / arbitrary string regardless of `uname -s`.                                                        |
+| `RAM_BUDGET_STUB_*`              | (testing) Inject deterministic vm_stat / sysctl / /proc/meminfo / claude-agents responses. See script header.                        |
 
 ## When to Tune
 
@@ -88,11 +90,14 @@ The gate is invoked from `pwt-goal.sh` AFTER the cascade guard (PWT-DS2) and the
 
 Exit code map:
 
-| Exit | Source   | Meaning                                                             |
-| ---- | -------- | ------------------------------------------------------------------- |
-| 3    | PWT-DS1  | Hook already spawned a worker this turn (double-spawn refused).     |
-| 4    | PWT-DS2  | Worker-cascade refused (running inside a bg worker without escape). |
-| 5    | PWT-RAM1 | RAM gate refused (this gate).                                       |
+| Exit | Source   | Meaning                                                                                    |
+| ---- | -------- | ------------------------------------------------------------------------------------------ |
+| 3    | PWT-DS1  | Hook already spawned a worker this turn (double-spawn refused).                            |
+| 4    | PWT-DS2  | Worker-cascade refused (running inside a bg worker without escape).                        |
+| 5    | PWT-RAM1 | RAM gate refused (this gate).                                                              |
+| 6    | PWT-RAM2 | Fair-share gate refused (this repo at/above its fair share while another repo has demand). |
+
+Exit 6 fires AFTER the RAM gate — the RAM gate checks aggregate machine capacity, fair-share divides confirmed room across repos with demand. Owner: `shared/supervisor-protocol.md` §FAIR SHARE CHECK (cross-repo allocation). Overrides: `PLAN_W_TEAM_DISABLE_FAIR_SHARE=1` skips the gate entirely; `PWT_RUN_PRIORITY=critical` bypasses it for one genuinely time-critical run.
 
 ## Integration with the Supervisor Protocol
 
@@ -105,14 +110,15 @@ The supervisor does NOT silently override the gate. It either waits or escalates
 
 ## Failure-Mode Catalog
 
-| Failure                                 | Behavior                                                          | User-visible                             |
-| --------------------------------------- | ----------------------------------------------------------------- | ---------------------------------------- |
-| `vm_stat` missing on macOS              | `recommended_action: null`, `note: "macos_read_failed"`           | Spawn proceeds; one-line stderr advisory |
-| `/proc/meminfo` unreadable on Linux     | `recommended_action: null`, `note: "linux_read_failed"`           | Spawn proceeds                           |
-| Unsupported platform (Plan9, BSD)       | `recommended_action: null`, `note: "unsupported_platform:<name>"` | Spawn proceeds                           |
-| `claude` CLI missing                    | `bg_session_count: 0`                                             | Gate uses 0 — conservative under-count   |
-| `ram-budget.sh` missing from script dir | gate skipped silently                                             | Spawn proceeds (fail-open)               |
-| Operator override `…DISABLE_RAM_GATE=1` | gate skipped                                                      | Spawn proceeds                           |
+| Failure                                 | Behavior                                                                                            | User-visible                                  |
+| --------------------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `vm_stat` missing on macOS              | `recommended_action: null`, `note: "macos_read_failed"`                                             | Spawn proceeds; one-line stderr advisory      |
+| `/proc/meminfo` unreadable on Linux     | `recommended_action: null`, `note: "linux_read_failed"`                                             | Spawn proceeds                                |
+| Unsupported platform (Plan9, BSD)       | `recommended_action: null`, `note: "unsupported_platform:<name>"`                                   | Spawn proceeds                                |
+| Claims registry absent/unreadable       | `bg_session_count` falls back to `claude agents --json` (via `claude-agents-extended.sh --bg-only`) | Count misses workers spawned from other repos |
+| `claude` CLI missing (and no registry)  | `bg_session_count: 0`                                                                               | Gate uses 0 — conservative under-count        |
+| `ram-budget.sh` missing from script dir | gate skipped silently                                                                               | Spawn proceeds (fail-open)                    |
+| Operator override `…DISABLE_RAM_GATE=1` | gate skipped                                                                                        | Spawn proceeds                                |
 
 **Design rule**: the RAM gate is a safety net for the common case. It does NOT participate in correctness, never gates the existing PWT-DS1/DS2 logic, and always fails open. The user remains the ultimate authority.
 
@@ -122,8 +128,9 @@ Run `.claude/scripts/ram-budget.test.sh` to exercise the gate against stubbed sy
 
 1. Builds synthetic `vm_stat` outputs (high free / zero free).
 2. Pins `sysctl hw.memsize` and `hw.pagesize` via `RAM_BUDGET_STUB_*`.
-3. Stubs `bg_session_count` directly via env to skip the `claude agents --json` call.
-4. Asserts each `recommended_action` is what the math predicts.
+3. Stubs `bg_session_count` directly via env (`RAM_BUDGET_STUB_BG_COUNT`) to skip both the claims registry and the CLI fallback.
+4. Exercises the PWT-RAM2 claims-registry path: a fixture JSONL pinned via `PWT_RAM_CLAIMS_PATH` (and the legacy alias) drives `bg_session_count`; an unreadable registry engages the CLI fallback.
+5. Asserts each `recommended_action` is what the math predicts.
 
 Tests cover both macOS and Linux read paths plus the unsupported-platform fail-open path.
 

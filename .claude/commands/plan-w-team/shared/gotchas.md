@@ -34,7 +34,7 @@ attachment).
 **Do instead**: pass forward via `systemMessage`, and check for the visible
 `🚀 /plan-w-team origin-chat supervisor active` marker — never an `additionalContext` token.
 
-**Source**: `.claude/commands/plan-w-team.md:43`, `:48` (Routing Pre-Check Step 3a).
+**Source**: `.claude/commands/plan-w-team.md` §Step 3a — Double-spawn guard (Routing Pre-Check).
 
 ## G2 — LLM-attention is not a load-bearing guard (PWT-DS1 / PWT-DS2)
 
@@ -51,7 +51,7 @@ refuses to spawn (exit 3) if a fresh flag from the same parent exists. **PWT-DS2
 `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1` into the worker env so a nested call exits 4. Escape hatch
 for legitimate nesting: `PLAN_W_TEAM_FORCE_SPAWN=1`.
 
-**Source**: `.claude/commands/plan-w-team.md:50` (PWT-DS1), Step 3a (PWT-DS2);
+**Source**: `.claude/commands/plan-w-team.md` §Step 3a — Double-spawn guard (PWT-DS1 + PWT-DS2);
 `shared/state-artifacts.md` (flag registration).
 
 ## G3 — `claude --bg` does NOT auto-create a worktree
@@ -68,8 +68,7 @@ worker starts inside `.claude/worktrees/<slug>`. Any path that will Write/Edit u
 must be in a worktree (call `EnterWorktree` if `pwd` is not under `.claude/worktrees/`).
 Opt-out only via `PWT_DISABLE_WORKER_WORKTREE=1`.
 
-**Source**: `.claude/commands/plan-w-team.md:687`; manifest §Pre-Flight: Background Session
-Worktree.
+**Source**: `.claude/commands/plan-w-team.md` §Pre-Flight: Background Session Worktree.
 
 ## G4 — The Agent tool's `model` param accepts ONLY aliases, never a full model ID
 
@@ -82,7 +81,7 @@ an alias defeats a generation pin (the alias overrides the agent-definition fron
 (e.g. `model: claude-opus-4-8` in `.claude/agents/team/evaluator.md`) and do **not** set
 `model:` in the Agent call. For mechanical lead work, no pin is needed.
 
-**Source**: `.claude/commands/plan-w-team.md:525` (§How tier pinning works).
+**Source**: `.claude/commands/plan-w-team.md` §How tier pinning works.
 
 ## G5 — Use `mkdir` for locks, not `flock` (macOS has no `flock(1)`)
 
@@ -95,8 +94,8 @@ mac-mini `/bin/bash`, so two concurrent runs race on the same state files.
 `plan-w-team-push.lock`, `plan-w-team-friction-log.lock`) with PID-based stale recovery. They
 survive compaction and are atomic on every POSIX filesystem.
 
-**Source**: `.claude/commands/plan-w-team.md:452` (§Pre-Flight: Workflow Lock);
-`07-retro.md:351` (friction-log lock).
+**Source**: `.claude/commands/plan-w-team.md` §Pre-Flight: Workflow Lock;
+`07-retro.md` §8i Self-Assessment (friction-log lock).
 
 ## G6 — CHANGELOG SHA off-by-one → the `(pending)` backfill convention
 
@@ -111,7 +110,7 @@ commit that will actually ship the entry.
 backfill `(pending)` → real short-SHA in a docs-only follow-up commit (no new version). The
 P14 SHA-lint enforces this.
 
-**Source**: `shared/versioning.md:66` (§CHANGELOG SHA backfill convention).
+**Source**: `shared/versioning.md` §CHANGELOG SHA backfill convention.
 
 ## G7 — bash 3.2 portability (the test bash lies to you)
 
@@ -193,8 +192,8 @@ authoritative registry.
 **Do instead**: register every `.claude/state/plan-w-team-*` artifact in
 `shared/state-artifacts.md` (path, writer, reader, lifecycle) OR remove the reader.
 
-**Source**: `shared/state-artifacts.md`; `.claude/scripts/plan-w-team-symmetry-check.sh:21`,
-`:201`.
+**Source**: `shared/state-artifacts.md`; `.claude/scripts/plan-w-team-symmetry-check.sh`
+(registry path + exit-code contract in the header).
 
 ---
 

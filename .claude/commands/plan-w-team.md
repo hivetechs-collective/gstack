@@ -563,9 +563,9 @@ When a new model generation ships (the rollover applied for Opus 4.8 on 2026-05-
 
 > **Frontmatter-pin exception — DO NOT centralize the pins.** The per-agent frontmatter `model:` pins are deliberately NOT collapsed into the canonical table above. The Agent tool accepts only the aliases `opus`/`sonnet`/`haiku`, so the full model ID MUST live in each agent's frontmatter to drive the Brain/Hands split — that frontmatter is the one place a literal model ID is load-bearing. A future maintainer who "helpfully" replaces the frontmatter pins with a pointer to this table would silently break the tier split (every agent would run on the lead's alias). Centralize the **prose** references to tier names; never centralize the **pins**.
 
-### Boris Cherny's Opus 4.7 Practices
+### Opus 4.7/4.8 Practices
 
-Lead and Brain-tier agents follow the patterns in `shared/opus-4-7-practices.md`:
+Lead and Brain-tier agents follow the Opus 4.7/4.8 patterns in `shared/opus-4-7-practices.md`:
 
 - **Front-load task specification** — give the full task shape upfront (intent, constraints, AC, files).
 - **Adaptive thinking** — guide intent ("think carefully" / "respond quickly"), don't fix a token budget.
@@ -612,7 +612,7 @@ Stage files reference these shared components on-demand (only loaded when needed
 | `shared/artifact-storage.md`     | 05-ship, 07-retro                        | SLUG, paths, formats                                                                                                                                                                                                                           |
 | `shared/browser-qa.md`           | 04-review, 05-ship                       | Playwright MCP + browse binary QA                                                                                                                                                                                                              |
 | `shared/board-integration.md`    | All stages (01-07)                       | GitHub Issues board sync, fire-and-forget                                                                                                                                                                                                      |
-| `shared/opus-4-7-practices.md`   | 00-scope, 01-spec, 03-execute, 04-review | Cherny's Opus 4.7 patterns — front-load, adaptive thinking, deliberate subagents                                                                                                                                                               |
+| `shared/opus-4-7-practices.md`   | 00-scope, 01-spec, 03-execute, 04-review | Cherny's Opus 4.7/4.8 patterns — front-load, adaptive thinking, deliberate subagents                                                                                                                                                           |
 | `shared/state-artifacts.md`      | 04-review (enforcing), 07-retro (metric) | Authoritative registry of `.claude/state/plan-w-team-*` artifacts — checked by `plan-w-team-symmetry-check.sh`                                                                                                                                 |
 | `shared/shell-safety.md`         | all stage-file authors                   | Shell injection primer — safe/unsafe patterns, assert helpers                                                                                                                                                                                  |
 | `shared/secret-safety.md`        | 05-ship (§6a-ter), pre-commit, sync      | Secret-leak defense-in-depth: pattern catalog, placeholder rules, how to add a pattern, history-rewrite runbook                                                                                                                                |

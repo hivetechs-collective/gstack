@@ -2,13 +2,13 @@
 
 Authoritative reference for PWT-T5b: the deterministic Stop-hook evaluator that fires after every Claude turn while a `/plan-w-team` run is active and decides whether the pipeline reached a terminal state.
 
-Spec: `docs/specs/pwt-t5b-goal-evaluator.md`
+Spec: none dedicated — this doc is the authoritative T5b reference. (The previously-cited `docs/specs/pwt-t5b-goal-evaluator.md` was never written; the nearest spec, `docs/specs/pwt-t5-goal-wrapper.md`, covers only the original T5 `/goal`-wrapper design T5b descends from.)
 Evaluator hook: `.claude/hooks/plan-w-team-goal-evaluator.sh` (Stop event)
 Helper: `.claude/scripts/plan-w-team-surface-status.sh` (emits status blocks the evaluator reads)
 State file: `.claude/state/plan-w-team-goal-<SLUG>.json` (written by skill at top-of-pipeline, deleted at retro-complete). For autonomous bg workers it is **also seeded at spawn by `pwt-goal.sh --worker-only` (PWT-WT2)** so the anti-skip anchor is active from t=0 even if the worker never reaches the manifest's top-of-pipeline activation — closing the 2026-06-02 regression where a worktree-isolated worker (no state file anywhere → evaluator "No active goal → exit 0") stopped short of its DoD. The seed is keyed by `SLUG_GUESS` in the launching checkout's `.claude/state/`; `await-terminal.sh` resolves it main-then-worktree (see `shared/supervisor-protocol.md` Wait mechanism + `docs/specs/supervisor-wait-worktree-aware.md`).
 Kill switch: `PLAN_W_TEAM_DISABLE_GOAL=1` — hook exits 0 without evaluation
 Companion: `shared/supervisor-protocol.md` (supervisor's per-turn summary block — second evaluator sensor)
-Anthropic docs (for context — we no longer use `/goal`): https://code.claude.com/docs/en/goal
+Anthropic docs (for context — we no longer rely on `/goal` alone: the self-hosted T5b evaluator below is the deterministic primary, with `/goal` as the outer-loop belt+braces — see §Two evaluators, two purposes): https://code.claude.com/docs/en/goal
 
 ## Quick-start: `pwt-goal` helper (for `/goal`-driven autonomous runs)
 
@@ -18,7 +18,7 @@ When you want to start an autonomous run that uses Anthropic's `/goal` command a
 .claude/scripts/pwt-goal.sh "ship payment API with stripe webhook handling"
 ```
 
-The script prints a properly-formatted `/goal` command to stdout. Copy and paste it at the start of a fresh `claude` session, or use `--launch` to invoke `claude -p` directly:
+The script prints a properly-formatted `/goal` command to stdout. Copy and paste it at the start of a fresh `claude` session, or use `--launch` to spawn a `claude --bg` worker directly:
 
 ```bash
 .claude/scripts/pwt-goal.sh --launch "ship payment API with stripe webhook handling"
@@ -206,9 +206,9 @@ stateDiagram-v2
 **Reading the diagram:**
 
 - The hook is **always active** while the goal state file exists; the kill switch (`PLAN_W_TEAM_DISABLE_GOAL=1`) removes the hook from the path entirely.
-- The three directly-detected terminal states are **mutually exclusive per evaluation**; precedence — `USER_ESCALATION_HALT > LOW_CONFIDENCE_STREAK > API_HALT > SUCCESS` (the hook's canonical chain, `plan-w-team-goal-evaluator.sh` ~L532) — only matters for parent-child propagation (next section). `API_HALT` is never detected directly; it arises only when propagating a dead child's state.
+- The three directly-detected terminal states are **mutually exclusive per evaluation**; precedence — `USER_ESCALATION_HALT > LOW_CONFIDENCE_STREAK > API_HALT > SUCCESS` (the hook's canonical chain — `plan-w-team-goal-evaluator.sh` §Worst-precedence selection) — only matters for parent-child propagation (next section). `API_HALT` is never detected directly; it arises only when propagating a dead child's state.
 - The `CheckFeatureCriteria` branch is what PWT-T5c adds on top of T5b: a non-empty `feature_specific_done_criteria` array forces an AND-check between generic anchors and every per-AC pattern before SUCCESS fires. With an empty array (or a missing field), behavior is identical to T5b — generic anchors alone fire SUCCESS.
-- "BLOCK stop" means the hook exits with `"continue": true` so Claude can't terminate; "let Claude stop" means the hook exits with `"continue": false`. The hook is the only thing standing between the run and termination — wrong hook decision = wrong run lifetime.
+- "BLOCK stop" means the hook emits `{"decision":"block","reason":"..."}` so Claude can't terminate; "let Claude stop" means the hook exits 0 with no decision JSON. The hook is the only thing standing between the run and termination — wrong hook decision = wrong run lifetime.
 
 ### Parent-Child Terminal Propagation (2026-05-20)
 
@@ -265,7 +265,7 @@ Stage labels in use:
 - `post-ship` (after Step 7)
 - `retro-complete` (after Step 8 — the SUCCESS anchor)
 
-The supervisor's per-turn summary block (fenced as `summary` not `status`) is documented in `shared/supervisor-protocol.md` §Turn-End Summary Block Contract.
+The supervisor's per-turn summary block (fenced as `summary` not `status`) is documented in `shared/supervisor-protocol.md` §Transcript-Surfacing Summary Block.
 
 ### Transcript-storage detection (escaped quotes) — 2026-05-25
 
@@ -397,7 +397,7 @@ The goal state file optionally carries a `next_batch_spec` object. When set on r
 
 Chained spawns are subject to the same deterministic guards as any other `pwt-goal.sh --worker-only` call:
 
-- **PWT-DS1** (process-level flag file): if `.claude/state/plan-w-team-hook-spawn-<sid>.flag` is fresh (≤60s), the spawn refuses with exit 3 (`PWT_DS1_DUPLICATE`). The supervisor SURFACES instead.
+- **PWT-DS1** (process-level flag file): if `.claude/state/plan-w-team-hook-spawn-<sid>.flag` is fresh (within `PWT_DOUBLE_SPAWN_WINDOW_MIN`, default 3 minutes), the spawn refuses with exit 3 (`PWT_DS1_DUPLICATE`). The supervisor SURFACES instead.
 - **PWT-DS2** (env-cascade): the chained worker inherits `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1`, so any `Use /plan-w-team to …` text in the worker's own goal cannot re-trigger the routing classifier. Subsequent `pwt-goal.sh` calls inside the worker exit 4 (`PWT_DS2_CASCADE`).
 - **PWT-WF1** (workflow guard): every bg session `pwt-goal.sh` spawns (worker + supervisor) carries `CLAUDE_CODE_DISABLE_WORKFLOWS=1` in `LAUNCH_ENV`. Dynamic Workflows (`/workflows`, the `Workflow` tool) auto-run in headless/bg mode, and the literal token "workflow" — which /plan-w-team prose uses dozens of times — can otherwise trigger a nested workflow fan-out that bypasses gated dispatch and the RAM-budget gate. The guard makes headless `/goal` runs deterministically Agent()-tool-only. Env-var name verified in the CLI 2.1.156 binary string table. **Interactive sessions are NOT guarded** — there an operator may legitimately author a workflow (e.g. this very evaluation run).
 

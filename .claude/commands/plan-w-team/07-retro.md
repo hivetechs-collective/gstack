@@ -266,6 +266,48 @@ else
 fi
 ```
 
+### Retroactive-Coverage Closure & Gap-Analyzer Cost (advisory)
+
+This is the Step-8 consumer the Step-5 handoff promises: the §5c-bis / §5d-bis gap
+analyzers queue retroactive-coverage tasks (metadata `retroactive: true`,
+`origin: test-gap-analyzer` / `security-gap-analyzer`, plus `owasp_category` on the
+security `N.t` tasks), and §5b-pre / §5c-bis / §5d-bis cite this section for their
+token costs. Advisory signals only — never a gate, never blocks retro. **n/a when
+neither analyzer ran** (the Step 5 status block records the skip reason).
+
+```bash
+SLUG="<feature-slug>"
+# Pseudocode — use your task tooling (mirrors §8g-bis). The §5c-bis/§5d-bis
+# TaskCreate contract tags every queued task with metadata
+# { slug: $SLUG, retroactive: true, origin: <analyzer> }.
+RETRO_TOTAL=$(TaskList by metadata slug="$SLUG" retroactive=true | wc -l)
+RETRO_CLOSED=$(TaskList by metadata slug="$SLUG" retroactive=true status=completed | wc -l)
+if [ "$RETRO_TOTAL" -gt 0 ]; then
+  echo "Retroactive closure: $RETRO_CLOSED/$RETRO_TOTAL closed before retro"
+else
+  echo "Retroactive closure: n/a (no retroactive tasks queued this run)"
+fi
+```
+
+- **Closure rate** (`completed / total`): <100% means Step 5 queued gap tasks that
+  did not close before retro — name each open task in the retro narrative and
+  confirm it survives in the durable task queue (it must not silently evaporate
+  with the run).
+- **Per-OWASP-category gap counts**: from the security-gap-analyzer report, count
+  `### G<N>` findings per `owasp_category` (the queued `N.t` tasks mirror it in
+  metadata) and report `A01=<n> A03=<n> …`. The same category recurring across
+  runs is a systemic gap — treat it like §8g's repeated failure categories.
+
+| Token metric                   | Written by                          | Warning threshold     |
+| ------------------------------ | ----------------------------------- | --------------------- |
+| `pass1_reviewer_tokens`        | §5b-pre Pass-1 fan-out (cumulative) | >40k across reviewers |
+| `test_gap_analyzer_tokens`     | §5c-bis test-gap analyzer           | >20k per run          |
+| `security_gap_analyzer_tokens` | §5d-bis security-gap analyzer       | >20k per run          |
+
+A threshold breach is a tuning signal — tighten `module_root` to siblings-only,
+skip fan-out Slot 3, or (last resort) use the per-run kill switches documented in
+Step 5. It is never a cap and never a halt.
+
 ## 8f. Hook Friction Log
 
 Track PostToolUse hook interactions that caused workflow friction:
@@ -703,10 +745,15 @@ EOF
   fi
 fi
 
+# §8j-quinquies reads the /goal terminal state from the goal-state file, but the
+# cleanup below deletes it — capture into locals BEFORE the rm -f (see §8j-quinquies).
+GOAL_TERMINAL_STATE=$(jq -r '.terminal_state // "n/a"' ".claude/state/plan-w-team-goal-${SLUG}.json" 2>/dev/null || echo "n/a")
+GOAL_TERMINAL_REASON=$(jq -r '.terminal_reason // empty' ".claude/state/plan-w-team-goal-${SLUG}.json" 2>/dev/null || echo "")
+
 # Cleanup on successful retro (mirrors §8j-ter fleet cleanup)
 if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
   rm -f "$SUP_LOG"
-  rm -f ".claude/state/plan-w-team-goal-${SLUG}.json"   # T5b goal evaluator state (idempotent)
+  rm -f ".claude/state/plan-w-team-goal-${SLUG}.json"   # T5b goal evaluator state (idempotent — §8j-quinquies reads the GOAL_TERMINAL_* locals captured above)
   # B4 (1.33.0): remove this run's retired secret-scan allow-file so it cannot mask a
   # real secret at the same path:line in a FUTURE run. (pre-commit-quality.sh's age check
   # is the backstop for abandoned features; this is the clean per-run retirement the
@@ -761,10 +808,11 @@ When `/plan-w-team` was opened with `/goal` at the top (PWT-T5; default unless `
 ```bash
 SLUG="<feature-slug>"
 
-# /goal is session-scoped — its state is read via the /goal status command
-# or surfaced in the conversation transcript. There is no persistent on-disk
-# log; the retro reads the most recent evaluator outcome from the transcript
-# (cite the terminal-state block emitted by the helper or supervisor).
+# Authoritative terminal state lives in .claude/state/plan-w-team-goal-<SLUG>.json
+# (terminal_state / terminal_reason — shared/goal-conditions.md). §8j-quater's
+# cleanup deletes that file EARLIER in this stage, so read the locals it captured
+# before its rm -f ($GOAL_TERMINAL_STATE / $GOAL_TERMINAL_REASON); fall back to
+# the transcript's terminal-state block only if the capture is empty.
 #
 # If /goal was disabled (PLAN_W_TEAM_DISABLE_GOAL=1) or unavailable
 # (pre-2.1.139 Claude Code), report n/a.
@@ -779,8 +827,8 @@ else
   cat <<EOF
 ### /goal Evaluator Health
 
-- Terminal state: <SUCCESS|USER_ESCALATION_HALT|LOW_CONFIDENCE_STREAK|n/a>
-- Evaluator reason on terminal turn: <short quote from /goal's "yes" message>
+- Terminal state: ${GOAL_TERMINAL_STATE:-n/a}
+- Evaluator reason on terminal turn: ${GOAL_TERMINAL_REASON:-<quote the transcript's terminal-state block>}
 - Pipeline duration: <wall-clock — reporting only, NOT a termination signal>
 
 EOF

@@ -24,17 +24,17 @@ The supervisor is a persistent Brain-tier agent that owns Step 3-4 dispatch for 
 ````mermaid
 flowchart TB
     subgraph Parent["Parent session (lead)"]
-        Lead[Lead agent<br/>Brain · Opus 4.7]
+        Lead[Lead agent<br/>Brain]
     end
 
     subgraph SupervisorRun["Supervisor (Step 3-4 only)"]
-        Sup[Supervisor agent<br/>persistent · Brain · Opus 4.7]
+        Sup[Supervisor agent<br/>persistent · Brain]
         ActionLog[(supervisor-actions<br/>JSONL audit log)]
         Summary[/per-turn summary block<br/>fenced ```summary``` in transcript/]
     end
 
     subgraph Workers["Worker subagents (one per task)"]
-        W1[builder<br/>Hands · Opus 4.6]
+        W1[builder<br/>Hands]
         W2[specialist-N<br/>Hands · pinned per agent def]
         Wn[...up to N parallel...]
     end
@@ -124,12 +124,12 @@ Cleanup: `07-retro.md` removes on `RETRO_SUCCESS=1`
 | Field                 | Type                           | Notes                                                                                                                         |
 | --------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
 | `ts`                  | string (ISO8601 UTC)           | Required on all rows                                                                                                          |
-| `event`               | string enum                    | Required; one of the 5 event types above                                                                                      |
+| `event`               | string enum                    | Required; one of the 6 event types above                                                                                      |
 | `slug`                | string                         | Required; consuming /plan-w-team run's SLUG                                                                                   |
-| `supervisor_agent_id` | string                         | Supervisor's own agent_id (from spawn context); appears on `supervisor_start` and `supervisor_stop` for join with fleet log   |
+| `supervisor_agent_id` | string                         | Supervisor's own agent_id (from spawn context); appears on `supervisor_start` only, for join with fleet log                   |
 | `task_id`             | string                         | Required on `spawn_decision`                                                                                                  |
 | `agent_type`          | string                         | Required on `spawn_decision`; matches `subagent_type` parameter passed to `Agent()`                                           |
-| `reason`              | string                         | Free-form one-sentence rationale; required on `spawn_decision`, `escalation`, `supervisor_stop`                               |
+| `reason`              | string                         | Free-form one-sentence rationale; required on `spawn_decision`, `escalation`, `supervisor_stop`, `worker_restart`             |
 | `call_site`           | string                         | Required on `route_delegation` and `escalation`; must match a label in `shared/orchestrator-interception.md` Classifier Table |
 | `router_choice`       | string                         | Required on `route_delegation`; what the router returned                                                                      |
 | `router_confidence`   | enum (`high`\|`medium`\|`low`) | Required on `route_delegation`; from router's decision block                                                                  |
@@ -281,7 +281,7 @@ The manifest Step 3a guard greps for the prefix `/plan-w-team origin-chat superv
 
 **PWT-DS1 and PWT-DS2 are deterministic backstops, not replacements:**
 
-- **PWT-DS1** (process-level, mid-2026-05): even if the assistant ignores the systemMessage marker and calls `pwt-goal.sh --worker-only` anyway, the script checks `.claude/state/plan-w-team-hook-spawn-<sid>.flag` (written by the hook on successful spawn). A flag mtime-within-60s for the current parent SID → refuse spawn, exit 3 (PWT_DS1_DUPLICATE label, code returns 3). The flag-file is registered in `shared/state-artifacts.md`.
+- **PWT-DS1** (process-level, mid-2026-05): even if the assistant ignores the systemMessage marker and calls `pwt-goal.sh --worker-only` anyway, the script checks `.claude/state/plan-w-team-hook-spawn-<sid>.flag` (written by the hook on successful spawn). A flag fresh within the `PWT_DOUBLE_SPAWN_WINDOW_MIN` window (default 3 minutes, mtime-based) for the current parent SID → refuse spawn, exit 3 (PWT_DS1_DUPLICATE label, code returns 3). The flag-file is registered in `shared/state-artifacts.md`.
 - **PWT-DS2** (env-propagated, cascade guard): `pwt-goal.sh --worker-only` sets `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1` in the spawned worker's environment. Any subsequent `pwt-goal.sh` invocation (worker-only OR launch) inside that env refuses to spawn (exit 4 `PWT_DS2_CASCADE`). Escape hatch: `PLAN_W_TEAM_FORCE_SPAWN=1` for legitimate nested runs.
 
 **Defense-in-depth ordering** (first→last):
@@ -291,6 +291,8 @@ The manifest Step 3a guard greps for the prefix `/plan-w-team origin-chat superv
 3. **PWT-DS2** env signal — catches the cascade pattern where a worker's goal text re-triggers the routing classifier (the case that produced commit `553ab85`).
 
 This layering is intentional: the visual marker is the cheapest and most ergonomic; the flag-file is a backstop that requires no assistant cooperation; the env signal stops self-replication from inside the worker.
+
+**Known limitation**: the UserPromptSubmit route hook does NOT fire on mid-work interrupts (a prompt submitted while the assistant is mid-turn) — a natural-language `/plan-w-team` trigger arriving that way needs manual routing, after the standard double-spawn check.
 
 ## Decision Matrix — Origin-Chat Supervisor Continuation (2026-05-22)
 

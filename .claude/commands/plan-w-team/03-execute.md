@@ -791,18 +791,16 @@ Write(".claude/state/evaluator-outcomes.jsonl", append=true, content={
 
 **Do NOT spawn multiple fix builders** — fixes from one evaluator cycle are usually interdependent. One builder, one commit, then re-evaluate.
 
-### Cost Budget
+### Iteration Budget
 
-Each iteration costs approximately one evaluator agent spawn + one fix round. For a typical 3-iteration loop:
+Each iteration costs approximately one evaluator agent spawn + one fix round. Dollar cost is not a computable signal on a flat subscription (Claude Max) — bound the loop with these signals instead:
 
-| Component                       | Estimated Cost |
-| ------------------------------- | -------------- |
-| Evaluator spawn (per iteration) | ~$2-5          |
-| Fix builder (per iteration)     | ~$3-8          |
-| Full 3-iteration loop           | ~$15-40        |
-| Skip (no contract)              | $0             |
+| Signal                                                                                                                            | Action                                                                                                     |
+| --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Context usage > 60% (same threshold as the "When to Run" table)                                                                   | Stop iterating — proceed to Step 5 (budget conservation)                                                   |
+| No score progress: `functional_pass` did not increase AND `quality_avg` did not improve vs the previous iteration's verdict block | Stop iterating — treat as ESCALATE (extends the identical-failures no-progress check in the Loop Protocol) |
 
-If the feature's total cost is < $50, limit to 2 iterations. The evaluator loop should not exceed 30% of total feature cost.
+Skipping the loop entirely (no contract) costs nothing — see "When to Run".
 
 ### Interaction with Execution Strategy
 

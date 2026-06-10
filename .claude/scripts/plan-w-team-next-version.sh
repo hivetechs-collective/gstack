@@ -8,8 +8,11 @@
 # sibling run that landed a higher version first.
 #
 # THE FIX: at Step 6 ship, re-derive the new version from the version that is
-# CURRENTLY on the merge target (origin/main or local main), AFTER fetch/rebase —
-# not the spawn-time snapshot. So if run A shipped 1.37.0 while run B was working,
+# CURRENTLY on the merge target (origin/main or local main) — not the spawn-time
+# snapshot. The script SELF-FETCHES the merge target first (best-effort
+# `git fetch origin <base>`; offline / no-remote it silently falls back to the
+# local refs) so the remote-tracking ref it reads is fresh without requiring a
+# prior fetch/rebase step. So if run A shipped 1.37.0 while run B was working,
 # run B's ship reads main=1.37.0 and ships 1.38.0 — no collision, no cross-run
 # coordination needed.
 #
@@ -17,7 +20,9 @@
 #   plan-w-team-next-version.sh --bump <major|minor|patch> [--ref <git-ref>] \
 #                               [--version-file <path>] [--write]
 #
-# Resolution of the AUTHORITATIVE current version (first that yields a semver):
+# Resolution of the AUTHORITATIVE current version (first that yields a semver),
+# after a best-effort `git fetch --quiet origin <base>` refreshes the
+# remote-tracking base (skipped for local --ref values; never fails the run):
 #   1. --ref <ref>            → git show <ref>:<version-file>
 #   2. (no --ref) origin/main → git show origin/main:<version-file>
 #   3. (no --ref) main        → git show main:<version-file>
@@ -76,6 +81,21 @@ __read_ref() {
     [ -z "$ref" ] && return 0
     git show "${ref}:${VERSION_FILE}" 2>/dev/null || true
 }
+
+# Best-effort freshness: refresh the remote-tracking base BEFORE reading it, so
+# "current main" is actually current even when nothing in this session has
+# fetched yet (§6d invokes this helper directly — no prior fetch is guaranteed).
+# Must never break offline / hermetic-sandbox use (no remote): || true.
+__fetch_base() {
+    local base="main"
+    case "$REF" in
+        "")       : ;;                      # no --ref → default merge-target branch
+        origin/*) base="${REF#origin/}" ;;  # remote-tracking ref → fetch its branch
+        *)        return 0 ;;               # local ref/sha (HEAD, main, …): nothing to fetch
+    esac
+    git fetch --quiet origin "$base" >/dev/null 2>&1 || true
+}
+__fetch_base
 
 CURRENT=""
 if [ -n "$REF" ]; then

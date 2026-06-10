@@ -4,9 +4,11 @@
 # UserPromptSubmit hook — defense-in-depth enforcement of the /plan-w-team
 # routing rule. When the user's prompt contains a "use /plan-w-team to ..."
 # trigger phrase (natural-language autonomous-run pattern), this hook spawns
-# a bg WORKER via `pwt-goal.sh --worker-only` and injects `additionalContext`
-# so the ORIGIN ASSISTANT TURN becomes the live supervisor (observes the
-# worker, surfaces every stage transition / pause-site / supervisor decision
+# a bg WORKER via `pwt-goal.sh --supervisor-goal` (a strict superset of
+# --worker-only: same SID emission + AUTO_PUSH=1 implication, plus an
+# origin-side goal-state mirror) and injects `additionalContext` so the
+# ORIGIN ASSISTANT TURN becomes the live supervisor (observes the worker,
+# surfaces every stage transition / pause-site / supervisor decision
 # / terminal block as native assistant messages in the origin transcript).
 #
 # This replaces the previous "block + spawn detached supervisor pair" behavior
@@ -16,6 +18,10 @@
 # Backward compat (AC7): explicit shell `pwt-goal.sh --launch` (run outside a
 # Claude Code chat) still spawns the worker+supervisor pair as before. Only
 # the hook path changed.
+#
+# LIMITATION: UserPromptSubmit hooks do NOT fire on mid-work interrupt
+# prompts — interrupts bypass this hook and must be routed manually (after
+# a double-spawn check).
 #
 # === FAIL-OPEN CONTRACT ===
 # This hook MUST NEVER block the user from working. On any internal error
@@ -716,7 +722,7 @@ Supervisor responsibilities (perform in order, this turn):
 
    Also write the same content to
    `{project_root}/.claude/state/pwt-completion-summary-{sid}.md` so the
-   existing `plan-w-completion-surface.sh` hook can archive it for the
+   existing `plan-w-team-completion-surface.sh` hook can archive it for the
    user's next session.
 
 5. EXIT: After the terminal block, you are done. Do not continue polling.
