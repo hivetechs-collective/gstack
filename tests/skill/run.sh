@@ -48,6 +48,14 @@ BATS_DIR="$HARNESS_DIR/.bats"
 BATS_BIN="$BATS_DIR/bin/bats"
 CASES_DIR="$HARNESS_DIR/cases"
 SCENARIOS_DIR="$HARNESS_DIR/scenarios"
+# Consumer-authored scenarios live in a SIBLING dir (R5, 2026-06-09 design
+# review) so the source's own scenarios/ stays the single-source-of-truth corpus
+# while a consumer's product scenarios are owned/tracked by the consumer. Sibling
+# (not nested) is deliberate: the tests/skill rsync's --delete-excluded would
+# reap a nested dir, and the trailing-slash 'tests/skill/scenarios/' consumer
+# gitignore does not match the sibling — so scenarios.local/ stays tracked with
+# zero gitignore change.
+SCENARIOS_LOCAL_DIR="$HARNESS_DIR/scenarios.local"
 RESULTS_DIR="$HARNESS_DIR/results"
 RUNS_DIR="$RESULTS_DIR/runs"
 
@@ -104,17 +112,20 @@ else
     exit 2
   fi
   TEST_FILES=()
-  # Walk both cases/ (unit tests) and scenarios/ (E2E integration tests).
-  # Anti-fragmentation lock-in: this single discovery is the only place that
-  # decides what runs. `run-scenarios.sh` is a dev-iteration shortcut for the
-  # scenarios/ subset; pre-commit and `make test-skill` always invoke this
-  # runner so passing tests cannot mask a regression elsewhere.
+  # Walk cases/ (unit tests), scenarios/ (source E2E), and scenarios.local/
+  # (consumer-authored E2E — R5). Anti-fragmentation lock-in: this single
+  # discovery is the only place that decides what runs. `run-scenarios.sh` is a
+  # dev-iteration shortcut; pre-commit and `make test-skill` always invoke this
+  # runner so passing tests cannot mask a regression elsewhere. scenarios.local/
+  # MUST be discovered here too — a consumer's pre-commit runs run-scenarios.sh
+  # (which also discovers it), but this canonical runner is what gates them.
   while IFS= read -r f; do
     TEST_FILES+=("$f")
   done < <(
     {
       find "$CASES_DIR" -name '*.bats' -type f 2>/dev/null
       [ -d "$SCENARIOS_DIR" ] && find "$SCENARIOS_DIR" -name '*.bats' -type f 2>/dev/null
+      [ -d "$SCENARIOS_LOCAL_DIR" ] && find "$SCENARIOS_LOCAL_DIR" -name '*.bats' -type f 2>/dev/null
     } | sort
   )
 fi
@@ -128,9 +139,29 @@ fi
 mkdir -p "$RUNS_DIR"
 TIMESTAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 TAP_LOG=$(mktemp)
-trap 'rm -f "$TAP_LOG"' EXIT
+TS_LOG=""
+trap 'rm -f "$TAP_LOG" ${TS_LOG:+"$TS_LOG"}' EXIT
 
 echo "→ running ${#TEST_FILES[@]} bats file(s) under tests/skill/{cases,scenarios}/"
+
+# ── State-leak guard: BEFORE snapshot (R6, 2026-06-09 design review) ──────────
+# A well-behaved test mutates only its sandbox ($SANDBOX_DIR / $BATS_TEST_TMPDIR),
+# never the LIVE .claude/state tree. A misbehaving one silently poisons real
+# per-run state — the dmarc-monitor incident stamped a live .claude/state
+# watermark from a scenario. Bracket the SINGLE merged bats invocation with a
+# before/after `git status --porcelain -- .claude/state` snapshot and flag any
+# NEW dirt. The diff is ADDITIVE (comm -13) so it tolerates the permanently-
+# dirty baseline (this run's own goal-state / scope-lock / ac-snapshot files).
+# Skips cleanly when git is unavailable; SKILL_SKIP_STATE_LEAK_GUARD=1 bypasses.
+STATE_LEAK=0
+STATE_LEAKED_PATHS=""
+STATE_GUARD_ACTIVE=0
+STATE_BEFORE=""
+if [ "${SKILL_SKIP_STATE_LEAK_GUARD:-0}" != "1" ] && command -v git >/dev/null 2>&1 \
+   && git -C "$REPO_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  STATE_GUARD_ACTIVE=1
+  STATE_BEFORE="$(git -C "$REPO_ROOT" status --porcelain -- .claude/state 2>/dev/null | LC_ALL=C sort)"
+fi
 
 # Use --tap to get machine-parseable output AND tee it to terminal for dev UX.
 # `bats` exits non-zero on any failure; capture exit independently of the tee
@@ -139,6 +170,24 @@ set +e
 "$BATS_BIN" --tap "${TEST_FILES[@]}" | tee "$TAP_LOG"
 BATS_EXIT=${PIPESTATUS[0]}
 set -e
+
+# ── State-leak guard: AFTER snapshot + additive diff (R6) ────────────────────
+if [ "$STATE_GUARD_ACTIVE" = "1" ]; then
+  STATE_AFTER="$(git -C "$REPO_ROOT" status --porcelain -- .claude/state 2>/dev/null | LC_ALL=C sort)"
+  # comm -13: lines in AFTER but not BEFORE = new dirt the bats phase introduced.
+  STATE_LEAKED_PATHS="$(comm -13 \
+    <(printf '%s\n' "$STATE_BEFORE") \
+    <(printf '%s\n' "$STATE_AFTER") | sed '/^[[:space:]]*$/d')"
+  if [ -n "$STATE_LEAKED_PATHS" ]; then
+    STATE_LEAK=1
+    echo "" >&2
+    echo "✗ STATE LEAK — the bats phase introduced new .claude/state dirt:" >&2
+    printf '%s\n' "$STATE_LEAKED_PATHS" | sed 's/^/    /' >&2
+    echo "  A test wrote to the LIVE .claude/state tree instead of its sandbox" >&2
+    echo "  (the dmarc-monitor watermark class). Fix the offending test to use the" >&2
+    echo "  sandbox helper; set SKILL_SKIP_STATE_LEAK_GUARD=1 only to bypass." >&2
+  fi
+fi
 
 # ── Phase 2: shell integration tests (.test.sh) ──────────────────────────────
 # Anti-fragmentation lock-in (extended 2026-05-25 complexity audit): the
@@ -208,6 +257,95 @@ if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ]; then
   echo "→ shell integration tests: $SHELL_PASSED/$SHELL_TOTAL passed"
 fi
 
+# ── Phase 2b: TypeScript analyzer tests (.test.ts) ───────────────────────────
+# The import-coupling analyzer (.claude/scripts/plan-w-team-import-coupling.ts)
+# is a hard pre-fork spawn gate (03-execute.md "Verify import-coupling gate"),
+# but its .test.ts suite was historically orphaned — Phase 1 globs only *.bats
+# and Phase 2 only *.test.sh, so it ran NOWHERE (F26, 2026-06-09 audit). Same
+# anti-fragmentation rule as Phase 2: run.sh stays the ONLY runner, so the TS
+# tests are a phase here rather than a parallel npm/vitest entry point.
+#
+# Unlike Phase 2 (dozens of shell files — too slow for single-file dev
+# iteration), this is a single hard-gate suite, so it also runs in TARGET
+# mode: a silently-rotting spawn gate is worse than the wait. Escape hatch:
+# SKILL_SKIP_TS_TESTS=1 (mirrors SKILL_SKIP_SHELL_TESTS).
+#
+# Toolchain contract (consumer-repo safe): the phase needs a TS runner — tsx
+# on PATH or node_modules/.bin/tsx (npm install). claude-pattern vendors tsx
+# in devDependencies; a consumer repo without a node toolchain cannot run it,
+# so when NO runner is found the phase emits a LOUD [SKIP] line and does not
+# fail the suite. Contract documented in tests/skill/CONVENTIONS.md
+# ("TypeScript test phase").
+TS_TOTAL=0
+TS_PASSED=0
+TS_FAILED=0
+TS_FAILED_NAMES=""
+TS_SKIPPED_NO_RUNNER=0
+if [ "${SKILL_SKIP_TS_TESTS:-0}" != "1" ]; then
+  TS_TEST_FILES=()
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    TS_TEST_FILES+=("$f")
+  done < <(
+    {
+      [ -d "$REPO_ROOT/.claude/scripts" ] && find "$REPO_ROOT/.claude/scripts" -name '*.test.ts' -type f 2>/dev/null
+      [ -d "$REPO_ROOT/.claude/hooks" ]   && find "$REPO_ROOT/.claude/hooks"   -name '*.test.ts' -type f 2>/dev/null
+    } | sort
+  )
+  if [ "${#TS_TEST_FILES[@]}" -gt 0 ]; then
+    # Resolve a tsx runner: global tsx, then repo-local node_modules/.bin.
+    # The repo's node_modules/.bin is prepended to PATH at run time so the
+    # test's own `npx tsx` child spawns (cwd = os.tmpdir fixture) resolve the
+    # same local tsx instead of hitting the registry.
+    TSX_BIN=""
+    if command -v tsx >/dev/null 2>&1; then TSX_BIN="tsx"
+    elif [ -x "$REPO_ROOT/node_modules/.bin/tsx" ]; then TSX_BIN="$REPO_ROOT/node_modules/.bin/tsx"
+    fi
+    if [ -z "$TSX_BIN" ]; then
+      TS_SKIPPED_NO_RUNNER="${#TS_TEST_FILES[@]}"
+      echo ""
+      for tf in "${TS_TEST_FILES[@]}"; do
+        echo "[SKIP] ${tf#"$REPO_ROOT"/}: no TS runner (tsx not found — npm install in repo root to enable)"
+      done
+    else
+      # Per-file hang protection, mirroring Phase 2 (timeout/gtimeout if
+      # present, else bare). Not a suite cap — only a stuck-process guard.
+      TS_TIMEOUT_BIN=""
+      if command -v timeout >/dev/null 2>&1; then TS_TIMEOUT_BIN="timeout"
+      elif command -v gtimeout >/dev/null 2>&1; then TS_TIMEOUT_BIN="gtimeout"; fi
+      TS_TEST_TIMEOUT="${TS_TEST_TIMEOUT:-300}"
+
+      run_one_ts_test() {
+        if [ -n "$TS_TIMEOUT_BIN" ]; then
+          PATH="$REPO_ROOT/node_modules/.bin:$PATH" \
+            "$TS_TIMEOUT_BIN" "$TS_TEST_TIMEOUT" "$TSX_BIN" "$1" >"$TS_LOG" 2>&1
+        else
+          PATH="$REPO_ROOT/node_modules/.bin:$PATH" \
+            "$TSX_BIN" "$1" >"$TS_LOG" 2>&1
+        fi
+      }
+
+      echo ""
+      echo "→ running TypeScript analyzer tests (.test.ts) via tsx"
+      TS_LOG=$(mktemp)
+      for tf in "${TS_TEST_FILES[@]}"; do
+        TS_TOTAL=$((TS_TOTAL + 1))
+        rel="${tf#"$REPO_ROOT"/}"
+        if run_one_ts_test "$tf"; then
+          TS_PASSED=$((TS_PASSED + 1))
+          echo "  ok   $rel ($(tail -1 "$TS_LOG"))"
+        else
+          TS_FAILED=$((TS_FAILED + 1))
+          TS_FAILED_NAMES="${TS_FAILED_NAMES}${rel}"$'\n'
+          echo "  FAIL $rel"
+          sed 's/^/       /' "$TS_LOG"
+        fi
+      done
+      echo "→ TypeScript tests: $TS_PASSED/$TS_TOTAL file(s) passed"
+    fi
+  fi
+fi
+
 # ── Archive ──────────────────────────────────────────────────────────────────
 if [ "$ARCHIVE" = "1" ]; then
   RUN_FILE="$RUNS_DIR/$TIMESTAMP.json"
@@ -240,6 +378,21 @@ if [ "$ARCHIVE" = "1" ]; then
     SHELL_FAILED_JSON=$(printf '%s' "$SHELL_FAILED_NAMES" | grep -v '^$' | jq -R . | jq -s . 2>/dev/null || echo '[]')
   fi
 
+  # TS-test failed names as a JSON array (empty → []).
+  if [ -z "$TS_FAILED_NAMES" ]; then
+    TS_FAILED_JSON='[]'
+  else
+    TS_FAILED_JSON=$(printf '%s' "$TS_FAILED_NAMES" | grep -v '^$' | jq -R . | jq -s . 2>/dev/null || echo '[]')
+  fi
+
+  # State-leak guard (R6): leaked .claude/state paths as a JSON array (empty → []).
+  if [ -z "$STATE_LEAKED_PATHS" ]; then
+    STATE_LEAKED_JSON='[]'
+  else
+    STATE_LEAKED_JSON=$(printf '%s' "$STATE_LEAKED_PATHS" | grep -v '^$' | jq -R . | jq -s . 2>/dev/null || echo '[]')
+  fi
+  STATE_LEAKED_BOOL=$([ "${STATE_LEAK:-0}" -eq 1 ] && echo true || echo false)
+
   if command -v jq >/dev/null 2>&1; then
     jq -n \
       --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -255,6 +408,13 @@ if [ "$ARCHIVE" = "1" ]; then
       --argjson shell_passed "${SHELL_PASSED:-0}" \
       --argjson shell_failed "${SHELL_FAILED:-0}" \
       --argjson shell_failed_names "$SHELL_FAILED_JSON" \
+      --argjson ts_total "${TS_TOTAL:-0}" \
+      --argjson ts_passed "${TS_PASSED:-0}" \
+      --argjson ts_failed "${TS_FAILED:-0}" \
+      --argjson ts_skipped_no_runner "${TS_SKIPPED_NO_RUNNER:-0}" \
+      --argjson ts_failed_names "$TS_FAILED_JSON" \
+      --argjson state_leaked "$STATE_LEAKED_BOOL" \
+      --argjson leaked_paths "$STATE_LEAKED_JSON" \
       '{
         timestamp: $ts,
         git_sha: $sha,
@@ -268,7 +428,14 @@ if [ "$ARCHIVE" = "1" ]; then
         shell_total: $shell_total,
         shell_passed: $shell_passed,
         shell_failed: $shell_failed,
-        shell_failed_tests: $shell_failed_names
+        shell_failed_tests: $shell_failed_names,
+        ts_total: $ts_total,
+        ts_passed: $ts_passed,
+        ts_failed: $ts_failed,
+        ts_skipped_no_runner: $ts_skipped_no_runner,
+        ts_failed_tests: $ts_failed_names,
+        state_leaked: $state_leaked,
+        leaked_paths: $leaked_paths
       }' > "$RUN_FILE"
 
     cp "$RUN_FILE" "$RESULTS_DIR/latest.json"
@@ -279,15 +446,25 @@ if [ "$ARCHIVE" = "1" ]; then
   fi
 fi
 
-# Final summary line for human eyes. The suite is green only when BOTH the bats
-# phase AND the shell-integration phase pass.
-if [ "$BATS_EXIT" -eq 0 ] && [ "${SHELL_FAILED:-0}" -eq 0 ]; then
-  echo "✓ all tests passed (bats + ${SHELL_PASSED:-0} shell integration tests)"
+# Final summary line for human eyes. The suite is green only when the bats
+# phase, the shell-integration phase, the TypeScript phase all pass AND no test
+# leaked into the live .claude/state tree (R6 state-leak guard).
+if [ "$BATS_EXIT" -eq 0 ] && [ "${SHELL_FAILED:-0}" -eq 0 ] && [ "${TS_FAILED:-0}" -eq 0 ] \
+   && [ "${STATE_LEAK:-0}" -eq 0 ]; then
+  echo "✓ all tests passed (bats + ${SHELL_PASSED:-0} shell integration tests + ${TS_PASSED:-0} TS test file(s))"
   exit 0
 fi
 [ "$BATS_EXIT" -ne 0 ] && echo "✗ bats phase failed (exit $BATS_EXIT)"
 if [ "${SHELL_FAILED:-0}" -ne 0 ]; then
   echo "✗ shell integration phase failed ($SHELL_FAILED of $SHELL_TOTAL):"
   printf '%s' "$SHELL_FAILED_NAMES" | grep -v '^$' | sed 's/^/    - /'
+fi
+if [ "${TS_FAILED:-0}" -ne 0 ]; then
+  echo "✗ TypeScript phase failed ($TS_FAILED of $TS_TOTAL):"
+  printf '%s' "$TS_FAILED_NAMES" | grep -v '^$' | sed 's/^/    - /'
+fi
+if [ "${STATE_LEAK:-0}" -ne 0 ]; then
+  echo "✗ state-leak guard failed — bats phase dirtied the live .claude/state tree:"
+  printf '%s\n' "$STATE_LEAKED_PATHS" | grep -v '^$' | sed 's/^/    /'
 fi
 exit 1

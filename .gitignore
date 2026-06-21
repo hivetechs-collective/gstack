@@ -33,3 +33,6 @@ tests/skill/scenarios/
 .claude/state/pwt-brief-*.md
 .claude/state/plan-w-team-ship-verdict-*
 .claude/state/supervisor-progress-*.json
+
+# Claude per-run state default-deny (sync-managed; tracked paths negated below)
+.claude/state/*
