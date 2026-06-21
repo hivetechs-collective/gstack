@@ -172,6 +172,64 @@ __antipark_state() {
     jq -r '"\(.backlogKnown // 0) \(.backlog // 0) \(.verdict // "") \(.stallStreak // 0)"' "$f" 2>/dev/null || true
 }
 
+# ── Stale-foreign goal skip (PWT-STALE-SKIP, prong A, 2026-06-10) ─────────────
+# The GOAL_FILES loop below counts EVERY non-terminal plan-w-team-goal-*.json
+# toward the block decision. A stale, foreign-slug, non-terminal leftover — e.g.
+# an UNOWNABLE goal (no worker_sid) from an aborted run — therefore forces the
+# fail-safe BLOCKING_GOAL_UNOWNABLE block and can trap a legitimate Stop. This
+# helper identifies a goal that is provably NOT this run's live work so the loop
+# can SKIP it for the in-flight/block decision (mirrors the foreign-slug + stale
+# idiom already used by __antipark_state above).
+#
+# Returns 0 = SKIP (do not count toward block), 1 = KEEP (evaluate normally).
+# A goal is SKIP-eligible ONLY when ALL hold (each clause fails toward KEEP):
+#   1. feature enabled (PLAN_W_TEAM_DISABLE_STALE_SKIP != 1).
+#   2. NOT ours — worker_sid prefix != this session's SELF_SID prefix.
+#   3. worker NOT live — worker_sid not in ACTIVE_SIDS (when ACTIVE_SIDS known);
+#      a live concurrent run is never skipped.
+#   4. AGED — file mtime older than PWT_GOAL_STALE_HOURS (default 24). Age is the
+#      universal safety: nothing recent is ever skipped, so our own recent goal
+#      (even one with no worker_sid) is never touched. Unreadable mtime → KEEP.
+#
+# SAFETY: a skip NEVER marks a goal terminal and NEVER deletes anything — it only
+# declines to let a foreign/stale goal force THIS session to keep running. The
+# foreign run's own session still blocks on its own goal, so an over-aggressive
+# skip is benign (this session stops; the other run is unaffected). Fail-OPEN
+# throughout. Kill switch PLAN_W_TEAM_DISABLE_STALE_SKIP=1 → always KEEP.
+# Threshold knob PWT_GOAL_STALE_HOURS (default 24) — distinct from the worktree
+# lock knob PWT_STALE_LOCK_HOURS (different lifetime; goal-state, not a lock).
+__is_stale_foreign_goal() {
+    [ "${PLAN_W_TEAM_DISABLE_STALE_SKIP:-}" = "1" ] && return 1
+    local gf="$1"
+    local wsid
+    wsid=$(jq -r '.worker_sid // ""' "$gf" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    case "$wsid" in
+        [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+            # Clause 2 — ours? well-formed 8-hex worker_sid whose prefix == SELF_SID.
+            if [ -n "$SELF_SID" ] && [ "${SELF_SID:0:8}" = "${wsid:0:8}" ]; then
+                return 1   # ours → KEEP (the owning worker always runs to terminal)
+            fi
+            # Clause 3 — live? worker_sid present and in ACTIVE_SIDS (8-char form).
+            if [ -n "$ACTIVE_SIDS" ] && echo "$ACTIVE_SIDS" | grep -qFx "${wsid:0:8}"; then
+                return 1   # live concurrent run → KEEP
+            fi
+            ;;
+        *)
+            : # no/malformed worker_sid → ownership+liveness unprovable; rely on age
+            ;;
+    esac
+    # Clause 4 — AGED? (the universal safety gate; recent goals are never skipped)
+    local mtime now age max_age
+    mtime=$(stat -f %m "$gf" 2>/dev/null || stat -c %Y "$gf" 2>/dev/null || echo "")
+    [ -n "$mtime" ] || return 1                       # unreadable age → KEEP (fail-open)
+    [ "$mtime" -gt 0 ] 2>/dev/null || return 1
+    now=$(date -u +%s)
+    age=$(( now - mtime ))
+    max_age=$(( ${PWT_GOAL_STALE_HOURS:-24} * 3600 ))
+    [ "$age" -lt "$max_age" ] 2>/dev/null && return 1  # recent → KEEP
+    return 0   # aged + not-ours + not-live → SKIP
+}
+
 # Transcript: Claude Code passes the path in the hook input
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)
 
@@ -316,6 +374,16 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
             ANY_TERMINAL=true
             continue
         fi
+    fi
+
+    # PWT-STALE-SKIP (prong A): a NON-terminal goal that is provably not this run's
+    # live work (aged + not-ours + worker-not-live) is skipped for the block
+    # decision, so a stale/foreign leftover can't trap this session's Stop. Only
+    # applies to genuinely non-terminal goals; never marks/deletes anything.
+    if [ -z "$EXISTING_TERMINAL" ] && __is_stale_foreign_goal "$GOAL_FILE"; then
+        echo "[goal-evaluator] SLUG=$SLUG stale-foreign skip — aged, not-this-session, worker not live; not counted toward block (PWT-STALE-SKIP)" >&2
+        dbg "SLUG=$SLUG stale-foreign skip → continue (not counted toward block)"
+        continue
     fi
 
     # Read recent transcript lines (last ~500) for anchor detection.

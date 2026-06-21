@@ -36,6 +36,19 @@ stop_stub() {
     echo "$s"
 }
 
+# Deterministically wait for the guard's BACKGROUNDED stop to write $1 (it runs
+# `( $STOP_CMD "$SID" & )`), instead of a fixed `sleep` that races under load (the
+# 2026-06-10 full-suite flake: a fixed sleep 0.3 lost the race when other tests
+# hammered the box). Polls up to ~8s; returns 0 as soon as the file is non-empty.
+wait_for_file() {
+    local f="$1" n="${2:-80}" i=0
+    while [ "$i" -lt "$n" ]; do
+        [ -s "$f" ] && return 0
+        sleep 0.1; i=$((i + 1))
+    done
+    return 1
+}
+
 echo "── plan-w-team-bg-resume-guard tests ──"
 
 # [1] STALE verdict (check cmd exits 0) → stop requested + systemMessage emitted
@@ -45,7 +58,7 @@ OUT=$( printf '{"session_id":"abc12345","source":"resume","cwd":"%s"}' "$R" | \
        PWT_RESUME_GUARD_CHECK_CMD="true" \
        PWT_RESUME_GUARD_STOP_CMD="$(stop_stub "$STOPFILE")" \
        bash "$GUARD" 2>/dev/null )
-sleep 0.3
+wait_for_file "$STOPFILE"
 assert_eq "stop command invoked with the sid" "abc12345" "$(cat "$STOPFILE" 2>/dev/null)"
 printf '%s' "$OUT" | grep -q 'bg-resume-guard' && pass "systemMessage emitted on STALE" || fail "systemMessage emitted on STALE" "missing marker"
 printf '%s' "$OUT" | grep -q 'already shipped' && pass "additionalContext explains self-exit" || fail "additionalContext explains self-exit" "missing text"

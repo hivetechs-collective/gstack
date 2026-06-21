@@ -21,6 +21,35 @@ Entries are newest-first.
 
 ---
 
+## [1.44.0] — 2026-06-10 (e5b0923)
+
+Goal-state **test-leak + evaluator-blocks-on-stale** hardening (three prongs;
+spec `docs/specs/goalstate-test-leak-hardening.md`). Closes the autonomy-substrate
+foot-gun where a stale/foreign non-terminal goal-state could trap a legitimate Stop
+and aborted runs orphaned run-state forever. All additive, kill-switched, fail-open.
+
+- feat: **(A) evaluator stale-foreign skip** — `plan-w-team-goal-evaluator.sh` now
+  SKIPS a non-terminal `plan-w-team-goal-*.json` that is provably not this run's live
+  work (aged ≥ `PWT_GOAL_STALE_HOURS` [default 24] AND not-ours AND worker-not-live)
+  before it can set `BLOCKING_GOAL_UNOWNABLE` and block the Stop. Reuses the
+  `__antipark_state` foreign-slug+stale idiom and `ACTIVE_SIDS` dead-worker signal.
+  Single-live-run path unchanged. Kill switch `PLAN_W_TEAM_DISABLE_STALE_SKIP=1`.
+- feat: **(B) janitor orphan-family GC** — `plan-w-team-cleanup-stale-goal-states.sh`
+  gains PASS 2: reaps a `terminal_state=null` goal + its sibling family (manifest /
+  skill-version / spawned-children / stage-events, incl. goal-less families) ONLY
+  when the worker is provably DEAD (owner SID absent from live `claude` sessions via
+  the new `pwt-live-session-sids.sh`) AND aged ≥ `PWT_GOAL_STALE_HOURS`.
+  `USER_ESCALATION_HALT`/`LOW_CONFIDENCE_STREAK`/`DEAD`/`API_HALT` preserved; SUCCESS
+  path unchanged. Fail-CLOSED on liveness-query failure; `--dry-run` lists; kill
+  switch `PLAN_W_TEAM_DISABLE_ORPHAN_GC=1`. Resolves cleanup-eval **SA-4**.
+- feat: **`pwt-live-session-sids.sh`** — SID-emitting sibling of
+  `pwt-live-session-cwds.sh` (same fail-CLOSED `claude agents --json` contract).
+- test: **(C) corpus isolation** — CONVENTIONS.md gains an explicit "redirect
+  run-state writes (goal/manifest/supervisor-progress) to per-test tmp" rule; R6
+  state-leak guard verified green and pinned with bracketing + CONVENTIONS regressions.
+- fix: correct the janitor header's false "non-terminal files don't block the
+  evaluator" claim and the deep-audit **LOW** grep+sed-matches-evaluator comment.
+
 ## [1.43.0] — 2026-06-10 (ead76d4)
 
 Sync-design review **ranks 4–8** (wave 2 of the 2026-06-09 sync-hardening review;

@@ -1,22 +1,35 @@
 #!/usr/bin/env bash
 # plan-w-team-cleanup-stale-goal-states.sh
 #
-# Remove `.claude/state/plan-w-team-goal-<SLUG>.json` files whose
-# `terminal_state` equals `"SUCCESS"`. These files SHOULD have been deleted
-# by `07-retro.md` §8j-quater on `RETRO_SUCCESS=1` but commit 409e265
-# (which added that cleanup path) only handles runs going forward. Files
-# from earlier successful runs persist on disk as dead weight — they don't
-# block the goal-evaluator hook (it iterates all files and naturally skips
-# terminated ones), but they accumulate forever without GC.
+# Two-pass GC for `.claude/state/plan-w-team-*` run-state.
 #
-# PRESERVED states (signal worth keeping for inspection):
-#   - null                       — run still in flight
+# PASS 1 — SUCCESS goal-state removal (the original behavior, UNCHANGED).
+#   Remove `plan-w-team-goal-<SLUG>.json` files whose `terminal_state` equals
+#   `"SUCCESS"`. These SHOULD have been deleted by `07-retro.md` §8j-quater on
+#   `RETRO_SUCCESS=1`, but pre-409e265 runs persist on disk as dead weight.
+#
+# PASS 2 — provably-orphaned NON-terminal family GC (prong B, 2026-06-10).
+#   The SUCCESS-only pass left non-terminal orphans — and their sibling run-state
+#   family (manifest, skill-version, spawned-children, stage-events) — on disk
+#   FOREVER (open follow-up cleanup-eval SA-4). Worse, a non-terminal goal leftover
+#   DID block the goal-evaluator (the earlier header claim that it "doesn't block …
+#   naturally skips terminated ones" was FALSE for NON-terminal files — that is
+#   exactly the prong-A evaluator bug). PASS 2 reaps a `terminal_state=null` family
+#   ONLY when it is provably an orphan: worker DEAD (its worker_sid/run_sid is not
+#   among live `claude` sessions, via pwt-live-session-sids.sh) AND aged beyond
+#   PWT_GOAL_STALE_HOURS (default 24). Fail-CLOSED: if liveness can't be proven
+#   (`__QUERY_FAILED__`) nothing is reaped. Kill switch
+#   PLAN_W_TEAM_DISABLE_ORPHAN_GC=1 → PASS 2 is skipped (janitor stays SUCCESS-only).
+#
+# PRESERVED states (signal worth keeping for inspection — NEVER reaped by either
+# pass, regardless of age):
 #   - USER_ESCALATION_HALT       — hard-gate pause site needs user attention
 #   - LOW_CONFIDENCE_STREAK      — supervisor escalation needs investigation
-#   - DEAD                       — worker died unexpectedly
-#
-# REMOVED states:
-#   - SUCCESS                    — retro completed, file should already be gone
+#   - DEAD                       — worker died unexpectedly (already recorded)
+#   - API_HALT                   — transient API/socket halt (supervisor may resume)
+# REAPED states:
+#   - SUCCESS  (pass 1)          — retro completed, file should already be gone
+#   - null     (pass 2)          — ONLY when worker-dead AND aged (provable orphan)
 #
 # Usage:
 #   plan-w-team-cleanup-stale-goal-states.sh                    # silent unless removals
@@ -24,12 +37,15 @@
 #   plan-w-team-cleanup-stale-goal-states.sh --quiet            # suppress even the summary
 #   plan-w-team-cleanup-stale-goal-states.sh --dry-run          # list, don't delete
 #   STATE_DIR=/path/to/state plan-w-team-cleanup-stale-goal-states.sh   # override
+#   PWT_GOAL_STALE_HOURS=<n>     orphan age threshold (default 24)
+#   PLAN_W_TEAM_DISABLE_ORPHAN_GC=1   skip pass 2 (SUCCESS-only behavior)
 #
 # This is the SINGLE stale-goal-state janitor (reconciled 2026-06-08): both
-# session-start (no args) and 07-retro.md (--quiet) call it. It only ever removes
-# terminal_state=SUCCESS and PRESERVES escalation/dead/null, so neither caller can
-# delete a goal-state another run left for inspection. (Replaces the second
-# all-terminal cleaner plan-w-team-cleanup-stale-goals.sh, removed in the same change.)
+# session-start (no args) and 07-retro.md (--quiet) call it. Pass 1 only ever
+# removes terminal_state=SUCCESS; pass 2 only ever removes a provably-orphaned
+# non-terminal family — so neither caller can delete a goal-state another LIVE run
+# left for inspection. (Replaces the second all-terminal cleaner
+# plan-w-team-cleanup-stale-goals.sh, removed in the same 2026-06-08 change.)
 #
 # Exit code: always 0 (best-effort; never block session start)
 
@@ -55,27 +71,46 @@ done
 
 [ -d "$STATE_DIR" ] || exit 0
 
+# ── shared extractors (jq-preferred, grep+sed fallback for jq-less hosts) ─────
+__terminal_state_of() {  # $1=file → terminal_state string ("" for null/absent)
+    local file="$1" st=""
+    if command -v jq >/dev/null 2>&1; then
+        st=$(jq -r '.terminal_state // empty' "$file" 2>/dev/null || echo "")
+    fi
+    if [ -z "$st" ]; then
+        st=$(grep -oE '"terminal_state"[[:space:]]*:[[:space:]]*"[^"]*"' "$file" 2>/dev/null \
+            | head -1 \
+            | sed -E 's/.*"terminal_state"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' \
+            || echo "")
+    fi
+    printf '%s' "$st"
+}
+__json_str_field() {  # $1=file $2=key → string value ("" if absent)
+    local file="$1" key="$2" v=""
+    if command -v jq >/dev/null 2>&1; then
+        v=$(jq -r ".${key} // empty" "$file" 2>/dev/null || echo "")
+    fi
+    if [ -z "$v" ]; then
+        v=$(grep -oE "\"${key}\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$file" 2>/dev/null \
+            | head -1 \
+            | sed -E "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\1/" || echo "")
+    fi
+    printf '%s' "$v"
+}
+__mtime_of() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo ""; }
+
 REMOVED=0
 
 # bash 3.2 + nullglob-safe iteration
 for f in "$STATE_DIR"/plan-w-team-goal-*.json; do
     [ -f "$f" ] || continue
 
-    # Extract terminal_state without requiring jq. The field is a string
-    # value on its own line in our writer's output, but we also handle
-    # compact JSON. Prefer jq when available for correctness, fall back to
-    # grep+sed for portability (matches the same fallback chain used in
-    # plan-w-team-goal-evaluator.sh).
-    STATE=""
-    if command -v jq >/dev/null 2>&1; then
-        STATE=$(jq -r '.terminal_state // empty' "$f" 2>/dev/null || echo "")
-    fi
-    if [ -z "$STATE" ]; then
-        STATE=$(grep -oE '"terminal_state"[[:space:]]*:[[:space:]]*"[^"]*"' "$f" 2>/dev/null \
-            | head -1 \
-            | sed -E 's/.*"terminal_state"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/' \
-            || echo "")
-    fi
+    # Extract terminal_state. Prefer jq when available; fall back to grep+sed for
+    # portability so this janitor still works on a host without jq. (The
+    # goal-evaluator hook is jq-only-or-bail — it does NOT share this grep+sed
+    # fallback; this janitor is intentionally more portable since it runs at every
+    # session start.) Shared as a helper so pass 2 reuses the exact extraction.
+    STATE="$(__terminal_state_of "$f")"
 
     if [ "$STATE" = "SUCCESS" ]; then
         if [ "$DRY_RUN" = "1" ]; then
@@ -89,8 +124,134 @@ for f in "$STATE_DIR"/plan-w-team-goal-*.json; do
     fi
 done
 
-if [ "$REMOVED" -gt 0 ] && [ "$DRY_RUN" != "1" ] && [ "$QUIET" != "1" ]; then
-    echo "🧹 cleaned $REMOVED stale SUCCESS goal-state file(s)"
+# ── PASS 2: provably-orphaned non-terminal family GC (prong B) ───────────────
+# Reap a `terminal_state=null` goal/family ONLY when its worker is provably DEAD
+# (owner SID not among live claude sessions) AND it is aged beyond
+# PWT_GOAL_STALE_HOURS. Escalation/DEAD/API_HALT are preserved by the null-only
+# gate. Fail-CLOSED on a failed liveness query. Skipped entirely under
+# PLAN_W_TEAM_DISABLE_ORPHAN_GC=1.
+ORPHANS_REAPED=0
+# All five canonical per-run families (shared/state-artifacts.md). goal+manifest
+# drive slug discovery; all five are reaped together once a slug is judged orphan.
+FAMILY_PREFIXES="plan-w-team-goal- plan-w-team-manifest- plan-w-team-skill-version- plan-w-team-spawned-children- plan-w-team-stage-events-"
+
+if [ "${PLAN_W_TEAM_DISABLE_ORPHAN_GC:-}" != "1" ]; then
+    # 1) Discover candidate slugs from goal-*.json and manifest-*.json (so a
+    #    goal-less orphan family — e.g. a <1.29.0 worker-only run — is still caught).
+    CAND_SLUGS=""
+    for f in "$STATE_DIR"/plan-w-team-goal-*.json "$STATE_DIR"/plan-w-team-manifest-*.json; do
+        [ -f "$f" ] || continue
+        base="$(basename "$f")"; slug="$base"
+        slug="${slug#plan-w-team-goal-}"; slug="${slug#plan-w-team-manifest-}"
+        slug="${slug%.json}"
+        CAND_SLUGS="$CAND_SLUGS
+$slug"
+    done
+    CAND_SLUGS="$(printf '%s\n' "$CAND_SLUGS" | grep -v '^$' | sort -u)"
+
+    # 2) Pre-filter to NON-terminal + AGED candidates (query liveness only if any
+    #    survive — zero cost on a clean state dir). Emit "slug<SPACE>sid,sid".
+    MAX_AGE=$(( ${PWT_GOAL_STALE_HOURS:-24} * 3600 ))
+    NOW=$(date -u +%s)
+    REAP_CANDIDATES=""
+    while IFS= read -r slug; do
+        [ -z "$slug" ] && continue
+        gf="$STATE_DIR/plan-w-team-goal-${slug}.json"
+        mf="$STATE_DIR/plan-w-team-manifest-${slug}.json"
+        st=""
+        [ -f "$gf" ] && st="$(__terminal_state_of "$gf")"
+        [ -z "$st" ] && [ -f "$mf" ] && st="$(__terminal_state_of "$mf")"
+        [ -n "$st" ] && continue   # any terminal_state (SUCCESS/escalation/DEAD/API_HALT) → keep
+        # Age = NEWEST mtime across the family (a recently-touched member = maybe alive).
+        newest=0
+        for pref in $FAMILY_PREFIXES; do
+            for ext in json jsonl; do
+                ff="$STATE_DIR/${pref}${slug}.${ext}"
+                [ -f "$ff" ] || continue
+                m="$(__mtime_of "$ff")"
+                [ -n "$m" ] || { newest=-1; break; }
+                [ "$m" -gt "$newest" ] 2>/dev/null && newest="$m"
+            done
+            [ "$newest" -lt 0 ] && break
+        done
+        [ "$newest" -le 0 ] 2>/dev/null && continue   # unreadable / no files → keep (fail-safe)
+        age=$(( NOW - newest ))
+        [ "$age" -lt "$MAX_AGE" ] 2>/dev/null && continue   # recent → keep
+        # Owner SIDs: worker_sid (goal) + run_sid (manifest).
+        sids=""
+        [ -f "$gf" ] && { w="$(__json_str_field "$gf" worker_sid)"; [ -n "$w" ] && sids="$sids $w"; }
+        [ -f "$mf" ] && { r="$(__json_str_field "$mf" run_sid)"; [ -n "$r" ] && sids="$sids $r"; }
+        sids="$(printf '%s' "$sids" | tr ' ' '\n' | grep -v '^$' | paste -sd, - 2>/dev/null || true)"
+        REAP_CANDIDATES="$REAP_CANDIDATES
+${slug} ${sids}"
+    done <<EOF
+$CAND_SLUGS
+EOF
+    REAP_CANDIDATES="$(printf '%s\n' "$REAP_CANDIDATES" | grep -v '^[[:space:]]*$')"
+
+    # 3) Query live SIDs ONCE (fail-CLOSED), then reap dead+aged orphans.
+    if [ -n "$REAP_CANDIDATES" ]; then
+        SIDS_HELPER="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/pwt-live-session-sids.sh"
+        QUERY_OK=1
+        LIVE_SIDS=""
+        if [ -x "$SIDS_HELPER" ]; then
+            LIVE_SIDS="$("$SIDS_HELPER" 2>/dev/null)"
+        else
+            QUERY_OK=0   # helper missing → cannot prove dead → fail-CLOSED
+        fi
+        printf '%s\n' "$LIVE_SIDS" | grep -qFx '__QUERY_FAILED__' && QUERY_OK=0
+        LIVE8="$(printf '%s\n' "$LIVE_SIDS" | grep -v '^$' | grep -vFx '__QUERY_FAILED__' | cut -c1-8 | sort -u)"
+
+        if [ "$QUERY_OK" = "1" ]; then
+            while IFS= read -r line; do
+                [ -z "$line" ] && continue
+                slug="${line%% *}"; sids="${line#* }"
+                [ "$sids" = "$line" ] && sids=""   # no SID present
+                # No owner SID at all → the worker is UNIDENTIFIABLE, so we cannot
+                # prove it is dead. Fail-CLOSED (keep): a long-running in-session
+                # /plan-w-team writes a goal with no worker_sid, and reaping it would
+                # delete a possibly-live run's state. "provably dead" REQUIRES a SID.
+                if [ -z "$sids" ]; then
+                    [ "$VERBOSE" = "1" ] && echo "kept family $slug (no owner SID → cannot prove dead, fail-closed)"
+                    continue
+                fi
+                alive=0
+                OLD_IFS="$IFS"; IFS=','
+                for s in $sids; do
+                    [ -z "$s" ] && continue
+                    s8="$(printf '%s' "$s" | cut -c1-8)"
+                    if printf '%s\n' "$LIVE8" | grep -qFx "$s8"; then alive=1; break; fi
+                done
+                IFS="$OLD_IFS"
+                if [ "$alive" = "1" ]; then
+                    [ "$VERBOSE" = "1" ] && echo "kept family $slug (worker live)"
+                    continue
+                fi
+                # Provable orphan: null + aged + worker dead → reap the whole family.
+                for pref in $FAMILY_PREFIXES; do
+                    for ext in json jsonl; do
+                        ff="$STATE_DIR/${pref}${slug}.${ext}"
+                        [ -f "$ff" ] || continue
+                        if [ "$DRY_RUN" = "1" ]; then
+                            echo "[dry-run] would remove $ff (orphaned non-terminal family: worker dead + aged ≥ ${PWT_GOAL_STALE_HOURS:-24}h)"
+                        else
+                            rm -f "$ff" 2>/dev/null && ORPHANS_REAPED=$((ORPHANS_REAPED + 1))
+                            [ "$VERBOSE" = "1" ] && echo "removed $ff (orphan family $slug)"
+                        fi
+                    done
+                done
+            done <<EOF
+$REAP_CANDIDATES
+EOF
+        elif [ "$VERBOSE" = "1" ]; then
+            echo "orphan-GC: liveness query failed/absent → fail-CLOSED, reaped nothing"
+        fi
+    fi
+fi
+
+if [ "$DRY_RUN" != "1" ] && [ "$QUIET" != "1" ]; then
+    [ "$REMOVED" -gt 0 ] && echo "🧹 cleaned $REMOVED stale SUCCESS goal-state file(s)"
+    [ "$ORPHANS_REAPED" -gt 0 ] && echo "🧹 reaped $ORPHANS_REAPED orphaned non-terminal run-state file(s)"
 fi
 
 exit 0
