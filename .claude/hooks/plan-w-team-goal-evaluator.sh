@@ -365,14 +365,41 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     # the worker's own self-write. See audit C3.
     if [ -n "$EXISTING_TERMINAL" ]; then
         TERMINAL_SRC=$(jq -r '.terminal_state_source // ""' "$GOAL_FILE")
-        if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-}" = "1" ] && [ "$TERMINAL_SRC" != "evaluator" ]; then
-            echo "[goal-evaluator] SLUG=$SLUG worker-mode spoof-guard: ignoring self-written terminal_state=$EXISTING_TERMINAL (no evaluator provenance) — continuing real detection" >&2
-            dbg "SLUG=$SLUG worker-mode: un-provenanced terminal_state ignored (spoof guard)"
-            # Do NOT short-circuit; fall through to real anchor detection.
-        else
-            dbg "SLUG=$SLUG already terminal_state=$EXISTING_TERMINAL (state-file short-circuit) → allowing stop"
+        HONOR_EXISTING=1
+        if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-}" = "1" ]; then
+            # Worker mode: a self-written terminal_state is spoofable. Honor a
+            # pre-existing terminal_state ONLY with accepted provenance:
+            #   evaluator       → we wrote it (trusted).
+            #   retro | ship    → trusted ONLY when corroborated by a deterministic
+            #                     PASS ship-verdict artifact for this slug (the same
+            #                     anchor C3 requires). The worker's own LLM cannot
+            #                     fabricate that without crossing every §6 ENFORCING
+            #                     gate, so the spoof-guard's INTENT (no un-provenanced
+            #                     mid-run self-completion) is preserved, not weakened.
+            #                     Lets retro's authoritative SUCCESS write (PWT-TERM1)
+            #                     terminate the run deterministically.
+            #   any other/empty → ignore (fall through to real anchor detection).
+            case "$TERMINAL_SRC" in
+                evaluator) HONOR_EXISTING=1 ;;
+                retro|ship)
+                    SV_FILE="$(dirname "$GOAL_FILE")/plan-w-team-ship-verdict-${SLUG}.json"
+                    if [ "$(jq -r '.verdict // ""' "$SV_FILE" 2>/dev/null)" = "PASS" ]; then
+                        HONOR_EXISTING=1
+                    else
+                        HONOR_EXISTING=0
+                    fi
+                    ;;
+                *) HONOR_EXISTING=0 ;;
+            esac
+        fi
+        if [ "$HONOR_EXISTING" = "1" ]; then
+            dbg "SLUG=$SLUG already terminal_state=$EXISTING_TERMINAL (state-file short-circuit, source=$TERMINAL_SRC) → allowing stop"
             ANY_TERMINAL=true
             continue
+        else
+            echo "[goal-evaluator] SLUG=$SLUG worker-mode spoof-guard: ignoring self-written terminal_state=$EXISTING_TERMINAL (source='$TERMINAL_SRC' not accepted or uncorroborated by PASS ship-verdict) — continuing real detection" >&2
+            dbg "SLUG=$SLUG worker-mode: un-provenanced/uncorroborated terminal_state ignored (spoof guard)"
+            # Do NOT short-circuit; fall through to real anchor detection.
         fi
     fi
 
@@ -437,13 +464,47 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     # forms. The SLUG is safe-slugged (kebab `[a-z0-9-]`), so it carries no ERE
     # metacharacters.
     SLUG_RE="\"slug\"[[:space:]]*:[[:space:]]*\"${SLUG}\""
+    MARKER_MATCH=0
     if printf '%s\n' "$RECENT" \
          | grep -E '"stage"[[:space:]]*:[[:space:]]*"retro-complete"' \
          | grep -E '"workflow_lock"[[:space:]]*:[[:space:]]*"done"' \
          | grep -E "$SLUG_RE" >/dev/null 2>&1; then
+        MARKER_MATCH=1
+    fi
+
+    # PWT-TERM2 runaway guard — a deterministic PASS ship-verdict is the objective
+    # "we already shipped" signal and must dominate a missing/fragile transcript
+    # marker. Without it, a worker that shipped (PASS verdict) but failed to emit the
+    # exact paired stage=retro-complete + workflow_lock=done block leaves
+    # terminal_state null → /goal keeps the session alive → the model invents phantom
+    # work (the 2026-06-22 runaway). Accept the verdict only when its ts is at/after
+    # this goal's started_at, so a STALE PASS verdict left by an aborted prior run of
+    # the same slug cannot prematurely succeed a new run. Unparseable timestamps fail
+    # toward honoring (consistent with C3 already trusting this artifact). The
+    # feature-AC AND-check + empty-AC antipark check BELOW still run, so a genuinely
+    # incomplete multi-AC run is never prematurely terminated.
+    SHIP_VERDICT_PASS=0
+    SV_FILE="$(dirname "$GOAL_FILE")/plan-w-team-ship-verdict-${SLUG}.json"
+    if [ "$(jq -r '.verdict // ""' "$SV_FILE" 2>/dev/null)" = "PASS" ]; then
+        SV_TS=$(jq -r '.ts // ""' "$SV_FILE" 2>/dev/null)
+        SV_EPOCH=$(__iso_to_epoch "$SV_TS")
+        START_EPOCH=$(__iso_to_epoch "$STARTED_AT")
+        if [ -z "$SV_EPOCH" ] || [ -z "$START_EPOCH" ] || [ "$SV_EPOCH" -ge "$START_EPOCH" ] 2>/dev/null; then
+            SHIP_VERDICT_PASS=1
+        else
+            dbg "(1/PWT-TERM2) PASS ship-verdict ignored — ts=$SV_TS precedes started_at=$STARTED_AT (stale prior-run verdict)"
+        fi
+    fi
+
+    if [ "$MARKER_MATCH" = "1" ] || [ "$SHIP_VERDICT_PASS" = "1" ]; then
         TERMINAL="SUCCESS"
-        REASON="retro-complete status block emitted with workflow_lock=done for slug=$SLUG"
-        dbg "(1) SUCCESS matched: stage=retro-complete + workflow_lock=done + slug=$SLUG colocated on one decoded line"
+        if [ "$MARKER_MATCH" = "1" ]; then
+            REASON="retro-complete status block emitted with workflow_lock=done for slug=$SLUG"
+            dbg "(1) SUCCESS matched: stage=retro-complete + workflow_lock=done + slug=$SLUG colocated on one decoded line"
+        else
+            REASON="runaway-guard (PWT-TERM2): deterministic PASS ship-verdict for slug=$SLUG with transcript marker absent — resolving SUCCESS instead of continuing into unrequested work"
+            dbg "(1/PWT-TERM2) SUCCESS via PASS ship-verdict (marker absent) for slug=$SLUG"
+        fi
 
         # PWT-T5c: AND-check feature-specific done criteria
         CRITERIA_LEN=$(jq '.feature_specific_done_criteria // [] | length' "$GOAL_FILE")

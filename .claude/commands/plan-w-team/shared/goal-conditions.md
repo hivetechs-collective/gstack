@@ -158,10 +158,28 @@ The condition is well under `/goal`'s 4000 char limit.
 
 | State                   | Transcript anchor                                                                                                                                                    | What it means                                                                                                          |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `SUCCESS`               | A status block with `stage: "retro-complete"` AND `workflow_lock: "done"` (emitted by `07-retro.md`)                                                                 | Pipeline ran end-to-end without escalation; ship gate passed                                                           |
+| `SUCCESS`               | A status block with `stage: "retro-complete"` AND `workflow_lock: "done"` (emitted by `07-retro.md`), **OR** a deterministic PASS ship-verdict (PWT-TERM2, below)    | Pipeline ran end-to-end without escalation; ship gate passed                                                           |
 | `USER_ESCALATION_HALT`  | Any status/summary block with non-empty `pending_escalations` containing one of the 3 hard-gate labels                                                               | A hard-gate was hit; user must respond before pipeline can proceed                                                     |
 | `LOW_CONFIDENCE_STREAK` | Either: 3 consecutive supervisor summary blocks mentioning "low-confidence" in `goal_progress`, OR any status block with `low_confidence_routes >= 3`                | Supervisor's decisions are unreliable; do not let it continue dispatching                                              |
 | `API_HALT`              | No transcript anchor — derived during parent-child propagation when a delegated child worker is idle ≥ 600s and its last turn matches a transient-connection pattern | A delegated child died on a transient API error; surface to the user rather than masking it under the parent's SUCCESS |
+
+**Deterministic SUCCESS — not LLM-marker-dependent (PWT-TERM1/TERM2, 1.46.0):** `SUCCESS` must
+not hinge on the worker's LLM emitting the exact paired `stage="retro-complete"` +
+`workflow_lock="done"` block. Two additive, fail-open paths make it deterministic and break the
+runaway-after-ship loop (a shipped run that left `terminal_state` null while `/goal` kept the
+session alive and the model invented phantom work — worker `3ce4f51f`, 2026-06-22):
+
+- **PWT-TERM1 (retro authoritative write):** on `RETRO_SUCCESS=1` + a PASS ship-verdict,
+  `07-retro.md` writes `terminal_state=SUCCESS` with `terminal_state_source=retro`. The
+  worker-mode spoof-guard honors `retro`/`ship` provenance ONLY when corroborated by that same
+  PASS ship-verdict — so the anti-spoof intent (no un-provenanced mid-run self-completion) is
+  preserved, not weakened.
+- **PWT-TERM2 (runaway guard):** detector (1) resolves `SUCCESS` when a deterministic PASS
+  ship-verdict (`.claude/state/plan-w-team-ship-verdict-<slug>.json`, written by Step 6 only
+  after every §6 ENFORCING gate) exists for the slug with `ts >= started_at`, even if the
+  transcript marker is absent. A stale prior-run verdict (`ts < started_at`) is ignored. The
+  feature-AC AND-check and the empty-AC PWT-ANTIPARK backlog check still gate, so an incomplete
+  multi-AC / multi-epic run is never prematurely terminated.
 
 **Removed:** an earlier `TIME_OR_TURN_CAP` terminal state was deleted by design (2026-05-19). Wall-clock and turn-count termination conflated "the work is done" with "we've used our budget" — neither is a legitimate stopping signal for autonomous engineering work. The four states above (three directly-detected + `API_HALT` via propagation) are the only ways a `/plan-w-team` run reaches terminal.
 

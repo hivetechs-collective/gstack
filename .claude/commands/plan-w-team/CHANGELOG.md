@@ -21,6 +21,73 @@ Entries are newest-first.
 
 ---
 
+## [1.46.0] — 2026-06-25 (1886c0a)
+
+**Fix the /plan-w-team ↔ /goal non-termination (runaway-after-ship) bug; harden
+completion to be deterministic, not LLM-marker-dependent.** A run could fully ship
+(origin push + `stage="retro-complete"`) yet leave `terminal_state` null, so `/goal`
+kept the session alive and the model invented phantom work (observed: worker `3ce4f51f`
+ran 48 min into a non-existent backlog after shipping 1.45.0). Root cause: SUCCESS was
+written ONLY by the evaluator on a fragile paired-marker transcript match, and retro read
+but never authoritatively wrote it. All changes additive / guarded / fail-open; the
+evaluator foreign-slug/stale-skip/dead-worker/API-HALT/supervisor-mirror guards, 1.44.0
+PWT-ANTIPARK, the worker-mode spoof-guard's intent, `PLAN_W_TEAM_DISABLE_GOAL`, and the
+no-new-hard-gate / bash-3.2 / no-external-deps invariants are all preserved. Spec:
+`docs/specs/goal-termination-handshake.md`.
+
+- MINOR: **PWT-TERM1 — retro authoritatively writes SUCCESS.** `07-retro.md` now sets
+  `terminal_state=SUCCESS` with `terminal_state_source=retro` on `RETRO_SUCCESS=1` + a PASS
+  ship-verdict (never clobbering a halt state). The evaluator's worker-mode spoof-guard is
+  extended to honor `retro`/`ship` provenance ONLY when corroborated by the same
+  deterministic PASS ship-verdict artifact — preserving (not weakening) its anti-spoof intent.
+- MINOR: **PWT-TERM2 — runaway guard.** The evaluator resolves SUCCESS when a PASS
+  ship-verdict (ts ≥ the goal's `started_at`) exists for the slug even if the paired
+  transcript marker is absent; a stale verdict from an aborted prior same-slug run is ignored
+  (ts guard) and retro now retires the ship-verdict on success. The feature-AC AND-check and
+  empty-AC PWT-ANTIPARK backlog check still gate, so an incomplete multi-AC / multi-epic run
+  is never prematurely terminated.
+- MINOR: **Empty-criteria safety.** A route-hook spawn with empty
+  `feature_specific_done_criteria` plus a real ship now resolves SUCCESS instead of running
+  forever (PWT-ANTIPARK still withholds when an unmet backlog is known).
+- MINOR: **Supervisor auto stand-down on post-ship off-brief drift** documented in
+  `shared/supervisor-protocol.md` — codifies the manual `3ce4f51f` stand-down; deterministically
+  enforced by PWT-TERM2.
+- test: new BDD-named regression scenario
+  `tests/skill/scenarios/goal-evaluator-termination-handshake.bats` (9 cases) covering the
+  runaway guard, stale-verdict rejection, retro-provenance honoring + spoof rejection,
+  empty-criteria SUCCESS, antipark withholding, and the unchanged marker happy path.
+
+## [1.45.0] — 2026-06-22 (9dd74e4)
+
+**Visual artifacts woven across the lifecycle** — a single reusable
+self-contained-HTML renderer substrate (`plan-w-team-render-artifact.sh`) plus
+four lifecycle hook points. Max-safe local-HTML equivalent of Anthropic's
+Artifacts-in-Claude-Code (no Artifact tool — plain `Write`s). Spec:
+`docs/specs/weave-visual-artifacts-across-the-plan-w-team-lifecycle-as-specified-in-claude-s-da7bc931.md`;
+ops doc: `docs/operations/plan-w-team-visual-artifacts.md`. All additive, OFF by
+default, fail-open; bash 3.2; zero external deps; no new lifecycle gate.
+
+- MINOR: new substrate `plan-w-team-render-artifact.sh` — emits ONE self-contained
+  `.html` (inline CSS/JS/SVG, zero external requests; data values neutralized + a
+  post-build self-check discards any leaky page) for four kinds:
+  `completion` / `comparison` / `review` / `dashboard`. Design-token seeding: built-in
+  defaults overridable from a CLAUDE.md `## Design system` block or `$PWT_DESIGN_TOKENS_FILE`.
+- MINOR: Hook 1 (core) — `plan-w-team-completion-summary.sh` ALSO emits
+  `.claude/state/plan-w-team-completion-<SLUG>.html` from the EXISTING completion JSON
+  when `PWT_EMIT_HTML_REPORT=1` (default OFF). The existing `.md`/`.json` output is
+  **byte-for-byte unchanged** when the toggle is unset (pinned regression test).
+- MINOR: Hooks 2–4 — `comparison` (scope/spec design comparison), `review` (Step-5
+  findings walkthrough), `dashboard` (supervisor live view) wired as OFF-by-default
+  documented call-sites in `00-scope-challenge.md`, `01-specification.md`,
+  `04-fix-first-review.md`, and `shared/supervisor-protocol.md`.
+- MINOR: new state artifact `plan-w-team-completion-<SLUG>.html` (mode `audit-trail`,
+  gitignored so it never leaks into a sync commit); registered in
+  `shared/state-artifacts.md`, `sync-to-project.sh` cp wall, and
+  `plan-w-team-sync-allowlist-check.sh`.
+- Tests: `plan-w-team-render-artifact.test.sh` (12 assertions) + BDD-named
+  `tests/skill/cases/render-artifact-self-contained.bats` (self-contained HTML,
+  off-by-default, design-token override, fail-open, byte-for-byte invariant).
+
 ## [1.44.0] — 2026-06-10 (e5b0923)
 
 Goal-state **test-leak + evaluator-blocks-on-stale** hardening (three prongs;

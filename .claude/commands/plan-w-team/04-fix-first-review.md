@@ -826,3 +826,19 @@ At the end of this stage, emit a status block for the `/goal` evaluator. This is
 The stage label `review` is the second argument — see `shared/goal-conditions.md` §Status-Block Schema for the full label list. `/goal` evaluator reads the emitted block to judge whether the pipeline terminal condition is met.
 
 Skip this block entirely when `PLAN_W_TEAM_DISABLE_GOAL=1` (kill switch) — the helper itself is observability and remains safe to call, but invocation here is optional in that mode.
+
+## Optional: Visual Review-Walkthrough Artifact (Hook 3 — OFF by default)
+
+Instead of scrolling raw findings, the reviewer MAY render the Step-5 findings as an
+annotated HTML walkthrough (severity, `file:line`, diff excerpt) for a human to read.
+Additive, OFF by default, fail-open — it does not gate the review or the ship.
+
+```bash
+# snippet-lint: skip — illustrative; render an ad-hoc findings JSON.
+# data shape: {"title":"…","findings":[{"severity":"…","file":"…","line":N,"note":"…","excerpt":"…"}]}
+.claude/scripts/plan-w-team-render-artifact.sh --kind review \
+  --data ".claude/state/plan-w-team-review-findings-${SLUG}.json" \
+  --out  ".claude/state/review-${SLUG}.html"
+```
+
+See `docs/operations/plan-w-team-visual-artifacts.md`.

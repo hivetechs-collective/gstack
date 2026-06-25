@@ -745,6 +745,33 @@ EOF
   fi
 fi
 
+# §8j-quater-bis (PWT-TERM1) — RETRO AUTHORITATIVELY WRITES terminal_state=SUCCESS.
+# Root-cause fix for the runaway-after-ship bug: SUCCESS must NOT depend on the LLM
+# emitting the exact paired stage=retro-complete + workflow_lock=done marker (the
+# fragile handshake the goal-evaluator's detector (1) keys on). Ground truth is
+# "retro finished (RETRO_SUCCESS=1) + ship PASSED (deterministic PASS ship-verdict)".
+# On that condition, write terminal_state=SUCCESS with terminal_state_source=retro — an
+# accepted provenance the evaluator's worker-mode spoof-guard honors WHEN corroborated
+# by the same PASS ship-verdict (so the guard's anti-spoof intent is preserved). Only
+# writes when the current terminal_state is empty or already SUCCESS — never clobbers a
+# halt state (USER_ESCALATION_HALT / LOW_CONFIDENCE_STREAK / DEAD). Additive + fail-open:
+# RETRO_SUCCESS!=1 or no PASS ship-verdict → no write (behavior unchanged).
+GOAL_STATE_FILE=".claude/state/plan-w-team-goal-${SLUG}.json"
+SHIP_VERDICT_FILE=".claude/state/plan-w-team-ship-verdict-${SLUG}.json"
+if [ "${RETRO_SUCCESS:-0}" = "1" ] && [ -f "$GOAL_STATE_FILE" ] \
+   && [ "$(jq -r '.verdict // ""' "$SHIP_VERDICT_FILE" 2>/dev/null)" = "PASS" ]; then
+  CUR_TS=$(jq -r '.terminal_state // ""' "$GOAL_STATE_FILE" 2>/dev/null || echo "")
+  if [ -z "$CUR_TS" ] || [ "$CUR_TS" = "SUCCESS" ]; then
+    jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+       '.terminal_state = "SUCCESS"
+        | .terminal_reason = "retro complete + PASS ship-verdict (authoritative retro write, PWT-TERM1)"
+        | .terminated_at = $ts
+        | .terminal_state_source = "retro"' \
+       "$GOAL_STATE_FILE" > "$GOAL_STATE_FILE.tmp" && mv "$GOAL_STATE_FILE.tmp" "$GOAL_STATE_FILE"
+    echo "✓ retro authoritatively set terminal_state=SUCCESS (source=retro, PASS ship-verdict) — PWT-TERM1"
+  fi
+fi
+
 # §8j-quinquies reads the /goal terminal state from the goal-state file, but the
 # cleanup below deletes it — capture into locals BEFORE the rm -f (see §8j-quinquies).
 GOAL_TERMINAL_STATE=$(jq -r '.terminal_state // "n/a"' ".claude/state/plan-w-team-goal-${SLUG}.json" 2>/dev/null || echo "n/a")
@@ -769,6 +796,12 @@ if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
   # slug AND the legacy literal "active" the detector defaults to when no slug is known.
   rm -f ".claude/state/plan-w-team-credwall-${SLUG}.json"       # SA-2 per-run credential-wall marker
   rm -f ".claude/state/plan-w-team-credwall-active.json"        # SA-2 legacy default-slug marker
+  # PWT-TERM2: retire this run's ship-verdict. The runaway guard + C3 treat a PASS
+  # ship-verdict as the deterministic "we already shipped" SUCCESS signal, so a stale
+  # PASS verdict left behind could prematurely succeed a FUTURE run of the same slug
+  # (the runaway-guard ts>=started_at check is the backstop; this is the clean
+  # per-run retirement). Reaching retro means we shipped past the §6 gate → safe.
+  rm -f ".claude/state/plan-w-team-ship-verdict-${SLUG}.json"   # PWT-TERM2 per-run ship-verdict
 
   # Janitor pass: sweep up leftover SUCCESS goal files — this run's now-shipped
   # state plus any older SUCCESS files from runs whose own retro cleanup never

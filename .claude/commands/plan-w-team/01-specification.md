@@ -426,3 +426,21 @@ At the end of this stage, emit a status block for the `/goal` evaluator. This is
 The stage label `specification` is the second argument — see `shared/goal-conditions.md` §Status-Block Schema for the full label list. `/goal` evaluator reads the emitted block to judge whether the pipeline terminal condition is met.
 
 Skip this block entirely when `PLAN_W_TEAM_DISABLE_GOAL=1` (kill switch) — the helper itself is observability and remains safe to call, but invocation here is optional in that mode.
+
+## Optional: Visual Approach-Comparison Artifact (Hook 2 — OFF by default)
+
+When the design phase produces **N candidate approaches** and a human will choose between
+them, the lead MAY render them side-by-side as a self-contained HTML page (each option's
+tradeoffs under it) — the judge-panel made reviewable. This is an **attended decision aid**,
+additive and OFF by default; it introduces no lifecycle gate and never blocks the spec.
+
+```bash
+# snippet-lint: skip — illustrative; lead authors the options JSON, then renders.
+# data shape: {"title":"…","options":[{"name":"…","pros":[…],"cons":[…],"notes":"…"}]}
+.claude/scripts/plan-w-team-render-artifact.sh --kind comparison \
+  --data ".claude/state/approaches-${SLUG}.json" \
+  --out  ".claude/state/approaches-${SLUG}.html"
+```
+
+The renderer is self-contained (zero external requests) and fail-open. See
+`docs/operations/plan-w-team-visual-artifacts.md`.

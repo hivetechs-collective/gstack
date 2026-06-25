@@ -75,7 +75,13 @@ done <<<"$CANDIDATES"
 # spawn / secret gates to function in a consumer repo; a rename that dropped one
 # from the allowlist would silently make those gates fail-open with no drift
 # warning (audit C7). Pin them explicitly.
-REQUIRED_NONPREFIXED="ram-budget.sh disk-budget.sh claude-agents-extended.sh locate-claude.sh secret-scan.sh access-control-content-scan.sh secret-doc-sync.sh supervisor-merge-gate.sh supervisor-progress-check.sh"
+#
+# `plan-w-team-render-artifact.sh` IS prefixed (so the glob above already
+# requires its cp line) — it is pinned here too as belt-and-suspenders: the
+# visual-artifacts substrate is a load-bearing dependency of the Hook-1
+# completion-summary emission, and the pin keeps it required even if a future
+# rename ever drops the prefix.
+REQUIRED_NONPREFIXED="ram-budget.sh disk-budget.sh claude-agents-extended.sh locate-claude.sh secret-scan.sh access-control-content-scan.sh secret-doc-sync.sh supervisor-merge-gate.sh supervisor-progress-check.sh plan-w-team-render-artifact.sh"
 for name in $REQUIRED_NONPREFIXED; do
     # Only require it if the source script actually exists (don't demand a dep a
     # given checkout legitimately doesn't ship).

@@ -258,6 +258,33 @@ The goal-evaluator hook (`.claude/hooks/plan-w-team-goal-evaluator.sh`) handles 
 
 For supervisors that ever spawn additional `claude --bg` children (rare — supervisors normally spawn agents via the `Agent` tool, not new sessions): such a spawn MUST be registered via `.claude/scripts/plan-w-team-register-spawn.sh` so the propagation works. Without registration, the parent's goal evaluator has no record of the child and will continue to wait on transcript anchors that never arrive in its own session.
 
+## Post-Ship Off-Brief Drift — Auto Stand-Down (PWT-TERM, 2026-06-25)
+
+A run can finish its lifecycle — ship to origin (a deterministic PASS ship-verdict at
+`.claude/state/plan-w-team-ship-verdict-<slug>.json`, HEAD pushed) — yet keep the session
+alive and drift into **new, unrequested work** if the goal never resolves SUCCESS. This is the
+runaway-after-ship failure: worker `3ce4f51f` shipped 1.45.0 and then ran 48 min / 131k tokens
+into a non-existent backlog (zero commits) before the origin-chat supervisor stopped it by hand.
+
+**Rule (codifying what the supervisor did by hand):** once a run has demonstrably shipped
+(PASS ship-verdict present OR HEAD pushed past the ship gate) and the only remaining activity
+is NOT one of this run's spec ACs / queued tasks, the supervisor **stands the worker down and
+surfaces it as a completion (SUCCESS), not an error**. "We already shipped" is an objective
+signal that must dominate a missing/fragile `stage=retro-complete` + `workflow_lock=done`
+transcript marker. The supervisor must NOT dispatch new off-brief work after ship.
+
+**Deterministic enforcement:** the stand-down is enforced by the goal-evaluator, not left to
+the supervisor's judgment. Its **PWT-TERM2 runaway guard** resolves SUCCESS the moment a PASS
+ship-verdict (whose `ts` is at/after the goal's `started_at`) exists for the slug, even if the
+paired marker was never emitted — and **PWT-TERM1** has retro authoritatively write
+`terminal_state=SUCCESS` (`terminal_state_source=retro`, honored by the worker-mode spoof-guard
+only when corroborated by that same PASS ship-verdict). Both unblock the Stop hook so the
+session terminates instead of inventing work. The feature-AC AND-check and the PWT-ANTIPARK
+empty-AC backlog check still run first, so a genuinely incomplete multi-AC run (or a multi-epic
+program with unmet backlog) is never falsely stood down — only a run that truly shipped its
+contract terminates. See `shared/goal-conditions.md` and the goal-evaluator hook for the
+precedence and fail-open contract.
+
 ## Origin-Chat Supervisor — systemMessage as Load-Bearing Signal (2026-05-21)
 
 The **persistent supervisor** described above is for parallel-builder runs (Step 3-4 dispatch). A different, simpler supervisor mode runs for every natural-language `/plan-w-team` trigger: the **origin-chat supervisor**, where the user's current chat session takes the supervisor role for a single bg worker spawned by the UserPromptSubmit route hook. The full inlined protocol lives in the skill manifest's "Step 3c — Act as live supervisor" block; this section documents only what makes the handoff between hook and origin chat actually work in 2.1.148+.
@@ -769,3 +796,23 @@ When extending the supervisor (e.g. for T5 integration):
 4. Update the symmetry-check registry row if the on-disk path or pattern changes.
 5. Add a test case in `plan-w-team-supervisor-route.test.sh` if it affects the wrapper.
 6. If the change touches the **summary block schema**, document the version bump in this file (the block is a shipped one-way contract).
+
+## Optional: Live-Supervision Dashboard Artifact (Hook 4 — OFF by default)
+
+The origin-chat supervisor MAY maintain a self-contained HTML dashboard that re-renders
+as the worker progresses — the one "updates while you watch" use that fits the `--bg`
+model. **Best-effort, OFF by default, never blocks supervision** (the renderer is
+fail-open and the re-render is fire-and-forget).
+
+```bash
+# snippet-lint: skip — illustrative; assemble ONE JSON from the live artifacts, then render.
+# data shape: {slug, terminal_state, progress:{tasks_done,tasks_total}, stages:[…], fleet:[…]}
+.claude/scripts/plan-w-team-render-artifact.sh --kind dashboard \
+  --data ".claude/state/dashboard-${SLUG}.json" \
+  --out  ".claude/state/dashboard-${SLUG}.html" || true
+```
+
+The supervisor assembles the JSON from `plan-w-team-goal-<SLUG>.json`,
+`plan-w-team-stage-events-<SLUG>.jsonl`, `plan-w-team-fleet-<SLUG>.jsonl`, and
+`supervisor-progress-<SLUG>.json` (all read-only). See
+`docs/operations/plan-w-team-visual-artifacts.md`.

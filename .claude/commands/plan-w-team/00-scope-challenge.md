@@ -163,3 +163,10 @@ At the end of this stage, emit a status block for the `/goal` evaluator. This is
 The stage label `scope-challenge` is the second argument — see `shared/goal-conditions.md` §Status-Block Schema for the full label list. `/goal` evaluator reads the emitted block to judge whether the pipeline terminal condition is met.
 
 Skip this block entirely when `PLAN_W_TEAM_DISABLE_GOAL=1` (kill switch) — the helper itself is observability and remains safe to call, but invocation here is optional in that mode.
+
+## Optional: Visual Approach-Comparison Artifact (Hook 2 — OFF by default)
+
+If the scope challenge surfaces competing approaches, the side-by-side HTML
+approach-comparison artifact (Hook 2) can be rendered here or at Step 1 — see
+`01-specification.md` §"Optional: Visual Approach-Comparison Artifact" and
+`docs/operations/plan-w-team-visual-artifacts.md`. Additive, OFF by default, no gate.
