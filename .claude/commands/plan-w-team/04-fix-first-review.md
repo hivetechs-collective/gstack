@@ -702,6 +702,63 @@ When spawning parallel agents to fix review findings:
 3. **Assign shared files to ONE fix agent**: If multiple fixes touch the same file, group them into one agent. Do NOT split fixes for the same file across multiple agents — this was the #1 source of merge coordination pain in the factory-orchestrator retro.
 4. **Prefer fixing on main directly** for small fixes (1-3 lines): spawning a worktree for a one-line fix adds overhead. Only use worktree isolation when the fix is substantial enough to benefit from parallel execution.
 
+## 5d-quater. Advisory Root-Cause / Close-the-Class Check (bug-fix runs — ADVISORY, fail-open)
+
+> Provenance: principle #4 of Ray Amjad's "targeting machine" talk (model-agnostic).
+
+Models default to lazy **point-fixes** — they patch the symptom where it surfaced and
+move on, even when a deeper **root cause / meta-level pattern** produces the same CLASS
+of bug elsewhere; they are also reluctant to propose an architectural change unless
+explicitly asked. This check is the cheap, high-leverage countermeasure: once a fix is in
+hand, the reviewer pauses to ask whether it is a point-fix over a deeper pattern — then
+acts **deliberately**, instead of shipping the symptom-patch by reflex.
+
+**This is ADVISORY, not a hard gate.** It adds no new pause site, no new script, no new
+dependency, and never forces an architectural change. It is **fail-open**: a run with no
+deeper pattern simply **no-ops**. It is **right-sized**: it fires for **bug-fix-type runs**
+only and **skips pure features and trivial one-liners** (their "class" is themselves).
+Human review attention is the real bottleneck, so this **surfaces the option** — it does
+not mandate the work.
+
+### When it fires
+
+- **Run it** when this run fixed a defect (the diff repairs broken behavior — a bug-fix
+  task, a Pass-1 CRITICAL fix, a flaky-test repair, an off-policy-drift correction).
+- **Skip it (no-op)** for pure features (net-new behavior with no symptom being repaired)
+  and for trivial one-liners (typo, version bump, comment). Record `root-cause-check:
+skipped (<feature|trivial>)` in the Step 5 status block and move on.
+
+### The question
+
+> _Is this a point-fix over a deeper root cause / meta-level pattern that recurs elsewhere
+> — is there a single fix that would close a whole CLASS of these issues?_
+
+If the honest answer is "no, the fix is the whole story" → **no-op** (the common case).
+Record `root-cause-check: no-pattern` and continue. Otherwise take **exactly ONE** of the
+three deliberate outcomes below.
+
+### The three deliberate outcomes
+
+| #   | Situation                                                                           | Action                                                                                                                                                                                                                                                                                             |
+| --- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | **Within original scope** — closing the class fits the run's existing task envelope | Fix the root cause / close the class **now**, under the §5-0 fix-immediately discipline (fix → deploy → retest → verify GREEN → note).                                                                                                                                                             |
+| 2   | **Expands scope** — closing the class is LARGER than the originally scoped task     | Route through the **EXISTING `scope-unlock-for-drift` pause** (user-gated — see `03-execute.md` and `shared/self-regulation.md`). **Never silently balloon scope.** Reuse that pause; do **not** invent a new gate.                                                                                |
+| 3   | **Deferred** — too big / out of scope / needs the user, and not unlocking now       | Record a follow-up in the **`recursive-followups` ledger** (`.claude/state/plan-w-team-recursive-followups.jsonl`, see `shared/state-artifacts.md`) and **ship the point-fix**. The deferral is captured, not forgotten — a prior run's open follow-ups are surfaced at the next run's pre-flight. |
+
+Outcomes 2 and 3 deliberately **reuse** the scope-unlock pause and the follow-up ledger
+that already exist — this check is a new _prompt_, not new _machinery_. Whichever outcome
+is taken, note it in the Step 5 status block (`root-cause-check: <fixed-now|scope-unlock|deferred>`)
+so the retro can see the decision was made on purpose.
+
+### Why advisory and not a gate
+
+Forcing a root-cause fix would (a) contradict the talk's own caveat against mandating
+architectural change, (b) blow up human-review attention on every bug-fix run, and (c) add
+a hard gate the brief explicitly forbids. The leverage is in _asking the question every
+time_; the judgment of whether to act stays with the reviewer (outcome 1/3) or the user
+(outcome 2). All pre-existing Step 5 gates and the PWT-TERM1/TERM2 deterministic-SUCCESS
+guards (1.46.0) are untouched by this addition.
+
 ## 5e. Review Suppressions — Do NOT Flag These
 
 1. Redundancy that aids readability (e.g., explicit type annotations TypeScript could infer)

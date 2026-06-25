@@ -13,11 +13,117 @@ traced back to the exact /plan-w-team release that produced it.
 ## Format
 
 ```
+
+## [1.47.2] — 2026-06-25 (b11e6ce)
+
+- fix(test): de-flake `render-artifact-self-contained.bats` (1.45.0 visual-artifacts
+  byte-for-byte invariant). Two volatile fields escaped masking and caused an
+  intermittent (~1-in-3) failure: `elapsed_seconds` in the JSON (jq pretty-prints a
+  space after the colon, so `[0-9]*` matched zero digits) and a BARE `**Generated:**
+  <ISO>` in the MD (the mask only caught backtick-wrapped timestamps). Both now masked;
+  verified deterministic 10/10. Removes non-determinism — does not loosen the invariant.
+
 ## [<semver>] — <YYYY-MM-DD> (<short-sha>)
 - <bump kind>: <description>
 ```
 
 Entries are newest-first.
+
+---
+
+## [1.47.1] — 2026-06-25 (025c6ff)
+
+**PWT-TERM3: make the Step-6 ship-verdict write RELIABLE — close the
+runaway-after-ship gap left open by 1.46.0.** The 1.46.0 deterministic-SUCCESS fix
+(PWT-TERM1/TERM2) is sound but contingent on the ship-verdict artifact
+(`.claude/state/plan-w-team-ship-verdict-<SLUG>.json`, `verdict==PASS`,
+`ts>=started_at`) existing on disk. Pre-TERM3 that artifact was written ONLY by an
+End-of-Stage inline block in `05-ship.md` — ~700 lines and several fail-soft
+off-ramps AFTER `git push`. When a worker reached push but drifted before executing
+that block (observed: the 1.47.0 run committed+pushed but produced NO ship-verdict;
+three runs hit this — 3ce4f51f, 5b0e7042, ed9856e1), every SUCCESS path failed →
+`/goal` kept the session alive → hang. The fix keeps the EXACT same trusted signal
+(no new signal, no new artifact, no new gate) and makes the existing post-push write
+reliable via an arm-flag + EXIT-trap re-assertion.
+
+- PATCH: **deterministic post-push ship-verdict writer.** Three edits in
+  `05-ship.md` ONLY: (1) §6-0a-bis defines `__pwt_write_ship_verdict()` + the
+  `SHIP_PUSH_CONFIRMED=0` arm-flag alongside the §6-0a trap install (helper exists
+  long before push); the writer fail-safes — it returns WITHOUT writing unless
+  `SHIP_PUSH_CONFIRMED=1`. (2) Immediately after `git push -u origin "$BRANCH"`,
+  `PUSH_RC=$?` is captured as the FIRST statement (else `$?` is clobbered); on
+  `PUSH_RC -eq 0` the flag is armed and the writer is chained onto the EXIT trap via
+  the §6-0a/§6g capture+append idiom (appended LAST — never clobbers the
+  minimal-retro writer or the push-lock release). (3) The End-of-Stage inline
+  `printf > "$SHIP_VERDICT"` is replaced by a call to `__pwt_write_ship_verdict`, so
+  happy-path and trap re-assertion are ONE source of truth (exactly one
+  PASS-writing printf now exists in the stage).
+- WHY NOT THE REJECTED ALTERNATIVES (both adversaries proved these unsafe):
+  **R1 — write the verdict pre-push (right after the last §6 gate):** FALSE-POSITIVE
+  — would mint a PASS even if the subsequent `git push` / self-merge FAILED,
+  terminating SUCCESS for work that never landed. The arm-flag's
+  post-push-success-only gating is exactly the anti-false-positive property R1
+  violates. **R2 — a merge-corroboration SUCCESS path / per-gate JSONL stamps:**
+  new spoof surfaces (the C3 anti-spoof intent requires a single shell-written
+  signal, not LLM-corroborated text). **R3 — move/duplicate the signal or touch the
+  evaluator / 07-retro:** the evaluator + retro consume the verdict verbatim;
+  changing them would break the C3 gate precondition. TERM3 leaves WHO writes it
+  (gate/push shell, never the LLM), WHAT it attests (all six §6 ENFORCING gates
+  passed AND `PUSH_RC==0`), and the spoof surface IDENTICAL to before — only the
+  post-push timing footgun is removed.
+- TEST: `tests/skill/scenarios/ship-verdict-post-push-reliability.bats` (20
+  BDD-named cases per the r10 ratchet): helper-defined-before-push + flag-default-0;
+  writer no-ops when flag=0 (pre-push fail-safe); writes PASS when flag=1; arm site
+  is AFTER `git push` guarded by `PUSH_RC -eq 0`; EXIT-trap capture+append inside the
+  post-push branch (no clobber); End-of-Stage calls the helper (single
+  PASS-printf); **post-push drift → trap fires → PASS on disk (the liveness fix)**;
+  **pre-push fail → flag 0 → NO verdict (anti-false-positive)**; idempotent
+  overwrite; plus preserved-contract checks that the evaluator still consumes the
+  same ship-verdict json and still requires `verdict==PASS`. Runtime cases source
+  the helper EXTRACTED from `05-ship.md`, so the behavioral guarantees track the
+  live stage source, not a divergent copy.
+- INVARIANTS: PWT-TERM1/TERM2 deterministic-SUCCESS (1.46.0), the C3 anti-spoof
+  contract, the evaluator foreign-slug/stale/dead-worker/API-HALT guards,
+  `PLAN_W_TEAM_DISABLE_GOAL`, fail-open, no new hard gate, bash 3.2, and the
+  no-external-deps floor are all preserved. `make test-skill` fully green (bats + 82
+  shell + 1 TS); snippet-lint / symmetry-check / sync-allowlist / secret-doc-sync
+  --check / sync-script-references all green. Brief:
+  `.claude/state/pwt-brief-term3-shipverdict-reliability.md`.
+
+---
+
+## [1.47.0] — 2026-06-25 (923b311)
+
+**Add an advisory root-cause / close-the-class check to Step 5 fix-first review.**
+Provenance: principle #4 of Ray Amjad's "targeting machine" talk (model-agnostic;
+we run Opus 4.8 only). Models default to lazy point-fixes — patching the symptom
+where it surfaces and moving on even when a deeper root cause / meta-level pattern
+produces the same CLASS of bug elsewhere — and are reluctant to propose
+architectural change unless asked. New §5d-quater in `04-fix-first-review.md` makes
+the countermeasure an explicit, repeatable review step for bug-fix-type runs: once a
+fix is in hand, the reviewer asks whether it is a point-fix over a deeper pattern,
+then takes ONE deliberate outcome. Purely a prompt/doc addition + a thin regression
+test — no new subsystem, script, lifecycle gate, or dependency. Spec:
+`docs/specs/root-cause-check.md`.
+
+- MINOR: **§5d-quater advisory root-cause / close-the-class check.** Fires for
+  bug-fix-type runs (skips pure features / trivial one-liners — right-sized,
+  fail-open: no deeper pattern → no-op). Three deliberate outcomes: (1) within
+  original scope → close the class now under §5-0 fix-immediately; (2) expands
+  scope → route through the **existing** `scope-unlock-for-drift` pause (user-gated,
+  reuse — invents no new gate); (3) deferred → record a follow-up in the **existing**
+  `recursive-followups` ledger and ship the point-fix. ADVISORY, not a hard gate;
+  never forces an architectural change.
+- TEST: `tests/skill/cases/root-cause-check.bats` (5 BDD-named cases per the r10
+  ratchet) pins the check, the three outcomes, the scope-unlock-for-drift gating
+  reference, the recursive-followups ledger deferral, and the advisory/fail-open
+  labelling — so a future edit cannot silently drop the gating or upgrade the
+  advisory check into a hard gate.
+- INVARIANTS: all pre-existing Step 5 gates (spec-integrity, writer↔reader symmetry,
+  Pass 1/2, test-gap / security-gap analyzers, access-control content-signal scan),
+  the `scope-unlock-for-drift` semantics, PWT-TERM1/TERM2 deterministic-SUCCESS
+  (1.46.0), bash 3.2, and the no-new-deps floor are all preserved. `make test-skill`
+  fully green (bats + 82 shell + 1 TS).
 
 ---
 

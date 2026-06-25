@@ -40,6 +40,25 @@ When a later gate uses `exit 1`, the trap fires the helper which writes a minima
 
 Later sections of this stage (the push-lock trap chain in §6g, the PR-body cleanup in §6g) ALSO use `trap -p EXIT | sed` to chain. As long as every subsequent `trap … EXIT` follows that pattern (capture, then append), the minimal-retro writer survives intact.
 
+### 6-0a-bis. Deterministic post-push ship-verdict writer (PWT-TERM3 — install with the trap)
+
+Define the ship-verdict writer **here**, alongside the §6-0a trap install, so the helper exists long before push and the End-of-Stage write and the EXIT-trap re-assertion are ONE source of truth. The writer fail-safes: it returns without writing unless `SHIP_PUSH_CONFIRMED=1`, which is set **exclusively** by the post-push-success path in §6g — never by the LLM, never pre-push. This makes the existing post-push ship-verdict write RELIABLE (it lands even if the worker drifts after push and never reaches the End-of-Stage block — the runaway-after-ship gap that PWT-TERM1/TERM2 depended on) WITHOUT minting a false-positive PASS when push failed.
+
+```bash
+# PWT-TERM3: deterministic post-push ship-verdict writer + arm flag.
+# Attests "every §6 ENFORCING gate passed AND the work was pushed". Written ONLY
+# when SHIP_PUSH_CONFIRMED=1 — set exclusively by the post-push-success path below
+# (never by the LLM, never pre-push). Idempotent (printf overwrite, fresh ts).
+SHIP_PUSH_CONFIRMED=0
+__pwt_write_ship_verdict() {
+  [ "${SHIP_PUSH_CONFIRMED:-0}" = "1" ] || return 0   # fail-safe: never write pre-push
+  local sv=".claude/state/plan-w-team-ship-verdict-${SLUG}.json"
+  mkdir -p .claude/state 2>/dev/null || true
+  printf '{"slug":"%s","verdict":"PASS","ts":"%s"}\n' \
+    "$SLUG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$sv" 2>/dev/null || true
+}
+```
+
 ## 6-0. Ship Gate: Untracked File Classification (MANDATORY)
 
 **This runs before any commit work.** Load `.claude/commands/plan-w-team/shared/untracked-hygiene.md` if you have not already — it contains the full decision matrix, IGNORE pattern guidance, the DISCARD value-carrier guard, and worked examples for the two real-world cases (parts pipeline, claude-pattern obs-\*.png).
@@ -964,6 +983,16 @@ trap 'rm -f "$PUSH_LOCK_DIR/holder"; rmdir "$PUSH_LOCK_DIR" 2>/dev/null' EXIT
 # below for the chain pattern (`trap -p EXIT` capture + append).
 
 git push -u origin "$BRANCH"
+PUSH_RC=$?
+if [ "$PUSH_RC" -eq 0 ]; then
+  SHIP_PUSH_CONFIRMED=1
+  # PWT-TERM3: re-assert the earned ship-verdict on any later drift/exit
+  # (capture+append idiom, same as §6-0a/§6g). No-op unless armed, so it can
+  # never mint a pre-push verdict; appended LAST so it does not clobber the
+  # §6-0a minimal-retro writer or the §6g push-lock release.
+  EXISTING_TRAP=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\1/")
+  trap "${EXISTING_TRAP:+${EXISTING_TRAP}; }__pwt_write_ship_verdict" EXIT
+fi
 # Lock released by trap on script exit.
 ```
 
@@ -1199,13 +1228,12 @@ The helper enforces every safety invariant itself (containment to `.claude/workt
 
 ## End-of-Stage Status Block (PWT-T5)
 
-**Ship-verdict artifact (C3 — deterministic SUCCESS corroboration).** Reaching this point means every §6 ENFORCING gate passed (each `exit 1`s on failure: §6a-ter secret scan, §6a-quinquies credential-wall, §6b test suite, §6c coverage, §6c-bis security tier, §6c-ter access-control). Write a machine-readable ship-verdict that the goal-evaluator **requires** before honoring SUCCESS inside a bg worker — so a worker cannot self-declare the `/goal` done by emitting `retro-complete` transcript text alone, bypassing the ship gate (audit C3, `docs/operations/pwt-principles-enforcement-audit-2026-06-02.md`):
+**Ship-verdict artifact (C3 — deterministic SUCCESS corroboration).** Reaching this point means every §6 ENFORCING gate passed (each `exit 1`s on failure: §6a-ter secret scan, §6a-quinquies credential-wall, §6b test suite, §6c coverage, §6c-bis security tier, §6c-ter access-control). Write a machine-readable ship-verdict that the goal-evaluator **requires** before honoring SUCCESS inside a bg worker — so a worker cannot self-declare the `/goal` done by emitting `retro-complete` transcript text alone, bypassing the ship gate (audit C3, `docs/operations/pwt-principles-enforcement-audit-2026-06-02.md`). Gated on `SHIP_PUSH_CONFIRMED` (set only post-push-success in §6g) and re-asserted by an armed EXIT trap — so it reliably lands even if this block isn't reached (post-push drift), but NEVER lands when push failed:
 
 ```bash
-SHIP_VERDICT=".claude/state/plan-w-team-ship-verdict-${SLUG}.json"
-mkdir -p .claude/state
-printf '{"slug":"%s","verdict":"PASS","ts":"%s"}\n' \
-  "$SLUG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$SHIP_VERDICT"
+# push (and, for reversible runs, self-merge) succeeded → SHIP_PUSH_CONFIRMED=1.
+# Single source of truth with the §6g EXIT-trap re-assertion (PWT-TERM3).
+__pwt_write_ship_verdict
 ```
 
 At the end of this stage, emit a status block for the `/goal` evaluator. This is a one-line invocation; the helper handles all field population (workflow lock, supervisor log, fleet log, escalations).
