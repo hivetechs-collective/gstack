@@ -6,11 +6,29 @@
 set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-# Override inherited CLAUDE_PROJECT_DIR so the helper reads from $STATE_DIR (the
-# path the test writes to), not an inherited parent-session value pointing elsewhere.
-export CLAUDE_PROJECT_DIR="$PROJECT_ROOT"
 HELPER="$SCRIPT_DIR/plan-w-team-surface-status.sh"
-STATE_DIR="$PROJECT_ROOT/.claude/state"
+
+# ── Corpus state isolation (1.48.0) — NEVER write to the live .claude/state ───
+# This test used to set STATE_DIR=$PROJECT_ROOT/.claude/state and CLAUDE_PROJECT_DIR
+# at the LIVE repo, so the helper's manifest mirror (pwt-manifest.sh) and the test's
+# own LOCK_DIR/SUP_LOG/FLEET_LOG writes landed in the live tree under a test slug.
+# ROOT FIX: redirect every write into a per-test mktemp sandbox and tear it down with
+# the test. We `cd` into the sandbox so the helper's $PWD-preferred state-dir resolves
+# inside it, and export CLAUDE_PROJECT_DIR + PWT_PROJECT_ROOT_OVERRIDE so the helper and
+# pwt-manifest.sh resolve the sandbox too. SCRIPT_DIR/HELPER are absolute, so the cd does
+# not break the real-script lookups. Assertions are UNCHANGED — only the write path moves.
+PWT_TEST_SANDBOX=$(mktemp -d -t pwt-surfstat.XXXXXX)
+STATE_DIR="$PWT_TEST_SANDBOX/.claude/state"
+mkdir -p "$PWT_TEST_SANDBOX/.claude" "$STATE_DIR"
+# surface-status.sh resolves its sibling scripts (fleet-query, pwt-manifest) via
+# $PROJECT_ROOT/.claude/scripts — i.e. CLAUDE_PROJECT_DIR. Symlink the REAL scripts
+# dir into the sandbox so those lookups still resolve while state writes stay isolated
+# (U5 fleet summary needs the real fleet-query; the manifest mirror then lands in the
+# sandbox's own state, not live). Sibling-script resolution + sandboxed state, together.
+ln -s "$PROJECT_ROOT/.claude/scripts" "$PWT_TEST_SANDBOX/.claude/scripts"
+cd "$PWT_TEST_SANDBOX" || exit 1
+export CLAUDE_PROJECT_DIR="$PWT_TEST_SANDBOX"
+export PWT_PROJECT_ROOT_OVERRIDE="$PWT_TEST_SANDBOX"
 
 TEST_SLUG="surface-status-test-$$"
 LOCK_DIR="$STATE_DIR/plan-w-team-workflow-${TEST_SLUG}.lock"
@@ -20,11 +38,18 @@ FLEET_LOG="$STATE_DIR/plan-w-team-fleet-${TEST_SLUG}.jsonl"
 PASS=0
 FAIL=0
 
+# cleanup() removes only the per-test state FILES — it is called MID-TEST (U2) to
+# reset state between assertions, so it must NOT remove the sandbox (which holds the
+# .claude/scripts symlink the helper needs). The sandbox is torn down once, at EXIT.
 cleanup() {
     rm -rf "$LOCK_DIR"
     rm -f "$SUP_LOG" "$FLEET_LOG"
 }
-trap cleanup EXIT
+final_cleanup() {
+    cleanup
+    rm -rf "$PWT_TEST_SANDBOX"
+}
+trap final_cleanup EXIT
 
 assert_eq() {
     local name="$1" expected="$2" actual="$3"

@@ -919,6 +919,42 @@ For non-UI features on the same repo (e.g., a backend-only PR), omit the ledger 
 
 ## 6g. Push and Create PR (if on a branch)
 
+### Empty-ship loop-breaker (fail-safe — run FIRST, before the ack gate)
+
+Before arming the push, confirm there is actually something to ship. A worker that
+`git reset` away its own work (observed once, worker 5088e5f4, 2026-06-25) can reach
+Step 6 with an EMPTY worktree — 0 commits ahead of base, clean tree — and LOOP on
+push/retry forever; worse, a no-op `git push` of zero commits would let the post-push
+path mint a false-positive `SHIP_PUSH_CONFIRMED` PASS. The guard breaks that loop.
+
+It is **fail-safe by construction**: it HALTS only when it can POSITIVELY confirm
+there is nothing to ship (0 commits ahead of `$BASE_REF` AND a clean tracked tree),
+and PROCEEDS on a real ship or ANY ambiguity — so it can NEVER block a real ship
+(a real ship always has commits ahead of base). Untracked files (e.g. the
+permanently-untracked goal-state file) are ignored — they are not pushed.
+
+```bash
+# Resolve the same ship base the §6 gates use.
+BASE_BRANCH="${BASE_BRANCH:-main}"
+BASE_REF="origin/${BASE_BRANCH}"
+git rev-parse --verify "$BASE_REF" >/dev/null 2>&1 || BASE_REF="$BASE_BRANCH"
+
+if [ -x .claude/scripts/plan-w-team-empty-ship-guard.sh ]; then
+  if ! .claude/scripts/plan-w-team-empty-ship-guard.sh "$BASE_REF" "$SLUG"; then
+    echo "✗ Ship gate 6g: empty-ship loop-breaker fired — 0 commits to ship on a clean tree."
+    echo "  This is NOT a real ship (no commits ahead of $BASE_REF). Halting instead of"
+    echo "  looping push on an empty worktree. Investigate why the worktree is empty"
+    echo "  (e.g. a pre-ship reset discarded the work) — do NOT re-run ship blindly."
+    # exit 1 is caught by the §6-0a minimal-retro trap → escalation verdict.
+    # SHIP_PUSH_CONFIRMED is left 0, so no false-positive PASS is written.
+    exit 1
+  fi
+fi
+```
+
+This guard is additive and runs ONLY on the empty-worktree-at-ship path; a normal ship
+with commits proceeds straight through to the ack gate below.
+
 ### Ack gate — confirm before pushing
 
 <!-- PWT-T2: push-ack is classified as `user` in the orchestrator classifier table.

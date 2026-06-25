@@ -20,7 +20,28 @@ unset PLAN_W_TEAM_DISABLE_PROMPT_ROUTE   # U8 --launch must not hit the PWT-DS2 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HELPER="$SCRIPT_DIR/plan-w-team-register-spawn.sh"
-STATE_DIR="$PROJECT_ROOT/.claude/state"
+
+# ── Corpus state isolation (1.48.0) — NEVER write to the live .claude/state ───
+# This test used to set STATE_DIR=$PROJECT_ROOT/.claude/state (LIVE) and U8 ran the
+# REAL pwt-goal.sh --launch, which seeded plan-w-team-{goal,manifest,stage-events,
+# skill-version}-<derived-slug>.* FAMILIES into the live tree under a test slug —
+# no-owner-SID orphans the fail-closed janitor cannot reap (66 swept by hand
+# 2026-06-25). ROOT FIX: redirect EVERY helper's state writes into a per-test
+# mktemp sandbox and tear it down with the test. The redirect works because:
+#   • we `cd` into the sandbox, so `$PWD/.claude` (register-spawn's preferred root)
+#     AND the hardcoded relative `.claude/state/…` subshell paths (U6/U7 below)
+#     resolve INSIDE the sandbox;
+#   • CLAUDE_PROJECT_DIR + PWT_PROJECT_ROOT_OVERRIDE point pwt-goal.sh / pwt-manifest.sh
+#     at the sandbox (PWT_PROJECT_ROOT_OVERRIDE takes precedence at every root-resolution
+#     site in pwt-goal.sh — the test-only lever it already exposes).
+# SCRIPT_DIR/HELPER were resolved above as ABSOLUTE paths, so the cd does not break
+# the real-script lookups. Assertions are UNCHANGED — only the write path moves.
+PWT_TEST_SANDBOX=$(mktemp -d -t pwt-spawnreg.XXXXXX)
+STATE_DIR="$PWT_TEST_SANDBOX/.claude/state"
+mkdir -p "$STATE_DIR"
+cd "$PWT_TEST_SANDBOX" || exit 1
+export CLAUDE_PROJECT_DIR="$PWT_TEST_SANDBOX"
+export PWT_PROJECT_ROOT_OVERRIDE="$PWT_TEST_SANDBOX"
 
 TEST_SLUG="spawn-registry-test-$$"
 REGISTRY="$STATE_DIR/plan-w-team-spawned-children-${TEST_SLUG}.jsonl"
@@ -33,6 +54,7 @@ FAIL=0
 cleanup() {
     rm -f "$REGISTRY"
     rm -rf "$SHIM_DIR"
+    rm -rf "$PWT_TEST_SANDBOX"
 }
 trap cleanup EXIT
 

@@ -63,6 +63,23 @@ Estimate the feature's context cost before proceeding:
 
 When splitting, each phase should be a **self-contained /plan-w-team run** that ships independently — not just a task breakdown within one run. Each phase gets its own spec, its own review, its own ship step.
 
+### Anti-pattern: force-marching a trivial task through the full lifecycle
+
+The Context Budget Gate splits tasks that are **too big**. The inverse failure is just as
+real: a **trivial / near-empty task** (a one-line doc tweak, a single-character fix) that a
+brief or goal directive force-marches through the entire spec→build→review→ship→retro
+ceremony. Scope-challenge owns BOTH directions — it must right-size DOWN as well as up.
+
+The reset-loop incident (worker 5088e5f4, 2026-06-25) was aggravated by exactly this: a
+proof brief that FORCED the full lifecycle (`do-not-short-circuit-scope`) onto a one-line
+task, so the ship/retro machinery mismatched the (ultimately empty) work and the worker
+looped on Step 6 with nothing to ship. The Step-6 empty-ship loop-breaker
+(`05-ship.md` §6g) is the fail-safe backstop, but the ROOT fix is here: when a task is
+genuinely trivial, **say so** — prefer a direct edit + `/git-commit` (or `/batch`) over a
+full `/plan-w-team` run, and record "right-sized: trivial — direct edit, no lifecycle" as the
+scope verdict. A directive that insists on the full lifecycle for a one-liner is a smell, not
+a requirement; flag it rather than manufacturing ceremony around empty work.
+
 ## 0d. One-Way vs Two-Way Door Labeling
 
 Tag each major design decision in the feature as:

@@ -14,6 +14,41 @@ traced back to the exact /plan-w-team release that produced it.
 
 ```
 
+## [1.48.0] — 2026-06-25 (a047fd8)
+
+- feat(test): **corpus goal-state isolation** — `plan-w-team-spawn-registry.test.sh` and
+  `plan-w-team-surface-status.test.sh` no longer leak `plan-w-team-{goal,manifest,
+  spawned-children,stage-events,skill-version}-<slug>` FAMILIES into the LIVE `.claude/state`
+  tree. Each now redirects every helper's writes (incl. the REAL `pwt-goal.sh --launch` in
+  spawn-registry U8, and `pwt-manifest.sh` in surface-status) into a per-test `mktemp`
+  sandbox via `STATE_DIR` + `cd` + `CLAUDE_PROJECT_DIR` + `PWT_PROJECT_ROOT_OVERRIDE` (the
+  test-only lever pwt-goal already exposes). Assertions unchanged; before/after live-state
+  snapshots show ZERO new families. Resolves the recurring corpus-goalstate-leak follow-up
+  (66 swept by hand 2026-06-25). New BDD regression `tests/skill/cases/corpus-state-isolation.bats`
+  pins the redirect for both scripts.
+- feat(test): **R6 state-leak guard extended to Phase 2** — `tests/skill/run.sh`'s before/after
+  `.claude/state` additive diff now brackets the shell-test (`.test.sh`) phase as well as the
+  bats phase, so a FUTURE `.test.sh` live-state leak fails the suite at authoring time (the
+  corpus-goalstate-leak class lived exactly here and was previously uncaught).
+- feat(test): **worktree-fragility fix** — `run.sh` pins `CLAUDE_PROJECT_DIR=$REPO_ROOT` for
+  the shell-test phase so state-reading hooks (goal-evaluator, antipark-*, supervisor-state-detection)
+  resolve the SAME checkout the suite runs in. Without it, a self-hosted run inside a
+  `.claude/worktrees/<slug>/` checkout made those hooks read main's live state (active-run
+  goal-state + leaked debris) while the test only stashed the worktree's — a false failure.
+  No-op when run from main; tests that set their own `CLAUDE_PROJECT_DIR` still override it.
+- feat(ship): **fail-safe empty-ship loop-breaker** (`plan-w-team-empty-ship-guard.sh`, wired
+  into `05-ship.md` §6g before the push ack-gate). Halts Step 6 ONLY when it can POSITIVELY
+  confirm there is nothing to ship (0 commits ahead of base AND a clean tracked tree) and
+  PROCEEDS on a real ship or ANY ambiguity — so it can NEVER block a real ship. Breaks the
+  pre-ship reset-loop (worker 5088e5f4, 2026-06-25: reset its own work then looped push on an
+  empty worktree, which would also mint a false-positive `SHIP_PUSH_CONFIRMED` PASS). 8 BDD
+  tests pin both directions. Resolves the preship-reset-loop follow-up.
+- docs(scope): `00-scope-challenge.md` anti-pattern note — trivial/near-empty tasks must be
+  right-sized DOWN by scope-challenge, not force-marched through the full lifecycle (the root
+  condition that aggravated the reset-loop incident).
+- New state artifact `plan-w-team-empty-ship-attempts-$SLUG.txt` (audit-trail) registered in
+  `shared/state-artifacts.md`; both new scripts added to `sync-to-project.sh` allowlist.
+
 ## [1.47.2] — 2026-06-25 (b11e6ce)
 
 - fix(test): de-flake `render-artifact-self-contained.bats` (1.45.0 visual-artifacts
