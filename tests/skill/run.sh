@@ -221,20 +221,48 @@ if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ]; then
   # is the systemic counterpart to the per-test `unset` guards (see the
   # route-prompt-recursion test) and prevents worker-session ambient state from
   # producing spurious failures (2026-05-25 audit: spawn-registry, heredoc-size).
+  # Pin CLAUDE_PROJECT_DIR to the checkout the suite runs in (1.48.0 worktree-fragility
+  # fix). State-reading tests (goal-evaluator, antipark-*, supervisor-state-detection)
+  # resolve their PROJECT_ROOT from the test script's own location (= $REPO_ROOT) but
+  # the hooks under test resolve theirs from CLAUDE_PROJECT_DIR. When the suite runs
+  # inside a `.claude/worktrees/<slug>/` checkout (an autonomous self-hosted run) the
+  # AMBIENT CLAUDE_PROJECT_DIR points at the MAIN checkout, so the hook reads main's
+  # live .claude/state (active-run goal-state + any leaked debris) while the test only
+  # stashes the worktree's — a false failure that has nothing to do with the code under
+  # test (memory: test-worktree-cwd-fragility). Pinning it to $REPO_ROOT aligns hook and
+  # test on ONE state dir; it is a NO-OP when the suite runs from main (REPO_ROOT==main),
+  # and any test that sets its own CLAUDE_PROJECT_DIR (the sandbox-isolated corpus tests)
+  # overrides this inherited value.
   run_one_shell_test() {
     if [ -n "$TIMEOUT_BIN" ]; then
       env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE -u PLAN_W_TEAM_AUTO_APPROVE_PUSH \
           -u PLAN_W_TEAM_FORCE_SPAWN -u PLAN_W_TEAM_DISABLE_GOAL \
+          CLAUDE_PROJECT_DIR="$REPO_ROOT" \
           "$TIMEOUT_BIN" "$SHELL_TEST_TIMEOUT" bash "$1" >/dev/null 2>&1
     else
       env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE -u PLAN_W_TEAM_AUTO_APPROVE_PUSH \
           -u PLAN_W_TEAM_FORCE_SPAWN -u PLAN_W_TEAM_DISABLE_GOAL \
+          CLAUDE_PROJECT_DIR="$REPO_ROOT" \
           bash "$1" >/dev/null 2>&1
     fi
   }
 
   echo ""
   echo "→ running shell integration tests under .claude/{scripts,hooks}/ + tests/version-uplift/"
+
+  # ── State-leak guard: Phase-2 BEFORE snapshot (R6 extension, 1.48.0) ─────────
+  # R6 originally bracketed only the bats phase, but the shell-test (.test.sh)
+  # phase is exactly where the corpus-goalstate-leak class lived (spawn-registry,
+  # surface-status seeded goal-state FAMILIES into the LIVE .claude/state tree via
+  # the real pwt-goal.sh). Extend the same before/after additive diff over Phase 2
+  # so a FUTURE leaking .test.sh is caught at authoring time, not swept by hand.
+  # Re-snapshot here (not reuse the bats STATE_AFTER) so this run's own bats dirt is
+  # part of the Phase-2 baseline and only NEW Phase-2 dirt is attributed.
+  STATE_BEFORE_SHELL=""
+  if [ "$STATE_GUARD_ACTIVE" = "1" ]; then
+    STATE_BEFORE_SHELL="$(git -C "$REPO_ROOT" status --porcelain -- .claude/state 2>/dev/null | LC_ALL=C sort)"
+  fi
+
   while IFS= read -r tf; do
     [ -z "$tf" ] && continue
     SHELL_TOTAL=$((SHELL_TOTAL + 1))
@@ -255,6 +283,28 @@ if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ]; then
     } | sort
   )
   echo "→ shell integration tests: $SHELL_PASSED/$SHELL_TOTAL passed"
+
+  # ── State-leak guard: Phase-2 AFTER snapshot + additive diff (R6 extension) ──
+  # Fold any NEW Phase-2 .claude/state dirt into the SAME STATE_LEAK verdict the
+  # bats phase uses, so the final gate (below) fails the suite identically whether
+  # the leak came from a .bats scenario or a .test.sh integration test.
+  if [ "$STATE_GUARD_ACTIVE" = "1" ]; then
+    STATE_AFTER_SHELL="$(git -C "$REPO_ROOT" status --porcelain -- .claude/state 2>/dev/null | LC_ALL=C sort)"
+    SHELL_LEAKED_PATHS="$(comm -13 \
+      <(printf '%s\n' "$STATE_BEFORE_SHELL") \
+      <(printf '%s\n' "$STATE_AFTER_SHELL") | sed '/^[[:space:]]*$/d')"
+    if [ -n "$SHELL_LEAKED_PATHS" ]; then
+      STATE_LEAK=1
+      STATE_LEAKED_PATHS="$(printf '%s\n%s' "$STATE_LEAKED_PATHS" "$SHELL_LEAKED_PATHS" | sed '/^[[:space:]]*$/d')"
+      echo "" >&2
+      echo "✗ STATE LEAK — the shell-test (.test.sh) phase introduced new .claude/state dirt:" >&2
+      printf '%s\n' "$SHELL_LEAKED_PATHS" | sed 's/^/    /' >&2
+      echo "  A .test.sh wrote to the LIVE .claude/state tree instead of its sandbox" >&2
+      echo "  (the corpus-goalstate-leak class). Redirect the test's STATE_DIR + " >&2
+      echo "  CLAUDE_PROJECT_DIR/PWT_PROJECT_ROOT_OVERRIDE at a mktemp sandbox; set" >&2
+      echo "  SKILL_SKIP_STATE_LEAK_GUARD=1 only to bypass." >&2
+    fi
+  fi
 fi
 
 # ── Phase 2b: TypeScript analyzer tests (.test.ts) ───────────────────────────
