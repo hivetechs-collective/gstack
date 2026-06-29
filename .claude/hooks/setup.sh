@@ -96,7 +96,7 @@ echo ""
 echo "🔑 Settings permissions..."
 SETTINGS="$PROJECT_ROOT/.claude/settings.json"
 if [ -f "$SETTINGS" ]; then
-    REQUIRED_PERMS=("Agent(*)" "TeamCreate" "TeamDelete" "TaskCreate" "TaskList" "TaskGet" "TaskUpdate" "TaskStop" "SendMessage")
+    REQUIRED_PERMS=("Agent(*)" "TaskCreate" "TaskList" "TaskGet" "TaskUpdate" "TaskStop" "SendMessage")
     MISSING_PERMS=0
     for perm in "${REQUIRED_PERMS[@]}"; do
         if grep -q "\"$perm\"" "$SETTINGS" 2>/dev/null; then

@@ -136,6 +136,46 @@ __resolve_goal_file() {
   printf '%s\n' "$main_goal"
 }
 
+# ── Worker-transcript success detection (TERTIARY) ──────────────────────────
+# A `--worker-only` worker is caller-supervised: it completes the whole lifecycle
+# (commit→push→ff mac-mini→emits the canonical Step-8 retro status block in its
+# TRANSCRIPT) but, unlike `--supervisor-goal`/`--launch` (PWT-TERM3), does NOT
+# write `terminal_state` to the goal-state file and LINGERS idle (verified
+# 2026-06-29, run that shipped 1.48.2). So neither PRIMARY (terminal_state) nor
+# SECONDARY (WORKER_GONE — it never vanishes) ever fires, and this wait would
+# heartbeat forever on a SUCCESSFUL run. Detect success from the transcript.
+#
+# The canonical Step-8 emission is one line:
+#   status stage="retro-complete" workflow_lock="done" slug="<slug>"
+# The DISCRIMINATOR is the ADJACENCY of stage="retro-complete" immediately
+# followed by workflow_lock="done": the GOAL echo separates them
+# ("...appears in transcript with...") and planning mentions put backticks/commas
+# between, so a tight adjacency match fires ONLY on the emitted block — never the
+# echo or a mid-run mention (false-positive-safe; validated against real
+# transcripts 2026-06-29). The optional backslash tolerates JSONL `\"` escaping.
+# CLAUDE_PROJECTS_DIR mirrors claude-agents-extended.sh's override (test seam).
+PROJECTS_DIR="${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"
+TX_PATH=""   # resolved-once cache (find is bounded: top-level session transcript)
+__ensure_worker_transcript() {
+  # Sets global TX_PATH once (cache). No stdout. NOT called in a subshell, so the
+  # cache persists across ticks. Top-level session transcript:
+  #   <projects>/<project-dir>/<sid>.jsonl  (depth 2) — maxdepth 2 keeps it cheap
+  #   and excludes deeper sidechain subagent transcripts.
+  [ -z "$WORKER_SID" ] && return 0
+  [ -n "$TX_PATH" ] && return 0
+  [ -d "$PROJECTS_DIR" ] || return 0
+  local sid8 f
+  sid8="${WORKER_SID%%-*}"
+  f=$(find "$PROJECTS_DIR" -maxdepth 2 -type f -name "${sid8}*.jsonl" 2>/dev/null | head -1)
+  [ -n "$f" ] && TX_PATH="$f"
+  return 0
+}
+__transcript_shows_success() {
+  __ensure_worker_transcript
+  [ -n "$TX_PATH" ] && [ -f "$TX_PATH" ] || return 1
+  grep -Eq 'retro-complete\\?"[[:space:]]+workflow_lock=\\?"done' "$TX_PATH" 2>/dev/null
+}
+
 # Non-looping diagnostic seam (--print-goal-file): resolve and exit, never watch.
 if [ "${PRINT_GOAL_FILE:-0}" = "1" ]; then
   __resolve_goal_file
@@ -156,6 +196,15 @@ while :; do
       echo "terminal=$TS reason=$TR slug=$SLUG"
       exit 0
     fi
+  fi
+
+  # (1b) TERTIARY — `--worker-only` success via the worker transcript. The worker
+  #      emitted the canonical retro status block but (worker-only) never wrote
+  #      terminal_state and lingers, so PRIMARY/SECONDARY can't see it. ADDITIVE:
+  #      runs after PRIMARY, never short-circuits it; gated on --worker-sid.
+  if [ -n "$WORKER_SID" ] && __transcript_shows_success; then
+    echo "terminal=SUCCESS source=transcript sid=$WORKER_SID slug=$SLUG"
+    exit 0
   fi
 
   # (2) SECONDARY — watched worker vanished without writing terminal. Debounced

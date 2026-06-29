@@ -41,15 +41,15 @@ Keep the table concise — the point is an inventory, not an essay.
 
 The base `.claude/settings.json` shipped by `claude-pattern` covers all common skill needs:
 
-| Category      | Allow-list entries                                                                                                                     |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| File tools    | `Read(*)`, `Write(*)`, `Edit(*)`, `Glob(*)`, `Grep(*)`                                                                                 |
-| Shell (build) | `Bash(pnpm *)`, `Bash(npm *)`, `Bash(npx *)`, `Bash(turbo *)`, `Bash(cargo *)`, `Bash(tsx *)`, `Bash(tsc *)`, `Bash(prettier *)`, etc. |
-| Shell (fs)    | `Bash(mkdir *)`, `Bash(find *)`, `Bash(ls *)`, `Bash(cp *)`, `Bash(mv *)`, `Bash(chmod *)`, `Bash(cat *)`                              |
-| Shell (data)  | `Bash(awk *)`, `Bash(sed *)`, `Bash(jq *)`, `Bash(shasum *)`                                                                           |
-| Shell (git)   | `Bash(git *)`, `Bash(gh *)`                                                                                                            |
-| Agent tools   | `Agent(*)`, `TeamCreate`, `TeamDelete`, `TaskCreate`, `TaskList`, `TaskGet`, `TaskUpdate`, `TaskStop`, `SendMessage`                   |
-| Catch-all     | `Bash(*)` — broad safety net; `PreToolUse` hooks (damage-control, pre-commit-quality, block-protected-paths) still fire as guardrails  |
+| Category      | Allow-list entries                                                                                                                      |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| File tools    | `Read(*)`, `Write(*)`, `Edit(*)`, `Glob(*)`, `Grep(*)`                                                                                  |
+| Shell (build) | `Bash(pnpm *)`, `Bash(npm *)`, `Bash(npx *)`, `Bash(turbo *)`, `Bash(cargo *)`, `Bash(tsx *)`, `Bash(tsc *)`, `Bash(prettier *)`, etc.  |
+| Shell (fs)    | `Bash(mkdir *)`, `Bash(find *)`, `Bash(ls *)`, `Bash(cp *)`, `Bash(mv *)`, `Bash(chmod *)`, `Bash(cat *)`                               |
+| Shell (data)  | `Bash(awk *)`, `Bash(sed *)`, `Bash(jq *)`, `Bash(shasum *)`                                                                            |
+| Shell (git)   | `Bash(git *)`, `Bash(gh *)`                                                                                                             |
+| Agent tools   | `Agent(*)`, `TaskCreate`, `TaskList`, `TaskGet`, `TaskUpdate`, `TaskStop`, `SendMessage` (`TeamCreate`/`TeamDelete` removed in 2.1.178) |
+| Catch-all     | `Bash(*)` — broad safety net; `PreToolUse` hooks (damage-control, pre-commit-quality, block-protected-paths) still fire as guardrails   |
 
 `PermissionRequest` hooks also auto-approve `Read/Write/Edit/Glob/Grep/Bash/Agent(*)` as a second-layer safety net in case Claude Code's built-in sensitive-path classifier would otherwise prompt.
 

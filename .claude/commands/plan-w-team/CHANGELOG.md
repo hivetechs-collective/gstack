@@ -14,6 +14,88 @@ traced back to the exact /plan-w-team release that produced it.
 
 ```
 
+## [1.48.3] — 2026-06-29 (466321a)
+
+Close a supervisor-wait blind spot surfaced while supervising the 1.48.2 run (and recorded in
+the `feedback_pwt_supervision_watcher` learning): `plan-w-team-await-terminal.sh` could not detect
+a `--worker-only` worker's SUCCESS. Such a worker is caller-supervised — it completes the lifecycle
+and emits the canonical Step-8 retro status block in its TRANSCRIPT but, unlike
+`--supervisor-goal`/`--launch` (PWT-TERM3), never writes `terminal_state` and lingers idle, so the
+PRIMARY (`terminal_state`) and SECONDARY (`WORKER_GONE` — it never vanishes) paths both miss it and
+the wait heartbeats forever on a successful run.
+
+- fix(plan-w-team): **await-terminal TERTIARY transcript success-detector for `--worker-only`.**
+  When `--worker-sid` is set, locate the worker's top-level session transcript (`$CLAUDE_PROJECTS_DIR`
+  / `~/.claude/projects`, `find -maxdepth 2`, resolved-once + cached) and detect the emitted Step-8
+  block `status stage="retro-complete" workflow_lock="done"`. The matcher keys on the ADJACENCY of
+  `stage="retro-complete"` immediately followed by `workflow_lock="done"` (tolerant of JSONL `\"`
+  escaping) — the discriminator that excludes the goal echo (which separates the tokens with
+  "appears in transcript with") and planning mentions (backticks/commas between), validated against
+  real transcripts. Purely ADDITIVE: runs after PRIMARY (never short-circuits it), gated on
+  `--worker-sid`; the existing `terminal_state`, deleted-goal-state, `WORKER_GONE`-debounce, and
+  heartbeat semantics are unchanged. Emits `terminal=SUCCESS source=transcript` so the source is
+  distinguishable.
+- test(plan-w-team): 3 new `await-terminal.bats` cases — fires on the emitted block; does NOT
+  false-fire on goal-echo + planning mentions (the critical guard); PRIMARY `terminal_state` still
+  wins when both are present. Full `make test-skill` green (bats + 83 shell + 1 TS).
+
+## [1.48.2] — 2026-06-28 (2cd6e16)
+
+Bundled adoption of validated 2.1.195 version-uplift changes + an unrelated Helm-reported
+consumer bug fix. Net actionable surface from the uplift report after its regression-probe
+revision: the breaking fix + one doc edit (candidates #1/#2 dropped, #3/#4 deferred).
+
+- fix(plan-w-team): **TeamCreate/TeamDelete removed (2.1.178) — scrub dead-tool references.**
+  The harness removed `TeamCreate`/`TeamDelete` (only those two; `SendMessage` + `Task*`/`Agent`
+  survive). Real spawning was already Agent tool + worktree isolation + `TaskList` self-claim +
+  fleet JSONL, so this is cleanup with **no capability loss**. Surgical edits: dropped the
+  TeamCreate/TeamDelete steps from `03-execute.md` (renumbered) and reworded the resume-path step
+  to keep the spawn instruction; removed only the `TeamCreate`/`TeamDelete` entries from
+  `.claude/settings.json` `permissions.allow` (still valid JSON; `SendMessage` +
+  `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` KEPT); dropped them from `setup.sh` `REQUIRED_PERMS`;
+  reworded the `plan-w-team.md` example; kept `SendMessage` in `version-uplift/SKILL.md`. The
+  version-uplift DETECTION CATALOG (`integration-points.json`) keeps the `TeamCreate`/`TeamDelete`
+  keywords (classifier recall for future changelogs) — only its `description` was annotated.
+  Synced docs that TEACH the dead tool are **annotated** "removed in 2.1.178" (not deleted):
+  `CLAUDE_CODE_CLI_REFERENCE.md` §12, `SKILL_PERMISSION_CONVENTION.md`, `AGENT_TEAMS_AND_OBSERVABILITY.md`,
+  `docs/operations/claude-code-compatibility.md`.
+- docs(plan-w-team): **`workflow` → `ultracode` keyword rename (2.1.160).** `goal-conditions.md`
+  PWT-WF1 rationale now anchors the durable guard on the env var `CLAUDE_CODE_DISABLE_WORKFLOWS`
+  (keyword-independent), not prose-token avoidance; notes `/effort ultracode` stays excluded from
+  bg/autonomous paths (`xhigh` remains the ceiling). The literal `CLAUDE_CODE_DISABLE_WORKFLOWS`
+  string is unchanged (a test asserts it).
+- fix(plan-w-team): **`plan-w-team-sync-allowlist-check.sh` consumer-repo failure (Helm report).**
+  Bug-2 (silent abort): the `ALLOW` grep ran under `set -euo pipefail`, so a no-match `grep`
+  aborted the whole script via pipefail before the diagnostic block — real source-repo drift never
+  printed its offenders. Now wrapped `{ grep …|| true; }`. Bug-1 (consumer false-positive): a
+  consumer carrying an older/different-format `sync-to-project.sh` (no `cp "$SOURCE_DIR/scripts/…"`
+  lines) left `ALLOW` empty → every candidate flagged "missing" → hard fail. Now soft-skips
+  (exit 0 + one-line stderr warning) when `ALLOW` is empty while candidates exist. Rewrote
+  `plan-w-team-sync-allowlist-check.test.sh` into a BDD 3-scenario, fully `mktemp`-isolated
+  regression (source-drift-reports-offenders + consumer-soft-skips + source-symmetry-verified);
+  already in `sync-to-project.sh`'s allowlist + auto-discovered by `run.sh`. bash 3.2 safe.
+- docs(ops): annotated `version-uplift-reports/2026-06-27-2.1.195.md` with a `Regression-probe
+  revision (2026-06-28)` section (audit trail preserved): candidates #1 (multi-fallback chain) and
+  #2 (bg `--permission-mode`) DROPPED (no-op under `--bg` / redundant under `bypassPermissions`);
+  #3 (shell-rc guard) and #4 (`waitingFor` consumer) DEFERRED; summary + next-steps updated.
+
+## [1.48.1] — 2026-06-25 (73554e8)
+
+- fix(test): **complete the corpus goal-state isolation** started in 1.48.0. A full-suite
+  before/after sweep of the SOURCE-repo `.claude/state` revealed two MORE leakers the 1.48.0
+  named-script fix did not cover, both seeding `plan-w-team-{goal,…}-<slug>` FAMILIES to
+  `MAIN_REPO_ROOT` (resolved via git-common-dir = the live source repo) because they ran the
+  REAL `pwt-goal.sh` without redirecting its root:
+  - `tests/skill/helpers/test_helper.bash` `sandbox()` now exports
+    `PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX_DIR"` — the systemic fix for the whole bats phase
+    (any `sandbox`-using scenario that actually spawns, e.g. `worker-cascade-blocked.bats`).
+    Same isolation intent as the existing `PWT_RAM_CLAIMS_PATH` export beside it.
+  - `pwt-goal-heredoc-size.test.sh` exports `PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX"`.
+  Verified: a full `make test-skill` now introduces ZERO new families into the source
+  `.claude/state` tree (was: ship-the-payment-api / trigger-the-abort-branch / test-request).
+  Accumulated historical debris swept. This is the honest completion of the corpus-goalstate-leak
+  follow-up — the 1.48.0 ledger note overstated coverage; corrected.
+
 ## [1.48.0] — 2026-06-25 (a047fd8)
 
 - feat(test): **corpus goal-state isolation** — `plan-w-team-spawn-registry.test.sh` and

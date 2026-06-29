@@ -170,11 +170,13 @@ Claude Code CLI provides 22+ built-in tools:
 
 ### Agent Teams
 
-| Tool          | Purpose                         |
-| ------------- | ------------------------------- |
-| `TeamCreate`  | Create a team with shared tasks |
-| `TeamDelete`  | Remove team and task dirs       |
-| `SendMessage` | Message teammates               |
+> **Removed in 2.1.178:** `TeamCreate` and `TeamDelete` were removed from the harness (only those two — `SendMessage` and the `Task*`/`Agent` tools survive). Rows kept for historical reference; do not re-introduce them.
+
+| Tool          | Purpose                                                |
+| ------------- | ------------------------------------------------------ |
+| `TeamCreate`  | _(removed in 2.1.178)_ Create a team with shared tasks |
+| `TeamDelete`  | _(removed in 2.1.178)_ Remove team and task dirs       |
+| `SendMessage` | Message teammates                                      |
 
 ---
 
@@ -821,19 +823,23 @@ export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1
 
 **Status**: Experimental (requires `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`)
 
+> **⚠ Updated 2.1.178 — `TeamCreate` / `TeamDelete` removed.** The harness removed those two tools; `SendMessage` and the `Task*`/`Agent` tools survive. The `/plan-w-team` pipeline no longer calls TeamCreate/TeamDelete — real spawning is the Agent tool + worktree isolation + `TaskList` self-claim + the fleet JSONL. The `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` env var is still required (it gates `SendMessage`, used for builder shutdown). The workflow narrative below is **retained for historical reference only**; do not re-introduce TeamCreate/TeamDelete steps.
+
 ### Overview
 
 Agent Teams allow multiple Claude instances to collaborate on complex tasks with shared task lists and direct messaging.
 
 ### Tools
 
-| Tool          | Purpose                                |
-| ------------- | -------------------------------------- |
-| `TeamCreate`  | Create team with shared task list      |
-| `TeamDelete`  | Remove team and task directories       |
-| `SendMessage` | Direct message, broadcast, or shutdown |
+| Tool          | Purpose                                                  |
+| ------------- | -------------------------------------------------------- |
+| `TeamCreate`  | _(removed in 2.1.178)_ Create team with shared task list |
+| `TeamDelete`  | _(removed in 2.1.178)_ Remove team and task directories  |
+| `SendMessage` | Direct message, broadcast, or shutdown                   |
 
-### TeamCreate
+### TeamCreate _(removed in 2.1.178)_
+
+> Historical reference only — `TeamCreate` no longer exists. Spawn via the Agent tool + worktree isolation + `TaskList` self-claim instead.
 
 Creates a team at `~/.claude/teams/{team-name}.json` with a corresponding task list at `~/.claude/tasks/{team-name}/`.
 
@@ -866,7 +872,7 @@ Set via `--teammate-mode` CLI flag.
 
 ### Workflow
 
-1. Create team with `TeamCreate`
+1. ~~Create team with `TeamCreate`~~ _(removed in 2.1.178 — skip; no team object is created anymore)_
 2. Create tasks with `TaskCreate`
 3. Spawn teammates with `Agent` tool (pass `team_name` and `name`)
 4. Assign tasks via `TaskUpdate` with `owner`

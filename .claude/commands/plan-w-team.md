@@ -663,7 +663,7 @@ A common hybrid: scope inline, then a `/plan-w-team` task may itself fan out via
 >   5. Integration (high, blockedBy: [2,3,4])
 >
 > Step 3-4: Parallel builders, auto mode, worktree isolation
->   Pre-flight: clean tree, base fetched. TeamCreate -> 2 builders -> self-claim loop -> merge
+>   Pre-flight: clean tree, base fetched. Spawn 2 builders -> self-claim loop -> merge
 >
 > Step 5: Fix-First Review
 >   Pass 1 CRITICAL: 0 issues. Pass 2: 3 auto-fixed (unused imports, stale comment)

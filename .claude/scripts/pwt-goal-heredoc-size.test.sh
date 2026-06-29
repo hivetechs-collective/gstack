@@ -39,6 +39,13 @@ trap 'rm -rf "$SANDBOX"' EXIT
 mkdir -p "$SANDBOX/.claude/state"
 mkdir -p "$SANDBOX/bin"
 
+# Corpus goal-state isolation (1.48.0): pwt-goal.sh seeds the goal-state FAMILY to
+# MAIN_REPO_ROOT/.claude/state (resolved via git-common-dir when CWD is a non-git tmp),
+# which is the LIVE source repo here — leaking ship-the-payment-api / trigger-the-abort
+# families that the fail-closed janitor cannot reap. Redirect the seed into the sandbox
+# via the test-only override pwt-goal honors at every root-resolution site.
+export PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX"
+
 # Fake `claude` that emits a deterministic backgrounded line. Counter so we can
 # distinguish worker (call 1) from supervisor (call 2). Records each
 # invocation's --bg prompt for size measurement.

@@ -53,9 +53,27 @@ fi
 
 # Build the allowlist from sync-to-project.sh.
 # Matches: cp "$SOURCE_DIR/scripts/<NAME>"
-ALLOW=$(grep -oE 'cp "\$SOURCE_DIR/scripts/[^"]+"' "$SYNC_SCRIPT" 2>/dev/null \
+#
+# Bug-2 guard (silent-abort): under `set -euo pipefail`, a grep that finds NO
+# match exits 1, and pipefail propagates that exit through the pipeline — which
+# `set -e` then turns into a whole-script abort BEFORE the diagnostic block below
+# can print. Wrapping grep in `{ …; || true; }` makes "no match" yield an empty
+# ALLOW instead of killing the script, so real drift still prints its offenders.
+ALLOW=$({ grep -oE 'cp "\$SOURCE_DIR/scripts/[^"]+"' "$SYNC_SCRIPT" 2>/dev/null || true; } \
     | sed -E 's|cp "\$SOURCE_DIR/scripts/||; s|"$||' \
     | sort -u)
+
+# Bug-1 guard (consumer false-positive): CANDIDATES is guaranteed non-empty here
+# (checked above). If ALLOW is empty, this sync-to-project.sh is NOT the canonical
+# claude-pattern format — e.g. a consumer carrying an older / different-format copy
+# with no `cp "$SOURCE_DIR/scripts/…"` lines. Inferring "sync-to-project.sh present
+# ⟹ source repo" was wrong: it left ALLOW empty, flagged EVERY candidate as
+# "missing", and hard-failed the consumer. Treat empty-ALLOW as "not the source
+# repo / format mismatch" and soft-skip (exit 0) with a one-line warning instead.
+if [ -z "$ALLOW" ]; then
+    echo "[sync-allowlist-check] sync-to-project.sh present but carries no 'cp \"\$SOURCE_DIR/scripts/…\"' allowlist lines (consumer or older format); skipping" >&2
+    exit 0
+fi
 
 # Compare
 MISSING=()

@@ -103,7 +103,7 @@ Catalog surfaces (as of v1):
 - `worktree-baseref` — `worktree.baseRef` config
 - `scheduled-jobs` — CronCreate/CronDelete/routines
 - `task-tool` — Task\* persistent tools
-- `agent-teams` — TeamCreate, SendMessage
+- `agent-teams` — SendMessage (TeamCreate/TeamDelete removed in 2.1.178)
 
 ## Tests
 

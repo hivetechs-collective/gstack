@@ -189,10 +189,9 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
 
 ### Execution
 
-1. TeamCreate with descriptive team name
-2. **Use task `agent_type` from Step 2**: Each task already has a specialist assigned from the roster. If you need the full list, read `.claude/commands/plan-w-team/shared/agent-roster.md` (85+ specialists with domain and color).
+1. **Use task `agent_type` from Step 2**: Each task already has a specialist assigned from the roster. If you need the full list, read `.claude/commands/plan-w-team/shared/agent-roster.md` (85+ specialists with domain and color).
 
-3. Spawn N named builders using Agent tool with worktree isolation and **specialist subagent_type** (from task metadata `agent_type`):
+2. Spawn N named builders using Agent tool with worktree isolation and **specialist subagent_type** (from task metadata `agent_type`):
 
    ```
    Agent(
@@ -304,23 +303,22 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
    )
    ```
 
-4. Each builder gets its own git worktree — full repo copy, no file conflicts
-5. Builders self-claim from unassigned task pool via TaskList
-6. If plan approval: builders submit plans, lead approves before coding starts
-7. Builders implement, PostToolUse hooks validate, commit atomically to worktree branch
-8. On completion: TaskUpdate with metadata: {commit_sha, verification, builder_name, wtf_score} (see `shared/self-regulation.md` §WTF-likelihood for the 0.0-1.0 scoring rubric)
-9. Builder checks TaskList for next task (self-claiming loop)
-10. Lead monitors progress — use `/loop 2m check TaskList and report status` or CronCreate for automated monitoring instead of manual checks
-11. When all tasks complete: SendMessage(shutdown_request) to all builders
-12. When all builders complete, merge worktree branches to main in bisectable order:
+3. Each builder gets its own git worktree — full repo copy, no file conflicts
+4. Builders self-claim from unassigned task pool via TaskList
+5. If plan approval: builders submit plans, lead approves before coding starts
+6. Builders implement, PostToolUse hooks validate, commit atomically to worktree branch
+7. On completion: TaskUpdate with metadata: {commit_sha, verification, builder_name, wtf_score} (see `shared/self-regulation.md` §WTF-likelihood for the 0.0-1.0 scoring rubric)
+8. Builder checks TaskList for next task (self-claiming loop)
+9. Lead monitors progress — use `/loop 2m check TaskList and report status` or CronCreate for automated monitoring instead of manual checks
+10. When all tasks complete: SendMessage(shutdown_request) to all builders
+11. When all builders complete, merge worktree branches to main in bisectable order:
     - Merge in dependency order (infrastructure first, then models, then controllers, then tests)
     - **Shared file owners merge first** — tasks with `shared_file_owner: true` go before tasks that depend on them
     - After EACH merge, run `npx tsc --noEmit` (or project equivalent) to catch type conflicts immediately
     - If type errors appear, fix them BEFORE merging the next branch — this prevents error cascading
     - Git handles most merges automatically; lead resolves any git merge conflicts
-13. **Clean up worktrees immediately after merge**: `git worktree remove <path>` for each merged branch. Do NOT leave worktrees around for later — they consume disk and cause stale-base bugs if re-used.
-14. Verify the final merged state: run full test suite + type check before proceeding to Step 5
-15. TeamDelete to clean up
+12. **Clean up worktrees immediately after merge**: `git worktree remove <path>` for each merged branch. Do NOT leave worktrees around for later — they consume disk and cause stale-base bugs if re-used.
+13. Verify the final merged state: run full test suite + type check before proceeding to Step 5
 
 ### Fleet State Integration (optional, PWT-T3)
 
@@ -833,7 +831,7 @@ When invoked with `--resume`:
 5. Check for stale worktree branches with `git worktree list` — prune any orphaned worktrees
 6. Read metadata.spec_path from any task to reload requirements
 7. Reload taste calibration and door labels from spec
-8. TeamCreate, spawn builders for remaining work
+8. Spawn builders for remaining work
 9. Builders self-claim incomplete tasks
 10. Normal execution continues from Step 4 above
 

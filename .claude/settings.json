@@ -41,8 +41,6 @@
       "Glob(*)",
       "Grep(*)",
       "Agent(*)",
-      "TeamCreate",
-      "TeamDelete",
       "TaskCreate",
       "TaskList",
       "TaskGet",

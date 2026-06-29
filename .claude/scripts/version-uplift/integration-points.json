@@ -199,7 +199,7 @@
     },
     {
       "id": "agent-teams",
-      "description": "Agent Teams (experimental): TeamCreate, SendMessage, shared task lists",
+      "description": "Agent Teams (experimental): SendMessage + shared task lists (TeamCreate/TeamDelete removed in 2.1.178; keywords retained for changelog-classifier recall)",
       "keywords": [
         "TeamCreate",
         "TeamDelete",
