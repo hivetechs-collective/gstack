@@ -544,6 +544,7 @@ __pwt_build_goal_text() {
     local req="$1"
     read -r -d '' GOAL_TEXT <<EOF_GOAL_TEXT || true
 /goal Use /plan-w-team to ${req}.
+Ground in repo docs first (GRD).
 
 Pipeline is complete when ALL of:
 ${DONE_CRITERIA}${EXTRA_DONE}
@@ -635,8 +636,8 @@ silently reject it ("Goal condition is limited to ${GOAL_MAX} characters")
 and the worker would idle indefinitely.
 
 Shorten the REQUEST or DONE_CRITERIA arguments. The skeleton overhead
-(halt sites + closing note) is ~600 chars, leaving ~$((GOAL_MAX - 600))
-chars for the user-provided content.
+(halt sites + GRD grounding clause + closing note) is ~650 chars, leaving
+~$((GOAL_MAX - 650)) chars for the user-provided content.
 
 To override (e.g. when Anthropic raises the cap), set:
   PLAN_W_TEAM_GOAL_MAX=<new-cap> ${0##*/} ...

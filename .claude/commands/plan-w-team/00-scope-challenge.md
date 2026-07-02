@@ -15,6 +15,37 @@
 
 Before writing a single line of spec, challenge the premise. This step can kill a bad idea before wasting tokens.
 
+## 0a-pre. Existing-System Grounding (MANDATORY — GRD)
+
+**Run this BEFORE the premise challenge.** You cannot judge "is this the right thing to
+build?" or map CURRENT honestly without first reading what the repo says about itself.
+This is the enforcing fix for the existing-repo drift failure mode — planning against an
+assumed architecture instead of the documented one. Full contract: `shared/grounding.md`.
+
+```bash
+# Deterministic floor: list the repo's canonical entry-point docs.
+.claude/scripts/plan-w-team-grounding-gate.sh --enumerate
+```
+
+Dispose of **every** listed doc one of two ways: **read it** (Read tool) and mine it for
+claims relevant to this feature, or **skip it with a written reason**. Follow references
+from the entry points into feature-relevant deep docs (module READMEs, runbooks, sibling
+specs). Capture what you learned as **Grounding Ledger rows** (claim + evidence citation +
+`CONFIRMED`/`ASSUMED` status) — they land in the spec's mandatory
+`## Existing-System Grounding Ledger` section at Step 1, where the freeze gate
+(`plan-w-team-grounding-gate.sh --check`) refuses an absent/blank/uncovered ledger.
+
+The §0a `CURRENT` state, the §0b taste calibration, and every "X already handles Y"
+statement below MUST derive from ledger evidence — not from what a repo like this
+_probably_ contains. A claim you could not verify is recorded `ASSUMED` (honest flag),
+never silently asserted; Step 5 re-verifies the ledger adversarially and zero `ASSUMED`
+rows may survive review (`--phase review`).
+
+Greenfield repos (enumerator finds nothing): write the explicit greenfield statement in
+the ledger and move on — this section costs one command and one sentence.
+
+Kill switch: `PLAN_W_TEAM_DISABLE_GROUNDING=1` (trivial/docs-only runs).
+
 ## 0a. Premise Challenge
 
 Ask three questions:

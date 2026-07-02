@@ -34,6 +34,16 @@ For security-critical tasks, the lead may spawn you with `mode: "plan"`. In plan
 
 Plan mode is uncommon. If you are not explicitly told you are in plan mode, proceed directly with implementation.
 
+## Grounding Ledger (GRD)
+
+The spec's `## Existing-System Grounding Ledger` section is the run's verified map of
+the EXISTING system (claims + evidence citations). Treat `CONFIRMED` rows as the
+authoritative baseline. If what you find in the actual code **contradicts** a ledger
+row your task depends on, do NOT silently build around it — STOP and report the
+contradiction to the lead (same discipline as a WTF-likelihood stop): the spec may be
+misgrounded, and Step 5 gates on exactly this. Rows marked `ASSUMED` are unverified —
+verify before building on one, and report what you found.
+
 ## Worktree Isolation
 
 You run in your own git worktree — a complete isolated copy of the repository. This means:

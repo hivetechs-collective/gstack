@@ -20,9 +20,31 @@ Captured from the Step 0 scope-challenge output. These travel with the spec so S
 | `board_issue`        | `#<n>` from `scripts/board.sh add` (filled in after the Board Integration block below)                                                                                                  |
 | `complexity_signals` | Files-to-change estimate, new-files-to-create estimate, estimated-task count. If any exceeded the §0c Context Budget Gate threshold, this field MUST also reference the split decision. |
 
+## Existing-System Grounding Ledger (MANDATORY — GRD)
+
+What this run verified about the EXISTING system before designing against it (built in
+Step 0 §0a-pre; contract in `shared/grounding.md`). Every enumerated canonical doc is
+listed (consulted or skipped-with-reason); every claim the Technical Design relies on
+about existing behavior has a row with evidence. `ASSUMED` = shapes the design but
+unverified at spec time — allowed here, forbidden by Step 5 review.
+
+Sources consulted:
+
+- README.md — read
+- docs/architecture/overview.md — read
+- docs/adr/0007-queueing.md — skipped: superseded per ADR-0012
+
+| Claim about the existing system           | Evidence (file:line / doc §)    | Status    |
+| ----------------------------------------- | ------------------------------- | --------- |
+| Notifications fan out via NotificationBus | src/notify/bus.ts:41; README §3 | CONFIRMED |
+| Rate limiting handled at the edge (CDN)   | (could not verify in repo)      | ASSUMED   |
+
+Greenfield repos: replace the list + table with the explicit statement
+"Greenfield — no existing documentation to consult." — never a silent blank.
+
 ## Overview
 
-Brief description. Include dream state mapping:
+Brief description. Include dream state mapping (CURRENT must trace to Grounding Ledger rows):
 
 - CURRENT: [what exists]
 - THIS PLAN: [what we're building]
@@ -325,12 +347,46 @@ if ! .claude/scripts/plan-w-team-reuse-audit-gate.sh --spec "$SPEC"; then
   echo "✗ Step-1 freeze refused: Reuse Audit section missing/blank in $SPEC"
   echo "  Fill in the 'Existing-Code Survey / Reuse Audit' section with"
   echo "  REUSE/EXTEND/BUILD-NEW verdicts (or an explicit 'nothing overlaps'"
-  echo "  statement), OR set PLAN_W_TEAM_DISABLE_REUSE_AUDIT=1 to bypass."
+  echo "  statement)."
+  # NOTE: no bypass coaching in the failure message (C6 precedent — do not hand
+  # a blocked autonomous worker its own escape hatch; the kill switch is
+  # documented in shared/reuse-first.md for OPERATOR use).
   exit 1
 fi
 ```
 
 The gate exits `0` (pass / kill switch), `1` (section missing or blank — refuse freeze), or `2` (spec file not found — author the spec first). Kill switch `PLAN_W_TEAM_DISABLE_REUSE_AUDIT=1` is consistent with the `PLAN_W_TEAM_DISABLE_*` family and lets a docs-only / trivial run bypass the gate. See `shared/reuse-first.md` for the underlying rule.
+
+## Grounding Freeze Pre-Condition (ENFORCING — GRD)
+
+Beside the reuse gate above, the freeze also refuses to proceed unless the spec carries a
+compliant `## Existing-System Grounding Ledger` section (built in Step 0 §0a-pre; contract
+in `shared/grounding.md`). This is the deterministic half of the existing-repo drift fix:
+a spec that never read the repo's canonical docs cannot freeze.
+
+```bash
+SLUG="<feature-slug>"
+SPEC="docs/specs/${SLUG}.md"
+if ! .claude/scripts/plan-w-team-grounding-gate.sh --check --spec "$SPEC"; then
+  echo "✗ Step-1 freeze refused: Grounding Ledger missing/blank/uncovered in $SPEC"
+  echo "  Consult (or skip-with-reason) every doc from --enumerate, and add"
+  echo "  CONFIRMED/ASSUMED claim table rows (or the explicit greenfield statement)."
+  # NOTE: no bypass coaching in the failure message (C6 precedent — do not hand
+  # a blocked autonomous worker its own escape hatch; the kill switch is
+  # documented in shared/grounding.md for OPERATOR use).
+  exit 1
+fi
+```
+
+Exit codes mirror the reuse gate: `0` pass / kill switch, `1` refuse freeze (section
+missing, blank, an enumerated doc path absent from the section, or no claim table rows
+and no greenfield statement), `2` spec not found. The gate checks doc-path PRESENCE —
+the read-vs-skipped disposition wording is the lead's duty and is verified semantically
+at Step 5. Claim rows are counted **row-anchored** (a markdown table row whose status
+cell is `CONFIRMED`/`ASSUMED`); prose mentions of those words are ignored, so keeping
+this template's guidance sentences in the spec is safe. Step 5 §5a-ter re-runs this gate
+with `--phase review` (zero `ASSUMED` rows may survive) and adversarially re-verifies the
+rows — see `04-fix-first-review.md`.
 
 ## Acceptance Criteria Snapshot (MANDATORY — integrity gate)
 

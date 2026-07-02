@@ -241,6 +241,75 @@ fi
 
 **If the check blocks review on a legitimate new artifact**: Add the entry to `shared/state-artifacts.md` in the same commit as the writer, with appropriate `writer_grep`, `reader_grep`, and `mode`. Re-run; the check now passes.
 
+### 5a-ter. Grounding Re-Verification (ENFORCING — the adversarial second check, GRD)
+
+Step 1 froze a spec whose `## Existing-System Grounding Ledger` claims to describe the
+EXISTING system (contract: `shared/grounding.md`). The review does not trust that ledger —
+it re-verifies it. This is the second half of the existing-repo drift fix: Step 1 gates
+that grounding _happened_; Step 5 gates that it is _true_.
+
+**Layer 1 — deterministic floor** (mirrors the §5b access-control scanner's floor+judgment
+split):
+
+```bash
+# Legacy grace (mirrors §5a's missing-AC-snapshot grace): a pre-1.49.0 spec has
+# no Grounding Ledger section — warn and skip rather than hard-blocking every
+# --ship-only / --resume run on an in-flight or historical spec. A section
+# DELETED mid-run on a post-GRD spec is still caught: the §5a spec-SHA integrity
+# check flags any post-freeze spec edit as drift (ASK).
+# Resolve via git toplevel so the section grep and the gate see the SAME file
+# regardless of CWD (worktree subdir) — a relative-path grep missing while the
+# gate's own root-resolution succeeds would silently take the legacy branch.
+REPO_TOP=$(git rev-parse --show-toplevel)
+SPEC_ABS="$REPO_TOP/docs/specs/${SLUG}.md"
+if ! grep -qiE '^#{1,6}[[:space:]].*(grounding ledger|existing-system grounding)' "$SPEC_ABS"; then
+  echo "⚠ no Grounding Ledger section — likely pre-GRD (pre-1.49.0) spec; skipping §5a-ter (legacy grace)"
+else
+  # Re-run the grounding gate against the LIVE repo in review phase.
+  # Catches: ledger decayed mid-run, docs added since Step 1 that were never
+  # consulted (e.g. by a concurrent run), and any surviving ASSUMED row.
+  if ! "$REPO_TOP/.claude/scripts/plan-w-team-grounding-gate.sh" --check --spec "$SPEC_ABS" --root "$REPO_TOP" --phase review; then
+    echo "✗ grounding re-verification failed — resolve before Pass 1 proceeds"
+    echo "  (CONFIRM or refute every ASSUMED row; cover any new canonical docs;"
+    echo "   a refuted claim means correcting the SPEC, not the ledger alone)"
+    exit 1
+  fi
+fi
+```
+
+**Layer 2 — semantic verification (reviewer judgment, adversarial)**: re-read the ledger
+rows against the actual repo. Does the cited evidence really say what the claim says? Is
+there a contradicting doc or code path? Verify **all rows when ≤10**; otherwise prioritize
+every row the diff's design depends on. Record a verdict per checked row: `VERIFIED` /
+`REFUTED` (+ one-line citation).
+
+- A **REFUTED row the diff's design depends on is Pass-1 CRITICAL** — record it in §5h
+  like any CRITICAL (`→ resolved in <commit-sha>` required; blocks ship via
+  `all_critical_resolved`). The fix is to correct the SPEC (re-run the Step-1 freeze per
+  the AC-snapshot rules) and re-validate the affected design/tasks — never to edit the
+  ledger to match what was built.
+- REFUTED rows the diff does NOT depend on are Pass-2 INFORMATIONAL (fix the ledger row).
+- **Skip-disposition audit**: Layer 1 only checks that enumerated docs APPEAR in the
+  ledger — it cannot judge skip reasons. A ledger that skipped every enumerated doc, or
+  skipped any doc the diff plausibly touches, is itself a Pass-2 flag: spot-check those
+  skip reasons here.
+- **Tamper interplay**: a ledger row edited/deleted after the Step-1 freeze (e.g. a
+  REFUTED row quietly flipped to CONFIRMED) changes the spec file and is therefore
+  surfaced by the §5a spec-SHA integrity check as drift (ASK) — the ledger inherits the
+  AC snapshot's whole-file digest protection; no separate ledger snapshot is needed.
+- **Legitimate ASSUMED→CONFIRMED flips re-snapshot**: resolving an honest `ASSUMED` row
+  at review time (verify → flip to `CONFIRMED` with the citation) is a REQUIRED spec
+  edit, not drift. After flipping, re-run the Step-1 snapshot exactly as for a
+  tightened-AC edit — a status flip with evidence is by definition tightening — so
+  later §5a passes (`--resume`, re-entry) don't stall an unattended run on
+  `ambiguous-ASK` over a process-mandated edit.
+- Record the outcome in the Step 5 status block: `grounding-verification: verified` or
+  `grounding-verification: <N> refuted (<M> gating)`. Retro §8i reads a non-zero refuted
+  count as a spec-quality signal.
+
+Kill switch: `PLAN_W_TEAM_DISABLE_GROUNDING=1` skips both layers (same switch as Step 0/1;
+a run that bypassed grounding at spec time cannot be grounding-gated at review).
+
 ## Two-Pass Review Decision Tree
 
 > See diagram below — describes the route every diff line takes from raw evaluator handoff through Pass 1 / Pass 2 classification to the AUTO-FIX / ASK / DEFER terminal states.
@@ -343,6 +412,7 @@ Each reviewer receives an identical context envelope:
 You are reviewing a diff against origin/<base>...HEAD as a <ROLE> specialist.
 Repo: <project-name>
 Spec: docs/specs/<slug>.md   (you may read this for context, but DO NOT trust it for AC — read .claude/state/plan-w-team-ac-snapshot-<slug>.md if you need the frozen AC)
+Grounding: the spec's "Existing-System Grounding Ledger" claims facts about the EXISTING system. Do NOT treat spec statements about existing behavior as ground truth unless the ledger row is CONFIRMED and the citation checks out — a finding that contradicts an unverified spec claim may be flagging real drift (see §5a-ter).
 Diff: see `git diff origin/<base>...HEAD`
 Your remit: <slot-specific focus from the table above>
 What to report:
@@ -366,7 +436,7 @@ When all reviewers return (completion notifications fire — do not poll; per §
 1. **Union the CRITICAL findings** across all three reports.
 2. **Dedupe by file:line + issue-class** — if two reviewers flagged the same line, keep one entry with both citations.
 3. **Verifier filter**: for each CRITICAL, ask: _"Is this finding genuinely a blocker, or did the reviewer over-flag?"_ Drop findings where:
-   - The "issue" is actually intended behavior documented in the spec
+   - The "issue" is actually intended behavior documented in the spec — **valid ONLY when the documenting spec claim traces to a CONFIRMED/VERIFIED Grounding Ledger row** (§5a-ter / `shared/grounding.md`); an ungrounded spec claim cannot launder a finding
    - The line is already covered by an existing test that the reviewer didn't see
    - The risk is conditional on a code path the diff doesn't introduce
 4. **Promote out-of-remit findings** to the matching reviewer slot for the next pass if substantive — usually they're noise (a security reviewer commenting on style); drop them.
@@ -401,6 +471,7 @@ To revert to single-reviewer Pass 1 globally, delete this §5b-pre block. The ex
 | Conditional side effects                            | Database writes, API calls, notifications buried in conditionals                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | Time window safety                                  | Operations assuming time relationships without handling timezone, clock skew, DST                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | One-way door validation                             | Extra scrutiny for tasks tagged `door_type: "one-way"`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| Refuted architecture assumption (GRD)               | A Grounding Ledger row the diff's design depends on is REFUTED by the actual repo (§5a-ter semantic verification), or the diff's behavior relies on a claim about the existing system with no CONFIRMED ledger row. Fix = correct the SPEC and re-validate the affected design — never edit the ledger to match the code. See `shared/grounding.md`.                                                                                                                                                                                                                                                                                                           |
 | Mutation testing (TO2 default-on for one-way doors) | If ANY task in this run is tagged `door_type: one-way` with `mutation_required: true` (set by Step 2 §TO2 Mutation Default-On for One-Way-Door PRs), detect the mutation runner (`stryker.config.{ts,js,mjs}`, `mutmut.cfg`, `pitest.xml`) and run it on the touched files. **Mutation-survived rate >5% = CRITICAL**, blocking merge. Threshold override: `mutation-survival-floor: <pct>` in `.claude/state/coverage-policy.txt`. Absence of a mutation runner on a one-way-door code-changing PR raises INFORMATIONAL (offer to install or to record the gap in `.claude/state/coverage-policy.txt`).                                                       |
 | Error handling                                      | Catch-all handlers, swallowed errors, missing error types from Error & Rescue Map                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | Test-harness fragmentation                          | **REJECT** any PR that adds a second test framework, parallel runner, or test entry-point alongside `make test-skill` / `tests/skill/run.sh` / bats. The single canonical entry-point is the only thing that makes the pre-commit gate reliable. See `docs/specs/plan-w-team-followups.md` §Anti-Fragmentation Lock-In.                                                                                                                                                                                                                                                                                                                                        |

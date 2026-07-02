@@ -465,6 +465,7 @@ If the Step 5 gate ran in degraded mode (no baseline, e.g. `--ship-only` or `--r
 Rate the overall `/plan-w-team` experience for this feature 0-10. If below 10, note what friction points occurred — this feeds back into improving the workflow itself:
 
 - Where did the spec miss something?
+- Did Step 5 §5a-ter grounding re-verification refute any Grounding Ledger rows? A non-zero refuted count means Step 0/1 grounding was shallow — name the doc or code that was misread (GRD, `shared/grounding.md`).
 - Where did builders struggle?
 - Where did review catch real issues vs generate noise?
 - Where did hooks help vs create friction?

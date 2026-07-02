@@ -14,6 +14,97 @@ traced back to the exact /plan-w-team release that produced it.
 
 ```
 
+## [1.49.0] — 2026-07-02 (567c0e6)
+
+Close the existing-repo drift failure mode (user-reported): a run planning against an
+EXISTING repo without first reading its documentation/architecture, so wrong assumptions
+about the current system get baked into the spec, propagate to builders, and are even
+*trusted* by the Step-5 verifier filter ("intended behavior documented in the spec" was an
+unconditional drop-reason for findings). Grounding was previously advisory-only prose
+(Step 0 "read the relevant code" / taste calibration), and the context-blind bg worker's
+goal directive said nothing about reading the target repo's docs. This release makes
+grounding a deterministic two-phase gate with an adversarial second check — the same
+floor+judgment split as the access-control scan (audit P9c: detection must not be LLM-only).
+Full evaluation record (14-reader fleet + 4-skeptic verification, incident evidence,
+residuals): `docs/operations/pwt-grounding-evaluation-2026-07-02.md`.
+
+- feat(plan-w-team): **GRD Existing-System Grounding gate** (`plan-w-team-grounding-gate.sh`,
+  bash 3.2, LC_ALL=C-deterministic, LOUD enumeration cap). `--enumerate` lists the repo's
+  canonical entry-point docs (README*/CLAUDE.md/AGENTS.md/CONTRIBUTING*/ARCHITECTURE*/
+  DESIGN*/GOVERNANCE*, top-level `docs/*.md`, `docs/{architecture,adr,decisions}/*.md`).
+  `--check --phase spec` is a Step-1 freeze pre-condition beside the H1 reuse gate: the
+  spec must carry a non-blank `## Existing-System Grounding Ledger` covering EVERY
+  enumerated doc (consulted or skipped-with-reason) with ≥1 CONFIRMED/ASSUMED claim row or
+  an explicit greenfield statement (a greenfield claim does NOT exempt coverage when docs
+  exist). `--check --phase review` re-runs at Step 5 against the LIVE repo and fails any
+  surviving ASSUMED row. Kill switch: `PLAN_W_TEAM_DISABLE_GROUNDING=1`.
+- feat(plan-w-team): **Step 0 §0a-pre grounding duty** — enumerate + read/skip-with-reason
+  every canonical doc BEFORE the premise challenge; CURRENT state, taste calibration, and
+  every "X already handles Y" statement must derive from ledger evidence (`CONFIRMED`) or
+  be honestly flagged `ASSUMED` — never silently asserted.
+- feat(plan-w-team): **Step 1 spec template + Grounding Freeze Pre-Condition** — mandatory
+  `## Existing-System Grounding Ledger` section (sources consulted + claim/evidence/status
+  rows); freeze refuses without it.
+- feat(plan-w-team): **Step 5 §5a-ter Grounding Re-Verification — the adversarial second
+  check.** Layer 1 deterministic floor: gate re-run `--phase review` (catches ledger decay,
+  docs added mid-run, surviving ASSUMED rows; exit 1 blocks review). Layer 2 semantic:
+  reviewer re-reads ledger rows against the actual repo (all rows when ≤10, else every row
+  the diff depends on); a REFUTED row the diff's design depends on is **Pass-1 CRITICAL**
+  (new §5b table row) — fixed by correcting the SPEC (re-freeze per AC-snapshot rules),
+  never by editing the ledger to match the code. The §5b-pre verifier-filter drop-reason
+  "documented in the spec" is now valid ONLY when the claim traces to a CONFIRMED/VERIFIED
+  ledger row; the reviewer fan-out envelope gains a Grounding line making spec claims about
+  existing behavior explicitly untrusted. Status-block signal:
+  `grounding-verification: verified | <N> refuted (<M> gating)`.
+- feat(plan-w-team): **pwt-goal.sh goal-directive grounding clause** — every derived
+  /goal sentence now ends "Ground in repo docs first (GRD).", giving the (context-blind)
+  bg worker first-turn awareness (`feedback_route_hook_context_blind`). Deliberately
+  inline + short: the wrapper must keep a 3000-char request under the 4000-char /goal
+  cap (pwt-goal-cap-enforcement AC4); the deterministic freeze gate is the load-bearing
+  fix, not this clause. Survives the overflow-to-disk rebuild (clause lives in the
+  wrapper, not the request).
+- fix(plan-w-team): **§5a-ter legacy grace** — a spec with NO Grounding Ledger section
+  (pre-1.49.0, e.g. `--ship-only`/`--resume` on an in-flight run) warns and skips the
+  re-verification instead of hard-blocking; a section deleted mid-run on a post-GRD spec
+  is still caught by the §5a spec-SHA drift check.
+- feat(plan-w-team): new canonical shared contract `shared/grounding.md` (manifest Shared
+  Resources row added); retro §8i gains a refuted-rows spec-quality prompt.
+- feat(plan-w-team): **builder grounding channel** — `.claude/agents/team/builder.md`
+  gains a Grounding Ledger section: CONFIRMED rows are the authoritative baseline; a
+  code-vs-ledger contradiction on a depended-on row is a STOP-and-report (WTF-stop
+  discipline), and ASSUMED rows must be verified before building on them. Closes the
+  execution-stage blind spot where a wrong assumption was only caught at Step 5 after
+  the code was already built.
+- fix(plan-w-team): **adversarial-verification hardening** (4-skeptic fan-out over the
+  diff before ship): (1) claim-token matching is ROW-ANCHORED — only a table row whose
+  status cell is CONFIRMED/ASSUMED counts, so the spec template's own guidance prose
+  containing "ASSUMED" can no longer permanently block a template-following spec at
+  `--phase review` (was a confirmed blocker); (2) the greenfield waiver requires the
+  canonical phrase "no existing documentation" — a negation ("this is NOT a greenfield
+  repo") no longer waives the claim-row requirement; (3) freeze-gate failure messages no
+  longer coach the kill switch (C6 precedent), for BOTH the grounding and reuse gates;
+  (4) §5a-ter resolves the spec via git toplevel so the legacy-grace grep and the gate
+  can never disagree under a worktree/subdir CWD; (5) §5a-ter documents the
+  skip-disposition audit and the spec-SHA tamper interplay (ledger edits post-freeze
+  surface as §5a drift), and a legitimate ASSUMED→CONFIRMED flip re-runs the Step-1
+  snapshot (tightening) so later §5a passes don't stall an unattended run on
+  ambiguous-ASK; (6) coverage matching is BOUNDARY-ANCHORED — a longer path can no
+  longer cover a shorter one (ledger says `docs/README.md`, root `README.md` counted as
+  covered — the common root+docs README layout silently defeated the core promise);
+  (7) the goal-directive clause is emitted as its own second line so
+  `pwt-goal-preamble-strip.test.sh`'s exact first-line contract holds (16/16) while
+  staying under the 4000-char cap (cap-enforcement 11/11); (8) mechanism label is
+  **GRD**, not "G2" — G<N> was already claimed twice (gotchas index + gap-analyzer
+  finding ids); (9) dry-run "Would copy" echoes added for the new gate (+ backfilled
+  for the 1.38.0 reuse-* cluster).
+- test(plan-w-team): `plan-w-team-grounding-gate.test.sh` — 20 cases green on bash 5.3 AND
+  /bin/bash 3.2 (coverage miss names the doc, suffix false-pass regression, fake-greenfield
+  fails, greenfield negation fails, prose-ASSUMED immunity at review, ASSUMED row passes
+  spec phase / fails review phase, LOUD cap, kill switch, exit-code contract);
+  `tests/skill/cases/grounding-gate.bats` — 13 prose-invariant cases pinning the
+  cross-file wiring (r10-ratchet names). Sync allowlist: gate + test added to
+  `sync-to-project.sh` (G11).
+
 ## [1.48.3] — 2026-06-29 (466321a)
 
 Close a supervisor-wait blind spot surfaced while supervising the 1.48.2 run (and recorded in
