@@ -278,15 +278,23 @@ If the card already exists (from a previous `/board add` or backlog grooming), s
 
 **Cognitive frameworks used here**: Make the change easy, then make the easy change (Beck), Boring technology (McKinley), Strangler fig pattern (Fowler). Read `shared/cognitive-frameworks.md` for full reference.
 
-## §1b-pre. Multi-Angle Spec Fan-Out (OPT-IN — default OFF)
+## §1b-pre. Multi-Angle Spec Fan-Out (AUTO — right-sized, default-on for non-trivial specs)
 
-When `PLAN_W_TEAM_SPEC_FANOUT=1`, run a parallel multi-angle critique of the
-just-authored draft spec **before the AC freeze below**. This catches missing
-requirements, weak/untestable acceptance criteria, untraced shadow paths, and
-security boundaries while the spec is still mutable. **Default OFF**: when the
-var is unset (or `!= 1`), Step 1 is single-pass exactly as before — author the
-spec, then freeze. This is a pilot; it stays default-OFF until the §8j-octies
-retro signal shows it earns its keep.
+Run a parallel multi-angle critique of the just-authored draft spec **before the
+AC freeze below**. This catches missing requirements, weak/untestable acceptance
+criteria, untraced shadow paths, and security boundaries while the spec is still
+mutable — the cheapest point in the whole lifecycle to fix them.
+
+**AUTO mode (the default, operator decision 2026-07-02):** the fan-out fires
+automatically when the draft spec is **non-trivial** — ≥3 requirement checkboxes
+OR any one-way-door decision — and auto-skips (single-pass, exactly the old
+behavior) on trivial specs, where 3 Brain-tier reviewers cannot earn their cost.
+No env var, no per-run action, identical behavior on attended and bg runs.
+Overrides: `PLAN_W_TEAM_SPEC_FANOUT=0` → hard OFF (operator opt-out, forwarded
+to bg workers by `pwt-goal.sh` when set); `PLAN_W_TEAM_SPEC_FANOUT=1` → force ON
+even for trivial specs. The §8j-nonies retro signal keeps scoring every fired
+run — if `findings_folded ≈ 0` across ~5 auto-fired runs, that is the evidence
+to restore default-off (reverse this section + the §8j-nonies advice text).
 
 Hard ordering rule: the fan-out MUST complete and its findings MUST be folded
 into the spec **strictly before** the freeze below, so the SHA256 snapshot
@@ -303,11 +311,25 @@ at Step 1):
 | `code-review-expert`     | Testability — are the acceptance criteria observable/verifiable? |
 
 ```bash
-# Opt-in gate — default OFF preserves today's single-pass Step 1 exactly.
-if [ "${PLAN_W_TEAM_SPEC_FANOUT:-0}" != "1" ]; then
-  echo "[§1b-pre] spec fan-out disabled (set PLAN_W_TEAM_SPEC_FANOUT=1 to enable)"
-else
-  SLUG="<feature-slug>"
+# Tri-state gate: unset → AUTO (fire on non-trivial specs); 0 → hard OFF; 1 → force ON.
+SLUG="<feature-slug>"
+SPEC="docs/specs/${SLUG}.md"
+RUN_FANOUT=0
+case "${PLAN_W_TEAM_SPEC_FANOUT:-auto}" in
+  0) echo "[§1b-pre] spec fan-out OFF (PLAN_W_TEAM_SPEC_FANOUT=0 — operator opt-out)" ;;
+  1) RUN_FANOUT=1; echo "[§1b-pre] spec fan-out FORCED on (PLAN_W_TEAM_SPEC_FANOUT=1)" ;;
+  *)
+    # AUTO: non-trivial = ≥3 requirement checkboxes OR a one-way-door decision.
+    REQ_COUNT=$(awk '/^## Requirements/{f=1;next} /^## /{f=0} f' "$SPEC" | grep -cE '^[[:space:]]*-[[:space:]]*\[' || true)
+    if [ "${REQ_COUNT:-0}" -ge 3 ] || grep -qi 'one-way' "$SPEC"; then
+      RUN_FANOUT=1
+      echo "[§1b-pre] auto-fired: non-trivial spec (${REQ_COUNT} requirements; one-way check applied)"
+    else
+      echo "[§1b-pre] auto-skip: trivial spec (${REQ_COUNT} requirements, no one-way door) — single-pass"
+    fi
+    ;;
+esac
+if [ "$RUN_FANOUT" = "1" ]; then
   FANOUT=".claude/state/plan-w-team-spec-fanout-${SLUG}.json"
   # Lead spawns the three reviewers via the Agent tool with run_in_background:true
   # (subagent_type: system-architect, security-expert, code-review-expert — via

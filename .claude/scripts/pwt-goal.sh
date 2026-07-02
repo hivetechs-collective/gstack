@@ -1032,6 +1032,15 @@ if [ "$LAUNCH" = "1" ]; then
     # docs/operations/pwt-principles-enforcement-audit-2026-06-02.md (P3/C1).
     LAUNCH_ENV="$LAUNCH_ENV CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=${PWT_STOP_HOOK_BLOCK_CAP:-200}"
 
+    # Spec-fanout override forwarding (1.50.0 AUTO mode): §1b-pre defaults to
+    # AUTO in-stage (fires on non-trivial specs) with NO env needed. Forward the
+    # operator's explicit override ONLY when set, so `=0` (hard off) and `=1`
+    # (force on) reach bg workers too — one knob, every path. Unset → nothing
+    # forwarded → worker resolves AUTO from the stage file.
+    if [ -n "${PLAN_W_TEAM_SPEC_FANOUT:-}" ]; then
+        LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_SPEC_FANOUT=${PLAN_W_TEAM_SPEC_FANOUT}"
+    fi
+
     # PWT-SUP-YIELD safety: force PLAN_W_TEAM_SUPERVISOR_SESSION=0 in the worker so
     # it can NEVER inherit a supervisor=1 marker from a spawning supervisor session.
     # The goal-evaluator lets a supervisor session YIELD instead of block; the

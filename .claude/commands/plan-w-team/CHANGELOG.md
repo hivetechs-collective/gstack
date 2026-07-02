@@ -14,6 +14,35 @@ traced back to the exact /plan-w-team release that produced it.
 
 ```
 
+## [1.50.0] — 2026-07-02 (ed5e459)
+
+Operator decision superseding the parallelism go/no-go run's Idea-B trial shape (record +
+addendum: `docs/operations/pwt-parallelism-go-nogo-2026-07-02.md`): the attended-only
+opt-in trial was rejected as too piecemeal ("not wrapped") — it also could not reach the
+dominant bg-worker path at all. The trial's SUBSTANCE (collect real evidence, decide on
+the §8j-nonies criterion) is preserved; the SHAPE becomes a right-sized default.
+
+- feat(plan-w-team): **§1b-pre Multi-Angle Spec Fan-Out → AUTO mode.** Tri-state gate:
+  unset (default) → AUTO — the fan-out fires automatically when the draft spec is
+  non-trivial (≥3 requirement checkboxes OR any one-way-door decision) and auto-skips
+  trivial specs (single-pass, the pre-1.50.0 behavior, where 3 Brain-tier reviewers
+  cannot earn their cost); `PLAN_W_TEAM_SPEC_FANOUT=0` → hard OFF (operator opt-out);
+  `=1` → force ON even for trivial specs. Zero per-run action; identical on attended and
+  bg runs. Roster, fold-before-freeze ordering rule, and the advisory state record are
+  unchanged.
+- feat(plan-w-team): **pwt-goal.sh forwards the override only-when-set** — `=0`/`=1` now
+  reach bg workers via LAUNCH_ENV (closes the B2 gap from the go/no-go record); unset
+  forwards nothing and the worker resolves AUTO from the stage file.
+- docs(plan-w-team): retro §8j-nonies advice text reframed from pilot-promotion to
+  AUTO keep/park review (≈0 folded across ~5 auto-fired runs → restore default-off);
+  state-artifacts registry row description updated; go/no-go decision record gains the
+  superseding-addendum; followups-ledger trial row superseded by the AUTO keep/park
+  checkpoint row.
+- test(plan-w-team): `scenarios/spec-fanout-optin.bats` re-pinned to the AUTO contract
+  (tri-state default, ≥3-requirements/one-way trigger, trivial auto-skip, only-when-set
+  LAUNCH_ENV forward); the old default-OFF guard test name removed from the r10 legacy
+  allowlist (ratchet shrink).
+
 ## [1.49.0] — 2026-07-02 (567c0e6)
 
 Close the existing-repo drift failure mode (user-reported): a run planning against an

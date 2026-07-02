@@ -1026,25 +1026,26 @@ fi
 
 A `bypass_rate.score` below 5 means the lead skipped at least one stage-file Read outside the fast path — investigate whether the stage files need consolidation or the fast-path criterion (HOLD + ≤2 tasks) should widen.
 
-## 8j-nonies. Spec Fan-Out Catch-Rate (advisory — C1 pilot)
+## 8j-nonies. Spec Fan-Out Catch-Rate (advisory — AUTO-mode keep/park signal)
 
-When the Step-1 multi-angle spec fan-out ran (`PLAN_W_TEAM_SPEC_FANOUT=1`, §1b-pre),
-read its advisory record to score whether the fan-out earned its keep. This is the
-marginal-catch-rate signal the pilot gathers before the fan-out is promoted to
-default-ON. **n/a when the fan-out was off (the default)** — never blocks retro.
+When the Step-1 multi-angle spec fan-out ran (§1b-pre — AUTO default fires it on
+non-trivial specs since 1.50.0; `=1` forces, `=0` opts out), read its advisory
+record to score whether the fan-out earned its keep. This is the keep/park
+evidence for the AUTO default. **n/a when the fan-out auto-skipped (trivial
+spec) or was opted out** — never blocks retro.
 
 ```bash
 SLUG="<feature-slug>"
 FANOUT_STATE=".claude/state/plan-w-team-spec-fanout-${SLUG}.json"
 if [ ! -f "$FANOUT_STATE" ]; then
-  echo "Spec fan-out score: n/a (fan-out off — default — or no record)"
+  echo "Spec fan-out score: n/a (auto-skipped trivial spec, opted out, or no record)"
 else
   FOLDED=$(jq -r '.findings_folded // 0' "$FANOUT_STATE" 2>/dev/null || echo 0)
   DEFERRED=$(jq -r '.findings_deferred // 0' "$FANOUT_STATE" 2>/dev/null || echo 0)
   echo "Spec fan-out: ${FOLDED} findings folded pre-freeze, ${DEFERRED} deferred."
-  echo "  → If folded≈0 across several runs, the fan-out is not earning its cost;"
-  echo "    keep PLAN_W_TEAM_SPEC_FANOUT default-OFF. If consistently >0 on real"
-  echo "    requirement/AC gaps, that is the evidence to promote it toward default-ON."
+  echo "  → If folded≈0 across ~5 auto-fired runs, the AUTO default is not earning"
+  echo "    its cost — restore default-off (§1b-pre) and record the closing evidence."
+  echo "    Consistently >0 on real requirement/AC gaps = the AUTO default stays."
 fi
 ```
 
