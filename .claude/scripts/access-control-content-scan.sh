@@ -39,10 +39,10 @@ STATE_DIR_OVERRIDE=""
 QUIET=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    --slug) SLUG="${2:-}"; shift 2 ;;
-    --base) BASE="${2:-}"; shift 2 ;;
-    --diff-file) DIFF_FILE="${2:-}"; shift 2 ;;
-    --state-dir) STATE_DIR_OVERRIDE="${2:-}"; shift 2 ;;
+    --slug) SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --base) BASE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --diff-file) DIFF_FILE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --state-dir) STATE_DIR_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     --quiet) QUIET=1; shift ;;
     *) shift ;;
   esac

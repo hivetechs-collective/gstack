@@ -34,10 +34,10 @@ SPECS_DIR="docs/specs"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --terms) TERMS="${2:-}"; shift 2 ;;
-    --paths) PATHS="${2:-}"; shift 2 ;;
-    --commits) COMMITS="${2:-200}"; shift 2 ;;
-    --specs-dir) SPECS_DIR="${2:-docs/specs}"; shift 2 ;;
+    --terms) TERMS="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --paths) PATHS="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --commits) COMMITS="${2:-200}"; shift; [ $# -gt 0 ] && shift ;;
+    --specs-dir) SPECS_DIR="${2:-docs/specs}"; shift; [ $# -gt 0 ] && shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -32; exit 0 ;;
     *) shift ;;
   esac

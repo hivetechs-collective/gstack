@@ -64,7 +64,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help) usage; exit 0 ;;
         --json)    WANT_JSON=1; shift ;;
-        --detail)  MODE="detail"; WANT_SLUG="${2:-}"; shift 2 ;;
+        --detail)  MODE="detail"; WANT_SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --*)       echo "pwt-status: unknown option $1" >&2; usage; exit 2 ;;
         *)         MODE="detail"; WANT_SLUG="$1"; shift ;;
     esac

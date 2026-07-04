@@ -38,11 +38,11 @@ HEARTBEAT="${PWT_AWAIT_HEARTBEAT_S:-1800}"
 GONE_CONFIRM="${PWT_AWAIT_GONE_CONFIRM:-2}"
 while [ $# -gt 0 ]; do
   case "$1" in
-    --slug) SLUG="${2:-}"; shift 2 ;;
-    --worker-sid) WORKER_SID="${2:-}"; shift 2 ;;
-    --state-dir) STATE_DIR_OVERRIDE="${2:-}"; shift 2 ;;
-    --interval) INTERVAL="${2:-10}"; shift 2 ;;
-    --heartbeat) HEARTBEAT="${2:-1800}"; shift 2 ;;
+    --slug) SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --worker-sid) WORKER_SID="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --state-dir) STATE_DIR_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --interval) INTERVAL="${2:-10}"; shift; [ $# -gt 0 ] && shift ;;
+    --heartbeat) HEARTBEAT="${2:-1800}"; shift; [ $# -gt 0 ] && shift ;;
     # Non-looping diagnostic seam: resolve the goal-state file path and exit.
     # Used by the seed-path regression test (and handy for debugging which
     # same-slug worktree the supervisor would watch). Does NOT enter the watch

@@ -36,7 +36,7 @@ set -u
 WORKTREE="$PWD"; JSON=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --worktree) WORKTREE="${2:-$PWD}"; shift 2 ;;
+        --worktree) WORKTREE="${2:-$PWD}"; shift; [ $# -gt 0 ] && shift ;;
         --json)     JSON=1; shift ;;
         *)          shift ;;
     esac

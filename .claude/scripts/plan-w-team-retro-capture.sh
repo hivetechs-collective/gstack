@@ -51,17 +51,17 @@ FOLLOWUPS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --slug)            SLUG="${2:-}"; shift 2 ;;
-    --state-dir)       STATE_DIR_OVERRIDE="${2:-}"; shift 2 ;;
-    --retro-state)     RETRO_STATE_OVERRIDE="${2:-}"; shift 2 ;;
-    --self-assessment) SELF_ASSESSMENT="${2:-}"; shift 2 ;;
-    --weakness)        WEAKNESSES+=("${2:-}"); shift 2 ;;
-    --gap)             GAPS+=("${2:-}"); shift 2 ;;
-    --struggle)        STRUGGLES+=("${2:-}"); shift 2 ;;
-    --follow-up)       FOLLOWUPS+=("${2:-}"); shift 2 ;;
-    --history)         HISTORY_OVERRIDE="${2:-}"; shift 2 ;;
-    --out)             OUT_OVERRIDE="${2:-}"; shift 2 ;;
-    --followups-log)   FOLLOWUPS_OVERRIDE="${2:-}"; shift 2 ;;
+    --slug)            SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --state-dir)       STATE_DIR_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --retro-state)     RETRO_STATE_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --self-assessment) SELF_ASSESSMENT="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --weakness)        WEAKNESSES+=("${2:-}"); shift; [ $# -gt 0 ] && shift ;;
+    --gap)             GAPS+=("${2:-}"); shift; [ $# -gt 0 ] && shift ;;
+    --struggle)        STRUGGLES+=("${2:-}"); shift; [ $# -gt 0 ] && shift ;;
+    --follow-up)       FOLLOWUPS+=("${2:-}"); shift; [ $# -gt 0 ] && shift ;;
+    --history)         HISTORY_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --out)             OUT_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --followups-log)   FOLLOWUPS_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     --quiet)           QUIET=1; shift ;;
     *)                 shift ;;
   esac

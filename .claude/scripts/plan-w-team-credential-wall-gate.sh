@@ -40,8 +40,8 @@ STATE_DIR="$ROOT_STATE_DIR"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --slug)      SLUG="${2:-}"; shift 2 ;;
-        --state-dir) STATE_DIR="${2:-$STATE_DIR}"; shift 2 ;;
+        --slug)      SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --state-dir) STATE_DIR="${2:-$STATE_DIR}"; shift; [ $# -gt 0 ] && shift ;;
         --json)      JSON=1; shift ;;
         -h|--help)   grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)           echo "credential-wall-gate: unknown arg: $1" >&2; exit 2 ;;

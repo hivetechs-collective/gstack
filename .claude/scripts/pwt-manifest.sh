@@ -106,17 +106,17 @@ TERMINAL=""; TERMINAL_REASON=""; TASK_ID=""; TASK_STATUS=""; TASK_OWNER=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --slug)            SLUG="${2:-}"; shift 2 ;;
-        --run-sid)         RUN_SID="${2:-}"; shift 2 ;;
-        --worktree)        WORKTREE="${2:-}"; shift 2 ;;
-        --strategy)        STRATEGY="${2:-}"; shift 2 ;;
-        --stage)           STAGE="${2:-}"; shift 2 ;;
-        --builders)        BUILDERS="${2:-}"; shift 2 ;;
-        --terminal)        TERMINAL="${2:-}"; shift 2 ;;
-        --terminal-reason) TERMINAL_REASON="${2:-}"; shift 2 ;;
-        --id)              TASK_ID="${2:-}"; shift 2 ;;
-        --status)          TASK_STATUS="${2:-}"; shift 2 ;;
-        --owner)           TASK_OWNER="${2:-}"; shift 2 ;;
+        --slug)            SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --run-sid)         RUN_SID="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --worktree)        WORKTREE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --strategy)        STRATEGY="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --stage)           STAGE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --builders)        BUILDERS="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --terminal)        TERMINAL="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --terminal-reason) TERMINAL_REASON="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --id)              TASK_ID="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --status)          TASK_STATUS="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --owner)           TASK_OWNER="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         -h|--help)         SUB="help"; shift ;;
         *)                 shift ;;
     esac

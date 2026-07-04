@@ -73,10 +73,13 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --enumerate) MODE="enumerate"; shift ;;
     --check) MODE="check"; shift ;;
-    --spec) SPEC="${2:-}"; shift 2 ;;
-    --slug) SLUG="${2:-}"; shift 2 ;;
-    --root) ROOT="${2:-}"; shift 2 ;;
-    --phase) PHASE="${2:-spec}"; shift 2 ;;
+    # "shift 2" with the flag as the LAST arg shifts nothing (set -u does not
+    # catch a failed shift), leaving $# and $1 unchanged → infinite 100%-CPU
+    # loop. Shift the flag, then shift the value only if one is present.
+    --spec) SPEC="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --slug) SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --root) ROOT="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --phase) PHASE="${2:-spec}"; shift; [ $# -gt 0 ] && shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -50; exit 0 ;;
     *) [ -z "$SPEC" ] && [ "$MODE" = "check" ] && SPEC="$1"; shift ;;
   esac

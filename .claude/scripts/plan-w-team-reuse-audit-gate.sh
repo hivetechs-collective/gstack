@@ -46,8 +46,8 @@ SPEC=""
 SLUG=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --spec) SPEC="${2:-}"; shift 2 ;;
-    --slug) SLUG="${2:-}"; shift 2 ;;
+    --spec) SPEC="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --slug) SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -40; exit 0 ;;
     *) [ -z "$SPEC" ] && SPEC="$1"; shift ;;
   esac

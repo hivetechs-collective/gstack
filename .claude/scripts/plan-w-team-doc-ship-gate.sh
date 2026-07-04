@@ -27,9 +27,9 @@ RANGE=""
 BASE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --slug) SLUG="${2:-}"; shift 2 ;;
-    --range) RANGE="${2:-}"; shift 2 ;;
-    --base) BASE="${2:-}"; shift 2 ;;
+    --slug) SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --range) RANGE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --base) BASE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     -h|--help) sed -n '2,22p' "$0" | sed -E 's|^#[[:space:]]?||'; exit 0 ;;
     *) echo "Unknown arg: $1" >&2; exit 2 ;;
   esac

@@ -60,10 +60,10 @@ usage() { sed -n '2,/^# bash 3.2/p' "$0" | sed -E 's|^#[[:space:]]?||'; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --range) RANGE="${2:-}"; shift 2 ;;
-    --base) BASE="${2:-}"; shift 2 ;;
-    --slug) SLUG="${2:-}"; shift 2 ;;
-    --waive-file) WAIVE_FILE="${2:-}"; shift 2 ;;
+    --range) RANGE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --base) BASE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --slug) SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --waive-file) WAIVE_FILE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     --json) JSON_OUT=true; shift ;;
     --quiet) QUIET=true; shift ;;
     -h|--help) usage; exit 0 ;;

@@ -43,9 +43,9 @@ VERSION_FILE=".claude/commands/plan-w-team/VERSION"
 WRITE=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --bump)         BUMP="${2:-patch}"; shift 2 ;;
-        --ref)          REF="${2:-}"; shift 2 ;;
-        --version-file) VERSION_FILE="${2:-$VERSION_FILE}"; shift 2 ;;
+        --bump)         BUMP="${2:-patch}"; shift; [ $# -gt 0 ] && shift ;;
+        --ref)          REF="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --version-file) VERSION_FILE="${2:-$VERSION_FILE}"; shift; [ $# -gt 0 ] && shift ;;
         --write)        WRITE=1; shift ;;
         -h|--help)      grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -40; exit 0 ;;
         *) shift ;;

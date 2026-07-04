@@ -32,8 +32,8 @@ MIN_TOKENS=50
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --paths) PATHS="${2:-.}"; shift 2 ;;
-    --min-tokens) MIN_TOKENS="${2:-50}"; shift 2 ;;
+    --paths) PATHS="${2:-.}"; shift; [ $# -gt 0 ] && shift ;;
+    --min-tokens) MIN_TOKENS="${2:-50}"; shift; [ $# -gt 0 ] && shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -30; exit 0 ;;
     *) shift ;;
   esac

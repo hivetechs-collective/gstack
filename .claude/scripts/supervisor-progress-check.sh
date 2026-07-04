@@ -71,11 +71,11 @@ SLUG=""
 STATE_EXPLICIT=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --slug)       SLUG="${2:-}"; shift 2 ;;
-        --state)      STATE="${2:-$STATE}"; STATE_EXPLICIT=1; shift 2 ;;
-        --threshold)  THRESHOLD="${2:-$THRESHOLD}"; shift 2 ;;
-        --transcript) TRANSCRIPT="${2:-}"; shift 2 ;;
-        --spec)       SPEC="${2:-}"; shift 2 ;;
+        --slug)       SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --state)      STATE="${2:-$STATE}"; STATE_EXPLICIT=1; shift; [ $# -gt 0 ] && shift ;;
+        --threshold)  THRESHOLD="${2:-$THRESHOLD}"; shift; [ $# -gt 0 ] && shift ;;
+        --transcript) TRANSCRIPT="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --spec)       SPEC="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         *) shift ;;
     esac
 done

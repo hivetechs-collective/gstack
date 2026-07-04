@@ -41,9 +41,9 @@ MODE="args"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --command)     COMMAND="${2:-}"; shift 2 ;;
-        --output)      OUTPUT="${2:-}"; shift 2 ;;
-        --output-file) OUTPUT="$(cat "${2:-/dev/null}" 2>/dev/null || true)"; shift 2 ;;
+        --command)     COMMAND="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --output)      OUTPUT="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --output-file) OUTPUT="$(cat "${2:-/dev/null}" 2>/dev/null || true)"; shift; [ $# -gt 0 ] && shift ;;
         --stdin-json)  MODE="stdin-json"; shift ;;
         --stdin)       MODE="stdin"; shift ;;
         -h|--help)     grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;

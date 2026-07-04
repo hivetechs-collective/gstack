@@ -14,6 +14,53 @@ traced back to the exact /plan-w-team release that produced it.
 
 ```
 
+## [1.50.2] — 2026-07-04 (ae74868)
+
+Class sweep of the 1.50.1 grounding-gate bug: the identical hang signature — tolerant
+`"${2:-…}"` value default + unguarded `shift 2` in a non-`set -e` script — existed in 16
+more `.claude/scripts/` parsers, several of them long-lived supervisor-path processes
+(await-terminal, supervisor-progress-check) where an orphaned spin is exactly as costly.
+
+- fix(plan-w-team): apply the guarded consume (`shift; [ $# -gt 0 ] && shift`) to every
+  unguarded value-taking `shift 2` in: retro-capture, reuse-overlap-scan,
+  access-control-content-scan, doc-ship-gate, netnew-surface, await-terminal,
+  pwt-manifest, credential-wall-gate, supervisor-progress-check, reuse-audit-gate,
+  reuse-clone-scan, pwt-status, bypass-rate, credential-wall-detect, ship-preflight,
+  next-version (63 arms; behavior for valid invocations unchanged). Scripts protected by
+  `set -e` (failed shift aborts), a same-line `||` fallback, a preceding `$#` check, or
+  bare `"$2"` under `set -u` (unbound expansion aborts first) were left as-is.
+- test(plan-w-team): new `argparse-shift2-lint.test.sh` — corpus-wide static lint over
+  `.claude/scripts/*.sh` + `.claude/hooks/**/*.sh` (119 files) enforcing the invariant
+  "a value-consuming `shift 2` must terminate loudly when the value is missing"; fails
+  with file:line list on any regression, plus a vacuity guard on corpus size. Added to
+  the sync-to-project.sh test-file allowlist so consumers inherit the guard.
+- Verified: all 11 existing suites for swept scripts pass (156 assertions); the 5 scripts
+  without suites probed live with trailing-flag invocations under a watchdog — all
+  terminate (no 137).
+- Deferred (backlog, per handoff): systemic wall-clock cap / iteration ceiling so no
+  gate can ever hang unbounded and orphan itself regardless of parser bugs — a design
+  change, not part of this mechanical sweep.
+
+## [1.50.1] — 2026-07-04 (f8f3fc4)
+
+Field bug (helm dev laptop, 2026-07-04): three orphaned `plan-w-team-grounding-gate.sh`
+processes pegged ~3 of 12 cores at 100% CPU for ~1d21h after their parent session died.
+Not a memory leak — a pure arg-parse spin.
+
+- fix(plan-w-team): **grounding gate infinite loop on a value-less trailing flag.**
+  `--spec`/`--slug`/`--root`/`--phase` consumed their value with `shift 2`; when the
+  flag was the LAST argument, `shift 2` shifts nothing and returns non-zero (which
+  `set -u` does not catch), so `$#`/`$1` never change and `while [ $# -gt 0 ]` spins
+  forever at 100% CPU. Fixed with the bash-3.2-safe guarded form
+  `shift; [ $# -gt 0 ] && shift` — identical semantics when the value is present,
+  clean loop exit when it is absent (`${2:-}` defaults already tolerated the missing
+  value; only termination was broken).
+- test(plan-w-team): grounding-gate Cases 17–19 replay the three real orphaned command
+  lines (`--check --spec`, `--enumerate --root`, `--check --spec x.md --phase`) under a
+  new `bounded` watchdog helper (no coreutils `timeout` dependency; 137 = hung+killed),
+  so a regression FAILS the suite instead of hanging it. Verified red-then-green:
+  all three hang-and-kill against the pre-fix script, pass (exits 2/0/2) after.
+
 ## [1.50.0] — 2026-07-02 (ed5e459)
 
 Operator decision superseding the parallelism go/no-go run's Idea-B trial shape (record +

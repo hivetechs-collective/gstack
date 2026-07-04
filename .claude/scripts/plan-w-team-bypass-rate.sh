@@ -27,8 +27,8 @@ SLUG=""
 STATE_DIR_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --slug) SLUG="${2:-}"; shift 2 ;;
-    --state-dir) STATE_DIR_OVERRIDE="${2:-}"; shift 2 ;;
+    --slug) SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --state-dir) STATE_DIR_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     *) shift ;;
   esac
 done
