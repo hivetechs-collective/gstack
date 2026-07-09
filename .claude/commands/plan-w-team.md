@@ -554,7 +554,8 @@ To pin a specific generation or tier (Opus 4.8 vs Sonnet 5):
 
 1. **Set the full model ID in the agent-definition frontmatter** (e.g., `model: claude-opus-4-8` in `.claude/agents/team/evaluator.md`).
 2. **Do NOT set `model:` in the Agent tool call** — if you do, the alias will override the frontmatter pin and defeat the tier split.
-3. For mechanical work done directly by the lead (ship, retro), no pinning is needed — the lead's session model is used. These phases are short (~5% of total tokens combined), so running them on the lead's Brain-tier model is not a meaningful cost concern. If you want to force Hands-tier for ship/retro, delegate to a `builder`-type subagent for the mechanical steps.
+3. **Effort pins (1.52.2)**: `team/builder.md`, `team/builder-opus.md`, and `team/evaluator.md` carry `effort: high` frontmatter. Subagent effort otherwise INHERITS the session effort (documented default), so a lead escalated to `/effort xhigh` or ultracode would silently bleed xhigh into the entire builder fan-out and the throughput-sensitive evaluator loop — the effort-axis twin of the Fable model-default incident. Per-task escalation still works via the prompt-phrasing rung (`ultrathink`, 04-fix-first REQ-3); Anthropic's guidance is to run each model's default effort for most work, and `high` IS the default for Sonnet 5 and Opus 4.8.
+4. For mechanical work done directly by the lead (ship, retro), no pinning is needed — the lead's session model is used. These phases are short (~5% of total tokens combined), so running them on the lead's Brain-tier model is not a meaningful cost concern. If you want to force Hands-tier for ship/retro, delegate to a `builder`-type subagent for the mechanical steps.
 
 When a new model generation ships (rollovers applied: Opus 4.8 on 2026-05-28; Model Tiering v2 / Sonnet-5 Hands on 2026-07-09):
 

@@ -14,7 +14,26 @@ traced back to the exact /plan-w-team release that produced it.
 
 ```
 
-## [1.52.1] — 2026-07-09 (pending)
+## [1.52.2] — 2026-07-09 (pending)
+
+Effort pins — the effort-axis twin of the 1.51.0 model pins, closing the last lever from
+Anthropic's "knowing more vs. trying harder" article. Subagent effort INHERITS the
+session effort by default (code.claude.com/docs/en/sub-agents, verified on CLI 2.1.205),
+so a lead escalated to /effort xhigh or ultracode silently ran the entire Sonnet builder
+fan-out and the throughput-sensitive evaluator loop at xhigh — the same silent-bleed
+class as the Fable model-default incident.
+
+- feat(plan-w-team): `effort: high` frontmatter pins on team/builder.md,
+  team/builder-opus.md, and team/evaluator.md — `high` is the model default for both
+  Sonnet 5 and Opus 4.8 (Anthropic: run the default effort for most work), and the
+  evaluator pin enforces the §5 "evaluator stays at high" policy structurally.
+  Per-task escalation is unchanged: the 04-fix-first prompt-phrasing rung
+  (`ultrathink`) works regardless of the pin.
+- docs: manifest pinning-mechanics item 3 + opus-4-7-practices §5 document the pins
+  and the inherits-from-session default that motivates them.
+- test: MT14 asserts all three pins.
+
+## [1.52.1] — 2026-07-09 (d939c5e)
 
 Adversarial-audit hardening pass over the 1.51.0/1.52.0 work (6 independent refuting
 auditors: consistency, flow executability, test vacuity, language-agnosticism +

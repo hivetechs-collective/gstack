@@ -3,6 +3,7 @@ name: builder
 color: red
 description: Engineering agent that writes production code with automated validation
 model: claude-sonnet-5
+effort: high
 isolation: worktree
 permissionMode: auto
 disallowedTools: []

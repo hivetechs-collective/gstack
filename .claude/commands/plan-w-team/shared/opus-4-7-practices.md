@@ -62,7 +62,7 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 
 **How to apply**:
 
-- Brain-tier work (scope challenge, spec, review) → `high` by default; **one-way-door reviews and gnarly specs → `/effort xhigh`** (Opus 4.8, reachable from the CLI). Fall back to "think very carefully" prompt phrasing only when xhigh is unavailable (older model / non-CLI host). The evaluator stays at `high` — it is a throughput-sensitive per-iteration loop, so reserve xhigh for the critical security / one-way-door pass.
+- Brain-tier work (scope challenge, spec, review) → `high` by default; **one-way-door reviews and gnarly specs → `/effort xhigh`** (Opus 4.8, reachable from the CLI). Fall back to "think very carefully" prompt phrasing only when xhigh is unavailable (older model / non-CLI host). The evaluator stays at `high` — it is a throughput-sensitive per-iteration loop, so reserve xhigh for the critical security / one-way-door pass. As of skill 1.52.2 this is enforced structurally: `effort: high` frontmatter pins on builder / builder-opus / evaluator insulate them from session-level xhigh/ultracode bleed (subagent effort otherwise inherits the session's).
 - Hands-tier mechanical work (sync scripts, changelog bump, retro metrics) → `medium`.
 - One-off triage, log parsing, trivial grep → `low` or Haiku 4.5.
 - If you observe shallow reasoning at `high`, **raise effort (or add "think harder")** — do not try to prompt around it with more scaffolding.
@@ -106,15 +106,15 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 
 ## 9. Cross-References
 
-| Lifecycle Stage        | Applied Practices                                   |
-| ---------------------- | --------------------------------------------------- |
-| Step 0 (Scope)         | §2 adaptive thinking (terse mode)                   |
-| Step 1 (Spec)          | §1 front-load, §6 outcome-oriented AC, §7 prose     |
-| Step 3-4 (Execute)     | §3 explicit parallelism, §4 auto mode, §6 delegate  |
-| Step 4b (Evaluator)    | §1 front-load criteria, §2 think carefully, §7 form |
-| Step 5 (Review)        | §2 deep-think Pass 1, quick Pass 2                  |
+| Lifecycle Stage        | Applied Practices                                                                |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| Step 0 (Scope)         | §2 adaptive thinking (terse mode)                                                |
+| Step 1 (Spec)          | §1 front-load, §6 outcome-oriented AC, §7 prose                                  |
+| Step 3-4 (Execute)     | §3 explicit parallelism, §4 auto mode, §6 delegate                               |
+| Step 4b (Evaluator)    | §1 front-load criteria, §2 think carefully, §7 form                              |
+| Step 5 (Review)        | §2 deep-think Pass 1, quick Pass 2                                               |
 | Step 6-7 (Ship / Docs) | §5 medium effort, lead session (Hands delegation optional), §7 prose calibration |
-| Any long-context stage | §8 tokenization buffer                              |
+| Any long-context stage | §8 tokenization buffer                                                           |
 
 ## 10. What Stays the Same from 4.6
 
