@@ -503,7 +503,12 @@ fresh so the enforced gate has an accurate signal.
 **Effort-escalation rung (REQ-3 — autonomous "go deeper when stuck").** On
 `STALL-ALERT` (or a `LOW_CONFIDENCE_STREAK`), before re-attempting the next backlog
 item, **elevate the reasoning budget for the recovery turn** — interleaved-thinking
-/ `ultrathink` / `/effort xhigh` — rather than retrying at default effort. Trade
+/ `ultrathink` / `/effort xhigh` — rather than retrying at default effort.
+(Pin caveat, skill 1.52.3: `/effort xhigh` raises YOUR turn only — pinned team
+subagents (builder, builder-opus, evaluator, validator, silent-failure-hunter)
+keep `effort: high`; `ultrathink` in a re-spawn prompt deepens thinking within
+that pin. The effective per-task escalation for a re-spawn is the model bump —
+hard-lane re-dispatch per 04-fix-first REQ-3.) Trade
 tokens for depth in place. This is the bg-autonomous equivalent of "an operator
 invokes a workflow when stuck": the same recovery instinct, expressed as effort
 because **`CLAUDE_CODE_DISABLE_WORKFLOWS=1` stays for bg (PWT-WF1)** — a bg worker

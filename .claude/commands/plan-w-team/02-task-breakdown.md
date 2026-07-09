@@ -184,7 +184,7 @@ Post-merge type duplication is the single most-cited Stage 2 pain point (this ex
 | -------------- | -------- | --------------------------- | --------------------------------------------------------------------- |
 | `spec_path`    | Yes      | File path                   | Links task to spec for resumption                                     |
 | `feature_area` | Yes      | String                      | Groups related tasks                                                  |
-| `effort`       | Yes      | `high`, `medium`, `low`     | Controls builder thinking depth                                       |
+| `effort`       | Yes      | `high`, `medium`, `low`     | Steers the builder's implementation approach (prompt-level Effort Awareness table); API reasoning effort is pinned `high` in agent frontmatter (manifest pinning item 3) |
 | `scope`        | Yes      | See scope tags below        | Enables conditional review steps                                      |
 | `completeness` | No       | 1-10                        | How thorough the implementation should be                             |
 | `door_type`    | No       | `one-way`, `two-way`        | Extra review scrutiny for one-way doors                               |

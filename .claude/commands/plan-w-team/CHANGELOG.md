@@ -14,7 +14,39 @@ traced back to the exact /plan-w-team release that produced it.
 
 ```
 
-## [1.52.2] — 2026-07-09 (pending)
+## [1.52.3] — 2026-07-09 (pending)
+
+Adversarial check on the 1.52.2 effort pins (3 refuting auditors: semantics,
+regressions, consistency). The pin MECHANISM survived; the coverage claim and two
+doc statements did not. All confirmed findings fixed:
+
+- fix(coverage, MAJOR): 1.52.2 claimed the "entire builder fan-out" was insulated, but
+  Step 2 routes routine tasks to roster SPECIALISTS first (builder is the fallback) and
+  only 3 of the pipeline agents were pinned. Pins extended to the full pipeline set:
+  team/validator, team/supervisor, team/silent-failure-hunter, plus the two named Hands
+  specialists (react-typescript-specialist, rust-backend-specialist) — 8 pinned agents
+  total. Documented residual: tasks routed to OTHER roster specialists (nodejs-specialist
+  etc.) still inherit session effort — pinning all 159 agents would wrongly freeze
+  interactive consults; prefer the builder lanes when fanning out at xhigh.
+- fix(honesty, MAJOR): the pin is BIDIRECTIONAL — it also blocks deliberate session-level
+  de-escalation (a /effort low lead still runs pinned agents at high). Manifest item 3 and
+  §5 now say so, with the escape hatch (edit the pins in claude-pattern; consumer-repo
+  edits are reverted on next sync) and a reconciliation note on manifest item 4's
+  ship/retro Hands delegation.
+- fix(honesty, MAJOR): the claim that `ultrathink` "works regardless of the pin" was
+  unverified — prompt phrasing deepens adaptive thinking WITHIN the pinned effort level
+  and is NOT verified to raise the effort parameter. Docs now state this and name the
+  verified per-task escalation lever: the model bump (hard-lane re-dispatch).
+  supervisor-protocol STALL-ALERT rung annotated (its /effort-xhigh leg raises the
+  supervisor's own turn only).
+- fix(docs, MINOR): 02-task-breakdown effort-field description no longer claims to control
+  thinking depth (it steers the prompt-level approach; API effort is pinned); Sonnet-5
+  default-high claim now cited (platform effort docs / migration guide).
+- test: MT14 hardened — frontmatter-scoped via awk (body-prose/comment survivals can't
+  satisfy it), exactly-one-effort-key assertion (catches last-wins YAML duplicates),
+  extended to all 8 pinned agents.
+
+## [1.52.2] — 2026-07-09 (02ee483)
 
 Effort pins — the effort-axis twin of the 1.51.0 model pins, closing the last lever from
 Anthropic's "knowing more vs. trying harder" article. Subagent effort INHERITS the

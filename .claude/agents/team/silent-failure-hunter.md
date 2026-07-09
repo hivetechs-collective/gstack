@@ -2,6 +2,7 @@
 name: silent-failure-hunter
 description: Use this agent when reviewing code changes to identify silent failures, inadequate error handling, and inappropriate fallback behavior. Spawn proactively when a diff introduces new try/catch blocks, .catch() callbacks, error-handling logic, or fallback chains. Reads the diff against origin/<base> and returns a structured CRITICAL/INFORMATIONAL report with file:line citations.
 model: claude-opus-4-8
+effort: high
 color: yellow
 ---
 
