@@ -1054,13 +1054,13 @@ if [ "$LAUNCH" = "1" ]; then
     #   an expensive interactive session default (2026-07 incident: a Fable 5
     #   user default silently upgraded every bg worker/supervisor — ~2x Opus
     #   burn per token, two-account weekly-limit lockout). Brain tier = Opus 4.8.
-    #   --fallback-model (Claude Code 2.1.152+): if the primary is unavailable,
-    #   the session degrades to this model for the rest of the run instead of
-    #   hard-failing EVERY request (headless/bg sessions only; no-op interactive).
-    #   Default fallback is Sonnet 5 — near-Opus coding/agentic quality on the
-    #   same tokenizer, drawn largely from the separate Max Sonnet bucket, so a
-    #   long autonomous run survives Opus capacity exhaustion (an Opus 4.7
-    #   fallback could not: same pool and weight as 4.8, worse output).
+    #   --fallback-model: BEST-EFFORT only — `claude --help` documents the flag
+    #   for print/headless runs and the 2026-06-28 regression probe recorded it
+    #   as likely inert under --bg. Do NOT rely on it for capacity exhaustion;
+    #   the load-bearing protection is the explicit --model primary pin above.
+    #   Default fallback claude-sonnet-5 (near-Opus coding, same tokenizer,
+    #   separate Max Sonnet bucket) is kept as belt-and-suspenders; the durable
+    #   lever, if degradation is ever needed, is settings.json fallbackModel.
     #   Override via PWT_PRIMARY_MODEL / PWT_FALLBACK_MODEL. Threaded into both
     #   bg spawn sites below (worker + supervisor).
     PWT_PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-4-8}"

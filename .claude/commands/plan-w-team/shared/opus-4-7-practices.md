@@ -113,7 +113,7 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 | Step 3-4 (Execute)     | §3 explicit parallelism, §4 auto mode, §6 delegate  |
 | Step 4b (Evaluator)    | §1 front-load criteria, §2 think carefully, §7 form |
 | Step 5 (Review)        | §2 deep-think Pass 1, quick Pass 2                  |
-| Step 6-7 (Ship / Docs) | §5 medium effort, Hands tier, §7 prose calibration  |
+| Step 6-7 (Ship / Docs) | §5 medium effort, lead session (Hands delegation optional), §7 prose calibration |
 | Any long-context stage | §8 tokenization buffer                              |
 
 ## 10. What Stays the Same from 4.6

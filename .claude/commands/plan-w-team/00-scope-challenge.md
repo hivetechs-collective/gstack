@@ -198,7 +198,7 @@ The vignette exists to remind the lead that "Recommend against" is a real outcom
 
 **Cognitive frameworks used here**: Inversion reflex (Munger), Essential vs accidental complexity (Brooks), Focus as subtraction (Jobs/Rams), One-way vs two-way doors (Bezos). Read `shared/cognitive-frameworks.md` for full reference.
 
-**Opus 4.7 tip**: Scope challenge is a gate, not a design session — use terse adaptive thinking ("prioritize responding quickly"). See `shared/opus-4-7-practices.md` §2.
+**Opus 4.7/4.8 tip**: Scope challenge is a gate, not a design session — use terse adaptive thinking ("prioritize responding quickly"). See `shared/opus-4-7-practices.md` §2.
 
 ## End-of-Stage Status Block (PWT-T5)
 

@@ -1,13 +1,13 @@
 ---
 name: silent-failure-hunter
 description: Use this agent when reviewing code changes to identify silent failures, inadequate error handling, and inappropriate fallback behavior. Spawn proactively when a diff introduces new try/catch blocks, .catch() callbacks, error-handling logic, or fallback chains. Reads the diff against origin/<base> and returns a structured CRITICAL/INFORMATIONAL report with file:line citations.
-model: claude-opus-4-7
+model: claude-opus-4-8
 color: yellow
 ---
 
 <!--
   Adapted from pr-review-toolkit/agents/silent-failure-hunter.md
-  (claude-plugins-official, plugin v0.x). Pinned to Brain-tier (Opus 4.7)
+  (claude-plugins-official, plugin v0.x). Pinned to Brain-tier
   because the discipline scales with reasoning depth: identifying which
   catch block is too broad requires reading surrounding code, not pattern
   matching. Vendored into .claude/agents/team/ so claude-pattern-synced

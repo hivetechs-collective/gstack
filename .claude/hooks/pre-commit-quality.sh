@@ -35,7 +35,7 @@ INPUT=$(cat)
 COMMAND=$(echo "$INPUT" | grep -o '"command"[[:space:]]*:[[:space:]]*"[^"]*"' | sed 's/.*:[[:space:]]*"\([^"]*\)".*/\1/' || echo "")
 
 # Only activate on git commit (not --amend)
-if ! echo "$COMMAND" | grep -q 'git commit'; then
+if ! echo "$COMMAND" | grep -qE '(^|[^[:alnum:]])git([[:space:]]+-[^[:space:]]+([[:space:]]+[^[:space:]]+)?)*[[:space:]]+commit([^[:alnum:]]|$)'; then
     echo "$INPUT"
     exit 0
 fi
@@ -150,6 +150,10 @@ while IFS= read -r file; do
     case "$file" in
         .claude/commands/plan-w-team*|\
         .claude/scripts/plan-w-team-*|\
+        .claude/scripts/pwt-goal.sh|\
+        .claude/agents/team/*|\
+        .claude/agents/implementation/react-typescript-specialist.md|\
+        .claude/agents/implementation/rust-backend-specialist.md|\
         .claude/scripts/secret-scan.sh|\
         .claude/scripts/secret-doc-sync.sh|\
         tests/skill/*)

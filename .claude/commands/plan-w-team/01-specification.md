@@ -1,6 +1,6 @@
 # Step 1: Generate Specification
 
-**Opus 4.7 tip**: Front-load the full task shape in the first draft — intent, constraints, acceptance criteria, Error & Rescue Map, and Shadow Paths. Progressive reveal wastes tokens on rework. See `shared/opus-4-7-practices.md` §1.
+**Opus 4.7/4.8 tip**: Front-load the full task shape in the first draft — intent, constraints, acceptance criteria, Error & Rescue Map, and Shadow Paths. Progressive reveal wastes tokens on rework. See `shared/opus-4-7-practices.md` §1.
 
 Create a **spec** (requirements document, persists in repo) at `docs/specs/<feature-name>.md`:
 

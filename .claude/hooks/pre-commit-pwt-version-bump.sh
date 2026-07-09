@@ -63,7 +63,7 @@ STAGED=$(git -C "$PROJECT_ROOT" diff --cached --name-only --diff-filter=ACMR 2>/
 TRIGGER=0
 echo "$STAGED" | while IFS= read -r f; do
     case "$f" in
-        .claude/commands/plan-w-team/*|.claude/scripts/pwt-goal.sh)
+        .claude/commands/plan-w-team/*|.claude/scripts/pwt-goal.sh|.claude/agents/team/*|.claude/agents/implementation/react-typescript-specialist.md|.claude/agents/implementation/rust-backend-specialist.md)
             echo "trigger"
             break
             ;;
@@ -74,6 +74,13 @@ done | grep -q "trigger" && TRIGGER=1
 # If VERSION is already staged, the human (or a prior run) bumped it — defer.
 if echo "$STAGED" | grep -q '^\.claude/commands/plan-w-team/VERSION$'; then
     echo "pre-commit-pwt-version-bump: VERSION already staged, skipping auto-bump" >&2
+    exit 0
+fi
+
+# CHANGELOG sha-backfill commits update an already-shipped release's sha only —
+# bumping VERSION for them would mint a phantom release. Skip explicitly.
+if printf '%s' "$COMMAND" | grep -qi 'backfill'; then
+    echo "pre-commit-pwt-version-bump: CHANGELOG sha backfill commit, skipping auto-bump" >&2
     exit 0
 fi
 

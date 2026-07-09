@@ -13,9 +13,9 @@
      Kill switch: PLAN_W_TEAM_DISABLE_ORCHESTRATOR=1
 -->
 
-**Opus 4.7 tips** (read `shared/opus-4-7-practices.md` before spawning):
+**Opus 4.7/4.8 tips** (read `shared/opus-4-7-practices.md` before spawning):
 
-- §3 **Deliberate subagent spawning**: 4.7 is judicious. When you want parallelism, state "spawn N parallel builders" explicitly — do not assume the lead will fan out.
+- §3 **Deliberate subagent spawning**: the Brain-tier lead is judicious about fan-out. When you want parallelism, state "spawn N parallel builders" explicitly — do not assume the lead will fan out.
 - §4 **Auto mode + completion hooks**: default builders to `mode: "auto"` and rely on `desktop-notify.sh` rather than polling.
 - §6 **Delegate outcomes**: give builders the acceptance criteria and files touched, not step-by-step instructions.
 
@@ -296,6 +296,8 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
 
      TASK CLAIMING:
      - Use TaskList to find unassigned, unblocked tasks
+     - SKIP tasks with metadata.difficulty "hard" or agent_type "builder-opus"
+       unless YOU are a builder-opus agent or the lead re-dispatched the task to you
      - Use TaskUpdate to claim a task (assign to yourself)
      - Implement, commit, mark complete with metadata
      - Check TaskList for next task (self-claiming loop)
@@ -312,6 +314,7 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
 7. On completion: TaskUpdate with metadata: {commit_sha, verification, builder_name, wtf_score} (see `shared/self-regulation.md` §WTF-likelihood for the 0.0-1.0 scoring rubric)
 8. Builder checks TaskList for next task (self-claiming loop)
 9. Lead monitors progress — use `/loop 2m check TaskList and report status` or CronCreate for automated monitoring instead of manual checks
+   - **Builder consults (advisor pattern)**: Sonnet-lane builders SendMessage ONE focused question before committing to a non-obvious approach, when stuck (same error twice), or before closing a `door_type: one-way` task (see `team/builder.md` §Lead Consults). Answer promptly and briefly — focused guidance under ~80 words beats a comprehensive plan (Anthropic advisor-tool guidance). A consult is NOT a fix-first failure signal. If the same builder consults repeatedly on one task, treat it as a difficulty misroute and re-dispatch that task to the hard lane (`builder-opus`). **Re-dispatch sequence** (also referenced by the Step 5 escalation): (1) SendMessage the incumbent builder to stop, commit `wip:`, and report; (2) `TaskUpdate(taskId, owner: "", status: "pending", metadata: {agent_type: "builder-opus", difficulty: "hard"})`; (3) if no builder-opus is running, spawn one, pointing it at the branch holding the salvageable WIP — the re-dispatched agent starts with a fresh WTF score. Before Step 5, sweep TaskList for `consult_unanswered` / `pending_review` flags and review those tasks first.
 10. When all tasks complete: SendMessage(shutdown_request) to all builders
 11. When all builders complete, merge worktree branches to main in bisectable order:
     - Merge in dependency order (infrastructure first, then models, then controllers, then tests)

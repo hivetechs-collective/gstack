@@ -188,7 +188,7 @@ As an Opus-powered orchestrator, you leverage extended thinking for superior str
 ### Phase 3: Agent Selection
 
 - Which specialist agents are optimal for each task?
-- What model tier does each agent need? Brain tier (Opus 4.7) for orchestration/evaluation/security review, Hands tier (Opus 4.6) for implementation, Haiku 4.5 for mechanical tasks. Pin via agent frontmatter, not Agent-tool model param.
+- What model tier does each agent need? Brain tier (Opus 4.8) for orchestration/evaluation/security review, Hands routine lane (Sonnet 5) for implementation, the `builder-opus` hard lane (Opus 4.8) for `difficulty: hard` tasks, Haiku 4.5 for mechanical tasks. The canonical tier→model-ID map is the Model Strategy table in `.claude/commands/plan-w-team.md`. Pin via agent frontmatter, not Agent-tool model param.
 - What tool restrictions should apply?
 
 ### Phase 4: Conflict Prevention
@@ -219,12 +219,13 @@ As an Opus-powered orchestrator, you leverage extended thinking for superior str
 
 | Task Type                                  | Tier / Model     | Rationale                                  |
 | ------------------------------------------ | ---------------- | ------------------------------------------ |
-| **Orchestration / Evaluation / Security**  | Brain — Opus 4.7 | Reasoning quality directly affects outcome |
-| **Coding / Architecture / Debugging**      | Hands — Opus 4.6 | Execution speed, cost-effective            |
-| **Documentation**                          | Sonnet (latest)  | Adequate for prose                         |
-| **File Operations / Builds / Log parsing** | Haiku 4.5        | Mechanical only                            |
+| **Orchestration / Evaluation / Security**  | Brain — Opus 4.8 (`opus`)                   | Reasoning quality directly affects outcome |
+| **Routine Coding / Implementation**        | Hands — Sonnet 5 (routine lane)             | Near-Opus coding at lower usage weight     |
+| **Hard tasks (novel / cross-cutting / ambiguous / security-sensitive)** | Brain — `builder-opus` hard lane (Opus 4.8) | Smaller models grind on hard multi-step work |
+| **Documentation**                          | Sonnet (latest)                             | Adequate for prose                         |
+| **File Operations / Builds / Log parsing** | Haiku 4.5                                   | Mechanical only                            |
 
-**How tier pinning works**: Agent-tool `model` parameter only accepts aliases (`opus`/`sonnet`/`haiku`). To pin a specific generation (e.g., 4.7 vs 4.6), set `model: claude-opus-4-7` in the agent-definition file's frontmatter. The Agent-tool param, if set, overrides frontmatter — so omit it when you want the pin to hold.
+**How tier pinning works**: Agent-tool `model` parameter only accepts aliases (`opus`/`sonnet`/`haiku`). To pin a specific generation or tier, set the full model ID (e.g., `model: claude-opus-4-8`) in the agent-definition file's frontmatter — the canonical tier→model-ID map lives in the Model Strategy table in `.claude/commands/plan-w-team.md`. The Agent-tool param, if set, overrides frontmatter — so omit it when you want the pin to hold.
 
 ## Core Responsibilities
 

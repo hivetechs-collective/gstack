@@ -14,6 +14,83 @@ traced back to the exact /plan-w-team release that produced it.
 
 ```
 
+## [1.52.1] — 2026-07-09 (pending)
+
+Adversarial-audit hardening pass over the 1.51.0/1.52.0 work (6 independent refuting
+auditors: consistency, flow executability, test vacuity, language-agnosticism +
+propagation, spawn argv, hooks harmony). All confirmed findings fixed:
+
+- fix(CRITICAL, flow): claim-side routing race — the Sonnet builder could self-claim
+  `difficulty: hard` / `builder-opus` tasks (routing was enforced one-way). builder.md
+  Self-Claiming and the 03-execute spawn-prompt TASK CLAIMING block now SKIP hard-lane
+  tasks unless explicitly re-dispatched.
+- fix(CRITICAL, sync): `builder-opus.md` (and team/evaluator, team/supervisor,
+  team/silent-failure-hunter) were absent from sync-to-project.sh profile allowlists —
+  consumers were at VERSION 1.51.0 with docs routing to an agent type that did not
+  exist there, and evaluator/supervisor stuck on retired pins. All team agents added
+  to all three profiles; MT12 guards the symmetry.
+- fix(MAJOR, flow): Lead Consults now executable on every dispatch path — supervisor.md
+  gains SendMessage + a Builder Consults duty section; builder.md gains a no-reply
+  degrade rule (`consult_unanswered` metadata; one-way-door tasks complete with
+  `pending_review` instead of stalling) and a `wip:`-squash rule reconciling
+  durable-first with bisectable commits.
+- fix(MAJOR, flow): re-dispatch-to-hard-lane now has a concrete sequence (stop
+  incumbent → reset task to pending with agent_type builder-opus → spawn if none
+  running, pointing at salvageable WIP; fresh WTF score), referenced from Step 5.
+- fix(MAJOR, docs): stale generation prose swept — 04-fix-first auto-fix builder label
+  (was "Opus 4.7"), orchestrator.md ENFORCED delegation table (was 4.7/4.6, two
+  generations stale; MT13 guards), stage-file tip labels → "Opus 4.7/4.8", practices
+  ship-row default corrected to lead session, sdk-expert docs stamped HISTORICAL,
+  CLAUDE.md agent counts 154/85 → 159/86.
+- fix(MAJOR, argv): pwt-goal.sh fallback comment no longer overclaims — --fallback-model
+  is documented print-only and the 2026-06-28 probe recorded it likely inert under
+  --bg; the load-bearing protection is the --model primary pin (this correction also
+  amends the 1.51.0 entry's fallback rationale). Durable degradation lever, if ever
+  needed: settings.json fallbackModel.
+- fix(MAJOR, hooks): pre-commit-quality test-skill gate + version-bump hook now trigger
+  on pwt-goal.sh and the model-pinned agent files; both hooks' git-commit matchers
+  tolerate `git -C <path> commit` (worktree/bg form); version-bump skips CHANGELOG
+  sha-backfill commits explicitly.
+- fix(flow, minor): `difficulty: hard` now implies `effort: high`; the 04-fix-first
+  effort rung names prompt-phrasing (`ultrathink`) as the mechanism (the /effort
+  slider is session-level); hard-lane precedence over specialist match stated
+  explicitly; builder anti-pattern exemplars marked language-illustrative.
+- test: MT2/MT4/MT5/MT6/MT8/MT9/MT10 re-anchored on load-bearing clauses (vacuity
+  findings); new MT11 (claim-side exclusion), MT12 (sync allowlist symmetry), MT13
+  (no retired generations in orchestrator); AC12 excludes comment lines.
+
+## [1.52.0] — 2026-07-09 (0995a61)
+
+Advisor-pattern lead consults for the Sonnet lane — the native /plan-w-team analog of
+Anthropic's advisor tool (platform.claude.com/docs/en/agents-and-tools/tool-use/advisor-tool,
+API-only beta, unusable on Max): a faster executor consulting a stronger model at the
+moments where a plan matters most. Assessed the multi-agent sessions doc + advisor doc +
+the @claudedevs "plan big, execute small" threads as a whole against 1.51.0: the
+coordinator/roster/threads architecture and escalation lanes were already met; the one
+gap was builder-initiated consults BEFORE a failed iteration (fix-first only catches
+failures AFTER review).
+
+- feat(plan-w-team): `team/builder.md` gains §"Lead Consults (Advisor Pattern)" — three
+  scoped checkpoints (before committing to a non-obvious approach; when stuck with the
+  same error twice, BEFORE the WTF caps force a stop; before declaring done on a
+  `door_type: one-way` task), durable-first rule (commit WIP before consulting), and
+  conflict-surfacing discipline (never silently switch; mirrors the GRD contradiction
+  rule). Explicit anti-flood scope rule.
+- feat(plan-w-team): 03-execute Execution item 9 gains the lead-side contract — answer
+  consults promptly in under ~80 words (Anthropic's measured advisor-brevity guidance);
+  a consult is NOT a fix-first failure signal; repeated consults on one task = difficulty
+  misroute → re-dispatch to the hard lane.
+- docs(plan-w-team): builder-opus deliberately does NOT carry the consult checkpoints
+  (Anthropic measured consult nudges as net-negative on Opus executors; equal-capability
+  consult adds latency, not insight) — mirror-comment and manifest rollover bullet updated
+  to list this as the third deliberate divergence.
+- Hooks reviewed for harmony with 1.51+: no hook hardcodes model IDs; tmux panes label
+  agent types generically (builder-opus gets its own pane); pre-commit version-bump hook
+  skips when VERSION is staged manually (by design — no double-bump); quality gate,
+  naming ratchet, and sync-allowlist check all verified firing during the 1.51.0 ship.
+- test: MT8-MT10 — consult section present in builder.md, deliberately absent in
+  builder-opus.md, lead-side contract present in 03-execute.md.
+
 ## [1.51.0] — 2026-07-09 (24a45e3)
 
 Model Tiering v2 — task-difficulty lane routing per Anthropic's "knowing more vs.

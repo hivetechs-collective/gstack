@@ -67,7 +67,7 @@ Before proceeding to execution, assign each task to the best specialist agent:
    ```
 
 3. **Use the most specific match** — prefer `fastapi-specialist` over `builder` for a Python API task, `react-typescript-specialist` over `nodejs-specialist` for React UI work
-4. **Fall back to `builder`** only when no specialist fits the task domain; for `difficulty: hard` tasks use `builder-opus` instead (see Model-Lane Routing below)
+4. **Fall back to `builder`** only when no specialist fits the task domain; for `difficulty: hard` tasks use `builder-opus` regardless of specialist fit — the hard-lane rule overrides items 3-4 (see Model-Lane Routing below)
 
 ## Model-Lane Routing (difficulty flag)
 
@@ -80,6 +80,7 @@ Routing rule — applied here at assignment time, so Step 3 dispatch needs no ex
 
 - `difficulty: "hard"` → `agent_type: "builder-opus"` (Brain-tier hard lane; overrides the specialist match)
 - routine → the specialist from the roster, or `builder` (Sonnet routine lane) as fallback
+- `difficulty: "hard"` also implies `effort: "high"` unless the lead overrides with justification — the hard-lane criteria map to the high-effort row of the Effort Levels table
 
 **Why route by task, not just role** (Anthropic, "knowing more vs. trying harder"): on
 hard multi-step work the cost equation inverts — a smaller model grinds through failed
