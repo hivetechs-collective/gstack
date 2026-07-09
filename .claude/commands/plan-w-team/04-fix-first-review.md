@@ -15,13 +15,26 @@
 
 **Opus 4.7 tip**: Pass 1 (CRITICAL) benefits from deep adaptive thinking ("think carefully about security implications"). Pass 2 (INFORMATIONAL) benefits from terse thinking ("prioritize responding quickly — just list findings"). See `shared/opus-4-7-practices.md` §2.
 
-**Effort-escalation trigger (REQ-3 — autonomous, NO workflows).** When a reviewer/fix
+**Escalation trigger (REQ-3 — autonomous, NO workflows).** When a reviewer/fix
 returns **`confidence: low` twice on the same task**, OR the task carries a **HARD**-tagged
-sub-problem, the lead **re-spawns THAT single task with an elevated thinking budget**
-(`ultrathink` / `/effort xhigh`) rather than retrying at default effort. This is the
-fix-stage twin of the supervisor's STALL-ALERT effort rung (`shared/supervisor-protocol.md`).
-It trades tokens for depth in place; it does **not** re-enable the Workflow tool for bg
-workers (`CLAUDE_CODE_DISABLE_WORKFLOWS=1` / PWT-WF1 stays — workflows are operator-only).
+sub-problem, the lead escalates THAT single task — and first **diagnoses which knob to
+turn** (Anthropic, "knowing more vs. trying harder"):
+
+- **Trying-harder failure** — the builder skipped a file, didn't run the tests, or bailed
+  partway through: re-spawn the SAME model with an elevated thinking budget
+  (`ultrathink` / `/effort xhigh`) rather than retrying at default effort.
+- **Knowing-more failure** — the builder had full context, clearly tried, and was still
+  confidently wrong: re-dispatch the task to the **hard lane** (`agent_type:
+"builder-opus"`, Brain-tier). More effort on the smaller model buys a more elaborate
+  wrong answer, and every failed iteration re-triggers this review stage.
+- **Already Brain-tier and still confidently wrong** on a genuinely hard problem:
+  surface to the user as a Fable-credits candidate (`/model fable` in a fresh planning
+  session) — an operator decision; NEVER assume credits exist or switch models yourself.
+
+This is the fix-stage twin of the supervisor's STALL-ALERT effort rung
+(`shared/supervisor-protocol.md`). It trades tokens for depth in place; it does **not**
+re-enable the Workflow tool for bg workers (`CLAUDE_CODE_DISABLE_WORKFLOWS=1` / PWT-WF1
+stays — workflows are operator-only).
 
 After builders complete, worktrees are merged, and the evaluator loop (Step 4b) has run, perform a two-pass review on the full diff.
 

@@ -1049,14 +1049,22 @@ if [ "$LAUNCH" = "1" ]; then
     # (PWT-SUP-YIELD) + shared/supervisor-protocol.md §Wait mechanism.
     LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_SUPERVISOR_SESSION=0"
 
-    # --fallback-model (Claude Code 2.1.152+): if the pinned primary model
-    # (Opus 4.8) is ever not found, the session degrades to this model for the
-    # rest of the run instead of hard-failing EVERY request. Takes effect in
-    # background/print (headless) sessions only; a no-op in interactive mode.
-    # Default to Opus 4.7 to preserve Brain-tier reasoning quality (Opus-tier
-    # only per MEMORY user_no_local_llm); override via PWT_FALLBACK_MODEL
-    # (sonnet only as a last resort). Threaded into both bg spawn sites below.
-    PWT_FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-opus-4-7}"
+    # Model pinning for bg spawns (Model Tiering v2, skill 1.51.0):
+    #   --model pins the PRIMARY explicitly so bg fleets NEVER silently inherit
+    #   an expensive interactive session default (2026-07 incident: a Fable 5
+    #   user default silently upgraded every bg worker/supervisor — ~2x Opus
+    #   burn per token, two-account weekly-limit lockout). Brain tier = Opus 4.8.
+    #   --fallback-model (Claude Code 2.1.152+): if the primary is unavailable,
+    #   the session degrades to this model for the rest of the run instead of
+    #   hard-failing EVERY request (headless/bg sessions only; no-op interactive).
+    #   Default fallback is Sonnet 5 — near-Opus coding/agentic quality on the
+    #   same tokenizer, drawn largely from the separate Max Sonnet bucket, so a
+    #   long autonomous run survives Opus capacity exhaustion (an Opus 4.7
+    #   fallback could not: same pool and weight as 4.8, worse output).
+    #   Override via PWT_PRIMARY_MODEL / PWT_FALLBACK_MODEL. Threaded into both
+    #   bg spawn sites below (worker + supervisor).
+    PWT_PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-4-8}"
+    PWT_FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-sonnet-5}"
 
     # Resolve PROJECT_ROOT to the active worktree, not the main checkout.
     # When CLAUDE_PROJECT_DIR is inherited from a parent process, it can point
@@ -1193,10 +1201,10 @@ if [ "$LAUNCH" = "1" ]; then
     # Use $CLAUDE_BIN (resolved via locate-claude.sh) to avoid PATH-dependent
     # "env: claude: No such file or directory" failures.
     if [ -n "$LAUNCH_ENV" ]; then
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg $WT_FLAG --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
         LAUNCH_RC=$?
     else
-        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 "$CLAUDE_BIN" --bg $WT_FLAG --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
         LAUNCH_RC=$?
     fi
 
@@ -1559,7 +1567,7 @@ SUPEOF
     # 2026-05-21: sid 0b5856d7 → 4bbb2cb8 → f2ec9cb9 → 7a4c658b cascade).
     SUP_OUT_FILE=$(mktemp -t pwt-goal-supervisor.XXXXXX 2>/dev/null || echo "")
     if [ -n "$SUP_OUT_FILE" ]; then
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-7}" "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-sonnet-5}" "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
         SUP_RC=$?
         SUPERVISOR_SID=""
         if [ -s "$SUP_OUT_FILE" ]; then
@@ -1573,7 +1581,7 @@ SUPEOF
         SUPERVISOR_SID=""
         SUP_RC=1
         echo "WARN: mktemp failed for supervisor; spawning anyway" >&2
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-7}" "$SUPERVISOR_BOOTSTRAP" >&2 || true
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-sonnet-5}" "$SUPERVISOR_BOOTSTRAP" >&2 || true
     fi
 
     if [ -n "$SUPERVISOR_SID" ]; then

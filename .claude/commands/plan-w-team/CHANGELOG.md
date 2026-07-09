@@ -14,6 +14,45 @@ traced back to the exact /plan-w-team release that produced it.
 
 ```
 
+## [1.51.0] — 2026-07-09 (24a45e3)
+
+Model Tiering v2 — task-difficulty lane routing per Anthropic's "knowing more vs.
+trying harder" (claude.com/blog/claude-model-and-effort-level-in-claude-code) and the
+Managed Agents coordinator/roster economics. Trigger: the 2026-07 Fable-default
+incident (unpinned bg spawn paths silently inherited a `claude-fable-5[1m]` session
+default → ~2x burn, two-account weekly-limit lockout) plus the observation that the
+Opus 4.7 Hands tier was strictly dominated (same usage weight as 4.8, worse output).
+
+- feat(plan-w-team): Hands routine lane moves `claude-opus-4-7` → `claude-sonnet-5`
+  (team/builder, react-typescript-specialist, rust-backend-specialist frontmatter).
+  Near-Opus coding/agentic quality, same tokenizer as Opus 4.7/4.8, and on Max draws
+  largely from the separate (larger) Sonnet weekly bucket.
+- feat(plan-w-team): new Brain-tier hard lane `team/builder-opus` (`claude-opus-4-8`,
+  mirrors builder.md body). Step 2 gains a `difficulty: routine|hard` metadata field;
+  `hard` (novel architecture / cross-cutting / ambiguous / security-sensitive /
+  concurrency) ⇒ `agent_type: builder-opus` at assignment time — on hard multi-step
+  work the cost equation inverts (small model grinds, each failed iteration re-triggers
+  Brain review), so known-hard tasks skip the Sonnet lane entirely. Calibration guard:
+  >~20% hard ⇒ under-decomposed spec.
+- feat(plan-w-team): 04-fix-first escalation rung upgraded from effort-only to the
+  knowing-vs-trying diagnostic — skipped/bailed/unverified ⇒ effort bump same model
+  (`ultrathink`/xhigh); confidently-wrong-with-full-context ⇒ model bump to the hard
+  lane; Brain-tier still confidently wrong ⇒ surface as operator-only Fable-credits
+  candidate (never auto-switch). Companion bullet in opus-4-7-practices §5.
+- fix(pwt-goal): bg worker + supervisor spawns now pin `--model claude-opus-4-8`
+  (PWT_PRIMARY_MODEL) so fleets never silently inherit the interactive session default
+  (the Fable incident class); `--fallback-model` default moves `claude-opus-4-7` →
+  `claude-sonnet-5` (PWT_FALLBACK_MODEL) so long autonomous runs survive Opus capacity
+  exhaustion — a 4.7 fallback shares the exhausted pool and could not.
+- docs: manifest Model Strategy table gains the hard-lane row + 2026-07-09 generation
+  note; rollover procedure now tracks Brain (Opus) and Hands (Sonnet) generations
+  separately and forbids demoting a previous Opus into Hands; root CLAUDE.md Models
+  table updated; agent-roster gains builder-opus.
+- test: `tests/skill/cases/model-tiering-v2.bats` (MT1-MT7) asserts the lane pins,
+  builder-opus existence, difficulty routing docs, escalation diagnostic, and pwt-goal
+  primary/fallback pins; opus48-uplift AC2/AC12 updated (Hands-pin and fallback-default
+  assertions superseded by MT1/MT6).
+
 ## [1.50.2] — 2026-07-04 (ae74868)
 
 Class sweep of the 1.50.1 grounding-gate bug: the identical hang signature — tolerant

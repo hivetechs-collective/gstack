@@ -104,16 +104,17 @@ Use `subagent_type` value when spawning builders in Step 3.
 
 ## Coordination & Mechanical
 
-| subagent_type  | Domain                                                     | Color  |
-| -------------- | ---------------------------------------------------------- | ------ |
-| `orchestrator` | Multi-agent coordination (see `shared/orchestrator-interception.md` for in-pipeline routing contract) | blue   |
-| `git-expert`   | Branching, conflict resolution                             | green  |
-| `builder`      | General implementation                                     | red    |
-| `evaluator`    | Quality evaluation against acceptance criteria (read-only) | orange |
-| `validator`    | Read-only code inspection                                  | green  |
-| `build-runner` | Run builds/tests (haiku, cheap)                            | cyan   |
-| `file-scanner` | File listing/search (haiku, cheap)                         | cyan   |
-| `log-parser`   | Log filtering/extraction (haiku, cheap)                    | cyan   |
+| subagent_type  | Domain                                                                                                | Color   |
+| -------------- | ----------------------------------------------------------------------------------------------------- | ------- |
+| `orchestrator` | Multi-agent coordination (see `shared/orchestrator-interception.md` for in-pipeline routing contract) | blue    |
+| `git-expert`   | Branching, conflict resolution                                                                        | green   |
+| `builder`      | General implementation (Sonnet routine lane)                                                          | red     |
+| `builder-opus` | Hard-lane builder — `difficulty: hard` tasks (Brain tier)                                             | magenta |
+| `evaluator`    | Quality evaluation against acceptance criteria (read-only)                                            | orange  |
+| `validator`    | Read-only code inspection                                                                             | green   |
+| `build-runner` | Run builds/tests (haiku, cheap)                                                                       | cyan    |
+| `file-scanner` | File listing/search (haiku, cheap)                                                                    | cyan    |
+| `log-parser`   | Log filtering/extraction (haiku, cheap)                                                               | cyan    |
 
 ## Release & Publishing
 

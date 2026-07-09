@@ -66,6 +66,7 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 - Hands-tier mechanical work (sync scripts, changelog bump, retro metrics) → `medium`.
 - One-off triage, log parsing, trivial grep → `low` or Haiku 4.5.
 - If you observe shallow reasoning at `high`, **raise effort (or add "think harder")** — do not try to prompt around it with more scaffolding.
+- **Effort fixes trying-harder failures only** (skipped files, unrun tests, bailed refactors). If the model had full context, clearly tried, and was still _confidently wrong_, raise the **model** (hard lane / Brain tier), not the effort — more effort on the same model buys a more elaborate wrong answer. See the escalation diagnostic in `04-fix-first-review.md` (Anthropic, "knowing more vs. trying harder").
 
 ## 6. Delegate Like an Engineer, Not a Pair
 

@@ -67,7 +67,27 @@ Before proceeding to execution, assign each task to the best specialist agent:
    ```
 
 3. **Use the most specific match** — prefer `fastapi-specialist` over `builder` for a Python API task, `react-typescript-specialist` over `nodejs-specialist` for React UI work
-4. **Fall back to `builder`** only when no specialist fits the task domain
+4. **Fall back to `builder`** only when no specialist fits the task domain; for `difficulty: hard` tasks use `builder-opus` instead (see Model-Lane Routing below)
+
+## Model-Lane Routing (difficulty flag)
+
+Set `difficulty: "hard"` in a task's metadata when it involves **novel architecture, a
+cross-cutting refactor, an ambiguous spec area, security-sensitive logic, or
+concurrency/distributed correctness**. Everything else is `routine` (the default when
+the field is omitted).
+
+Routing rule — applied here at assignment time, so Step 3 dispatch needs no extra logic:
+
+- `difficulty: "hard"` → `agent_type: "builder-opus"` (Brain-tier hard lane; overrides the specialist match)
+- routine → the specialist from the roster, or `builder` (Sonnet routine lane) as fallback
+
+**Why route by task, not just role** (Anthropic, "knowing more vs. trying harder"): on
+hard multi-step work the cost equation inverts — a smaller model grinds through failed
+iterations, and every failed builder iteration also re-triggers Brain-tier review
+cycles. Known-hard tasks go straight to the Opus lane instead of proving the point
+through two failed Sonnet passes. Calibration guard: if more than ~20% of a breakdown
+is flagged hard, the spec is under-decomposed — split the hard tasks further before
+flagging them.
 
 **Why this matters**: Without `agent_type`, builders spawn as generic `general-purpose` agents. Specialists bring domain expertise AND show their assigned name/color in tmux panes for visual tracking.
 
@@ -159,14 +179,15 @@ Post-merge type duplication is the single most-cited Stage 2 pain point (this ex
 
 ## Task Metadata Fields
 
-| Field          | Required | Values                  | Purpose                                   |
-| -------------- | -------- | ----------------------- | ----------------------------------------- |
-| `spec_path`    | Yes      | File path               | Links task to spec for resumption         |
-| `feature_area` | Yes      | String                  | Groups related tasks                      |
-| `effort`       | Yes      | `high`, `medium`, `low` | Controls builder thinking depth           |
-| `scope`        | Yes      | See scope tags below    | Enables conditional review steps          |
-| `completeness` | No       | 1-10                    | How thorough the implementation should be |
-| `door_type`    | No       | `one-way`, `two-way`    | Extra review scrutiny for one-way doors   |
+| Field          | Required | Values                      | Purpose                                                               |
+| -------------- | -------- | --------------------------- | --------------------------------------------------------------------- |
+| `spec_path`    | Yes      | File path                   | Links task to spec for resumption                                     |
+| `feature_area` | Yes      | String                      | Groups related tasks                                                  |
+| `effort`       | Yes      | `high`, `medium`, `low`     | Controls builder thinking depth                                       |
+| `scope`        | Yes      | See scope tags below        | Enables conditional review steps                                      |
+| `completeness` | No       | 1-10                        | How thorough the implementation should be                             |
+| `door_type`    | No       | `one-way`, `two-way`        | Extra review scrutiny for one-way doors                               |
+| `difficulty`   | No       | `routine` (default), `hard` | Model-lane routing — `hard` ⇒ `agent_type: builder-opus` (Brain tier) |
 
 ## Effort Levels
 
