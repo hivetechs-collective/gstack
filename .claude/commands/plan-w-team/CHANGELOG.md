@@ -14,7 +14,51 @@ traced back to the exact /plan-w-team release that produced it.
 
 ```
 
-## [1.52.3] — 2026-07-09 (pending)
+## [1.53.0] — 2026-07-09 (pending)
+
+**Run-State Router — continuation detection + status mode.** Routing was phrasing-only
+(manifest NL Intent Detection) and never inspected disk state: a bare invocation on
+in-progress or shipped work re-ran the full 0→8 pipeline, pwt-goal derivation treated
+"continue X" as brand-new work (fresh hash-slug/worktree), and re-issued phrasing
+clobbered a live run's goal-state (unconditional PWT-WT2 `>` seed). Measured cost in
+cleanscale: 373 specs, 912 state artifacts, duplicate slugs. This feature routes on
+`intent × run-state`. Strengthens design principle #11 (durable SLUG-keyed state).
+
+- feat(Item 1): `.claude/scripts/plan-w-team-run-state.sh` — deterministic, read-only,
+  fail-open run-state detector. Fuzzy topic→slug matching across specs/goal-states/
+  scope-locks; per-candidate verdict JSON `{slug, verdict, score, artifacts, freshness}`
+  with vocabulary `no-prior|specd|mid-execution|built-unreviewed|shipped-unretroed|
+  complete|live-now`. GC-aware `complete` (retro deletes per-run files → absence + retro/
+  SUCCESS is not "never ran"). `live-now` uses PROCESS liveness (live lock PID / fresh
+  hook-spawn flag) — the discriminator vs. resumable `mid-execution`; the terminal_state
+  reading mirrors `pwt-goal.sh:166-179` (reuse-by-pattern; the subprocess's branch-merge
+  leg false-STALEs a 0-commit worktree branch, so it is deliberately not shelled out).
+  bash 3.2, exit 0 always except usage (2).
+- feat(Item 2): manifest **Step -1 State-Aware Routing** — `intent × verdict` routing
+  table; every state-based stage skip emits a grep-able `run-state-router:` audit line +
+  bypass-log entry (retro §8j-octies counts it). Kill switch
+  `PLAN_W_TEAM_DISABLE_RUN_STATE_ROUTER=1`.
+- feat(Item 3): manifest **Status / Readiness Mode (`--status`)** — read-only aggregation
+  (tracker chain, TaskList, live goal/run-states, board, ship verdicts, AC snapshots) →
+  one dated gap report `.claude/state/plan-w-team-status-<date>.md` + a recommended next
+  run. HARD zero-write-outside-report / zero-TaskCreate / zero-fan-out invariants.
+  Registered in `state-artifacts.md` (audit-trail).
+- feat(Item 4): pwt-goal derivation continuation-awareness — `continue`/`status`
+  type-inference cues + Continuation Awareness section (reuse matched slug, anchor
+  `feature_specific_done_criteria` to the EXISTING ac-snapshot, stand down on `live-now`).
+  **Seed guard (HARD):** `pwt-goal.sh __pwt_seed_guard_ok` + `--seed-guard-check` CLI mode
+  refuse to clobber a goal-state whose `terminal_state` is null (a live run) unless the
+  owning worker re-seeds or `PLAN_W_TEAM_FORCE_SEED=1` — closes the duplicate-run
+  goal-state clobber (concurrent-duplicate-run stand-down).
+- **HARD CONSTRAINT honored:** zero changes to `plan-w-team-route-prompt.sh` trigger logic
+  — the detector is invoked from the manifest Step -1 and pwt-goal derivation only, never
+  the hook (AC4). No new wall-clock/turn caps; hard gates byte-identical (AC6).
+- test: `tests/skill/cases/run-state-router.bats` — 29 r10-BDD, sandboxed cases (AC1
+  verdict matrix, AC3 seed guard, AC4 route-hook invariant, AC5 sync allowlist, AC6 caps,
+  AC8 docs). Detector added to `sync-to-project.sh` allowlist; symmetry-check 45/45.
+- docs: `docs/specs/run-state-router.md`; design-principles #11 cross-reference.
+
+## [1.52.3] — 2026-07-09 (9167a8a)
 
 Adversarial check on the 1.52.2 effort pins (3 refuting auditors: semantics,
 regressions, consistency). The pin MECHANISM survived; the coverage claim and two

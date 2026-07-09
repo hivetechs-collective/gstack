@@ -49,14 +49,56 @@ Run the derivation script with the user's natural-language request as the argume
 
 If the user supplied `--type`, `-i`, or `--launch` flags, pass them through. If the user used natural language, infer `--type` from cues:
 
-| Cue in user message                           | Inferred `--type`   |
-| --------------------------------------------- | ------------------- |
-| "refactor", "extract", "rename", "reorganize" | `refactor`          |
-| "fix the bug", "broken", "regression"         | `bugfix`            |
-| "update docs", "document", "README"           | `docs`              |
-| (anything else)                               | `feature` (default) |
+| Cue in user message                                        | Inferred `--type`                       |
+| ---------------------------------------------------------- | --------------------------------------- |
+| "refactor", "extract", "rename", "reorganize"              | `refactor`                              |
+| "fix the bug", "broken", "regression"                      | `bugfix`                                |
+| "update docs", "document", "README"                        | `docs`                                  |
+| "continue", "keep going on", "pick up", "resume", "finish" | `continue` (see Continuation Awareness) |
+| "what's left", "what remains", "ready for beta/go-live?"   | `status` (see Continuation Awareness)   |
+| (anything else)                                            | `feature` (default)                     |
 
 The script outputs the `/goal` command to stdout. Present it to the user verbatim in a code block, labeled clearly so they know to copy and paste.
+
+## Continuation Awareness (Run-State Router Item 4)
+
+Before deriving, run the deterministic run-state detector so a "continue X" request
+re-enters the EXISTING run instead of minting a fresh duplicate slug/spec/worktree:
+
+```bash
+.claude/scripts/plan-w-team-run-state.sh --topic "<the user's request>" --json
+```
+
+Consume the top candidate's `verdict`:
+
+- **`live-now`** → **STAND DOWN**. A worker is already running this slug. Do NOT derive a
+  new `/goal`, do NOT spawn — surface the live run to the user (memory:
+  concurrent-duplicate-run stand-down). The PWT-WT2 seed guard
+  (`pwt-goal.sh --seed-guard-check --goal-file <goal.json> --worker-sid <sid>`) enforces
+  this at the process level: exit 0 = permit the seed, exit 3 = refuse (the target is a
+  live run owned by another worker). It refuses to clobber a goal-state whose
+  `terminal_state` is null unless `--worker-sid` matches the owning worker (idempotent
+  re-seed) or `PLAN_W_TEAM_FORCE_SEED=1` is set.
+- **matched non-`complete`, non-`live-now`** (`specd`/`mid-execution`/`built-unreviewed`/
+  `shipped-unretroed`) → **REUSE that slug** (no fresh hash-slug), anchor the derived
+  `feature_specific_done_criteria` to the EXISTING spec's ac-snapshot
+  (`.claude/state/plan-w-team-ac-snapshot-<slug>.md`), and route the worker to the
+  Step -1 entry stage for that verdict (see `plan-w-team.md` Step -1 table).
+- **`complete`, same topic + a NEW ask** → a **delta-spec** run (Step 0/1 scoped to the
+  delta; amend or supersede the existing spec).
+- **`no-prior`** → brand-new derivation (the pre-feature path, unchanged).
+
+**Seed guard (HARD):** the PWT-WT2 goal-state seed must NEVER clobber a goal-state whose
+`terminal_state` is null (a live run) — `__pwt_seed_guard_ok` refuses with a stand-down
+message (`PLAN_W_TEAM_FORCE_SEED=1` overrides only when you are certain the run is dead).
+
+**Idempotence:** directive-hash idempotence is preserved; dedup additionally treats a
+fuzzy-slug match to an existing non-complete run as "reuse", not "new".
+
+**HARD CONSTRAINT — zero route-hook behavior change:** the detector is invoked from THIS
+derivation skill and the manifest Step -1 ONLY. `plan-w-team-route-prompt.sh` NL trigger
+detection is untouched — unanchored triggers, no clarifying questions, auto-launch, and
+the "/"-prefix skip are all preserved.
 
 ## Pattern Recognition (auto-trigger from natural language)
 

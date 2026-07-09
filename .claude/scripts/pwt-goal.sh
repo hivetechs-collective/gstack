@@ -27,6 +27,66 @@
 
 set -u
 
+# ─── PWT-WT2 SEED LIVE-CLOBBER GUARD (Run-State Router Item 4) ───────────────
+# The PWT-WT2 goal-state seed (__pwt_emit_goal_state, far below) writes with an
+# unconditional `>`. Re-issued identical phrasing (a duplicate run on the same
+# slug) would therefore CLOBBER a LIVE run's goal-state — resetting started_at
+# and wiping the feature_specific_done_criteria that Step 1 §1.5 injected — the
+# concurrent-duplicate-run race (memory: concurrent-duplicate-run-standdown).
+#
+# This guard refuses to overwrite a goal-state whose terminal_state is null
+# (a live run) unless the incoming worker owns it (idempotent same-worker
+# re-seed) or PLAN_W_TEAM_FORCE_SEED=1 is set (documented escape hatch).
+#
+# Returns 0 = PERMIT the write, 1 = REFUSE (live foreign clobber).
+__pwt_seed_guard_ok() {  # $1=goal_file  $2=incoming_worker_sid
+    local gf="$1" sid="${2:-}" term="" owner=""
+    [ "${PLAN_W_TEAM_FORCE_SEED:-0}" = "1" ] && return 0   # operator override
+    [ -f "$gf" ] || return 0                                # nothing to clobber
+    if command -v python3 >/dev/null 2>&1; then
+        term="$(python3 -c 'import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+v=d.get("terminal_state")
+print(v if v not in (None,"") else "")' "$gf" 2>/dev/null)"
+        owner="$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("worker_sid") or "")
+except Exception: print("")' "$gf" 2>/dev/null)"
+    else
+        term="$(grep -o '"terminal_state"[[:space:]]*:[[:space:]]*"[^"]*"' "$gf" 2>/dev/null | sed 's/.*:[[:space:]]*"//;s/"$//')"
+        owner="$(grep -o '"worker_sid"[[:space:]]*:[[:space:]]*"[^"]*"' "$gf" 2>/dev/null | sed 's/.*:[[:space:]]*"//;s/"$//')"
+    fi
+    [ -n "$term" ] && return 0            # already terminal → safe to overwrite
+    # terminal_state is null → LIVE run. Permit ONLY the owning worker's re-seed.
+    [ -n "$sid" ] && [ "$sid" = "$owner" ] && return 0
+    return 1                               # live + foreign/unknown → refuse
+}
+
+# CLI mode for the guard (testable in isolation; also used by callers that want
+# to check before writing). Exit 0 = permit, 3 = refuse (PWT_SEED_GUARD_REFUSE).
+if [ "${1:-}" = "--seed-guard-check" ]; then
+    shift
+    SGC_GOAL=""; SGC_SID=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --goal-file)  SGC_GOAL="${2:-}"; shift 2 || break ;;
+            --worker-sid) SGC_SID="${2:-}"; shift 2 || break ;;
+            *) shift ;;
+        esac
+    done
+    if [ -z "$SGC_GOAL" ]; then
+        echo "seed-guard: --goal-file required" >&2; exit 2
+    fi
+    if __pwt_seed_guard_ok "$SGC_GOAL" "$SGC_SID"; then
+        echo "seed-guard: PERMIT ($SGC_GOAL)" >&2; exit 0
+    else
+        echo "seed-guard: REFUSE — $SGC_GOAL is a LIVE run (terminal_state null) owned by another worker." >&2
+        echo "  Standing down to avoid clobbering its goal-state + feature_specific_done_criteria." >&2
+        echo "  Override with PLAN_W_TEAM_FORCE_SEED=1 only if you are certain the run is dead." >&2
+        exit 3
+    fi
+fi
+
 usage() {
     cat <<EOF
 Usage: $0 [options] <request>
@@ -1330,6 +1390,12 @@ if [ "$LAUNCH" = "1" ]; then
         [ -n "$dir" ] || return 0
         mkdir -p "$dir" 2>/dev/null || return 0
         file="$dir/plan-w-team-goal-${SLUG_GUESS}.json"
+        # PWT-WT2 live-clobber guard (Run-State Router Item 4): never overwrite a
+        # LIVE run's goal-state (terminal_state null) owned by a different worker.
+        if ! __pwt_seed_guard_ok "$file" "$WORKER_SID"; then
+            echo "  goal-state seed:    SKIPPED $file — live run owned by another worker (stand-down; PLAN_W_TEAM_FORCE_SEED=1 to override)" >&2
+            return 0
+        fi
         if command -v jq >/dev/null 2>&1; then
             jq -n \
                 --arg slug "$SLUG_GUESS" \
@@ -1416,6 +1482,15 @@ if [ "$LAUNCH" = "1" ]; then
                 ORIGIN_STATE_DIR="$ORIGIN_ROOT/.claude/state"
                 mkdir -p "$ORIGIN_STATE_DIR" 2>/dev/null || true
                 ORIGIN_GOAL_FILE="$ORIGIN_STATE_DIR/plan-w-team-goal-${SLUG_GUESS}.json"
+                # PWT-WT2 live-clobber guard (Run-State Router Item 4): the origin
+                # mirror is a SECOND writer of the goal-state family. Without this,
+                # a duplicate --supervisor-goal run on the same slug would clobber a
+                # LIVE origin goal-state unconditionally (reset started_at, force
+                # terminal_state back to null, steal worker_sid) — the exact race
+                # __pwt_seed_guard_ok exists to stop. Guard this path too.
+                if ! __pwt_seed_guard_ok "$ORIGIN_GOAL_FILE" "$WORKER_SID"; then
+                    echo "  origin goal-state:  SKIPPED $ORIGIN_GOAL_FILE — live run owned by another worker (stand-down; PLAN_W_TEAM_FORCE_SEED=1 to override)" >&2
+                else
                 # Write a minimal goal state file the origin's evaluator can read.
                 # feature_specific_done_criteria is left empty — origin sees the
                 # generic SUCCESS anchors (the worker writes its own per-feature
@@ -1468,6 +1543,7 @@ EOF_GOAL_MIRROR
                         printf '%s\n' "$MIRROR_ROW" >> "$ORIGIN_REGISTRY" 2>/dev/null || true
                     fi
                 fi
+                fi   # end PWT-WT2 origin-mirror seed guard (Item 4)
             else
                 echo "WARN: --supervisor-goal: PWT_ORIGIN_ROOT/CLAUDE_PROJECT_DIR unset and PWD is not a git repo; skipping origin mirror" >&2
             fi

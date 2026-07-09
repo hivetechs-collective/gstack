@@ -241,6 +241,65 @@ flowchart LR
 
 For simple parallel changes across files (same pattern, no spec needed), use `/batch` instead. `/plan-w-team` is for spec-first features with dependencies between tasks.
 
+## Step -1: State-Aware Routing (Run-State Router)
+
+**Runs BEFORE Intent Detection.** Historically routing was phrasing-only — a bare
+invocation on in-progress or shipped work re-ran the full 0→8 pipeline (Step 1 had no
+"spec already exists" guard), and re-issued phrasing minted duplicate slugs/specs
+(cleanscale: 373 specs, 912 state artifacts). The Run-State Router closes this by
+inspecting **disk run-state** and routing on `intent × run-state`, not phrasing alone.
+The user still types only ordinary words + `/plan-w-team`; all detection is internal.
+
+**Step A — detect.** Run the deterministic, read-only, fail-open detector with the
+user's topic words (a spec/feature name, "CleanRev", "the alerting work", …):
+
+```bash
+.claude/scripts/plan-w-team-run-state.sh --topic "<the user's topic words>" --json
+```
+
+It emits, per candidate slug, a verdict JSON `{slug, verdict, score, artifacts, freshness}`
+where `verdict ∈ {no-prior, specd, mid-execution, built-unreviewed, shipped-unretroed,
+complete, live-now}`. It NEVER blocks a run (exit 0 always except usage errors); any read
+error degrades a candidate to `no-prior`. Full contract: `docs/specs/run-state-router.md`.
+
+**Step B — route on `intent × verdict`:**
+
+| Verdict           | Phrasing class                                                  | Route                                                                                                                  |
+| ----------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| no-prior          | any                                                             | Full pipeline 0→8 (unchanged)                                                                                          |
+| specd (fresh)     | continue                                                        | Step 2 → 8, reusing the spec after `plan-w-team-grounding-gate.sh --check --spec <spec> --phase review` freshness pass |
+| mid-execution     | continue                                                        | existing `--resume` machinery (3-4 → 8; SLUG Recovery Contract + Baseline-Missing Guard unchanged, `03-execute.md`)    |
+| built-unreviewed  | continue/ship                                                   | 5 → 8 (`--ship-only` semantics incl. degraded-hygiene sentinels)                                                       |
+| shipped-unretroed | any                                                             | Step 8                                                                                                                 |
+| complete          | new ask, same topic                                             | **Delta-spec**: Step 0/1 scoped to the DELTA only (amend or supersede the existing spec — record which), then 2→8      |
+| any               | readiness question ("what remains / ready for beta / go-live?") | **Status mode** (see below)                                                                                            |
+| live-now          | any                                                             | **STAND DOWN** + surface the live run (memory: concurrent-duplicate-run stand-down) — never race it                    |
+
+**Behavioral rules:**
+
+- **Interactive**: state the routing decision and PROCEED — e.g. "Found `<slug>`
+  mid-execution: N/M tasks done, spec fresh — resuming at 3-4; say 'full pipeline' to
+  override." Present ranked candidates only when the match is genuinely ambiguous
+  (≥2 close scores).
+- **Autonomous**: never ask; pick the top candidate and state it in the transcript.
+- Every state-based stage skip emits a grep-able audit line (retro §8j-octies counts it
+  via the bypass log — same mechanism as `⚠ stage-file-bypass:`):
+
+  ```bash
+  printf 'run-state-router: %s→%s (verdict=%s slug=%s)\n' "0" "<entry-stage>" "<verdict>" "<slug>"
+  printf 'run-state-router: %s→%s (verdict=%s slug=%s)\n' "0" "<entry-stage>" "<verdict>" "<slug>" \
+    >> ".claude/state/plan-w-team-bypass-${SLUG}.log"
+  ```
+
+- **New scope discovered mid-continuation ALWAYS re-enters Step 0/1 for the delta**
+  (design principle #1 — the Fast Path stays narrow, spec-first gating holds). A
+  continuation reuses the existing spec ONLY for work already in it.
+
+Kill switch: `PLAN_W_TEAM_DISABLE_RUN_STATE_ROUTER=1` (skip Step -1, fall through to
+phrasing-only Intent Detection — the pre-feature behavior). The detector is invoked
+here and from pwt-goal derivation ONLY — **never** from the route hook
+(`plan-w-team-route-prompt.sh` trigger logic is untouched; see the routing pre-check).
+
 ## Intent Detection
 
 The user does NOT need to remember flags. Infer intent from natural language and route accordingly:
@@ -526,6 +585,40 @@ Quantitative retrospective with metrics, quality signals, streak tracking, self-
 | `--resume`    | 3-4 (with resume logic) -> 5 -> 6 -> 7 -> 8 | Read 03-execute.md, use Resume section |
 | `--ship-only` | 5 -> 6 -> 7 -> 8                            | Assumes code is already implemented    |
 | `--retro`     | 8 only                                      | Retro on recent shipped work           |
+| `--status`    | none (read-only)                            | Status / Readiness Mode — see below    |
+
+## Status / Readiness Mode (--status)
+
+A read-only aggregation mode. Users reach it by **asking** a readiness question —
+"what's left before beta?", "are we ready for go-live?", "what remains on CleanRev?" —
+which Step -1 routes here; `--status` is the internal flag. It answers "where does this
+project stand?" without running any pipeline stage.
+
+**What it does (one Brain-tier pass, no fan-out):** aggregate, read-only:
+
+- the canonical tracker chain — respect repo-local pointer banners (e.g. cleanscale's
+  `GO-LIVE-REMAINING.md → runbook → tracker`);
+- `TaskList` (open/in-progress/completed);
+- live goal-states + run-states via `pwt-status.sh --json` and
+  `plan-w-team-run-state.sh --json`;
+- board issues (only if board integration is configured — READ only);
+- ship verdicts + AC snapshots for recently-touched slugs.
+
+**Output:** ONE artifact — a gap report at `.claude/state/plan-w-team-status-<date>.md`
+(date = `YYYY-MM-DD`) — containing the current state, the remaining gaps, and a
+**recommended next run** the user can trigger with one sentence.
+
+**HARD invariants (enforced by convention — this is a read-only mode):**
+
+- **Zero Write/Edit outside the report artifact.** No spec writes, no code edits.
+- **Zero `TaskCreate`.** It reports on tasks; it does not create them.
+- **Zero builder spawns, zero fan-out.** One Brain-tier pass only.
+- Does not acquire the workflow lock, seed a goal-state, or touch any run's per-run
+  state — it is observation, not a run.
+
+The report artifact is registered in `shared/state-artifacts.md` (`audit-trail` — a
+human-consumed report, no code reader). Kill switch: none needed — the mode is inert
+by construction (it only reads + writes its own dated report).
 
 ## Model Strategy (ACTIVE)
 
