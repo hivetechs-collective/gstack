@@ -29,6 +29,9 @@
 #         re-checks state and re-launches the wait. This is a heartbeat, NOT a
 #         wall-clock cap on the work (principle #3: no turn/time caps) — it only
 #         re-invokes the supervisor so a silently-hung worker still surfaces.
+#   4  duplicate watcher (1.54.0) → stdout: "duplicate slug=<slug> pid=<pid> ..." —
+#         another watcher already owns this slug+worker-sid wait; DEFER to it,
+#         do NOT re-launch (re-launching would loop straight back here).
 #   2  bad usage
 set -u
 
@@ -173,13 +176,56 @@ __ensure_worker_transcript() {
 __transcript_shows_success() {
   __ensure_worker_transcript
   [ -n "$TX_PATH" ] && [ -f "$TX_PATH" ] || return 1
-  grep -Eq 'retro-complete\\?"[[:space:]]+workflow_lock=\\?"done' "$TX_PATH" 2>/dev/null
+  # Legacy adjacency form (pre-1.54.0 hand-written shell-equals blocks) — kept verbatim.
+  grep -Eq 'retro-complete\\?"[[:space:]]+workflow_lock=\\?"done' "$TX_PATH" 2>/dev/null && return 0
+  # 1.54.0: the canonical emitter (plan-w-team-surface-status.sh) pretty-prints JSON
+  # colon form — "stage": "retro-complete" … "workflow_lock": "done" on separate lines
+  # of ONE fenced block, which lands in the transcript as ONE JSONL line with \n
+  # escapes. The legacy regex above requires equals-form adjacency and NEVER matched
+  # the canonical emission (two detectors, two formats — field audit 2026-07-10).
+  #
+  # BOUNDED-WINDOW ADJACENCY (review finding, CRITICAL): a whole FILE read via the
+  # Read tool is also ONE physical JSONL line, so independent same-line greps would
+  # false-fire on a worker merely READING goal-conditions.md (fence + both anchors
+  # co-present file-level). The emitted block is contiguous: fence → {slug,stage}
+  # within ~160 chars, stage → ts → workflow_lock within ~120 chars. One regex with
+  # bounded gaps matches the real emission and rejects doc reads (anchors thousands
+  # of chars apart / out of order).
+  grep -Eq '```status.{0,160}"stage\\?"?[[:space:]]*:[[:space:]]*\\?"?retro-complete.{0,120}"workflow_lock\\?"?[[:space:]]*:[[:space:]]*\\?"?done' "$TX_PATH" 2>/dev/null
 }
 
 # Non-looping diagnostic seam (--print-goal-file): resolve and exit, never watch.
 if [ "${PRINT_GOAL_FILE:-0}" = "1" ]; then
   __resolve_goal_file
   exit 0
+fi
+
+# ── Watcher singleton (1.54.0) ──────────────────────────────────────────────
+# Field evidence 2026-07-09/10: TWO watchers per worker-sid observed twice in 24h
+# (parts run-3 orphan pair; cleanscale apple-continuation pair) — each supervisor
+# turn that re-issues the await spawns another poller, and orphans poll forever.
+# Atomic mkdir claim keyed on slug+worker-sid; a stale lock (dead holder PID) is
+# reclaimed. bash 3.2 safe. A duplicate exits 0 with a distinct message (no
+# `terminal=` line) so callers cannot misread it as a terminal verdict.
+LOCK_KEY="${SLUG:-noslug}-${WORKER_SID:-nosid}"
+LOCK_DIR="${TMPDIR:-/tmp}/pwt-await-${LOCK_KEY}.lock"
+__pwt_await_claim() {
+  mkdir "$LOCK_DIR" 2>/dev/null || return 1
+  printf '%s\n' "$$" > "$LOCK_DIR/pid" 2>/dev/null || true
+  trap 'rm -rf "$LOCK_DIR" 2>/dev/null' EXIT
+  return 0
+}
+if ! __pwt_await_claim; then
+  OLD_PID=$(cat "$LOCK_DIR/pid" 2>/dev/null || echo "")
+  if [ -n "$OLD_PID" ] && kill -0 "$OLD_PID" 2>/dev/null; then
+    # Distinct exit code 4 (review finding): exit 0 is contractually "terminal
+    # reached" and exit 3 is "re-launch the wait" — both would mislead a
+    # supervisor into a malformed terminal block or an instant re-launch loop.
+    echo "duplicate slug=${SLUG:-} pid=${OLD_PID} — another watcher owns this wait; defer to it (do NOT re-launch)"
+    exit 4
+  fi
+  rm -rf "$LOCK_DIR" 2>/dev/null || true
+  __pwt_await_claim || true   # fail-open: if the re-claim races, watch anyway
 fi
 
 elapsed=0

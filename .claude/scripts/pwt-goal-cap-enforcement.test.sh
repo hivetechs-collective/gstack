@@ -78,8 +78,16 @@ assert_eq "exit code is 0 with raised cap" "0" "$rc"
 
 echo ""
 echo "AC4: directive right at the boundary (under 4000 chars) passes"
-# Skeleton overhead is ~930 chars, so a 3000-char REQUEST yields ~3930 chars total.
-boundary_req=$(python3 -c "print('x' * 3000)")
+# MEASURE the wrapper skeleton overhead instead of hardcoding it (1.54.0: the
+# injected SLUG block + emitter-named DONE_CRITERIA grew the skeleton and broke
+# the old "~930 chars" assumption). Probe with a 1000-char request (slug body is
+# length-capped well before that, so overhead is constant for large requests),
+# then size the boundary request to land ~50 chars under the 4000 cap.
+probe_req=$(python3 -c "print('x' * 1000)")
+probe_len=$(env $DISABLE_OVERFLOW PLAN_W_TEAM_GOAL_MAX=100000 "$PWT_GOAL" "$probe_req" 2>/dev/null | wc -c | tr -d ' ')
+overhead=$((probe_len - 1000))
+boundary_size=$((4000 - overhead - 50))
+boundary_req=$(python3 -c "print('x' * ${boundary_size})")
 env $DISABLE_OVERFLOW "$PWT_GOAL" "$boundary_req" >/dev/null 2>/tmp/pwt-goal-cap.err
 rc=$?
 # Must NOT abort with 2 (may pass with 0; minor wording variance is fine)

@@ -21,15 +21,29 @@
 
 ## Step 3: Choose Execution Strategy
 
-| Scenario                                  | Strategy                                       | Mode   | Plan Approval? |
-| ----------------------------------------- | ---------------------------------------------- | ------ | -------------- |
-| 3+ tasks, new feature                     | Parallel builders, self-claiming pool          | `auto` | Optional       |
-| 1-2 simple tasks                          | Single builder, direct assignment              | `auto` | No             |
-| Security-critical                         | Parallel builders + validator for final review | `plan` | Yes            |
-| Bug fix                                   | Single builder, direct                         | `auto` | No             |
-| One-way door tasks                        | Any strategy + extra review in Step 5          | `auto` | Recommended    |
-| Large feature (>5 tasks or multi-session) | Lead implements directly, no worktrees         | `auto` | No             |
-| Tightly-coupled tasks in same module      | Lead implements directly, sequential           | `auto` | No             |
+| Scenario                                                      | Strategy                                                                                    | Mode   | Plan Approval? |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------ | -------------- |
+| 3+ tasks, new feature                                         | Parallel builders, self-claiming pool                                                       | `auto` | Optional       |
+| 1-2 simple tasks                                              | Single builder, direct assignment                                                           | `auto` | No             |
+| Security-critical                                             | Parallel builders + validator for final review                                              | `plan` | Yes            |
+| Bug fix                                                       | Single builder, direct                                                                      | `auto` | No             |
+| One-way door tasks                                            | Any strategy + extra review in Step 5                                                       | `auto` | Recommended    |
+| Large feature, tasks COUPLED (shared files / strict ordering) | Lead implements directly, no worktrees                                                      | `auto` | No             |
+| Large feature, ≥3 tasks DISJOINT-FILE parallelizable          | Parallel builders (Sonnet Hands lane; `difficulty: hard` → builder-opus) — even at >5 tasks | `auto` | No             |
+| Tightly-coupled tasks in same module                          | Lead implements directly, sequential                                                        | `auto` | No             |
+
+> **1.54.0 — parallelizability, not task count, decides.** The old row "Large feature
+> (>5 tasks or multi-session) → lead-direct" fired on almost any real feature and
+> silently idled the entire Hands lane (field evidence 2026-07-09: 7/7 autonomous runs
+> chose lead-direct; Model Tiering v2 + effort pins got zero exercise). Task count is
+> NOT a coupling signal — choose lead-direct because tasks genuinely share files/context,
+> and record a one-line justification via the strategy record (below). This is soft
+> guidance, not a gate: a justified lead-direct is always legitimate.
+>
+> **`difficulty: hard` under lead-direct**: the task executes on the lead's own
+> Brain-tier session (Opus 4.8), so MODEL routing is not bypassed — but the hard-lane
+> `effort: high` pin does NOT auto-apply to the lead's own turns; raise your own
+> `/effort` for that task or note why not.
 
 **Default mode is `auto`** — builders execute without permission prompts for uninterrupted implementation. Use `mode: "plan"` only for security-critical work where each builder must submit an implementation plan via ExitPlanMode before coding starts.
 
@@ -58,9 +72,15 @@ scripts/board.sh comment "<feature-name>" "## Execution Started
 ```bash
 # snippet-lint: skip — illustrative manifest wiring
 # Strategy + declared builder count (do this once, after Step 3 decides).
+# 1.54.0: also record WHY (one line) and the task-difficulty mix — the retro
+# parallelism review reads these to detect systematic lead-direct bias (field
+# evidence 2026-07-09: 7/7 runs lead-direct, Hands lane idle). A lead-direct
+# choice with ≥3 disjoint-file routine tasks REQUIRES the justification.
 .claude/scripts/pwt-manifest.sh set --slug "$SLUG" \
   --strategy "<lead-implements-directly|parallel-builders|single-builder>" \
-  --builders <N> --stage 3-execute || true
+  --builders <N> --stage 3-execute \
+  --justification "<one line: why this strategy — coupling/size/context evidence>" \
+  --difficulty-mix "<e.g. routine=4 hard=1 disjoint=3>" || true
 
 # Per-task ownership — call once per task as it is assigned/dispatched, and
 # again when it completes. owner is the builder's session id (or '-' for lead).
@@ -602,7 +622,16 @@ Context compaction can hit during any phase (build, review, merge). To survive i
 
 If Step 2 produced >5 tasks or the total estimated AI effort exceeds 45 minutes, the feature will likely span multiple context windows. Worktree builders expire when the lead's context compacts or the session ends — spawning them for multi-session work wastes allocation overhead.
 
-**For multi-session features, use the "lead implements directly" strategy:**
+> **1.54.0 qualifier — this trigger is about COUPLING and context, not raw count.** A
+>
+> > 5-task feature whose tasks are disjoint-file parallelizable can still fan out
+> > per-batch: builders complete within one lead context window per batch, so
+> > multi-session risk does not apply to them. Reserve lead-direct for genuinely
+> > coupled/shared-file/sequential work, and record the one-line justification in the
+> > manifest strategy record (above). Field evidence 2026-07-09: this OR-trigger fired
+> > on effectively every real feature and idled the Sonnet Hands lane entirely.
+
+**For multi-session features with COUPLED tasks, use the "lead implements directly" strategy:**
 
 1. Lead works on main (no worktrees, no builder agents)
 2. Commit after each task completes (preserves progress across sessions)

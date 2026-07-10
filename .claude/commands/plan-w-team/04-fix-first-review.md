@@ -153,6 +153,16 @@ git fetch origin <base> --quiet
 git diff origin/<base>...HEAD
 ```
 
+### AC Verification Line Contract (PWT-T5c emission side — 1.54.0)
+
+When you verify an acceptance criterion — during review here, or at Step 6 ship — emit EXACTLY one line per AC in the form:
+
+```
+AC<N>: PASS — <one-line evidence>
+```
+
+(`AC<N>: FAIL — <reason>` or `AC<N>: PENDING — <reason>` when not verified.) The `/goal` evaluator's feature-specific criteria (Step 1 §1.5) grep the transcript for `AC<N>:[[:space:]]*PASS` — free-form variants ("AC3 verified", "AC-3 pass", "AC3 — PASS") do NOT match and leave the criterion unmet, stalling the evaluator. Conversely, NEVER write `AC<N>: PASS` for an AC you did not actually verify — the first pattern match marks it `met: true` immediately and permanently (field evidence 2026-07-09: helm AC9 flipped met-while-explicitly-PENDING under the old unanchored `AC<N>.*PASS` pattern; 1.54.0 anchored the pattern AND made this emission format the contract).
+
 ### Spec Integrity Check (ENFORCING — runs before any review passes)
 
 Step 1 captured a SHA256 snapshot of the spec and its Acceptance Criteria section at `.claude/state/plan-w-team-ac-snapshot-$SLUG.md`. Verify the live spec still matches — a mid-flight spec edit that relaxed AC would bypass the evaluator's contract.

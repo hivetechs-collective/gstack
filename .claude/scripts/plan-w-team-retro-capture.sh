@@ -78,14 +78,34 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 0
 fi
 
+# 1.54.0 (scoped per review): PER-RUN files (retro state read-back, capture OUT)
+# stay on the CALLER's toplevel — 07-retro reads/merges/cleans them via bare
+# worktree-relative paths, so repointing them to main would silently no-op the
+# recursive-capture merge and regression loop in worker-only runs. Only the
+# DURABLE CROSS-RUN files (capture history, recursive-followups ledger) resolve
+# to the MAIN checkout via git-common-dir — those are the ones a GC'd worktree
+# would otherwise take with it. PWT_PROJECT_ROOT_OVERRIDE keeps tests hermetic.
 PROJECT_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+  PROJECT_ROOT="$PWT_PROJECT_ROOT_OVERRIDE"
+  MAIN_ROOT="$PWT_PROJECT_ROOT_OVERRIDE"
+else
+  __rc_cdir="$(git rev-parse --git-common-dir 2>/dev/null || echo "")"
+  case "$__rc_cdir" in
+    "") MAIN_ROOT="" ;;
+    /*) MAIN_ROOT="$(dirname "$__rc_cdir")" ;;
+    *)  MAIN_ROOT="$(cd "$(dirname "$__rc_cdir")" 2>/dev/null && pwd || echo "")" ;;
+  esac
+  [ -z "$MAIN_ROOT" ] && MAIN_ROOT="$PROJECT_ROOT"
+fi
 STATE_DIR="${STATE_DIR_OVERRIDE:-$PROJECT_ROOT/.claude/state}"
-mkdir -p "$STATE_DIR" 2>/dev/null || true
+MAIN_STATE_DIR="${STATE_DIR_OVERRIDE:-$MAIN_ROOT/.claude/state}"
+mkdir -p "$STATE_DIR" "$MAIN_STATE_DIR" 2>/dev/null || true
 
 RETRO_STATE="${RETRO_STATE_OVERRIDE:-$STATE_DIR/plan-w-team-retro-${SLUG}.json}"
-HISTORY="${HISTORY_OVERRIDE:-$STATE_DIR/plan-w-team-retro-capture-history.jsonl}"
+HISTORY="${HISTORY_OVERRIDE:-$MAIN_STATE_DIR/plan-w-team-retro-capture-history.jsonl}"
 OUT="${OUT_OVERRIDE:-$STATE_DIR/plan-w-team-retro-capture-${SLUG}.json}"
-FOLLOWUPS_LOG="${FOLLOWUPS_OVERRIDE:-$STATE_DIR/plan-w-team-recursive-followups.jsonl}"
+FOLLOWUPS_LOG="${FOLLOWUPS_OVERRIDE:-$MAIN_STATE_DIR/plan-w-team-recursive-followups.jsonl}"
 TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 # ── Best-practice adherence: read the signal scores §8j sections wrote ─────────

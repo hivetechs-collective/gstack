@@ -685,7 +685,7 @@ fi
 
 Report in retro: `Fleet parallelism health: <FLEET_SCORE>/5 (spawned=<N>, max_concurrent=<N>, duration=<N>s)`.
 
-A score <3 suggests batch-fan-out waste. The retro recommendation is Pattern B continuous dispatch (`shared/fleet-manager.md` §Query Subcommand Reference). For lead-implements-directly runs or runs with `PLAN_W_TEAM_FLEET_DISABLE=1`, this section is n/a — no parallelism to measure.
+A score <3 suggests batch-fan-out waste. The retro recommendation is Pattern B continuous dispatch (`shared/fleet-manager.md` §Query Subcommand Reference). For lead-implements-directly runs or runs with `PLAN_W_TEAM_FLEET_DISABLE=1`, the fleet SCORE is n/a — but a lead-direct run is NOT exempt from strategy review (1.54.0): read `strategy`, `strategy_justification`, and `task_difficulty_mix` from the run manifest (`pwt-manifest.sh read --slug "$SLUG"`) and report one line — `Strategy: lead-implements-directly — <justification> (tasks: <mix>)`. A missing justification on a lead-direct run with ≥3 disjoint-file routine tasks is itself a retro finding (field evidence 2026-07-09: 7/7 runs lead-direct with zero recorded rationale idled the entire Sonnet Hands lane).
 
 ## 8j-quater. Supervisor Decision Health
 
@@ -763,13 +763,38 @@ if [ "${RETRO_SUCCESS:-0}" = "1" ] && [ -f "$GOAL_STATE_FILE" ] \
    && [ "$(jq -r '.verdict // ""' "$SHIP_VERDICT_FILE" 2>/dev/null)" = "PASS" ]; then
   CUR_TS=$(jq -r '.terminal_state // ""' "$GOAL_STATE_FILE" 2>/dev/null || echo "")
   if [ -z "$CUR_TS" ] || [ "$CUR_TS" = "SUCCESS" ]; then
-    jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-       '.terminal_state = "SUCCESS"
-        | .terminal_reason = "retro complete + PASS ship-verdict (authoritative retro write, PWT-TERM1)"
-        | .terminated_at = $ts
-        | .terminal_state_source = "retro"' \
-       "$GOAL_STATE_FILE" > "$GOAL_STATE_FILE.tmp" && mv "$GOAL_STATE_FILE.tmp" "$GOAL_STATE_FILE"
-    echo "✓ retro authoritatively set terminal_state=SUCCESS (source=retro, PASS ship-verdict) — PWT-TERM1"
+    # 1.54.0 DUAL-WRITE: under a worker-only run cwd is a WORKTREE, so the
+    # bare-relative write below reaches only the worktree-local copy and the
+    # main-checkout seeded copy (read by the evaluator's PRIMARY await-terminal
+    # leg and the Run-State Router) stays terminal_state:null forever (field
+    # evidence 2026-07-09: 3 shipped runs stranded null). Resolve the main root
+    # via git-common-dir (pwt-goal.sh __pwt_main_repo_root idiom) and patch BOTH
+    # copies. Never-clobber-a-halt applies independently per copy.
+    MAIN_ROOT=""
+    if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+        MAIN_ROOT="$PWT_PROJECT_ROOT_OVERRIDE"
+    else
+        CDIR=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+        case "$CDIR" in
+            "") MAIN_ROOT="" ;;
+            /*) MAIN_ROOT=$(dirname "$CDIR") ;;
+            *)  MAIN_ROOT=$(cd "$(dirname "$CDIR")" 2>/dev/null && pwd || echo "") ;;
+        esac
+    fi
+    for GF in "$GOAL_STATE_FILE" "${MAIN_ROOT}/.claude/state/plan-w-team-goal-${SLUG}.json"; do
+      [ -f "$GF" ] || continue
+      GF_TS=$(jq -r '.terminal_state // ""' "$GF" 2>/dev/null || echo "")
+      if [ -n "$GF_TS" ] && [ "$GF_TS" != "SUCCESS" ]; then
+        continue   # never clobber a halt state on either copy
+      fi
+      jq --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+         '.terminal_state = "SUCCESS"
+          | .terminal_reason = "retro complete + PASS ship-verdict (authoritative retro write, PWT-TERM1)"
+          | .terminated_at = $ts
+          | .terminal_state_source = "retro"' \
+         "$GF" > "$GF.tmp" && mv "$GF.tmp" "$GF"
+    done
+    echo "✓ retro authoritatively set terminal_state=SUCCESS (source=retro, PASS ship-verdict, dual-write) — PWT-TERM1"
   fi
 fi
 
@@ -1208,7 +1233,14 @@ Writer spec: `docs/specs/retro-completion-summary.md`.
 
 ## End-of-Stage Status Block (PWT-T5)
 
-The final action of the retro stage emits the terminal status block — its presence with `stage="retro-complete"` and `workflow_lock="done"` is the SUCCESS anchor the `/goal` evaluator's terminal condition looks for (see `shared/goal-conditions.md` §Terminal-State Reference).
+The final action of the retro stage emits the terminal status block — its presence with the JSON anchors `"stage": "retro-complete"` and `"workflow_lock": "done"` is the SUCCESS anchor the `/goal` evaluator's terminal condition looks for (see `shared/goal-conditions.md` §Terminal-State Reference).
+
+> **ALWAYS emit via `plan-w-team-surface-status.sh` — never hand-write the block.**
+> The evaluator regex accepts ONLY the JSON colon form the script emits. A hand-written
+> shell-form block (`stage="retro-complete" workflow_lock="done"`) does NOT match and
+> strands the run at `terminal_state: null` even after a fully successful ship — field
+> evidence 2026-07-09 (cleanscale daily-qa run: 1 merged PR, verified green, stranded
+> null by exactly this emission-form miss).
 
 ```bash
 .claude/scripts/plan-w-team-surface-status.sh "$SLUG" "retro-complete"

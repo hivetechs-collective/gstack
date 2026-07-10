@@ -12,9 +12,89 @@ traced back to the exact /plan-w-team release that produced it.
 
 ## Format
 
-```
+````
 
-## [1.53.0] — 2026-07-09 (pending)
+## [1.54.0] — 2026-07-10 (8299d42)
+
+**State-Truth Hardening — the goal-state must tell the truth.** Field audit of the
+first 7 fully-1.53.0 autonomous runs (2026-07-09: cleanscale ×3, parts ×3, helm ×1)
+found the WORK succeeded (6 merged PRs, verified via gh) while the STATE lied:
+3 seeded goal-states stranded `terminal_state: null` after successful ships, one AC
+flipped `met: true` while explicitly not performed, duplicate await-terminal watchers
+polled dead workers, and zero Run-State Router evidence existed anywhere. Root causes
+verified against source by a 6-reader + adversarial-verifier workflow before any fix
+(2 proposed fixes REJECTED by the verifier: a ps-by-SID death leg that would false-kill
+live bg workers, and a detector-internal write that would break the AC2 read-only
+tree-hash contract).
+
+- fix(F1 slug divergence, CRITICAL): pwt-goal.sh hoists `SLUG_GUESS` above the
+  GOAL_TEXT heredoc and INJECTS `SLUG for ALL run artifacts: <slug>` into the /goal
+  directive — the only channel that crosses the worker process boundary. Manifest
+  PWT-T5b mandates verbatim adoption (+ never overwrite the dual-seeded file —
+  create-if-absent guard), and the Step -1 routing table gains a "own pre-seeded
+  slug → adopt, not resume/stand-down" row. Workers minting their own Step-1 slugs
+  (calendar-timeout-fixes, qa-gate-receipt-controls, receipt-ocr-waf-carveout) was
+  the #1 stranding cause.
+- fix(F2 split-brain): PWT-TERM1 (07-retro) and §1.5 criteria injection (01-spec)
+  DUAL-WRITE to the main checkout via the proven git-common-dir idiom
+  (never-clobber-a-halt enforced per copy); retro-capture.sh PROJECT_ROOT
+  `--show-toplevel` → git-common-dir (+ PWT_PROJECT_ROOT_OVERRIDE for tests).
+- fix(F3 AC false-flip): §1.5 pattern `AC<N>.*PASS` → anchored
+  `AC<N>:[[:space:]]*PASS` at the DERIVATION site (greedy `.*` spanned unrelated
+  collapsed-transcript text — the helm AC9-met-while-PENDING flip). Deliberately
+  NOT end-anchored (verifier proposed `PASS([[:space:]]|$)`; rejected here because
+  "AC3: PASSED" must keep matching — a never-matching pattern re-arms the 2026-06-22
+  blocked-stop runaway, the worse failure). New **AC Verification Line Contract**
+  (04-review + 05-ship): emit exactly `AC<N>: PASS — <evidence>`, and never for an
+  unverified AC. goal-conditions.md examples updated.
+- fix(F4 emission-form schism): the evaluator regex accepts ONLY the JSON colon form
+  while await-terminal TERTIARY accepted ONLY the hand-written shell-equals form —
+  two detectors, two formats, docs priming the wrong one everywhere. TERTIARY now
+  ALSO detects the canonical emitter's pretty-JSON block (same-line ```status fence
+  shield against doc-read false positives; legacy regex kept verbatim). Priming
+  sites corrected: 07-retro anchor prose (+ ALWAYS-use-the-emitter warning),
+  pwt-goal.sh DONE_CRITERIA (all 4 types now name the canonical emitter) and the
+  supervisor briefing SUCCESS bullet (greps both forms).
+- fix(F5 watcher hygiene): await-terminal singleton — atomic mkdir lock keyed on
+  slug+worker-sid, stale-lock (dead PID) reclaim, duplicate exits 0 with a distinct
+  no-`terminal=` message. Two duplicate-watcher pairs observed in 24h. The planned
+  PWT4 ps-by-SID QUATERNARY death leg is DROPPED per the adversarial verify (SID
+  absent from bg argv → would false-fire on live workers; only-confirmed-death
+  halts is invariant).
+- feat(F6 router evidence): Step -1 emits one JSON audit line on EVERY invocation —
+  including `no-prior` — to `plan-w-team-run-state-audit.jsonl` (persistent,
+  NOT retro-deleted, registered in state-artifacts.md); detector script itself
+  stays read-only (AC2 contract). pwt-goal.md cue table clarified: continue/status
+  are ROUTING decisions, never `--type` values (script exits 1 on them).
+- feat(strategy visibility): 03-execute strategy table — parallelizability, not
+  task count, decides; "large feature ≥3 disjoint-file tasks → fan-out (Sonnet
+  Hands lane) even at >5 tasks"; lead-direct requires a one-line justification via
+  `pwt-manifest.sh set --justification/--difficulty-mix` (new optional args,
+  fail-open contract intact); retro parallelism section reports lead-direct
+  strategy rationale instead of self-excluding. Field driver: 7/7 runs lead-direct,
+  Model Tiering v2 + effort pins + advisor consults got ZERO runtime exercise.
+- test: `tests/skill/cases/state-truth-hardening.bats` — r10-BDD sandboxed cases
+  (slug injection + idempotence, dual-write pins, anchored-pattern pin, TERTIARY
+  both-forms functional probes, singleton live/stale functional probes,
+  manifest justification round-trip, --type continue refusal).
+- fix(diff-review hardening): a 3-lens adversarial review of the release diff caught
+  and fixed pre-commit: (CRITICAL) the new TERTIARY same-line fence check false-fired
+  SUCCESS when a worker merely READ goal-conditions.md (a whole file is ONE transcript
+  JSONL line) — replaced with a single bounded-window adjacency regex (fence→stage
+  ≤160 chars, stage→lock ≤120) that matches the real emission and rejects doc reads;
+  (MAJOR) the retro-capture git-common-dir repoint split it from 07-retro's
+  worktree-relative read-back/merge/cleanup — re-scoped so only DURABLE cross-run
+  files (history, recursive-followups) live on main and per-run files stay
+  caller-local; (MINOR×3) watcher duplicate now exits 4 with an explicit
+  defer-don't-relaunch contract (exit 0 meant "terminal reached" and would loop a
+  supervisor), the injected slug directive is mode-aware (derive mode no longer
+  claims "pre-seeded/adopt-as-self", which could defeat concurrent-run stand-down
+  on a later paste), and the run-state-audit registry row no longer claims a
+  nonexistent code reader.
+- No new scripts (sync allowlist unchanged); route hook untouched; no wall-clock or
+  turn caps added; hard gates unweakened.
+
+## [1.53.0] — 2026-07-09 (9b801d4)
 
 **Run-State Router — continuation detection + status mode.** Routing was phrasing-only
 (manifest NL Intent Detection) and never inspected disk state: a bare invocation on
@@ -520,7 +600,7 @@ revision: the breaking fix + one doc edit (candidates #1/#2 dropped, #3/#4 defer
 
 ## [<semver>] — <YYYY-MM-DD> (<short-sha>)
 - <bump kind>: <description>
-```
+````
 
 Entries are newest-first.
 

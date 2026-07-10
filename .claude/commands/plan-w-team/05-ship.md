@@ -159,6 +159,8 @@ scripts/board.sh comment "<feature-name>" "## Shipped
 
 Verify Step 5 review is complete. If not, run it first. Track review completion in task metadata.
 
+When confirming acceptance criteria at ship time, follow the **AC Verification Line Contract** (`04-fix-first-review.md`): one `AC<N>: PASS — <evidence>` line per verified AC — exact form, since the `/goal` evaluator greps `AC<N>:[[:space:]]*PASS`; never emit it for an AC you did not verify.
+
 If the user wants to override a missing review, store the override decision (read `shared/artifact-storage.md` for override persistence format) so re-runs of `/plan-w-team` on the same branch do not re-ask.
 
 ### Re-read persisted review findings (ENFORCING)

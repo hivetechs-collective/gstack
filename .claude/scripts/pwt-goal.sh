@@ -559,27 +559,34 @@ case "$TYPE" in
 esac
 
 # Type-specific done criteria
+#
+# 1.54.0: the retro-complete criterion names the CANONICAL EMITTER, not a literal
+# anchor string. The old phrasing (stage="retro-complete" … shell-equals form)
+# PRIMED workers to hand-write that exact non-matching form — the goal-evaluator
+# regex accepts only the JSON colon form the emitter produces (field evidence
+# 2026-07-09: cleanscale daily-qa run stranded terminal_state:null by this).
+__PWT_RETRO_DONE='  - retro terminal status block emitted VIA .claude/scripts/plan-w-team-surface-status.sh "<slug>" retro-complete (never hand-write the block: the /goal evaluator matches only the script'\''s JSON output)'
 case "$TYPE" in
     feature)
-        DONE_CRITERIA='  - stage="retro-complete" appears in transcript with workflow_lock="done"
+        DONE_CRITERIA="${__PWT_RETRO_DONE}"'
   - every AC<N>: PASS line from the generated spec'\''s Acceptance Criteria contract appears in transcript
   - ship-readiness-gate verdict is PASS in a status block (Step 6)
   - test suite passes (Step 6 reports 100% of tests passing)'
         ;;
     refactor)
-        DONE_CRITERIA='  - stage="retro-complete" with workflow_lock="done"
+        DONE_CRITERIA="${__PWT_RETRO_DONE}"'
   - all existing tests still pass (no regression)
   - no behavior change (refactor only — code shape changes, contracts identical)
   - ship-readiness-gate PASS in Step 6 status block'
         ;;
     bugfix)
-        DONE_CRITERIA='  - stage="retro-complete" with workflow_lock="done"
+        DONE_CRITERIA="${__PWT_RETRO_DONE}"'
   - new regression test added that fails before the fix and passes after
   - existing tests still pass
   - ship-readiness-gate PASS in Step 6 status block'
         ;;
     docs)
-        DONE_CRITERIA='  - stage="retro-complete" with workflow_lock="done"
+        DONE_CRITERIA="${__PWT_RETRO_DONE}"'
   - docs cross-reference check passes in Step 7
   - no code changes (docs-only — verify diff scope)
   - CHANGELOG entry added if user-visible'
@@ -600,11 +607,41 @@ fi
 # ─── Build the /goal command ────────────────────────────────────────────────
 # This is wrapped in a helper so we can rebuild after directive overflow
 # (see "Directive overflow to disk" below) without duplicating the heredoc.
+#
+# SLUG_GUESS is hoisted here (1.54.0) so the seeded slug can be INJECTED into
+# the directive itself — the /goal text is the ONLY channel that crosses the
+# process boundary to the worker. Field evidence 2026-07-09: workers minted
+# their own Step-1 slugs (calendar-timeout-fixes, qa-gate-receipt-controls,
+# receipt-ocr-waf-carveout), stranding every seeded goal-state at
+# terminal_state:null. __pwt_safe_slug is pure (same REQUEST → same slug), so
+# the later recomputes at the spawn paths are idempotent and intentionally kept.
+SLUG_GUESS=$(__pwt_safe_slug "$ORIGINAL_REQUEST")
+
+# Mode-aware slug directive (review finding): only SPAWN modes (--launch /
+# --worker-only / --supervisor-goal, all of which set LAUNCH=1) actually seed the
+# goal-state before the worker starts — for those, a live verdict on this slug IS
+# this run (self). In pure DERIVE mode nothing is seeded and the /goal may be
+# pasted much later: claiming "pre-seeded … adopt, don't stand down" there could
+# defeat the concurrent-duplicate-run stand-down if another run holds the slug.
+if [ "$LAUNCH" = "1" ]; then
+    __PWT_SLUG_DIRECTIVE="(goal-state pre-seeded at .claude/state/plan-w-team-goal-${SLUG_GUESS}.json —
+reuse this slug VERBATIM in every stage artifact; do NOT mint a new slug in
+Step 1; a live-now/mid-execution run-state verdict on this exact slug is THIS
+run (self) — adopt it, do not stand down.)"
+else
+    __PWT_SLUG_DIRECTIVE="(seed the goal-state yourself at PWT-T5b under this exact slug; reuse it
+VERBATIM in every stage artifact; do NOT mint a new slug in Step 1. If the
+run-state detector reports a LIVE run on this slug, STAND DOWN per the
+Step -1 routing table — it is another run, not you.)"
+fi
+
 __pwt_build_goal_text() {
     local req="$1"
     read -r -d '' GOAL_TEXT <<EOF_GOAL_TEXT || true
 /goal Use /plan-w-team to ${req}.
 Ground in repo docs first (GRD).
+SLUG for ALL run artifacts: ${SLUG_GUESS}
+${__PWT_SLUG_DIRECTIVE}
 
 Pipeline is complete when ALL of:
 ${DONE_CRITERIA}${EXTRA_DONE}
@@ -1588,7 +1625,7 @@ The worker is a separate `claude --bg` session executing /plan-w-team. It create
 1. **Observe** by polling `./.claude/scripts/claude-agents-extended.sh` (or `claude agents --json` as fallback) and `claude logs __WORKER_SID__ --tail 200` every ~60s. The extended wrapper includes Agent-tool subagents (kind: "subagent") so a worker fanning out via the Agent tool stays visible. Use `until` loops or ScheduleWakeup; don't burn cache by polling too fast.
 
 2. **Wait for terminal state.** Done when ANY of:
-   - **SUCCESS:** transcript contains `stage="retro-complete"` block with `workflow_lock="done"`
+   - **SUCCESS:** transcript contains the retro terminal status block — a \`\`\`status fenced JSON with `"stage": "retro-complete"` and `"workflow_lock": "done"` (canonical, emitted by plan-w-team-surface-status.sh); when grepping, ALSO accept the legacy hand-written `stage="retro-complete"` equals form (pre-1.54.0 runs)
    - **ESCALATION:** a hard-gate pause site fires (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`)
    - **LOW-CONFIDENCE:** 3 consecutive supervisor decisions log `confidence=low`
    - **DEAD:** the extended wrapper (or `claude agents --json` fallback) no longer lists session __WORKER_SID__

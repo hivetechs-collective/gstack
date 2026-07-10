@@ -455,10 +455,18 @@ If a legitimate mid-flight AC change is needed, re-run Step 1 to refresh the sna
 
 After the AC snapshot, derive feature-specific grep patterns from the spec's Acceptance Criteria entries and inject them into the goal state file. This makes the `/goal` evaluator's SUCCESS condition require BOTH the generic terminal anchors AND every feature-specific criterion to appear in the transcript before allowing stop.
 
-The derivation is MECHANICAL: every `AC<N>:` entry in the spec's Acceptance Criteria section becomes one criterion with pattern `AC<N>.*PASS`. The pattern matches the verification lines that Step 5 review and Step 6 ship already emit per AC.
+The derivation is MECHANICAL: every `AC<N>:` entry in the spec's Acceptance Criteria section becomes one criterion with pattern `AC<N>:[[:space:]]*PASS`. The pattern matches the `AC<N>: PASS — <evidence>` verification lines that Step 5 review and Step 6 ship emit per AC (this emission format is a CONTRACT — see the AC Verification Line Contract in `04-fix-first-review.md`/`05-ship.md`).
+
+> **1.54.0 pattern tightening.** The previous pattern `AC<N>.*PASS` let the greedy `.*`
+> span unrelated transcript content — field evidence 2026-07-09 (helm): AC9 flipped
+> `met: true` while the lead explicitly reported it "deliberately not performed". The
+> anchored form requires the literal verification line. Deliberately NOT end-anchored
+> (`PASS` not `PASS([[:space:]]|$)`) so `AC3: PASSED` still matches — a too-tight
+> pattern that never matches re-arms the 2026-06-22 blocked-stop runaway class, which
+> is the worse failure.
 
 ```bash
-SLUG="<feature-slug>"
+SLUG="<feature-slug>"   # MUST be the directive's pre-seeded slug when one is named (see PWT-T5b SLUG adoption)
 SPEC="docs/specs/${SLUG}.md"
 GOAL_FILE=".claude/state/plan-w-team-goal-${SLUG}.json"
 
@@ -472,7 +480,7 @@ else
         [ -z "$n" ] && continue
         desc=$(echo "$line" | sed -E "s/.*AC${n}:[[:space:]]*//" | head -c 200)
         [[ "$desc" == *"[Subject]"* ]] && continue
-        CRITERIA_JSON=$(echo "$CRITERIA_JSON" | jq --arg p "AC${n}.*PASS" --arg d "$desc" \
+        CRITERIA_JSON=$(echo "$CRITERIA_JSON" | jq --arg p "AC${n}:[[:space:]]*PASS" --arg d "$desc" \
             '. + [{pattern: $p, description: $d, met: false, met_at: null}]')
     done < <(awk '/^## Acceptance Criteria/,/^## [^A]/' "$SPEC" | grep -E '^\s*-?\s*\[?\s*\]?\s*AC[0-9]+:')
 
@@ -481,6 +489,32 @@ else
         jq --argjson c "$CRITERIA_JSON" '.feature_specific_done_criteria = $c' \
             "$GOAL_FILE" > "$GOAL_FILE.tmp" && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
         echo "[§1.5] injected $CRITERIA_COUNT feature-specific done criteria into goal state"
+
+        # ── Dual-write to the MAIN checkout (1.54.0) ────────────────────────────
+        # Under a worker-only run, cwd is a WORKTREE: the bare-relative GOAL_FILE
+        # above patches only the worktree-local copy, and the main-repo seeded copy
+        # (read by the evaluator, await-terminal watcher, and Run-State Router)
+        # stranded at terminal_state:null forever (field evidence 2026-07-09, 3 runs).
+        # Mirror pwt-goal.sh's dual-seed: resolve the main root via git-common-dir
+        # and apply the same injection there when it is a DIFFERENT file.
+        MAIN_ROOT=""
+        if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+            MAIN_ROOT="$PWT_PROJECT_ROOT_OVERRIDE"
+        else
+            CDIR=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+            case "$CDIR" in
+                "") MAIN_ROOT="" ;;
+                /*) MAIN_ROOT=$(dirname "$CDIR") ;;
+                *)  MAIN_ROOT=$(cd "$(dirname "$CDIR")" 2>/dev/null && pwd || echo "") ;;
+            esac
+        fi
+        MAIN_GOAL_FILE="${MAIN_ROOT}/.claude/state/plan-w-team-goal-${SLUG}.json"
+        if [ -n "$MAIN_ROOT" ] && [ -f "$MAIN_GOAL_FILE" ] \
+           && [ "$MAIN_GOAL_FILE" != "$(cd "$(dirname "$GOAL_FILE")" 2>/dev/null && pwd)/$(basename "$GOAL_FILE")" ]; then
+            jq --argjson c "$CRITERIA_JSON" '.feature_specific_done_criteria = $c' \
+                "$MAIN_GOAL_FILE" > "$MAIN_GOAL_FILE.tmp" && mv "$MAIN_GOAL_FILE.tmp" "$MAIN_GOAL_FILE"
+            echo "[§1.5] dual-wrote criteria to main-checkout goal state"
+        fi
     else
         echo "[§1.5] no AC entries found in spec — goal evaluator uses generic anchors only (T5b behavior)"
     fi

@@ -49,14 +49,22 @@ Run the derivation script with the user's natural-language request as the argume
 
 If the user supplied `--type`, `-i`, or `--launch` flags, pass them through. If the user used natural language, infer `--type` from cues:
 
-| Cue in user message                                        | Inferred `--type`                       |
-| ---------------------------------------------------------- | --------------------------------------- |
-| "refactor", "extract", "rename", "reorganize"              | `refactor`                              |
-| "fix the bug", "broken", "regression"                      | `bugfix`                                |
-| "update docs", "document", "README"                        | `docs`                                  |
-| "continue", "keep going on", "pick up", "resume", "finish" | `continue` (see Continuation Awareness) |
-| "what's left", "what remains", "ready for beta/go-live?"   | `status` (see Continuation Awareness)   |
-| (anything else)                                            | `feature` (default)                     |
+| Cue in user message                                        | Inferred `--type`                                   |
+| ---------------------------------------------------------- | --------------------------------------------------- |
+| "refactor", "extract", "rename", "reorganize"              | `refactor`                                          |
+| "fix the bug", "broken", "regression"                      | `bugfix`                                            |
+| "update docs", "document", "README"                        | `docs`                                              |
+| "continue", "keep going on", "pick up", "resume", "finish" | _continuation routing_ (see Continuation Awareness) |
+| "what's left", "what remains", "ready for beta/go-live?"   | _status routing_ (see Continuation Awareness)       |
+| (anything else)                                            | `feature` (default)                                 |
+
+> **`continue`/`status` are ROUTING DECISIONS, not `--type` values (1.54.0
+> clarification).** `pwt-goal.sh --type` accepts ONLY
+> `feature|refactor|bugfix|docs` and exits 1 on anything else — passing
+> `--type continue` crashes the derivation. When a continuation/status cue fires,
+> follow the Continuation Awareness section below (detector → slug reuse / status
+> mode / stand-down) and, if a derivation still happens, pass the underlying work
+> type (or omit `--type` for the `feature` default).
 
 The script outputs the `/goal` command to stdout. Present it to the user verbatim in a code block, labeled clearly so they know to copy and paste.
 

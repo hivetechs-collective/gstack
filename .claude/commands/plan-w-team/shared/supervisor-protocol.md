@@ -578,7 +578,10 @@ liveness (debounced against flaky `claude agents --json`). Exit codes: `0` =
 terminal/halt reached (read `terminal_state` and emit the TERMINAL/⚠HALT block);
 `3` = heartbeat re-arm (re-run the Step-0 progress check, then re-launch the wait —
 this is a heartbeat, **NOT** a wall-clock cap; principle #3 forbids turn/time caps
-on the work). Tune via `PWT_AWAIT_INTERVAL_S` / `PWT_AWAIT_HEARTBEAT_S`.
+on the work); `4` = duplicate watcher (1.54.0 singleton — another watcher already
+owns this slug+worker-sid wait: DEFER to it, do **NOT** re-launch; re-launching
+loops straight back to exit 4). Tune via `PWT_AWAIT_INTERVAL_S` /
+`PWT_AWAIT_HEARTBEAT_S`.
 
 **Worktree-aware goal-state resolution (PWT-WT2).** PWT-WT1 spawns `--worker-only`
 workers with `claude --bg --worktree`, so the worker runs inside

@@ -330,13 +330,13 @@ The goal state file optionally carries a `feature_specific_done_criteria` array 
   // ... (existing T5b state fields above)
   "feature_specific_done_criteria": [
     {
-      "pattern": "AC1.*PASS",
+      "pattern": "AC1:[[:space:]]*PASS",
       "description": "Payment endpoint returns 200 with valid stripe token",
       "met": false,
       "met_at": null
     },
     {
-      "pattern": "AC2.*PASS",
+      "pattern": "AC2:[[:space:]]*PASS",
       "description": "Secret scan reports 0 findings",
       "met": false,
       "met_at": null

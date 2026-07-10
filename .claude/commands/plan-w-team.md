@@ -264,16 +264,17 @@ error degrades a candidate to `no-prior`. Full contract: `docs/specs/run-state-r
 
 **Step B — route on `intent × verdict`:**
 
-| Verdict           | Phrasing class                                                  | Route                                                                                                                  |
-| ----------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| no-prior          | any                                                             | Full pipeline 0→8 (unchanged)                                                                                          |
-| specd (fresh)     | continue                                                        | Step 2 → 8, reusing the spec after `plan-w-team-grounding-gate.sh --check --spec <spec> --phase review` freshness pass |
-| mid-execution     | continue                                                        | existing `--resume` machinery (3-4 → 8; SLUG Recovery Contract + Baseline-Missing Guard unchanged, `03-execute.md`)    |
-| built-unreviewed  | continue/ship                                                   | 5 → 8 (`--ship-only` semantics incl. degraded-hygiene sentinels)                                                       |
-| shipped-unretroed | any                                                             | Step 8                                                                                                                 |
-| complete          | new ask, same topic                                             | **Delta-spec**: Step 0/1 scoped to the DELTA only (amend or supersede the existing spec — record which), then 2→8      |
-| any               | readiness question ("what remains / ready for beta / go-live?") | **Status mode** (see below)                                                                                            |
-| live-now          | any                                                             | **STAND DOWN** + surface the live run (memory: concurrent-duplicate-run stand-down) — never race it                    |
+| Verdict                  | Phrasing class                                                                           | Route                                                                                                                                                                                           |
+| ------------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| no-prior                 | any                                                                                      | Full pipeline 0→8 (unchanged)                                                                                                                                                                   |
+| specd (fresh)            | continue                                                                                 | Step 2 → 8, reusing the spec after `plan-w-team-grounding-gate.sh --check --spec <spec> --phase review` freshness pass                                                                          |
+| mid-execution            | continue                                                                                 | existing `--resume` machinery (3-4 → 8; SLUG Recovery Contract + Baseline-Missing Guard unchanged, `03-execute.md`)                                                                             |
+| mid-execution / live-now | **own pre-seeded slug** (the /goal directive names `SLUG for ALL run artifacts: <slug>`) | **ADOPT the seeded slug and proceed 0→8 as normal** — this is a same-run self-seed (pwt-goal.sh dual-seeds the goal-state at spawn), NOT a prior separate run; do not resume, do not stand down |
+| built-unreviewed         | continue/ship                                                                            | 5 → 8 (`--ship-only` semantics incl. degraded-hygiene sentinels)                                                                                                                                |
+| shipped-unretroed        | any                                                                                      | Step 8                                                                                                                                                                                          |
+| complete                 | new ask, same topic                                                                      | **Delta-spec**: Step 0/1 scoped to the DELTA only (amend or supersede the existing spec — record which), then 2→8                                                                               |
+| any                      | readiness question ("what remains / ready for beta / go-live?")                          | **Status mode** (see below)                                                                                                                                                                     |
+| live-now                 | any                                                                                      | **STAND DOWN** + surface the live run (memory: concurrent-duplicate-run stand-down) — never race it                                                                                             |
 
 **Behavioral rules:**
 
@@ -282,8 +283,20 @@ error degrades a candidate to `no-prior`. Full contract: `docs/specs/run-state-r
   override." Present ranked candidates only when the match is genuinely ambiguous
   (≥2 close scores).
 - **Autonomous**: never ask; pick the top candidate and state it in the transcript.
-- Every state-based stage skip emits a grep-able audit line (retro §8j-octies counts it
-  via the bypass log — same mechanism as `⚠ stage-file-bypass:`):
+- **EVERY Step -1 invocation emits one audit record — including `no-prior`** (1.54.0).
+  Field evidence 2026-07-09: 7/7 runs left zero router evidence, making "router ran and
+  said no-prior" indistinguishable from "router never ran". Append one JSON line to the
+  persistent audit log (NOT deleted at retro; registered in `shared/state-artifacts.md`)
+  immediately after the detector returns:
+
+  ```bash
+  printf '{"ts":"%s","topic":"%s","verdict":"%s","slug":"%s","route":"%s"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "<topic>" "<verdict>" "<top-slug-or-none>" "<route, e.g. full-pipeline-0-8>" \
+    >> ".claude/state/plan-w-team-run-state-audit.jsonl"
+  ```
+
+- Every state-based stage skip ADDITIONALLY emits the grep-able skip line (retro
+  §8j-octies counts it via the bypass log — same mechanism as `⚠ stage-file-bypass:`):
 
   ```bash
   printf 'run-state-router: %s→%s (verdict=%s slug=%s)\n' "0" "<entry-stage>" "<verdict>" "<slug>"
@@ -375,12 +388,23 @@ Before Pre-Flight, **activate the self-hosted goal evaluator** by writing a goal
 
 **Otherwise, write the goal state file:**
 
+**SLUG adoption (1.54.0 — MANDATORY):** if the /goal directive names a pre-seeded slug
+(`SLUG for ALL run artifacts: <slug>` — injected by `pwt-goal.sh` on every spawn path),
+use it VERBATIM here and in every later stage artifact (spec filename, stage-events,
+ship-verdict, retro) and SKIP fresh derivation. Minting a different slug strands the
+seeded goal-state at `terminal_state: null` forever — the evaluator, await-terminal
+watcher, and Run-State Router all key on the seeded slug (field evidence 2026-07-09:
+three runs stranded this way). The seeded file may ALREADY exist (pwt-goal.sh
+dual-seeds it) and carries fields this block does not (`worker_sid`, `skill_version`)
+— NEVER overwrite it; create only when absent:
+
 ```bash
-SLUG="<feature-slug>"   # same slug used by the rest of the pipeline
+SLUG="<feature-slug>"   # = the directive's pre-seeded slug when present; else derive fresh
 STATE_DIR=".claude/state"
 mkdir -p "$STATE_DIR"
 
-cat > "$STATE_DIR/plan-w-team-goal-${SLUG}.json" <<EOF
+if [ ! -f "$STATE_DIR/plan-w-team-goal-${SLUG}.json" ]; then
+  cat > "$STATE_DIR/plan-w-team-goal-${SLUG}.json" <<EOF
 {
   "slug": "${SLUG}",
   "started_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
@@ -388,6 +412,7 @@ cat > "$STATE_DIR/plan-w-team-goal-${SLUG}.json" <<EOF
   "terminal_reason": null
 }
 EOF
+fi
 ```
 
 That's it. The hook activates automatically on the next Claude turn. The condition (3 terminal states — SUCCESS, USER_ESCALATION_HALT, LOW_CONFIDENCE_STREAK; **no wall-clock or turn caps by design**) is implemented in the hook — see `shared/goal-conditions.md` for the anchor patterns the evaluator looks for and how each lead stage / supervisor turn contributes signals.
