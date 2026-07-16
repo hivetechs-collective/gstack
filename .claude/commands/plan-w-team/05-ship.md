@@ -463,6 +463,35 @@ if ! run_tests; then
 fi
 ```
 
+**Skill-suite gate (CONDITIONAL — additive to `run_tests()` above).** In a repo that
+carries the /plan-w-team bats harness, `run_tests()` is not sufficient: `make test-skill`
+outlives the Bash tool's 600s cap, so a backgrounded suite hands back a TRUNCATED log
+that has historically been misread as green (memory:
+`project_test_skill_exceeds_bash_timeout`). The wrapper runs the suite synchronously
+(background the WRAPPER, not the suite) and derives green ONLY from run.sh's literal
+trailing `SUITE_EXIT=0` — a killed or truncated run is red by construction.
+
+Repos WITHOUT the harness are unaffected: the wrapper exits 3 `NO-SUITE`, writes no
+artifact, and this block no-ops — exactly today's behavior.
+
+```bash
+TEST_GREEN="$(git rev-parse --show-toplevel)/.claude/scripts/plan-w-team-test-green.sh"
+if [ -x "$TEST_GREEN" ]; then
+  "$TEST_GREEN" --slug "$SLUG"
+  TG_RC=$?
+  case "$TG_RC" in
+    0) echo "✓ Ship gate 6b-skill: skill suite GREEN (trailing SUITE_EXIT=0)" ;;
+    3) echo "→ Ship gate 6b-skill: NO-SUITE — no skill harness in this repo, skipping (run_tests() alone gates)" ;;
+    4) echo "✗ Ship gate 6b-skill: another test-green run holds this checkout's lock. Refusing to ship on an unknown verdict."
+       exit 1 ;;
+    *) echo "✗ Ship gate 6b-skill: skill suite RED (or marker-absent). Refusing to ship."
+       echo "  Verdict: .claude/state/plan-w-team-test-green-${SLUG}.json"
+       echo "  Fix-immediately applies (§5-0): fix → re-run → observe GREEN. Never ship past this."
+       exit 1 ;;
+  esac
+fi
+```
+
 If the browse binary is available and any task has `scope: "FRONTEND"`, read `shared/browser-qa.md` for browser smoke test instructions. **Browser smoke tests are also gates** — a non-zero exit code from the browse binary blocks the ship.
 
 ### Fix-Immediately at the ship gate (ENFORCING — per §5-0)

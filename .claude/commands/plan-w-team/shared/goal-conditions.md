@@ -181,6 +181,39 @@ session alive and the model invented phantom work — worker `3ce4f51f`, 2026-06
   feature-AC AND-check and the empty-AC PWT-ANTIPARK backlog check still gate, so an incomplete
   multi-AC / multi-epic run is never prematurely terminated.
 
+- **TEST_GREEN corroboration (R3/AC3, 2026-07-16):** before detector (1) resolves `SUCCESS`,
+  the evaluator reads the deterministic test-green verdict artifact
+  `.claude/state/plan-w-team-test-green-<slug>.json` (written by
+  `.claude/scripts/plan-w-team-test-green.sh`; resolved via `$(dirname "$GOAL_FILE")`, the same
+  WT2-safe path as the PWT-TERM2 ship-verdict read). A **FRESH RED** verdict
+  (`green:false` with `ts >= started_at`) WITHHOLDS `SUCCESS` and surfaces a block reason
+  containing the literal token `TEST_GREEN_RED`. "The suite is green" is thereby an artifact
+  the machinery consumes, not a claim in a transcript.
+  - **Fail-open, asymmetric:** the check may only ever withhold on positive evidence of a fresh
+    red. Artifact absent / stale (`ts < started_at`, i.e. a prior run's verdict) / unparseable /
+    `green:true` → behave exactly as before. A consumer repo with no wrapper is untouched.
+  - **Bounded (no wedge-forever):** there are no wall-clock or turn caps here by design, so a
+    permanently-red artifact could otherwise loop forever. After **3 consecutive** turns blocked
+    on the SAME red `ts`, the evaluator converts to `USER_ESCALATION_HALT` so a human sees it
+    (mirrors the low-confidence-streak precedent). A NEW red `ts` means a new suite run and
+    restarts the streak. Streak state lives on the goal file as `test_green_block_streak` /
+    `test_green_block_ts`.
+  - **Kill switch:** `PLAN_W_TEAM_DISABLE_TEST_GREEN=1` — the artifact is not consulted at all.
+  - **Implementation note (bug class worth remembering):** the artifact's `green` field must be
+    read as `if has("green") then (.green|tostring) else "" end`, NOT `.green // ""` — jq's `//`
+    treats `false` as empty and takes the alternative, so a RED verdict would read as unreadable
+    and fail open. That is the same silent-fail-open class as the Defect-B criteria bug.
+
+**Done-criteria contract (Defect B, fail-closed, 2026-07-16):** `feature_specific_done_criteria`
+rows MUST be canonical `{pattern, description, met, met_at}` objects. A non-object row (e.g. a
+bare string) is counted **UNMET** and surfaces a `malformed done-criteria row` reason; a criteria
+array that cannot be parsed at all **BLOCKS**; an empty or non-compiling `pattern` is UNMET
+(never `grep -E ""`, which matches every line). Rationale: a contract the evaluator cannot parse
+is exactly the case where it must never award SUCCESS. Writers (`pwt-goal.sh` seeding,
+`01-specification.md` §1.5) emit canonical rows only and merge by union
+(`unique_by(.pattern)`), so seeded rows survive AC injection; the sibling main-checkout copy
+converges at the next dual-write.
+
 **Removed:** an earlier `TIME_OR_TURN_CAP` terminal state was deleted by design (2026-05-19). Wall-clock and turn-count termination conflated "the work is done" with "we've used our budget" — neither is a legitimate stopping signal for autonomous engineering work. The four states above (three directly-detected + `API_HALT` via propagation) are the only ways a `/plan-w-team` run reaches terminal.
 
 ### Evaluator State Machine
@@ -458,6 +491,7 @@ The chain is at most as deep as the user's original mission; PWT-DS2 prevents ar
 | -------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `PLAN_W_TEAM_DISABLE_GOAL=1`     | unset                 | Skip top-of-pipeline `/goal` open entirely; pipeline runs as today (lead-driven turn-by-turn polling)                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `PLAN_W_TEAM_DISABLE_ANTIPARK=1` | unset                 | Disable the PWT-ANTIPARK gate (§Anti-Park Gate below). The supervisor yield + empty-AC SUCCESS-withholding revert to pre-2026-06-07 behavior. Fail-open default: with the var unset, the gate is also a no-op whenever the run's slug-keyed `.claude/state/supervisor-progress-<slug>.json` is absent, foreign-slug, stale, or corrupt.                                                                                                                                                                                                                                |
+| `PLAN_W_TEAM_DISABLE_TEST_GREEN=1` | unset                 | Disable the TEST_GREEN corroboration in the SUCCESS gate (§Terminal States). The evaluator stops reading `.claude/state/plan-w-team-test-green-<slug>.json` entirely, so a FRESH RED suite verdict no longer withholds SUCCESS and the 3-strike `USER_ESCALATION_HALT` never fires. Fail-open default: with the var unset, the check is ALREADY a no-op whenever the artifact is absent, stale (`ts < started_at`), unparseable, or green — so consumer repos with no test-green wrapper are unaffected without setting this. |
 | `PWT_ANTIPARK_MAX_AGE_S`         | `3600`                | Staleness threshold for the slug-keyed anti-park snapshot. A `supervisor-progress-<slug>.json` older than this (by its embedded `ts`, else file mtime) is IGNORED (fail-open) so a dead run's STALLED verdict cannot haunt a new run. Consumed by `__antipark_state` in `.claude/hooks/plan-w-team-goal-evaluator.sh`.                                                                                                                                                                                                                                                 |
 | `PWT_GOAL_EVALUATOR_DEBUG=1`     | unset                 | Evaluator prints per-detector diagnostics to stderr (which signal ran, what matched). Also `--debug`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `PWT_AUTONOMY_PROFILE`           | `strict` (when unset) | Autonomy-constant profile for the supervisor loop (C6 pilot). `strict`/unset = byte-for-byte today (STALL_THRESHOLD 2, in-flight window 30 min, idle 300 s). `relaxed` loosens to STALL_THRESHOLD 4, in-flight 60 min, idle 900 s — for long-horizon Opus-4.8 runs that legitimately cook longer between landings. Explicit `STALL_THRESHOLD` / `PWT_INFLIGHT_MMIN` / `PLAN_W_TEAM_IDLE_THRESHOLD_S` always override the profile. Adds **NO** self-report grace tick — STALL-ALERT stays purely objective. Consumed by `.claude/scripts/supervisor-progress-check.sh`. |

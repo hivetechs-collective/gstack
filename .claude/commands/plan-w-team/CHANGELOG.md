@@ -14,6 +14,90 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.56.0] — 2026-07-16 (d3d918b)
+
+Bottom-line-loops hardening + the 2026-07-16 goal-integrity field defects.
+Theme: **a signal that looks like an enforcement mechanism must actually be
+consumed authoritatively** — the "canon is not a control" failure class.
+
+### Fixed — goal-integrity field defects (both reproduced RED, then GREEN)
+
+- **Defect B — done-criteria now fail CLOSED** (`plan-w-team-goal-evaluator.sh`).
+  A `feature_specific_done_criteria` row that was not the canonical
+  `{pattern, description, met, met_at}` object silently resolved SUCCESS having
+  checked nothing. Verified root cause (NOT the originally-suspected fail-open
+  `2>/dev/null || echo ""` idiom): at the consume loop, `.pattern` on a
+  bare-string row errors to EMPTY, and the following `grep -E ""` — an empty
+  regex — matches EVERY line, marking the row met; the write-back then errors
+  too, so nothing persists and no unmet reason is ever recorded. Now: non-object
+  row → UNMET citing "malformed done-criteria row"; unparseable array → BLOCK;
+  empty/non-compiling pattern → UNMET (never `grep -E ""`). Canonical rows
+  behave exactly as before. Test: `plan-w-team-goal-evaluator-criteria-failclosed.test.sh`.
+- **Defect A — transcript SUCCESS now requires corroboration**
+  (`plan-w-team-await-terminal.sh`). The TERTIARY detector (1.48.3) treats
+  transcript anchors as a STATE, but they are a HISTORY: once any stop attempt
+  emits them they match forever — including when the /goal evaluator correctly
+  BLOCKED that stop for unmet criteria and the run is still working (observed
+  twice in the field). A transcript-only SUCCESS is now withheld when the
+  resolved goal-state shows unmet criteria and a null `terminal_state`.
+  Fail-open by construction: absent/unreadable goal-state, empty criteria, or
+  all-met criteria still emit SUCCESS, preserving the exact lingering-worker
+  case 1.48.3 exists for. Test: `plan-w-team-await-terminal-blocked-stop.test.sh`.
+
+### Added
+
+- **`SUITE_EXIT=<code>` marker** (`tests/skill/run.sh`, R1): emitted exactly once
+  as the literal final stdout line at the final gate, plus explicit emission on
+  the no-bats GREEN path (0) and the env-error exits (2). Deliberately not an
+  EXIT trap (subshell phases risk double-emit). Marker-less termination is RED
+  by construction downstream, so a truncated log can no longer read as green.
+- **`plan-w-team-test-green.sh`** (R2/R3): bg-safe wrapper that owns the suite
+  run, keys green off a literal trailing `SUITE_EXIT=0`, writes a dual-written
+  verdict artifact, NO-SUITE-guards consumer repos (exit 3, no artifact), and
+  takes a repo-root-keyed lock. `--log` / `PWT_TEST_GREEN_SUITE_CMD` fixture seam.
+- **pwt-goal deictic refusal + done-when synthesis** (R4/R5): exit 6
+  `PWT_CTX_DANGLING` for context-blind requests with no resolvable brief;
+  `--brief` regular/non-symlink/≥200-byte guard; `DONE<k>: PASS` criteria
+  synthesized via jq only, seeded to worker-visible copies only; goal text
+  anchor-stripped so it cannot self-satisfy. §1.5 merges by union
+  (`unique_by(.pattern)`) so seeded rows survive AC injection.
+- **`plan-w-team-friction-triage-due.sh`** (R7): deterministic
+  `FRICTION_TRIAGE_DUE` advisory + `--validate` schema mode, invoked fail-open
+  from session-start and the retro preflight. No launchd timer (actor problem).
+- **W3 — route-hook trigger matcher widened**: the nine exact-substring patterns
+  missed ordinary English ("Use **the** /plan-w-team **skill** to …" produced no
+  route at all — no log entry, no systemMessage, no trace). One tolerant regex
+  now matches `<verb> [the|our|a] /plan-w-team [skill|run|…] <to|for>`; the
+  required verb + to/for keep casual mentions from spawning. 19-fixture corpus
+  including the origin prompt and 7 negative controls.
+- **W4 — state gitignore hygiene**: statusline's stale-while-revalidate
+  `.refreshing`/`.tmp.<pid>` cache siblings, `hygiene-backups/`, and
+  `plan-w-team-run-state-audit.jsonl` were untracked-and-unignored, dirtying the
+  ship gate every session. Rows added + an executable guard.
+
+### Notes
+
+- W4's proposed "pin the statusline writer to repo root" was **NO-GO** on
+  evidence: `settings.json` invokes it as `"$CLAUDE_PROJECT_DIR"/.claude/statusline.sh`,
+  so `$PWD` IS the project root in production, and the PWD-relative resolution is
+  a documented per-project design that a repo-root pin would break.
+- The spec's stale version target (1.50.2 → 1.51.0) was superseded; version
+  re-derived at ship time via `plan-w-team-next-version.sh --bump minor`.
+
+## [1.55.1] — 2026-07-16 (26f83c7)
+
+**Consumer-portable governance scenario.** `supervisor-merge-gate-governance.bats`
+asserted `docs/specs/supervisor-merge-enforcement.md` exists — but `sync-to-project.sh`
+intentionally never propagates `docs/specs/` (source-only design records), so the two
+provenance tests were structurally un-passable in any consumer repo. Discovered when a
+full-scenario pre-commit gate in a QA consumer (progressive-qa-initiative) blocked the
+1.55.0 sync commit. The two tests now `skip` when `$SPEC` is absent (consumer) and still
+enforce when present (source). The mechanism they guard — the gate script + protocol/
+ship/governance wiring — is synced and remains enforced by AC1–AC7. Companion finding
+(not a code change): the default `minimal` sync profile leaves non-core agent
+definitions stale in consumers; a QA repo running the full scenario corpus must sync
+with `--profile full`.
+
 ## [1.55.0] — 2026-07-15 (cc314c6)
 
 **Agent-registry validity check — the roster could go silently dead.** The Cherny

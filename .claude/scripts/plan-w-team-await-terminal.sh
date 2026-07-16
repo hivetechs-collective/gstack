@@ -194,6 +194,37 @@ __transcript_shows_success() {
   grep -Eq '```status.{0,160}"stage\\?"?[[:space:]]*:[[:space:]]*\\?"?retro-complete.{0,120}"workflow_lock\\?"?[[:space:]]*:[[:space:]]*\\?"?done' "$TX_PATH" 2>/dev/null
 }
 
+# ── Goal-state corroboration for TERTIARY (DEFECT A, 2026-07-16) ────────────
+# Returns 0 ("unfinished — do NOT trust transcript anchors") ONLY on positive,
+# authoritative evidence that the run is still working:
+#   the goal-state file resolves AND terminal_state is null AND at least one
+#   feature_specific_done_criteria row is not met:true.
+# Everything else returns 1 ("nothing contradicts the anchors") so the 1.48.3
+# behaviour is preserved exactly: no goal file, unreadable JSON, no jq, empty
+# criteria array, or all rows met → the transcript verdict stands.
+#
+# Deliberately conservative on shape: a row that is not an object, or that lacks
+# met:true, counts as UNMET. That is the same fail-closed reading the evaluator
+# now uses (a malformed criteria contract must never read as "done"), and here it
+# only costs extra polling — the safe direction.
+__goal_state_shows_unfinished() {
+  local gf ts unmet
+  command -v jq >/dev/null 2>&1 || return 1
+  gf="$(__resolve_goal_file)"
+  [ -n "$gf" ] && [ -f "$gf" ] || return 1
+  ts=$(jq -r '.terminal_state // ""' "$gf" 2>/dev/null || echo "")
+  # A written terminal_state is PRIMARY's business and it already returned above.
+  [ -n "$ts" ] && [ "$ts" != "null" ] && return 1
+  unmet=$(jq -r '
+      (.feature_specific_done_criteria // [])
+      | map(select((type != "object") or (.met != true)))
+      | length
+  ' "$gf" 2>/dev/null || echo "")
+  printf '%s' "${unmet:-}" | grep -qE '^[0-9]+$' || return 1   # unreadable → fail open
+  [ "$unmet" -gt 0 ] 2>/dev/null || return 1
+  return 0
+}
+
 # Non-looping diagnostic seam (--print-goal-file): resolve and exit, never watch.
 if [ "${PRINT_GOAL_FILE:-0}" = "1" ]; then
   __resolve_goal_file
@@ -248,9 +279,29 @@ while :; do
   #      emitted the canonical retro status block but (worker-only) never wrote
   #      terminal_state and lingers, so PRIMARY/SECONDARY can't see it. ADDITIVE:
   #      runs after PRIMARY, never short-circuits it; gated on --worker-sid.
+  #
+  #      DEFECT A (2026-07-16) — CORROBORATION GATE.
+  #      Transcript anchors are a HISTORY, not a STATE: once ANY stop attempt
+  #      emits them they match on every subsequent poll, forever. If that stop
+  #      was BLOCKED by the /goal evaluator for unmet done-criteria, the run is
+  #      still going and this detector would report SUCCESS on every tick (field
+  #      incident: SUCCESS fired twice while four criteria were unmet). So a
+  #      transcript-only SUCCESS must be corroborated against the authoritative
+  #      goal-state before it is trusted.
+  #
+  #      Corroboration can only ever WITHHOLD on positive evidence of unfinished
+  #      work; it never invents a blocker. Absent/unreadable goal-state, empty
+  #      criteria, or all-met criteria → emit as before, preserving the 1.48.3
+  #      lingering-worker fix this layer exists for.
   if [ -n "$WORKER_SID" ] && __transcript_shows_success; then
-    echo "terminal=SUCCESS source=transcript sid=$WORKER_SID slug=$SLUG"
-    exit 0
+    if __goal_state_shows_unfinished; then
+      # Still working: the anchors are stale history from a blocked stop.
+      # Say so once per tick at heartbeat volume, then keep polling.
+      :
+    else
+      echo "terminal=SUCCESS source=transcript sid=$WORKER_SID slug=$SLUG"
+      exit 0
+    fi
   fi
 
   # (2) SECONDARY — watched worker vanished without writing terminal. Debounced

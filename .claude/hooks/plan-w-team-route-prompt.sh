@@ -139,22 +139,43 @@ esac
 # and trust opt-out mechanisms for the edge cases.
 PROMPT_LC=$(printf '%s' "$PROMPT" | tr '[:upper:]' '[:lower:]')
 
+# Trigger match (W3, 2026-07-16 — widened from a fixed exact-substring list).
+#
+# The old list was nine literal `grep -qF` substrings ("use /plan-w-team to ",
+# …). Any interpolated word broke every one of them: the real prompt
+#   "Use the /plan-w-team skill to evaluate and improve …"
+# produced NO route at all — no launch-log entry, no systemMessage, no trace —
+# because "the … skill" sits between "use" and "to", and the prompt carried no
+# "definition of done"/"done when" for the combined trigger below. Routing had
+# to be done by hand, which is the gap: natural language is the interface, so
+# the matcher must tolerate ordinary English, not a memorised phrase list.
+#
+# TWO alternations, each PRESERVING the old list's semantics for its verb class
+# and adding only tolerance for interpolated articles/nouns:
+#
+#   A. (use|run) [the|our|a|an|your] /plan-w-team [skill|run|…] <to|for> …
+#      to/for REQUIRED — matching the old "use /plan-w-team to ",
+#      "use our /plan-w-team to ", "run /plan-w-team to ". Keeps a bare
+#      question ("should I use /plan-w-team?") from spawning, as before.
+#
+#   B. (using|with|via|start|kick off|launch) [the|our|…] /plan-w-team …
+#      to/for OPTIONAL — matching the old "using /plan-w-team ",
+#      "with /plan-w-team ", "start /plan-w-team ", "kick off /plan-w-team ",
+#      which never required it. Narrowing these would DROP live triggers.
+#
+# The leading verb is what keeps a casual mention from spawning: "/plan-w-team
+# is the orchestrator", "I like how /plan-w-team works", "Read the /plan-w-team
+# docs" all put no trigger verb before the token. Unanchored by design — the
+# intent can appear at any position, after any pleasantry, with no content-word
+# guard (natural language is the interface).
+__PWT_ART='((the|our|a|an|your)[[:space:]]+)?'
+__PWT_NOUN='([[:space:]]+(skill|run|workflow|pipeline))?'
+TRIGGER_RE="((use|used|run)[[:space:]]+${__PWT_ART}/plan-w-team${__PWT_NOUN}[[:space:]]+(to|for)[[:space:]])|((using|with|via|start|starting|kick off|kicking off|launch|launching|running)[[:space:]]+${__PWT_ART}/plan-w-team${__PWT_NOUN}([[:space:]]|\$))"
+
 MATCHED_PATTERN=""
-for pat in \
-    "use /plan-w-team to " \
-    "use our /plan-w-team to " \
-    "using /plan-w-team " \
-    "with /plan-w-team " \
-    "kick off /plan-w-team " \
-    "kick off a /plan-w-team " \
-    "start a /plan-w-team run " \
-    "start /plan-w-team " \
-    "run /plan-w-team to "; do
-    if printf '%s' "$PROMPT_LC" | grep -qF "$pat"; then
-        MATCHED_PATTERN="$pat"
-        break
-    fi
-done
+if printf '%s\n' "$PROMPT_LC" | grep -qE "$TRIGGER_RE"; then
+    MATCHED_PATTERN=$(printf '%s\n' "$PROMPT_LC" | grep -oE "$TRIGGER_RE" | head -1)
+fi
 
 # Combined trigger: ("definition of done" OR "done when") + "/plan-w-team"
 # anywhere in prompt. Documented in CLAUDE.md + skill manifest as a trigger

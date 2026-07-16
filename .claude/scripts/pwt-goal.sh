@@ -145,6 +145,7 @@ SUPERVISOR_GOAL=0  # like --worker-only, plus mirror goal state to origin .claud
 AUTO_PUSH=0      # auto-approve push-ack hard-gate during autonomous run
 TYPE="feature"
 REQUEST=""
+BRIEF_PATH=""  # --brief <path>: written brief that grounds a deictic request (T2 §2a)
 
 # ─── --resume-staleness-check (AC4 — bg-worker resume staleness self-exit) ───
 # The bg-session daemon auto-resumes persisted `claude --bg` workers on restart
@@ -281,6 +282,7 @@ while [ $# -gt 0 ]; do
         --auto-push) AUTO_PUSH=1; shift ;;
         --no-auto-push) AUTO_PUSH=0; shift ;;
         -t|--type) TYPE="$2"; shift 2 ;;
+        --brief) BRIEF_PATH="$2"; shift 2 ;;
         --hours|--turns)
             echo "Note: $1 removed by design — /plan-w-team has no wall-clock or turn caps. Ignoring '$1 $2'." >&2
             shift 2 ;;
@@ -363,6 +365,100 @@ REQUEST=$(__pwt_strip_preamble "$REQUEST")
 if [ -z "$REQUEST" ]; then
     echo "Error: REQUEST is empty after stripping trigger preamble" >&2
     exit 1
+fi
+
+# ─── ANCHOR NEUTRALIZATION (PWT-T2 §2b spoof hardening) ────────────────────
+# The /goal text becomes the worker's FIRST PROMPT, so it lands verbatim in the
+# worker transcript — the exact text the goal-evaluator greps for terminal
+# anchors. A request carrying an anchor-shaped substring ("... then emit
+# DONE1: PASS") would therefore satisfy its own done-criterion at turn zero,
+# before any work happened. Neutralize the literal PASS token on any line that
+# also carries an AC<n>/DONE<n> token: the evaluator greps PER LINE, so the
+# line scope defeats both the anchored form (`DONE[0-9]+:[[:space:]]*PASS`) and
+# the greedy `AC[0-9]+.*PASS` family in one pass, while leaving every line that
+# is not anchor-shaped untouched. Applied BEFORE the ORIGINAL_REQUEST snapshot
+# so the overflow file, the supervisor mirror, and the goal text all inherit the
+# neutralized text. sed is line-oriented → multi-line requests are covered.
+__pwt_strip_anchors() {
+    printf '%s' "$1" | sed -E '/(AC|DONE)[0-9]+/ s/PASS/REDACTED/g'
+}
+REQUEST=$(__pwt_strip_anchors "$REQUEST")
+
+# ─── DONE-WHEN CLAUSE PARSER (PWT-T2 §2b) ──────────────────────────────────
+# Extract explicit done-when clauses from the request so they become real
+# feature_specific_done_criteria rows at seed time, instead of prose the worker
+# may or may not honor. Pure awk, NO eval — the input is untrusted user text.
+#
+# Contract: stdin arg $1 = request text; stdout = one clause per line, at most
+# 8 lines, each ≤200 chars. No introducer found → no output (caller seeds []).
+#
+# tolower() rather than gawk's IGNORECASE (BSD awk on macOS lacks it) and
+# bash 3.2-safe throughout.
+__pwt_parse_done_when() {
+    printf '%s\n' "$1" | awk '
+        { buf = buf $0 "\n" }
+        END {
+            s = buf; ls = tolower(s)
+            npat = split("definition of done:\ndone criteria:\ndone when", pats, "\n")
+            pos = 0; plen = 0
+            for (i = 1; i <= npat; i++) {
+                p = index(ls, pats[i])
+                if (p > 0 && (pos == 0 || p < pos)) { pos = p; plen = length(pats[i]) }
+            }
+            if (pos == 0) exit 0
+            rest = substr(s, pos + plen)
+            sub(/^[[:space:]]*:?[[:space:]]*/, "", rest)
+            # Clause separators: ";", newline, and ". " (period+space — a bare
+            # "." would split decimals like "v1.5").
+            gsub(/[;\n]/, "\036", rest)
+            gsub(/\. /, "\036", rest)
+            n = split(rest, cl, "\036")
+            k = 0
+            for (i = 1; i <= n; i++) {
+                c = cl[i]
+                sub(/^[[:space:]]+/, "", c)
+                sub(/[[:space:]]+$/, "", c)
+                sub(/\.$/, "", c)
+                if (length(c) == 0) continue
+                if (length(c) > 200) c = substr(c, 1, 200)
+                k++
+                if (k > 8) break
+                print c
+            }
+        }
+    '
+}
+
+# Build the seed rows NOW (pre-overflow): once the overflow path rewrites
+# $REQUEST to a "Read full directive at ..." pointer, the clauses are gone from
+# the variable. jq ONLY (--arg) — user text must never be printf/heredoc'd into
+# JSON. jq absent → skip synthesis, warn, seed [] (the printf fallback in
+# __pwt_emit_goal_state and the mirror heredoc are excluded from synthesis by
+# design for exactly this reason).
+__PWT_DONE_ROWS_JSON='[]'
+__PWT_DONE_ROWS_N=0
+if [ -n "$(__pwt_parse_done_when "$REQUEST")" ]; then
+    if command -v jq >/dev/null 2>&1; then
+        __pwt_k=0
+        while IFS= read -r __pwt_clause; do
+            [ -z "$__pwt_clause" ] && continue
+            __pwt_k=$((__pwt_k + 1))
+            __PWT_DONE_ROWS_JSON=$(printf '%s' "$__PWT_DONE_ROWS_JSON" | jq \
+                --arg p "DONE${__pwt_k}: PASS" \
+                --arg d "$__pwt_clause" \
+                '. + [{pattern: $p, description: $d, met: false, met_at: null}]') || {
+                    echo "WARN: done-when synthesis failed in jq; seeding [] instead" >&2
+                    __PWT_DONE_ROWS_JSON='[]'; __pwt_k=0; break
+                }
+        done <<EOF_DONE_CLAUSES
+$(__pwt_parse_done_when "$REQUEST")
+EOF_DONE_CLAUSES
+        __PWT_DONE_ROWS_N=$__pwt_k
+        [ "$__PWT_DONE_ROWS_N" -gt 0 ] && \
+            echo "INFO: done-when synthesis — seeding $__PWT_DONE_ROWS_N DONE<k> criteria from the request" >&2
+    else
+        echo "WARN: jq not found — skipping done-when synthesis; seeding feature_specific_done_criteria: [] (install jq to enable)" >&2
+    fi
 fi
 
 # Preserve the user's original directive content. The overflow path below
@@ -635,13 +731,33 @@ run-state detector reports a LIVE run on this slug, STAND DOWN per the
 Step -1 routing table — it is another run, not you.)"
 fi
 
+# Seeded-criteria directive (PWT-T2 §2b). PLACEHOLDER FORM by construction: it
+# describes how to build the anchor from its parts instead of printing one, so
+# the rendered goal text itself can never match `DONE[0-9]+:[[:space:]]*PASS`.
+# Spelling a literal example here would re-open the very spoof the anchor
+# neutralization above closes — the goal text IS transcript content.
+__PWT_DONE_ROWS_DIRECTIVE=""
+if [ "${__PWT_DONE_ROWS_N:-0}" -gt 0 ]; then
+    __PWT_DONE_ROWS_DIRECTIVE="
+${__PWT_DONE_ROWS_N} done-when criteria from your request are pre-seeded in the goal state as
+DONE<k> rows. To close criterion k, emit a verification line built from these
+parts in order: the token \"DONE\", then k, then a colon, then a space, then the
+token \"PASS\", then an em-dash and the evidence. Emit one such line per k in
+1..${__PWT_DONE_ROWS_N} once that criterion is genuinely verified — never in advance."
+fi
+
+# --brief grounding directive (PWT-T2 §2a). Empty unless a validated brief was
+# supplied; set by the deictic guard AFTER DS1/DS2, which then rebuilds the
+# goal text.
+__PWT_BRIEF_DIRECTIVE=""
+
 __pwt_build_goal_text() {
     local req="$1"
     read -r -d '' GOAL_TEXT <<EOF_GOAL_TEXT || true
 /goal Use /plan-w-team to ${req}.
-Ground in repo docs first (GRD).
+Ground in repo docs first (GRD).${__PWT_BRIEF_DIRECTIVE}
 SLUG for ALL run artifacts: ${SLUG_GUESS}
-${__PWT_SLUG_DIRECTIVE}
+${__PWT_SLUG_DIRECTIVE}${__PWT_DONE_ROWS_DIRECTIVE}
 
 Pipeline is complete when ALL of:
 ${DONE_CRITERIA}${EXTRA_DONE}
@@ -850,6 +966,127 @@ GUARD
             # supervisor on the prior worker instead.
             echo "worker_sid=$EXISTING_WORKER"
             exit 3
+        fi
+    fi
+fi
+
+# ─── DEICTIC CONTEXT-BLIND GUARD (PWT-CTX / T2 §2a) ─────────────────────────
+# EXIT-CODE REGISTRY for this script (keep in sync when adding a refusal —
+# every code below is a DISTINCT refusal class a caller may branch on):
+#
+#   0  success (spawned, or derived in --launch-less mode)
+#   1  usage / empty request / mktemp failure
+#   2  arg validation, /goal 4000-char cap exceeded, --resume-staleness-check misuse
+#   3  PWT-DS1 double-spawn refusal  +  __pwt_seed_guard stand-down
+#   4  PWT-DS2 worker-cascade refusal
+#   5  capacity/tooling hard-refusals — TRIPLE-BOOKED: RAM gate, disk gate,
+#      worktree cap, and the missing-hash-tool fatal in the overflow path
+#   6  fair-share gate refusal
+#   7  PWT_CTX_DANGLING — this guard (deictic request, no resolvable brief)
+#
+# NOTE for spec readers: docs/specs/bottom-line-loops-hardening.md says "exit 6"
+# for PWT_CTX_DANGLING. That text predates the fair-share gate, which took 6.
+# Reusing it would make a context-blind refusal indistinguishable from a
+# fair-share yield — defeating the registry. Hence 7.
+#
+# WHY: the NL route hook auto-launches a worker from the user's raw prompt. A
+# prompt like "use /plan-w-team to execute your bottom-line plan" references
+# analysis that exists ONLY in the origin chat's context — the spawned worker
+# starts with an empty context and cannot see it, so it invents a plan and
+# ships the wrong thing (recorded field incident: the route hook launching a
+# context-blind worker with empty done-criteria). Refuse at derivation time.
+#
+# ORDERING: runs AFTER DS1/DS2 (their refusals are about process identity and
+# must keep precedence) and BEFORE the capacity gates (a request that must not
+# spawn at all should not first be judged on RAM). Reads $ORIGINAL_REQUEST —
+# the PRE-overflow-replacement text — so a large deictic directive cannot
+# launder itself through the "Read full directive at ..." pointer; the persisted
+# overflow file is scanned too (belt-and-braces, and it is the artifact a human
+# would read back).
+#
+# Scoped to SPAWN modes only: pure derive mode prints a /goal for the user to
+# paste and review, so there is nothing context-blind to prevent.
+#
+# Conservative pattern set, ONE variable, each alternative test-pinned in
+# pwt-goal-deictic.test.sh. Accepted residual: novel phrasings slip through
+# (the supersede protocol remains the backstop). A FALSE POSITIVE is the worse
+# failure — it would break every autonomous spawn — hence the positive-control
+# test and the two documented escape routes below.
+__PWT_DEICTIC_PATTERN='your (bottom.?line )?plan|(as|that) (we|you) (discussed|analyzed|agreed)|the plan (we|you) (made|created|discussed)|your (analysis|recommendation|findings|assessment)|(this|our) (session|conversation|chat)|(above|earlier|previous) (analysis|findings|discussion)|bottom.?line'
+
+# printf '%s\n' — NEVER echo: a request beginning "-e" or "-n", or containing
+# backslash escapes, is mangled by echo and would silently evade the detector.
+__pwt_is_deictic() {
+    printf '%s\n' "$1" | grep -E -i -q "$__PWT_DEICTIC_PATTERN"
+}
+
+if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; }; then
+    __PWT_DEICTIC_HIT=0
+    __pwt_is_deictic "$ORIGINAL_REQUEST" && __PWT_DEICTIC_HIT=1
+    if [ "$__PWT_DEICTIC_HIT" = "0" ] && [ -n "${__pwt_overflow_file:-}" ] && [ -f "${__pwt_overflow_file}" ]; then
+        __pwt_is_deictic "$(cat "$__pwt_overflow_file" 2>/dev/null)" && __PWT_DEICTIC_HIT=1
+    fi
+
+    if [ "$__PWT_DEICTIC_HIT" = "1" ]; then
+        # Resolution order: (1) a real brief, (2) the operator escape hatch,
+        # (3) refuse. No coaching beyond the documented hatch (C6 precedent).
+        __PWT_BRIEF_OK=0
+        if [ -n "$BRIEF_PATH" ]; then
+            # Grounding-theater guard: the brief must be a REGULAR, NON-SYMLINK
+            # file of real size. A symlink could point anywhere (and be swapped
+            # after this check by the worker's own edits); a device or a stub
+            # file satisfies "--brief was passed" while grounding nothing.
+            if [ -L "$BRIEF_PATH" ]; then
+                echo "✗ --brief $BRIEF_PATH is a symlink — pass the real file path." >&2
+            elif [ ! -f "$BRIEF_PATH" ]; then
+                echo "✗ --brief $BRIEF_PATH is not a regular file (missing, or a directory/device)." >&2
+            else
+                __pwt_brief_bytes=$(wc -c < "$BRIEF_PATH" 2>/dev/null | tr -d ' ')
+                [ -z "$__pwt_brief_bytes" ] && __pwt_brief_bytes=0
+                if [ "$__pwt_brief_bytes" -lt 200 ]; then
+                    echo "✗ --brief $BRIEF_PATH is ${__pwt_brief_bytes} bytes — a brief under 200 bytes cannot ground a run (grounding theater)." >&2
+                else
+                    __PWT_BRIEF_OK=1
+                fi
+            fi
+        fi
+
+        if [ "$__PWT_BRIEF_OK" = "1" ]; then
+            __PWT_BRIEF_DIRECTIVE="
+Ground FIRST in the brief at ${BRIEF_PATH} — it carries the analysis this
+request refers to; the rest of that context is NOT in your session."
+            __pwt_build_goal_text "$REQUEST"
+            GOAL_BYTES=${#GOAL_TEXT}
+            echo "INFO: deictic request grounded by brief ${BRIEF_PATH} (${__pwt_brief_bytes} bytes) — proceeding" >&2
+        elif [ "${PLAN_W_TEAM_ALLOW_CONTEXT_BLIND:-0}" = "1" ]; then
+            cat >&2 <<'CTX_HATCH'
+⚠ PLAN_W_TEAM_ALLOW_CONTEXT_BLIND=1 — spawning a context-blind worker on a
+  deictic request. The worker CANNOT see the analysis this request refers to
+  and will reconstruct or invent it. You asked for this explicitly.
+CTX_HATCH
+        else
+            cat >&2 <<CTX_REFUSE
+✗ Spawn refused: PWT_CTX_DANGLING (exit 7)
+
+  This request refers to context that exists only in the ORIGIN chat
+  ("your plan", "as we discussed", "this session", "bottom line", …).
+  A spawned worker starts with an EMPTY context: it cannot read that
+  analysis, so it would rediscover or invent a plan and ship the wrong
+  thing. Refusing is cheaper than that run.
+
+  Fix — write the analysis down, then point at it:
+    1. Write the brief to a file, by convention:
+         .claude/state/pwt-brief-<slug>.md
+       (a real brief: findings, decisions, done criteria — ≥200 bytes,
+        a regular file, not a symlink)
+    2. Re-run with:  $0 --brief .claude/state/pwt-brief-<slug>.md <request>
+
+  Or restate the request self-containedly, so it stands on its own.
+
+  Escape hatch (spawns context-blind on purpose):
+    PLAN_W_TEAM_ALLOW_CONTEXT_BLIND=1
+CTX_REFUSE
+            exit 7
         fi
     fi
 fi
@@ -1102,6 +1339,15 @@ if [ "$LAUNCH" = "1" ]; then
     # quoted "use /plan-w-team to …" inside the supervisor's own bootstrap.
     # Observed in production 2026-05-21 (sids 0b5856d7 → 4bbb2cb8 cascade).
     LAUNCH_ENV="PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1"
+
+    # PWT-CTX worker env hygiene: the deictic escape hatch is for THIS
+    # invocation only. `env $LAUNCH_ENV claude` inherits our environment, so an
+    # operator who exported PLAN_W_TEAM_ALLOW_CONTEXT_BLIND=1 in their shell
+    # would silently pass it to the worker — and to every pwt-goal the worker
+    # itself runs, neutering the guard fleet-wide for the whole session tree.
+    # That is exactly the recorded PLAN_W_TEAM_DISABLE_* leak class. Unset it
+    # here, after the guard above has already consumed it.
+    unset PLAN_W_TEAM_ALLOW_CONTEXT_BLIND
     if [ "$AUTO_PUSH" = "1" ]; then
         LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_AUTO_APPROVE_PUSH=1"
     fi
@@ -1434,13 +1680,23 @@ if [ "$LAUNCH" = "1" ]; then
             return 0
         fi
         if command -v jq >/dev/null 2>&1; then
+            # $__PWT_DONE_ROWS_JSON is [] unless the request carried explicit
+            # done-when clauses (PWT-T2 §2b). Both targets of this helper are
+            # WORKER-VISIBLE copies (the worker's own worktree state dir and the
+            # main-checkout copy its evaluator resolves via git-common-dir), so
+            # the seeded DONE<k> anchors gate exactly the transcript that can
+            # satisfy them. The supervisor mirror is written by a separate
+            # heredoc below and deliberately keeps [] — the ORIGIN evaluator
+            # must never AND-gate on anchors that only ever appear in the
+            # WORKER's transcript.
             jq -n \
                 --arg slug "$SLUG_GUESS" \
                 --arg started_at "$SEED_NOW_ISO" \
                 --arg worker_sid "$WORKER_SID" \
                 --arg skill_version "$SKILL_VERSION" \
                 --arg skill_commit_sha "$SKILL_COMMIT_SHA" \
-                '{slug:$slug, started_at:$started_at, terminal_state:null, terminal_reason:null, worker_sid:$worker_sid, skill_version:$skill_version, skill_commit_sha:$skill_commit_sha, feature_specific_done_criteria:[]}' \
+                --argjson criteria "$__PWT_DONE_ROWS_JSON" \
+                '{slug:$slug, started_at:$started_at, terminal_state:null, terminal_reason:null, worker_sid:$worker_sid, skill_version:$skill_version, skill_commit_sha:$skill_commit_sha, feature_specific_done_criteria:$criteria}' \
                 > "$file" 2>/dev/null || true
         else
             printf '{"slug":"%s","started_at":"%s","terminal_state":null,"terminal_reason":null,"worker_sid":"%s","skill_version":"%s","skill_commit_sha":"%s","feature_specific_done_criteria":[]}\n' \

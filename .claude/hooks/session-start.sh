@@ -599,6 +599,21 @@ if [ -x "$GC_TIMER_INSTALL" ] && [ "${PWT_GC_TIMER_DISABLE:-0}" != "1" ]; then
 fi
 
 # =================================================================
+# /plan-w-team: friction-log triage-due advisory (T4 right-sizing)
+# The friction log (.claude/state/plan-w-team-friction-log.jsonl) had a
+# writer, 3 schema generations across its live rows, and ZERO programmatic
+# readers before this. A launchd triage timer was right-sized AWAY (actor
+# problem — see docs/operations/friction-log-audit-2026-07-06.md); this
+# advisory rides session start instead, where a human is already reading
+# output. Deterministic (literal marker FRICTION_TRIAGE_DUE), fail-open,
+# and silent when the log is absent, malformed-tolerant, or under threshold.
+# =================================================================
+FRICTION_TRIAGE_DUE="$PROJECT_ROOT/.claude/scripts/plan-w-team-friction-triage-due.sh"
+if [ -x "$FRICTION_TRIAGE_DUE" ]; then
+    "$FRICTION_TRIAGE_DUE" 2>/dev/null || true
+fi
+
+# =================================================================
 # COMPOUND: Surface learnings and auto-act on patterns
 # =================================================================
 COMPOUND_DIR="$PROJECT_ROOT/.claude/hooks/compound"

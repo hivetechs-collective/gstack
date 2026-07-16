@@ -478,20 +478,27 @@ Store self-assessment at the path defined in `shared/artifact-storage.md`.
 
 A self-assessment below 8 is not a vent — it is a signal that the workflow itself needs attention. When a score <8 is recorded:
 
-1. **Append the friction point** to `.claude/state/plan-w-team-friction-log.jsonl`. Serialize concurrent retros with a portable mkdir-based atomic lock (flock is not available on macOS by default). Busy-wait because two parallel retros on different features legitimately race here and both must land:
+1. **Append the friction point** to `.claude/state/plan-w-team-friction-log.jsonl` using the CANONICAL schema (T4 friction-log right-sizing, `docs/specs/bottom-line-loops-hardening.md` R7 — see `docs/operations/friction-log-audit-2026-07-06.md` for why: the log previously had 3 schema generations across its live rows, an enum its own rows violated, and zero programmatic readers). Every row MUST be `{ts, slug, category, severity, finding}` — no other shape. Serialize concurrent retros with a portable mkdir-based atomic lock (flock is not available on macOS by default). Busy-wait because two parallel retros on different features legitimately race here and both must land:
 
    ```bash
    LOG=".claude/state/plan-w-team-friction-log.jsonl"
    LOCK_DIR=".claude/state/plan-w-team-friction-log.lock"
    mkdir -p .claude/state
-   # Build the JSON line with jq to guarantee valid escaping.
+   # SEVERITY derives from the self-assessment score: <=4 high, 5-6 medium, 7 low.
+   case "$SELF_ASSESSMENT_SCORE" in
+     0|1|2|3|4) FRICTION_SEVERITY="high" ;;
+     5|6)       FRICTION_SEVERITY="medium" ;;
+     *)         FRICTION_SEVERITY="low" ;;
+   esac
+   # Build the JSON line with jq to guarantee valid escaping. Canonical
+   # gen-3 schema — the ONLY shape this writer may emit.
    LINE=$(jq -cn \
      --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-     --arg feature "$SLUG" \
-     --argjson score "$SELF_ASSESSMENT_SCORE" \
+     --arg slug "$SLUG" \
      --arg category "$FRICTION_CATEGORY" \
-     --arg note "$FRICTION_NOTE" \
-     '{timestamp:$ts, feature:$feature, score:$score, category:$category, note:$note}')
+     --arg severity "$FRICTION_SEVERITY" \
+     --arg finding "$FRICTION_NOTE" \
+     '{ts:$ts, slug:$slug, category:$category, severity:$severity, finding:$finding}')
    # mkdir is atomic on POSIX filesystems. Serializes concurrent retros.
    while ! mkdir "$LOCK_DIR" 2>/dev/null; do sleep 0.1; done
    trap 'rm -f "$LOG.tmp.$$"; rmdir "$LOCK_DIR" 2>/dev/null' EXIT
@@ -507,7 +514,7 @@ A self-assessment below 8 is not a vent — it is a signal that the workflow its
 
    If a stale lock dir blocks retros (e.g. after a killed process), remove it: `rmdir .claude/state/plan-w-team-friction-log.lock`.
 
-   `$FRICTION_CATEGORY` must be one of: `spec-gap|builder-struggle|review-noise|hook-friction|hygiene|orchestrator-quality|other`. Reject any other value before the append — unknown categories defeat the 3-in-30-days pattern detection.
+   `$FRICTION_CATEGORY` must be one of: `spec-gap|builder-struggle|review-noise|hook-friction|hygiene|orchestrator-quality|goal-evaluator-quality|other` (the `goal-evaluator-quality` member was added by R7 — 3 of the log's live rows already used it before it was in the documented enum). Reject any other value before the append. This enum is mechanically checked — `.claude/scripts/plan-w-team-friction-triage-due.sh --validate <file>` validates a whole log/fixture against it and exits nonzero on any violation, so the instruction above is no longer prose-only.
 
    When the friction category is ambiguous, route through the orchestrator for classification:
 
@@ -516,7 +523,7 @@ A self-assessment below 8 is not a vent — it is a signal that the workflow its
    FRICTION_CATEGORY=$(route_orchestrator retro-friction-categorize "$SLUG" \
      "friction_note=$FRICTION_NOTE" \
      "score=$SELF_ASSESSMENT_SCORE" \
-     "options=spec-gap,builder-struggle,review-noise,hook-friction,hygiene,orchestrator-quality,other" \
+     "options=spec-gap,builder-struggle,review-noise,hook-friction,hygiene,orchestrator-quality,goal-evaluator-quality,other" \
      2>/dev/null || echo "other")
    ```
 
@@ -524,15 +531,16 @@ A self-assessment below 8 is not a vent — it is a signal that the workflow its
         based on the friction note content and taxonomy.
         Fall-through: default to "other" if router unavailable. -->
 
-2. **After 3 entries in the same category** accumulate within 30 days, surface at the next `/plan-w-team` preflight:
+2. **Deterministic triage-due check** (T4 — replaces the previous prose-only "3 entries in the same category within 30 days" detector, which had never fired on live data). Run at the retro preflight, fail-open:
 
-   ```
-   ⚠ Friction pattern detected: category=<X> (3+ entries in 30d).
-     Review .claude/state/plan-w-team-friction-log.jsonl and consider updating
-     the relevant stage file before continuing.
+   ```bash
+   FRICTION_TRIAGE_DUE=".claude/scripts/plan-w-team-friction-triage-due.sh"
+   if [ -x "$FRICTION_TRIAGE_DUE" ]; then
+     "$FRICTION_TRIAGE_DUE" || true
+   fi
    ```
 
-3. **The user can dismiss with `.claude/state/plan-w-team-friction-ack-<category>`** (touch a file with the category name) if the pattern is intentional or already addressed. Dismissals expire after 30 days — chronic friction resurfaces.
+   When the script's output contains the literal marker `FRICTION_TRIAGE_DUE`, surface it verbatim to the user before continuing — it already names the row count, threshold, and log path. The count is rows since the last `{type:"triage"}` marker row (default threshold 5, `PWT_FRICTION_TRIAGE_THRESHOLD` overridable), not per-category — a full triage pass (audit + append a `{type:"triage", ts, rows_reviewed, report}` marker row, per `docs/operations/friction-log-audit-2026-07-06.md`) resets the count. There is no per-category dismissal file in this model (superseded — the old `plan-w-team-friction-ack-<category>` mechanism no longer applies); a triage pass is the only reset.
 
 This turns "write-only retro prose" into a lightweight feedback loop that updates the workflow without requiring the user to manually cross-reference old retros.
 

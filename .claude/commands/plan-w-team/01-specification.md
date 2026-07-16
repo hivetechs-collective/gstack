@@ -485,10 +485,42 @@ else
     done < <(awk '/^## Acceptance Criteria/,/^## [^A]/' "$SPEC" | grep -E '^\s*-?\s*\[?\s*\]?\s*AC[0-9]+:')
 
     CRITERIA_COUNT=$(echo "$CRITERIA_JSON" | jq 'length')
+
+    # ── Canonical row-shape self-check (1.56.0, DEFECT B) ──────────────────
+    # This writer must emit ONLY canonical {pattern,description,met,met_at}
+    # objects with a NON-EMPTY pattern. The exact mechanism, verified against
+    # `.claude/hooks/plan-w-team-goal-evaluator.sh:515`:
+    #     PATTERN=$(echo "$NEW_CRITERIA" | jq -r ".[$i].pattern")
+    # On a bare-STRING row, jq's `.pattern` errors and yields EMPTY, so the
+    # next step greps with `grep -E ""` — an empty regex matches EVERY line —
+    # silently marking the row MET. The write-back `.[$i].met = true` also
+    # errors on a string, collapsing NEW_CRITERIA to "", so nothing persists
+    # and the run resolves SUCCESS having checked NOTHING.
+    #
+    # The evaluator now fails CLOSED (non-object row → UNMET, empty pattern →
+    # UNMET, never `grep -E ""`), so a bad row BLOCKS loudly instead of passing
+    # silently. This check is the writer-side half: catch it here and fall back
+    # to generic anchors, rather than emitting a contract that wedges the run.
+    SHAPE_OK=$(echo "$CRITERIA_JSON" | jq '[.[] | (type == "object")
+        and has("pattern") and has("description") and has("met") and has("met_at")
+        and (.pattern | type == "string") and (.pattern | length > 0)] | all')
+    if [ "$CRITERIA_COUNT" -gt 0 ] && [ "$SHAPE_OK" != "true" ]; then
+        echo "[§1.5] ABORT: derived criteria are not canonical {pattern,description,met,met_at} objects with a non-empty pattern — refusing to inject (see goal-evaluator.sh:515 / DEFECT B)"
+        CRITERIA_COUNT=0
+    fi
+
     if [ "$CRITERIA_COUNT" -gt 0 ]; then
-        jq --argjson c "$CRITERIA_JSON" '.feature_specific_done_criteria = $c' \
+        # ── UNION merge, not replace (1.56.0) ──────────────────────────────
+        # pwt-goal.sh seeds DONE<k> rows from the request's explicit done-when
+        # clauses at spawn time (PWT-T2 §2b). The old `= $c` REPLACED the array,
+        # so this step silently deleted every seeded row the moment Step 1 ran —
+        # the user's own stated done criteria, gone before any work started.
+        # Union + unique_by(.pattern) keeps both families and is idempotent
+        # across re-runs of §1.5.
+        jq --argjson c "$CRITERIA_JSON" \
+            '.feature_specific_done_criteria = ((.feature_specific_done_criteria // []) + $c | unique_by(.pattern))' \
             "$GOAL_FILE" > "$GOAL_FILE.tmp" && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
-        echo "[§1.5] injected $CRITERIA_COUNT feature-specific done criteria into goal state"
+        echo "[§1.5] merged $CRITERIA_COUNT feature-specific done criteria into goal state (union with any seeded DONE<k> rows)"
 
         # ── Dual-write to the MAIN checkout (1.54.0) ────────────────────────────
         # Under a worker-only run, cwd is a WORKTREE: the bare-relative GOAL_FILE
@@ -511,9 +543,12 @@ else
         MAIN_GOAL_FILE="${MAIN_ROOT}/.claude/state/plan-w-team-goal-${SLUG}.json"
         if [ -n "$MAIN_ROOT" ] && [ -f "$MAIN_GOAL_FILE" ] \
            && [ "$MAIN_GOAL_FILE" != "$(cd "$(dirname "$GOAL_FILE")" 2>/dev/null && pwd)/$(basename "$GOAL_FILE")" ]; then
-            jq --argjson c "$CRITERIA_JSON" '.feature_specific_done_criteria = $c' \
+            # Union here too: this file is the OTHER half of pwt-goal.sh's
+            # dual-seed pair and carries the same seeded DONE<k> rows.
+            jq --argjson c "$CRITERIA_JSON" \
+                '.feature_specific_done_criteria = ((.feature_specific_done_criteria // []) + $c | unique_by(.pattern))' \
                 "$MAIN_GOAL_FILE" > "$MAIN_GOAL_FILE.tmp" && mv "$MAIN_GOAL_FILE.tmp" "$MAIN_GOAL_FILE"
-            echo "[§1.5] dual-wrote criteria to main-checkout goal state"
+            echo "[§1.5] dual-wrote criteria to main-checkout goal state (merged by union)"
         fi
     else
         echo "[§1.5] no AC entries found in spec — goal evaluator uses generic anchors only (T5b behavior)"

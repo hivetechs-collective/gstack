@@ -496,8 +496,79 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         fi
     fi
 
+    # ── Test-green corroboration (R3/AC3, 2026-07-16) ────────────────────────
+    # "The suite is green" used to be a CLAIM in a transcript; nothing read it.
+    # plan-w-team-test-green.sh now writes a deterministic verdict artifact, and
+    # the SUCCESS gate consults it — the same hand-off-the-check move as
+    # PWT-TERM2's ship-verdict read, whose idiom this mirrors exactly:
+    # $(dirname "$GOAL_FILE") resolution (WT2-safe on both sides), ts>=started_at
+    # freshness, fail-open on anything unreadable.
+    #
+    # FAIL-OPEN is deliberate and asymmetric: this check may only ever WITHHOLD
+    # success on positive evidence of a FRESH RED suite. Absent / stale /
+    # malformed / green / kill-switched → behave exactly as before. A consumer
+    # repo with no wrapper is untouched.
+    #
+    # BOUNDED: there are no wall-clock or turn caps in this pipeline by design,
+    # so a permanently-red artifact could otherwise wedge the loop forever.
+    # After 3 consecutive turns blocked on the SAME red ts, convert to
+    # USER_ESCALATION_HALT so a human sees it (mirrors the low-confidence-streak
+    # precedent). A NEW red ts means a new suite run — the streak restarts.
+    TEST_GREEN_BLOCK=""
     if [ "$MARKER_MATCH" = "1" ] || [ "$SHIP_VERDICT_PASS" = "1" ]; then
-        TERMINAL="SUCCESS"
+      if [ "${PLAN_W_TEAM_DISABLE_TEST_GREEN:-0}" != "1" ]; then
+        TG_FILE="$(dirname "$GOAL_FILE")/plan-w-team-test-green-${SLUG}.json"
+        # NOT `.green // ""` — jq's `//` treats FALSE as empty and takes the
+        # alternative, so a RED artifact ({"green": false}) would read as
+        # unreadable and fail open: the exact defect class this check exists to
+        # close. Stringify explicitly instead: "true" | "false" | "" (absent).
+        TG_GREEN=$(jq -r 'if (type == "object" and has("green")) then (.green | tostring) else "" end' \
+            "$TG_FILE" 2>/dev/null || echo "")
+        if [ "$TG_GREEN" = "false" ]; then
+            TG_TS=$(jq -r '.ts // ""' "$TG_FILE" 2>/dev/null || echo "")
+            TG_EPOCH=$(__iso_to_epoch "$TG_TS")
+            START_EPOCH=$(__iso_to_epoch "$STARTED_AT")
+            # Unparseable ts → treat as STALE (fail-open); only a verdict we can
+            # positively date to this run may block.
+            if [ -n "$TG_EPOCH" ] && [ -n "$START_EPOCH" ] && [ "$TG_EPOCH" -ge "$START_EPOCH" ] 2>/dev/null; then
+                TG_SEEN=$(jq -r '.test_green_block_ts // ""' "$GOAL_FILE" 2>/dev/null || echo "")
+                TG_STREAK=$(jq -r '.test_green_block_streak // 0' "$GOAL_FILE" 2>/dev/null || echo 0)
+                printf '%s' "${TG_STREAK:-}" | grep -qE '^[0-9]+$' || TG_STREAK=0
+                if [ "$TG_SEEN" = "$TG_TS" ]; then
+                    TG_STREAK=$((TG_STREAK + 1))
+                else
+                    TG_STREAK=1   # new red ts = new suite run = fresh streak
+                fi
+                jq --arg ts "$TG_TS" --argjson n "$TG_STREAK" \
+                   '.test_green_block_ts = $ts | .test_green_block_streak = $n' \
+                   "$GOAL_FILE" > "$GOAL_FILE.tmp" 2>/dev/null && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
+                TG_EXIT=$(jq -r '.suite_exit // "null"' "$TG_FILE" 2>/dev/null || echo "null")
+                TG_REASON=$(jq -r '.reason // ""' "$TG_FILE" 2>/dev/null || echo "")
+                if [ "$TG_STREAK" -ge 3 ] 2>/dev/null; then
+                    TERMINAL="USER_ESCALATION_HALT"
+                    REASON="TEST_GREEN_RED persisted across ${TG_STREAK} consecutive stop attempts on the same verdict (ts=$TG_TS, suite_exit=$TG_EXIT, reason=$TG_REASON). The suite is not going green on its own — escalating to the user rather than looping. Fix the suite, or set PLAN_W_TEAM_DISABLE_TEST_GREEN=1 to bypass."
+                    dbg "(1/TEST_GREEN) streak=$TG_STREAK on ts=$TG_TS → USER_ESCALATION_HALT"
+                else
+                    TEST_GREEN_BLOCK="TEST_GREEN_RED: the deterministic test-green verdict for slug=$SLUG is RED (ts=$TG_TS, suite_exit=$TG_EXIT, reason=$TG_REASON). SUCCESS is withheld until the suite is green. Re-run: .claude/scripts/plan-w-team-test-green.sh --slug $SLUG. Kill switch: PLAN_W_TEAM_DISABLE_TEST_GREEN=1. (Blocked ${TG_STREAK}/3 — a 3rd consecutive block on this same verdict escalates to the user.)"
+                    dbg "(1/TEST_GREEN) fresh red ts=$TG_TS streak=$TG_STREAK → withholding SUCCESS"
+                fi
+            else
+                dbg "(1/TEST_GREEN) red verdict ignored — ts=$TG_TS not at/after started_at=$STARTED_AT (stale prior-run verdict)"
+            fi
+        elif [ -f "$TG_FILE" ] && [ -z "$TG_GREEN" ]; then
+            echo "[goal-evaluator] test-green artifact present but unreadable: $TG_FILE — treating as absent (fail-open)" >&2
+        fi
+      fi
+    fi
+
+    if [ -n "$TEST_GREEN_BLOCK" ]; then
+        # Fresh-red block: route through the same BLOCK_REASON branch the
+        # criteria gate uses, so the caller sees one consistent block shape.
+        TERMINAL=""
+        REASON=""
+        CRITERIA_BLOCK_REASON="$TEST_GREEN_BLOCK"
+    elif [ "$MARKER_MATCH" = "1" ] || [ "$SHIP_VERDICT_PASS" = "1" ]; then
+        [ -z "$TERMINAL" ] && TERMINAL="SUCCESS"
         if [ "$MARKER_MATCH" = "1" ]; then
             REASON="retro-complete status block emitted with workflow_lock=done for slug=$SLUG"
             dbg "(1) SUCCESS matched: stage=retro-complete + workflow_lock=done + slug=$SLUG colocated on one decoded line"
@@ -507,24 +578,69 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         fi
 
         # PWT-T5c: AND-check feature-specific done criteria
-        CRITERIA_LEN=$(jq '.feature_specific_done_criteria // [] | length' "$GOAL_FILE")
-        if [ "$CRITERIA_LEN" -gt 0 ]; then
+        #
+        # DEFECT B (2026-07-16) — this contract MUST fail CLOSED.
+        # Previously a row that was not the canonical
+        # {pattern, description, met, met_at} object (e.g. a bare string, the
+        # shape a mis-written §1.5 injection emits) made `.pattern` error out to
+        # an EMPTY string, and the subsequent `grep -E ""` matched every line —
+        # silently marking the row MET. The write-back then errored too, so
+        # nothing persisted and UNMET_DESCRIPTIONS stayed empty: the run resolved
+        # SUCCESS having checked NOTHING. A criteria contract the evaluator
+        # cannot parse is the one case where it must never award SUCCESS.
+        #
+        # Rules now: unparseable array → BLOCK; non-object row → UNMET
+        # ("malformed done-criteria row"); empty/absent pattern → UNMET (never
+        # grep -E ""); non-compiling regex → UNMET. Canonical rows behave
+        # exactly as before.
+        CRITERIA_LEN=$(jq '.feature_specific_done_criteria // [] | length' "$GOAL_FILE" 2>/dev/null)
+        if ! printf '%s' "${CRITERIA_LEN:-}" | grep -qE '^[0-9]+$'; then
+            # The array could not be read at all (malformed JSON / wrong type).
+            # Fail CLOSED: never let an unreadable contract mean "all met".
+            CRITERIA_LEN=0
+            TERMINAL=""
+            REASON=""
+            CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but feature_specific_done_criteria could not be parsed in $(basename "$GOAL_FILE") — treating as UNMET (fail-closed). Repair the criteria array to canonical {pattern, description, met, met_at} rows, then re-emit retro-complete."
+            dbg "(1/T5c) criteria array unparseable → fail-closed BLOCK"
+        elif [ "$CRITERIA_LEN" -gt 0 ]; then
             UNMET_DESCRIPTIONS=""
             NEW_CRITERIA=$(jq -c '.feature_specific_done_criteria' "$GOAL_FILE")
             for i in $(seq 0 $((CRITERIA_LEN - 1))); do
+                # Shape gate FIRST — everything below assumes a canonical object.
+                ROW_TYPE=$(echo "$NEW_CRITERIA" | jq -r ".[$i] | type" 2>/dev/null)
+                ROW_OK=$(echo "$NEW_CRITERIA" | jq -r \
+                    ".[$i] | if (type==\"object\" and has(\"pattern\") and has(\"description\") and has(\"met\") and has(\"met_at\")) then \"1\" else \"0\" end" 2>/dev/null)
+                if [ "$ROW_OK" != "1" ]; then
+                    ROW_RAW=$(echo "$NEW_CRITERIA" | jq -c ".[$i]" 2>/dev/null | head -c 120)
+                    UNMET_DESCRIPTIONS="${UNMET_DESCRIPTIONS}${UNMET_DESCRIPTIONS:+; }malformed done-criteria row [$i] (type=${ROW_TYPE:-unknown}, expected object with pattern/description/met/met_at): ${ROW_RAW}"
+                    dbg "(1/T5c) row $i malformed (type=${ROW_TYPE:-unknown}) → UNMET, fail-closed"
+                    continue
+                fi
                 PATTERN=$(echo "$NEW_CRITERIA" | jq -r ".[$i].pattern")
                 ALREADY_MET=$(echo "$NEW_CRITERIA" | jq -r ".[$i].met")
                 if [ "$ALREADY_MET" = "true" ]; then continue; fi
-                # Validate regex compiles by attempting an empty-input grep
-                if ! echo "" | grep -E "$PATTERN" >/dev/null 2>&1; then
-                    : # grep returns 1 on no-match; ok. Real regex failure prints to stderr.
+                DESC=$(echo "$NEW_CRITERIA" | jq -r ".[$i].description")
+                # An empty pattern would make `grep -E ""` match EVERY line —
+                # self-satisfying. Treat as malformed, never as met.
+                if [ -z "$PATTERN" ] || [ "$PATTERN" = "null" ]; then
+                    UNMET_DESCRIPTIONS="${UNMET_DESCRIPTIONS}${UNMET_DESCRIPTIONS:+; }malformed done-criteria row [$i]: empty pattern (${DESC})"
+                    dbg "(1/T5c) row $i has empty pattern → UNMET, fail-closed"
+                    continue
+                fi
+                # A pattern that does not compile can never legitimately match;
+                # count it UNMET rather than letting grep's error read as no-match.
+                if ! printf '' | grep -E "$PATTERN" >/dev/null 2>&1; then
+                    if [ "$?" -gt 1 ]; then
+                        UNMET_DESCRIPTIONS="${UNMET_DESCRIPTIONS}${UNMET_DESCRIPTIONS:+; }malformed done-criteria row [$i]: pattern is not a valid regex (${DESC})"
+                        dbg "(1/T5c) row $i pattern does not compile → UNMET, fail-closed"
+                        continue
+                    fi
                 fi
                 if echo "$RECENT" | grep -E "$PATTERN" >/dev/null 2>&1; then
                     NEW_CRITERIA=$(echo "$NEW_CRITERIA" \
                         | jq --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
                              ".[$i].met = true | .[$i].met_at = \$ts")
                 else
-                    DESC=$(echo "$NEW_CRITERIA" | jq -r ".[$i].description")
                     UNMET_DESCRIPTIONS="${UNMET_DESCRIPTIONS}${UNMET_DESCRIPTIONS:+; }${DESC}"
                 fi
             done
