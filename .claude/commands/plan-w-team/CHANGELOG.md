@@ -14,6 +14,55 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.55.0] — 2026-07-15 (cc314c6)
+
+**Agent-registry validity check — the roster could go silently dead.** The Cherny
+automation audit ([`docs/operations/pwt-cherny-automation-audit-2026-07-15.md`](../../../docs/operations/pwt-cherny-automation-audit-2026-07-15.md))
+found that **15 of 99 named agent definitions cannot be spawned**: their YAML
+frontmatter does not parse, so the harness never registers them and
+`Agent(subagent_type: …)` fails only at spawn time. Cross-tab evidence: all 75
+YAML-valid agents are spawnable; all 15 unspawnable ones are YAML-invalid. The
+dominant root cause is a plain-scalar `description:` ending in `Examples:` — a
+trailing colon is a YAML mapping indicator (working agents use `description: |`).
+
+This is not theoretical. **The skill dispatches to three of the dead agents:**
+`system-architect` (`01-specification.md:309,335` — a *mandated* §1b-pre fan-out
+reviewer), `unit-testing-specialist` (`04-fix-first-review.md:602` — Step-5
+retroactive coverage), and `react-typescript-specialist` (the manifest's named
+Hands lane, additionally pinned by `tests/skill/cases/model-tiering-v2.bats:25`,
+a green test asserting a property of an unspawnable agent). The audit run itself
+hit it: its §1b-pre fan-out silently degraded from 3 reviewers to 2. Nothing
+warned — no test asserted roster ↔ disk ↔ spawnable parity.
+
+Per the audit's P2 lens (Cherny: *"your agent could fix an issue every time it
+sees that issue happen, but that uses tokens and might miss cases"*), the fix is a
+rule that fires rather than a per-run rediscovery:
+
+- **NEW** `.claude/scripts/plan-w-team-agent-registry-check.sh` — advisory,
+  read-only, bash 3.2 compatible. Parses every `.claude/agents/**/*.md`
+  frontmatter and reports agents that will not register, with the reason and the
+  fix. `--json` for machine consumption; `--strict` (operator-only) to exit 1.
+  **Never blocks** (design principles #3/#8; the audit brief forbids new hard
+  gates), and deliberately reports the 3 harness-tolerated agents as at-risk
+  rather than failing on them — that tolerance is undocumented and must not be
+  relied on.
+- **NEW** `tests/skill/cases/agent-registry-check.bats` — 8 fixture-based cases:
+  valid/invalid detection, the block-scalar no-false-positive case, advisory-vs-
+  `--strict` exit codes, non-agent skip, fail-open on a missing dir, plus a
+  live-tree anchor that skips cleanly once the frontmatter is repaired.
+- **Sync**: allowlisted in `sync-to-project.sh` (gotcha G11) — consumer repos
+  carry the same roster and the same dispatch sites, so they inherit the same
+  silent-failure class.
+
+The audit's other four findings are DEFERs with recorded reopeners (see the
+report's ranked gap list): `shared/gotchas.md` is unreachable (advertised once in
+the manifest, referenced by **zero** stage files — while 8/8 briefs hand-restate
+G7/G11 anyway); the `SUITE_EXIT` idiom is mis-encoded (`tests/skill/run.sh:499-506`
+emits no such token — the caller must mint it); `governance-tags.md:18`'s
+allowlist globs match no real allowlist file; and two decayed load-bearing doc
+claims. P1 verdict: **ALREADY-SATISFIED**. The 2026-07-02 parallelism decision is
+explicitly **NOT A REOPENER**.
+
 ## [1.54.0] — 2026-07-10 (8299d42)
 
 **State-Truth Hardening — the goal-state must tell the truth.** Field audit of the
