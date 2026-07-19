@@ -9,7 +9,6 @@ input=$(cat)
 # Get the directory where this statusline script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="${SCRIPT_DIR}/statusline.log"
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 
 # ---- check jq availability ----
 HAS_JQ=0
@@ -17,19 +16,35 @@ if command -v jq >/dev/null 2>&1; then
   HAS_JQ=1
 fi
 
-# ---- logging ----
-{
-  echo "[$TIMESTAMP] Status line triggered (cc-statusline v${STATUSLINE_VERSION})"
-  echo "[$TIMESTAMP] Input:"
-  if [ "$HAS_JQ" -eq 1 ]; then
-    echo "$input" | jq . 2>/dev/null || echo "$input"
-    echo "[$TIMESTAMP] Using jq for JSON parsing"
-  else
-    echo "$input"
-    echo "[$TIMESTAMP] WARNING: jq not found, using bash fallback for JSON parsing"
+# ---- logging (opt-in) ----
+# LOCAL PATCH on cc-statusline-generated code — regenerating via cc-statusline
+# would clobber it. The generated block appended the full session-input JSON
+# (via a spawned jq) to statusline.log on EVERY render, unbounded — measured
+# multi-GB logs per repo fleet-wide (2026-07-19). Debug logging is now opt-in
+# via STATUSLINE_DEBUG=1; default is zero log writes and zero jq/date spawns.
+# Even with debug on, the log self-caps: past 10 MB it is truncated (this is
+# debug scaffolding, not an archive).
+if [ "${STATUSLINE_DEBUG:-0}" = "1" ]; then
+  TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
+  if [ -f "$LOG_FILE" ]; then
+    log_bytes=$(wc -c < "$LOG_FILE" 2>/dev/null | tr -d '[:space:]')
+    if [ "${log_bytes:-0}" -gt 10485760 ]; then
+      : > "$LOG_FILE"
+    fi
   fi
-  echo "---"
-} >> "$LOG_FILE" 2>/dev/null
+  {
+    echo "[$TIMESTAMP] Status line triggered (cc-statusline v${STATUSLINE_VERSION})"
+    echo "[$TIMESTAMP] Input:"
+    if [ "$HAS_JQ" -eq 1 ]; then
+      echo "$input" | jq . 2>/dev/null || echo "$input"
+      echo "[$TIMESTAMP] Using jq for JSON parsing"
+    else
+      echo "$input"
+      echo "[$TIMESTAMP] WARNING: jq not found, using bash fallback for JSON parsing"
+    fi
+    echo "---"
+  } >> "$LOG_FILE" 2>/dev/null
+fi
 
 # ---- color helpers (force colors for Claude Code) ----
 use_color=1
@@ -355,13 +370,15 @@ if command -v ccusage >/dev/null 2>&1 && [ "$HAS_JQ" -eq 1 ]; then
   fi
 fi
 
-# ---- log extracted data ----
-{
-  echo "[$TIMESTAMP] Extracted: dir=${current_dir:-}, model=${model_name:-}, version=${model_version:-}, git=${git_branch:-}, context=${context_pct:-}, cost=${cost_usd:-}, cost_ph=${cost_per_hour:-}, tokens=${tot_tokens:-}, tpm=${tpm:-}, session_pct=${session_pct:-}"
-  if [ "$HAS_JQ" -eq 0 ]; then
-    echo "[$TIMESTAMP] Note: Context, tokens, and session info require jq for full functionality"
-  fi
-} >> "$LOG_FILE" 2>/dev/null
+# ---- log extracted data (opt-in — see STATUSLINE_DEBUG patch note above) ----
+if [ "${STATUSLINE_DEBUG:-0}" = "1" ]; then
+  {
+    echo "[$TIMESTAMP] Extracted: dir=${current_dir:-}, model=${model_name:-}, version=${model_version:-}, git=${git_branch:-}, context=${context_pct:-}, cost=${cost_usd:-}, cost_ph=${cost_per_hour:-}, tokens=${tot_tokens:-}, tpm=${tpm:-}, session_pct=${session_pct:-}"
+    if [ "$HAS_JQ" -eq 0 ]; then
+      echo "[$TIMESTAMP] Note: Context, tokens, and session info require jq for full functionality"
+    fi
+  } >> "$LOG_FILE" 2>/dev/null
+fi
 
 # ---- render statusline ----
 # Line 1: Core info (directory, git, model, claude code version, output style)
