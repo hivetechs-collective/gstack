@@ -190,6 +190,12 @@ Toolchain contract (consumer-repo safe):
 - **No runner found** (e.g. a consumer repo without a node toolchain) → the
   phase emits a loud `[SKIP] <file>: no TS runner` line per file and does NOT
   fail the suite. `npm install` in the repo root enables it.
+- **Runner found but a runtime npm dep is missing** (e.g. a machine-global
+  `tsx` in a repo without `node_modules/typescript` — the analyzer imports
+  `typescript` at runtime, which tsx does not bundle) → same contract: a loud
+  `[SKIP] <file>: missing npm dep` line per file, suite stays green. Without
+  this probe every assertion crashed with "Cannot find module 'typescript'"
+  in dep-less consumer repos — env noise reported as a red suite.
 - Escape hatch: `SKILL_SKIP_TS_TESTS=1` (mirrors `SKILL_SKIP_SHELL_TESTS`).
 
 Unlike the shell phase, the TS phase also runs in single-file TARGET mode — it

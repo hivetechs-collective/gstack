@@ -30,6 +30,26 @@
 
 set -euo pipefail
 
+# ── SUITE_EXIT marker (R1) ───────────────────────────────────────────────────
+# Emit `SUITE_EXIT=<code>` as the literal FINAL stdout line, exactly once, then
+# exit with that code. Deliberately NOT an EXIT trap: the suite runs phases in
+# subshells, and a trap would risk a second emission from a subshell exit. Every
+# deliberate exit path that represents a SUITE VERDICT routes through here; any
+# path that terminates WITHOUT the marker (set -e abort, SIGKILL, truncated log)
+# is RED by construction downstream — consumers require a literal trailing
+# `SUITE_EXIT=0` and treat marker-absence as failure, never as green.
+#
+# --help/--setup do NOT emit: they are not suite runs (no verdict to report),
+# and the wrapper's NO-SUITE guard covers "no suite here" separately.
+__SUITE_EXIT_EMITTED=0
+__suite_exit() {
+  if [ "$__SUITE_EXIT_EMITTED" -eq 0 ]; then
+    __SUITE_EXIT_EMITTED=1
+    echo "SUITE_EXIT=$1"
+  fi
+  exit "$1"
+}
+
 # ── Sanitize inherited /plan-w-team worker env (test-hygiene) ─────────────────
 # When pwt-goal.sh spawns a worker (claude --bg), it exports PLAN_W_TEAM_FORCE_SPAWN=1,
 # PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1, and PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 into the
@@ -79,7 +99,7 @@ if [ ! -x "$BATS_BIN" ]; then
   rm -rf "$BATS_DIR"
   if ! command -v git >/dev/null 2>&1; then
     echo "✗ git required to bootstrap bats-core" >&2
-    exit 2
+    __suite_exit 2
   fi
   # Pin a known-good release tag — avoids surprise breakage from upstream main.
   if ! git clone --quiet --depth 1 --branch v1.11.0 \
@@ -87,7 +107,7 @@ if [ ! -x "$BATS_BIN" ]; then
     echo "✗ failed to clone bats-core" >&2
     echo "  if offline, install via: brew install bats-core" >&2
     echo "  then re-run: tests/skill/run.sh" >&2
-    exit 2
+    __suite_exit 2
   fi
   echo "✓ bats-core v1.11.0 vendored under tests/skill/.bats/"
 fi
@@ -103,13 +123,13 @@ if [ -n "$TARGET" ]; then
   [ -f "$TARGET_PATH" ] || TARGET_PATH="$HARNESS_DIR/$TARGET"
   if [ ! -f "$TARGET_PATH" ]; then
     echo "✗ no such test file: $TARGET" >&2
-    exit 2
+    __suite_exit 2
   fi
   TEST_FILES=("$TARGET_PATH")
 else
   if [ ! -d "$CASES_DIR" ]; then
     echo "✗ cases directory missing: $CASES_DIR" >&2
-    exit 2
+    __suite_exit 2
   fi
   TEST_FILES=()
   # Walk cases/ (unit tests), scenarios/ (source E2E), and scenarios.local/
@@ -132,7 +152,7 @@ fi
 
 if [ "${#TEST_FILES[@]}" -eq 0 ]; then
   echo "⚠ no .bats files found under $CASES_DIR or $SCENARIOS_DIR — nothing to run"
-  exit 0
+  __suite_exit 0
 fi
 
 # ── Run tests ────────────────────────────────────────────────────────────────
@@ -321,16 +341,18 @@ fi
 # SKILL_SKIP_TS_TESTS=1 (mirrors SKILL_SKIP_SHELL_TESTS).
 #
 # Toolchain contract (consumer-repo safe): the phase needs a TS runner — tsx
-# on PATH or node_modules/.bin/tsx (npm install). claude-pattern vendors tsx
-# in devDependencies; a consumer repo without a node toolchain cannot run it,
-# so when NO runner is found the phase emits a LOUD [SKIP] line and does not
-# fail the suite. Contract documented in tests/skill/CONVENTIONS.md
-# ("TypeScript test phase").
+# on PATH or node_modules/.bin/tsx (npm install) — AND the analyzer's runtime
+# npm deps resolvable from the repo root. claude-pattern vendors both in
+# devDependencies; a consumer repo without a node toolchain cannot run it,
+# so when NO runner is found OR a runtime dep is missing the phase emits a
+# LOUD [SKIP] line and does not fail the suite. Contract documented in
+# tests/skill/CONVENTIONS.md ("TypeScript test phase").
 TS_TOTAL=0
 TS_PASSED=0
 TS_FAILED=0
 TS_FAILED_NAMES=""
 TS_SKIPPED_NO_RUNNER=0
+TS_SKIPPED_NO_DEP=0
 if [ "${SKILL_SKIP_TS_TESTS:-0}" != "1" ]; then
   TS_TEST_FILES=()
   while IFS= read -r f; do
@@ -351,11 +373,34 @@ if [ "${SKILL_SKIP_TS_TESTS:-0}" != "1" ]; then
     if command -v tsx >/dev/null 2>&1; then TSX_BIN="tsx"
     elif [ -x "$REPO_ROOT/node_modules/.bin/tsx" ]; then TSX_BIN="$REPO_ROOT/node_modules/.bin/tsx"
     fi
+    # A runner alone is not enough: the import-coupling analyzer imports the
+    # `typescript` npm package at runtime (AST parsing), which tsx does NOT
+    # bundle. A consumer repo with a global tsx but no local node_modules/
+    # typescript crashes every assertion with "Cannot find module 'typescript'"
+    # — env noise, not a skill regression. Probe resolution from the repo root
+    # (the same walk node performs for the test file itself) and SKIP loudly
+    # when missing, exactly like the no-runner path.
+    TS_MISSING_DEP=""
+    if [ -n "$TSX_BIN" ]; then
+      # shellcheck disable=SC2043  # single-item list IS the extension point for future runtime deps
+      for ts_dep in typescript; do
+        if ! (cd "$REPO_ROOT" && node -e "require.resolve('$ts_dep')") >/dev/null 2>&1; then
+          TS_MISSING_DEP="$ts_dep"
+          break
+        fi
+      done
+    fi
     if [ -z "$TSX_BIN" ]; then
       TS_SKIPPED_NO_RUNNER="${#TS_TEST_FILES[@]}"
       echo ""
       for tf in "${TS_TEST_FILES[@]}"; do
         echo "[SKIP] ${tf#"$REPO_ROOT"/}: no TS runner (tsx not found — npm install in repo root to enable)"
+      done
+    elif [ -n "$TS_MISSING_DEP" ]; then
+      TS_SKIPPED_NO_DEP="${#TS_TEST_FILES[@]}"
+      echo ""
+      for tf in "${TS_TEST_FILES[@]}"; do
+        echo "[SKIP] ${tf#"$REPO_ROOT"/}: missing npm dep '$TS_MISSING_DEP' (runner found, but the analyzer imports it at runtime — npm install in repo root to enable)"
       done
     else
       # Per-file hang protection, mirroring Phase 2 (timeout/gtimeout if
@@ -462,6 +507,7 @@ if [ "$ARCHIVE" = "1" ]; then
       --argjson ts_passed "${TS_PASSED:-0}" \
       --argjson ts_failed "${TS_FAILED:-0}" \
       --argjson ts_skipped_no_runner "${TS_SKIPPED_NO_RUNNER:-0}" \
+      --argjson ts_skipped_no_dep "${TS_SKIPPED_NO_DEP:-0}" \
       --argjson ts_failed_names "$TS_FAILED_JSON" \
       --argjson state_leaked "$STATE_LEAKED_BOOL" \
       --argjson leaked_paths "$STATE_LEAKED_JSON" \
@@ -483,6 +529,7 @@ if [ "$ARCHIVE" = "1" ]; then
         ts_passed: $ts_passed,
         ts_failed: $ts_failed,
         ts_skipped_no_runner: $ts_skipped_no_runner,
+        ts_skipped_no_dep: $ts_skipped_no_dep,
         ts_failed_tests: $ts_failed_names,
         state_leaked: $state_leaked,
         leaked_paths: $leaked_paths
@@ -502,7 +549,7 @@ fi
 if [ "$BATS_EXIT" -eq 0 ] && [ "${SHELL_FAILED:-0}" -eq 0 ] && [ "${TS_FAILED:-0}" -eq 0 ] \
    && [ "${STATE_LEAK:-0}" -eq 0 ]; then
   echo "✓ all tests passed (bats + ${SHELL_PASSED:-0} shell integration tests + ${TS_PASSED:-0} TS test file(s))"
-  exit 0
+  __suite_exit 0
 fi
 [ "$BATS_EXIT" -ne 0 ] && echo "✗ bats phase failed (exit $BATS_EXIT)"
 if [ "${SHELL_FAILED:-0}" -ne 0 ]; then
@@ -517,4 +564,4 @@ if [ "${STATE_LEAK:-0}" -ne 0 ]; then
   echo "✗ state-leak guard failed — bats phase dirtied the live .claude/state tree:"
   printf '%s\n' "$STATE_LEAKED_PATHS" | grep -v '^$' | sed 's/^/    /'
 fi
-exit 1
+__suite_exit 1

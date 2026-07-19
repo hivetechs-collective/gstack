@@ -34,6 +34,18 @@ sandbox() {
   # AT_FAIR_SHARE refusals in subsequent real spawns.
   # See docs/specs/pwt-test-isolation-fair-share.md.
   export PWT_RAM_CLAIMS_PATH="$SANDBOX_DIR/test-claims.jsonl"
+
+  # Corpus goal-state isolation (1.48.0). pwt-goal.sh seeds the anti-skip
+  # goal-state FAMILY (plan-w-team-{goal,manifest,spawned-children,stage-events,
+  # skill-version}-<slug>) to MAIN_REPO_ROOT/.claude/state, which __pwt_main_repo_root
+  # resolves via git-common-dir (= the real source repo) when the sandbox CWD is a
+  # non-git tmp dir — so a test that actually spawns (FORCE_SPAWN escape hatch, etc.)
+  # leaks no-owner-SID families into the LIVE source .claude/state that the fail-closed
+  # janitor cannot reap. PWT_PROJECT_ROOT_OVERRIDE is the test-only lever pwt-goal honors
+  # at EVERY root-resolution site (incl. __pwt_main_repo_root); pointing it at the sandbox
+  # makes every family write land in tmp and tear down with the test. Same isolation
+  # intent as PWT_RAM_CLAIMS_PATH above.
+  export PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX_DIR"
 }
 
 teardown_sandbox() {

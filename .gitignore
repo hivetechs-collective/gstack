@@ -36,3 +36,13 @@ tests/skill/scenarios/
 
 # Claude per-run state default-deny (sync-managed; tracked paths negated below)
 .claude/state/*
+
+# Claude machine-written session state (sync-managed override — must stay below the default-deny ladder)
+**/.claude/state/agent-activity.log
+**/.claude/state/agent-team.log
+**/.claude/state/compact-log.txt
+**/.claude/state/version-uplift-detection.log
+**/.claude/state/worktree-deps-share-hook.log
+**/.claude/state/worktree-deps-hash-agent-*.json
+**/.claude/state/bg-agents-cache.json
+**/.claude/state/bg-agents-cache.json.tmp
