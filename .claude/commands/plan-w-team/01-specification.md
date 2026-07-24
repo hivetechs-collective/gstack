@@ -304,11 +304,12 @@ Roster — three same-session **Agent**-tool reviewers (Brain-tier, spec-authori
 capable; NOT the diff-based gap analyzers, which read a diff that does not exist
 at Step 1):
 
-| Reviewer (subagent_type) | Angle                                                            |
-| ------------------------ | ---------------------------------------------------------------- |
-| `system-architect`       | Architecture fit, missing requirements, boundary/shadow paths    |
-| `security-expert`        | Security/abuse boundaries, one-way-door surfaces                 |
-| `code-review-expert`     | Testability — are the acceptance criteria observable/verifiable? |
+| Reviewer (subagent_type) | Angle                                                                                                                                        |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `system-architect`       | Architecture fit, missing requirements, boundary/shadow paths                                                                                |
+| `security-expert`        | Security/abuse boundaries, one-way-door surfaces                                                                                             |
+| `code-review-expert`     | Testability — are the acceptance criteria observable/verifiable?                                                                             |
+| `fable-spec-consult`     | **Fable tier — GUARD-GATED, see §1b-bis below.** Whole-design critique: top risks, missed alternatives, spec holes, production failure modes |
 
 ```bash
 # Tri-state gate: unset → AUTO (fire on non-trivial specs); 0 → hard OFF; 1 → force ON.
@@ -341,6 +342,52 @@ if [ "$RUN_FANOUT" = "1" ]; then
   echo "[§1b-pre] fan-out complete; findings folded; advisory record → $FANOUT"
 fi
 ```
+
+## §1b-bis. Fable Spec Consult (Model Tiering v3 — GUARD-GATED)
+
+A fourth reviewer, `fable-spec-consult`, runs on the **Fable tier** — the strongest
+model available. It is the last high-leverage read before the AC freeze, which is the
+cheapest point in the lifecycle to fix a design.
+
+It rides §1b-pre deliberately rather than carrying its own machinery: the trigger is
+§1b-pre's **existing non-triviality classifier** (`RUN_FANOUT`, above — ≥3 requirement
+checkboxes OR a one-way door), and it inherits §1b-pre's hard ordering rule verbatim —
+the consult MUST complete and its findings MUST be folded in **strictly before the
+freeze** below, so the SHA256 snapshot digests the post-consult spec and Step-5 tamper
+detection stays clean. There is no separate classifier and no separate artifact.
+
+Fable is a bounded, deliberate spend, never a lane. Every spawn goes through the guard:
+
+```bash
+# Only exit 0 authorizes the spawn. ANY other exit — including 127, which is what a
+# consumer repo that synced the agent but not the guard will produce — means SKIP:
+# continue with the three Opus reviewers and do NOT spawn Fable. A skip is never a
+# run failure, and the guard records the reason either way.
+if [ "$RUN_FANOUT" = "1" ] \
+   && .claude/scripts/plan-w-team-fable-guard.sh \
+        --slug "$SLUG" --kind consult --nontrivial true >/dev/null 2>&1; then
+  # Spawn ONE fable-spec-consult reviewer via the Agent tool alongside the other
+  # three. Give it the draft spec path and a findings path to write to as it goes
+  # (a lane that goes idle without delivering otherwise leaves no evidence).
+  # It is READ-ONLY: it advises; the Opus lead folds findings in and authors the spec.
+  echo "[§1b-bis] Fable spec consult ALLOWED — spawning read-only consultant"
+else
+  echo "[§1b-bis] Fable spec consult skipped — continuing on the Opus reviewers"
+fi
+```
+
+Overrides (all consumed by the guard, none re-implemented here):
+
+| Var                                   | Effect                                                                      |
+| ------------------------------------- | --------------------------------------------------------------------------- |
+| `PLAN_W_TEAM_DISABLE_FABLE=1`         | Subsystem kill — consult AND escalation. Highest precedence.                |
+| `PLAN_W_TEAM_DISABLE_FABLE_CONSULT=1` | Disables this consult only. Beats FORCE.                                    |
+| `PLAN_W_TEAM_FORCE_FABLE_CONSULT=1`   | Forces the consult on a trivial spec. Never bypasses the budget or the cap. |
+| `PLAN_W_TEAM_FABLE_BUDGET_MAX_PCT`    | Weekly Fable-bucket ceiling, default 80.                                    |
+
+**Honest limit**: the guard is invoked by this prose, so it binds a lead that reads the
+stage file. It is deterministic _once invoked_, not a chokepoint — a `PreToolUse` binding
+is the structural fix and is tracked as a deferred item on the v3 spec.
 
 ## §1c. Access-Control Threat-Model Trigger (security-relevant features)
 

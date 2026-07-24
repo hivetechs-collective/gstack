@@ -1348,6 +1348,14 @@ if [ "$LAUNCH" = "1" ]; then
     # That is exactly the recorded PLAN_W_TEAM_DISABLE_* leak class. Unset it
     # here, after the guard above has already consumed it.
     unset PLAN_W_TEAM_ALLOW_CONTEXT_BLIND
+
+    # Same leak class, spend axis (Model Tiering v3): PLAN_W_TEAM_FORCE_FABLE_CONSULT
+    # forces a Fable consult on a spec the classifier judged trivial. Exported once
+    # in a shell for one deliberate run, it would inherit into this worker and every
+    # nested pwt-goal — turning a one-run override into a fleet-wide spend amplifier
+    # against a shared weekly bucket. The consult is a per-run decision, so unset it
+    # here; an operator who wants it in a worker passes it to that worker explicitly.
+    unset PLAN_W_TEAM_FORCE_FABLE_CONSULT
     if [ "$AUTO_PUSH" = "1" ]; then
         LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_AUTO_APPROVE_PUSH=1"
     fi
@@ -1392,11 +1400,16 @@ if [ "$LAUNCH" = "1" ]; then
     # (PWT-SUP-YIELD) + shared/supervisor-protocol.md §Wait mechanism.
     LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_SUPERVISOR_SESSION=0"
 
-    # Model pinning for bg spawns (Model Tiering v2, skill 1.51.0):
+    # Model pinning for bg spawns (Model Tiering v4, skill 1.58.0):
     #   --model pins the PRIMARY explicitly so bg fleets NEVER silently inherit
     #   an expensive interactive session default (2026-07 incident: a Fable 5
     #   user default silently upgraded every bg worker/supervisor — ~2x Opus
-    #   burn per token, two-account weekly-limit lockout). Brain tier = Opus 4.8.
+    #   burn per token, two-account weekly-limit lockout). Brain tier = Opus 5
+    #   (`claude-opus-5`, 2026-07-24 rollover): a drop-in upgrade at Opus 4.8's
+    #   pricing and feature set, so the pin moves generation without changing
+    #   the burn profile. Opus 5 is ALSO the Fable-skip / Fable-refusal landing
+    #   tier — when plan-w-team-fable-guard.sh returns SKIP the run continues
+    #   on this model, so it must always name the current Brain generation.
     #   --fallback-model: BEST-EFFORT only — `claude --help` documents the flag
     #   for print/headless runs and the 2026-06-28 regression probe recorded it
     #   as likely inert under --bg. Do NOT rely on it for capacity exhaustion;
@@ -1406,7 +1419,7 @@ if [ "$LAUNCH" = "1" ]; then
     #   lever, if degradation is ever needed, is settings.json fallbackModel.
     #   Override via PWT_PRIMARY_MODEL / PWT_FALLBACK_MODEL. Threaded into both
     #   bg spawn sites below (worker + supervisor).
-    PWT_PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-4-8}"
+    PWT_PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-5}"
     PWT_FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-sonnet-5}"
 
     # Resolve PROJECT_ROOT to the active worktree, not the main checkout.
@@ -1936,7 +1949,7 @@ SUPEOF
     # 2026-05-21: sid 0b5856d7 → 4bbb2cb8 → f2ec9cb9 → 7a4c658b cascade).
     SUP_OUT_FILE=$(mktemp -t pwt-goal-supervisor.XXXXXX 2>/dev/null || echo "")
     if [ -n "$SUP_OUT_FILE" ]; then
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-sonnet-5}" "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-5}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-sonnet-5}" "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
         SUP_RC=$?
         SUPERVISOR_SID=""
         if [ -s "$SUP_OUT_FILE" ]; then
@@ -1950,7 +1963,7 @@ SUPEOF
         SUPERVISOR_SID=""
         SUP_RC=1
         echo "WARN: mktemp failed for supervisor; spawning anyway" >&2
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-sonnet-5}" "$SUPERVISOR_BOOTSTRAP" >&2 || true
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-5}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-sonnet-5}" "$SUPERVISOR_BOOTSTRAP" >&2 || true
     fi
 
     if [ -n "$SUPERVISOR_SID" ]; then

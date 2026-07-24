@@ -28,9 +28,44 @@ turn** (Anthropic, "knowing more vs. trying harder"):
   confidently wrong: re-dispatch the task to the **hard lane** (`agent_type:
 "builder-opus"`, Brain-tier). More effort on the smaller model buys a more elaborate
   wrong answer, and every failed iteration re-triggers this review stage.
-- **Already Brain-tier and still confidently wrong** on a genuinely hard problem:
-  surface to the user as a Fable-credits candidate (`/model fable` in a fresh planning
-  session) — an operator decision; NEVER assume credits exist or switch models yourself.
+- **Already Brain-tier and still confidently wrong** on a genuinely hard problem —
+  an Opus 5 agent (`builder-opus`, or a Brain-tier fix) that had full context, clearly
+  tried, and was still wrong on the SAME task _after_ the hard-lane bump: escalate ONE
+  more rung, to the **Fable tier** (Model Tiering v3). This is the top of the ladder;
+  there is nothing above it.
+
+  Ask the guard FIRST — it owns the budget, the per-run cap, and the ledger:
+
+  ```bash
+  if .claude/scripts/plan-w-team-fable-guard.sh \
+       --slug "$SLUG" --kind escalation --task "<task-id>" \
+       --note "<one line: the confidently-wrong diagnosis>" >/dev/null 2>&1; then
+    # exit 0 only: spawn ONE Fable-pinned fix agent for THIS TASK ONLY.
+    :
+  else
+    # ANY other exit (budget, cap-exhausted, disabled, unresolvable bucket,
+    # unwritable ledger, or 127 when the guard is absent) => do NOT spawn Fable.
+    # Fall through to the existing hard-gate / human-escalation path, unchanged.
+    :
+  fi
+  ```
+
+  Hard limits, none of them negotiable in-run:
+  - **ONE task.** Never a lane, never a pool, never a retry default. The Fable agent
+    fixes the single task that triggered it and nothing else.
+  - **Cap 2 per run** (`PLAN_W_TEAM_FABLE_ESCALATION_CAP`, default 2). The guard counts
+    its own ledger rows; when the cap is exhausted this rung is simply unavailable and
+    the run takes the existing human-escalation path.
+  - **Budget-gated.** Above the weekly Fable-bucket ceiling the guard skips and the run
+    continues on Opus. An unknown budget skips too — unknown never authorizes spend.
+  - **The skip lands on Brain (Opus 5), never lower.** Whether the guard says SKIP or the
+    spawned Fable agent comes back with `stop_reason: "refusal"` (its safety classifiers
+    can decline benign security-adjacent work), the task falls back to the Brain tier —
+    Opus 5 is Anthropic's documented recommended fallback for a Fable-tier refusal, so
+    the ladder degrades exactly one rung. Do NOT let a Fable skip drop the task to the
+    Hands lane: the whole reason it reached this rung is that Sonnet and the hard lane
+    already failed on it.
+  - Every outcome, ALLOW or SKIP, lands in the evidence ledger with its reason.
 
 This is the fix-stage twin of the supervisor's STALL-ALERT effort rung
 (`shared/supervisor-protocol.md`). It trades tokens for depth in place; it does **not**
@@ -401,7 +436,7 @@ If neither trigger fires, skip to **§5b (single-reviewer Pass 1)** unchanged �
 
 ### Fan-Out Roster
 
-Spawn **three parallel reviewers**, each focused on an independent dimension. Use `Agent` calls with `run_in_background: true` and rely on completion notifications (per `shared/opus-4-7-practices.md` §4). Reviewers are **Brain-tier** (`model: opus` → Opus 4.8 — e.g. `security-expert`, `code-review-expert`; pinned via the agent's frontmatter, **not** via the Agent tool's `model` parameter, which only accepts aliases per the rule in `plan-w-team.md` Model Strategy). Reviewers read and report; they do not synthesize. Synthesis is the lead's job.
+Spawn **three parallel reviewers**, each focused on an independent dimension. Use `Agent` calls with `run_in_background: true` and rely on completion notifications (per `shared/opus-4-7-practices.md` §4). Reviewers are **Brain-tier** (`model: opus` → Opus 5 — e.g. `security-expert`, `code-review-expert`; pinned via the agent's frontmatter, **not** via the Agent tool's `model` parameter, which only accepts aliases per the rule in `plan-w-team.md` Model Strategy). Reviewers read and report; they do not synthesize. Synthesis is the lead's job.
 
 | Slot | Agent (frontmatter-pinned)             | Focus                                                                                                                                                                            | Skip If                                                                      |
 | ---- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |

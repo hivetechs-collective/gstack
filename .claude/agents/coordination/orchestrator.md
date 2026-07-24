@@ -225,7 +225,7 @@ As an Opus-powered orchestrator, you leverage extended thinking for superior str
 | **Documentation**                          | Sonnet (latest)                             | Adequate for prose                         |
 | **File Operations / Builds / Log parsing** | Haiku 4.5                                   | Mechanical only                            |
 
-**How tier pinning works**: Agent-tool `model` parameter only accepts aliases (`opus`/`sonnet`/`haiku`). To pin a specific generation or tier, set the full model ID (e.g., `model: claude-opus-4-8`) in the agent-definition file's frontmatter — the canonical tier→model-ID map lives in the Model Strategy table in `.claude/commands/plan-w-team.md`. The Agent-tool param, if set, overrides frontmatter — so omit it when you want the pin to hold.
+**How tier pinning works**: Agent-tool `model` parameter only accepts aliases (`opus`/`sonnet`/`haiku`). To pin a specific generation or tier, set the full model ID (e.g., `model: claude-opus-5`) in the agent-definition file's frontmatter — the canonical tier→model-ID map lives in the Model Strategy table in `.claude/commands/plan-w-team.md`. The Agent-tool param, if set, overrides frontmatter — so omit it when you want the pin to hold.
 
 ## Core Responsibilities
 

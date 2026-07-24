@@ -14,6 +14,163 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.58.0] — 2026-07-24
+
+Model Tiering v4 — **Opus 5 rollover**. Brain tier moves `claude-opus-4-8` →
+`claude-opus-5`, and Opus 5 becomes the tier a Fable skip or refusal lands on.
+Theme: **a generation rollover, not a tiering change** — the tier shapes, the
+Fable blast-radius guards, and the burn profile are all unchanged.
+
+Trigger: Opus 5 ships as a drop-in upgrade at Opus 4.8's pricing ($5/$25 per MTok),
+feature set, and 1M context, with materially better long-horizon agentic execution
+and code review. Verified against CLI 2.1.219 before rollout: `claude --model
+claude-opus-5` is accepted as a full model name.
+
+### Changed — Brain tier is Opus 5
+
+- **Eight Brain-tier frontmatter pins** rolled to `model: claude-opus-5`:
+  `team/evaluator`, `team/validator`, `team/supervisor`, `team/silent-failure-hunter`,
+  `team/builder-opus`, `research-planning/test-gap-analyzer`,
+  `research-planning/security-gap-analyzer`, `research-planning/system-architect`.
+- **`pwt-goal.sh` spawn sites**: `PWT_PRIMARY_MODEL` default `claude-opus-4-8` →
+  `claude-opus-5` at all three occurrences (worker + both supervisor paths). The
+  explicit `--model` pin itself is untouched — it remains the load-bearing protection
+  against a bg fleet inheriting an expensive interactive session default.
+- **`PWT_FALLBACK_MODEL` stays `claude-sonnet-5`** — deliberately. That flag is the
+  *capacity* fallback (Opus exhaustion), not the Fable fallback; pointing it at another
+  Opus would defeat its purpose of reaching the separate Max Sonnet bucket.
+- Hands routine lane **unchanged** at `claude-sonnet-5`. The hard lane tracks Brain,
+  so `team/builder-opus` is now Opus 5.
+
+### Changed — Opus 5 is the Fable landing tier
+
+- The Step-5 escalation ladder (`04-fix-first-review.md`) now states explicitly that a
+  guard SKIP **or** a Fable `stop_reason: "refusal"` lands on **Brain (Opus 5)**, never
+  on the Hands lane — Opus 5 is Anthropic's documented recommended fallback for a
+  Fable-tier refusal, so the ladder degrades exactly one rung. Rationale for the
+  never-drop-to-Hands rule: a task only reaches this rung *because* Sonnet and the hard
+  lane already failed on it.
+- `plan-w-team-fable-guard.sh` needed no change — it was already written against the
+  tier name ("continue on Opus"), not a literal model ID. That indirection is why the
+  rollover touched no guard logic.
+
+### Unchanged — the Fable blast-radius invariants
+
+Fable 5 remains bounded to its two sanctioned sites (Step-1 §1b-bis consult, Step-5 top
+rung; ONE task, cap 2/run). The negative fan-out guard in
+`tests/skill/cases/model-tiering-v3.bats` still fails the suite if `claude-fable-5`
+appears in any agent frontmatter beyond `team/fable-spec-consult`, or if the pinned
+`--bg … --model` spawn sites drop below four. The 2026-07 Fable-default lockout remains
+the reason.
+
+### Docs
+
+- Model Strategy table in the manifest updated (the single canonical tier→ID map) plus a
+  v4 generation note that marks the v2/v3 notes as rationale-only, IDs-superseded.
+- Two Opus-5 prompt-tuning deltas recorded for future Brain-tier prompt edits: it
+  self-verifies unprompted (so *added* "double-check your answer" scaffolding now causes
+  over-verification), and it delegates to subagents more readily than 4.8 did (inverting
+  the 4.8-era advice to nudge delegation upward).
+- `docs/operations/claude-code-compatibility.md` model table refreshed (it was two
+  generations stale on the Hands and fallback rows) + a 2.1.219 Features-Adopted row.
+
+## [1.57.0] — 2026-07-19 (aa09ae5)
+
+Model Tiering v3 — **Fable-as-escalation**. Fable 5 becomes a tier at exactly two
+bounded sites, behind one guard. Theme: **an escalation rung that fan-out could
+select is a spend incident, not a tier.**
+
+Trigger: Fable 5 is included again at up to 50% of weekly Max limits
+(operator-confirmed 2026-07-19), removing the credits-only funding barrier that
+caused the 2026-07-09 tiering decision to defer this adoption.
+
+### Added — the Fable consult rung (Step 1)
+
+- **`team/fable-spec-consult`** — a read-only spec consultant pinned to the bare
+  `claude-fable-5` id (deliberately NOT the `[1m]` variant that caused the 2026-07
+  default-inheritance incident) with `effort: high` pinned so a session at
+  ultracode/xhigh cannot bleed in. It ADVISES; the Opus lead still authors the spec.
+- **Rides the EXISTING §1b-pre fan-out** (`01-specification.md` §1b-bis) rather than
+  carrying its own machinery. It reuses §1b-pre's non-triviality classifier, its
+  strict pre-freeze ordering rule, and its advisory record. An earlier draft of this
+  work proposed a bespoke project-level classifier on the belief that none existed —
+  the spec fan-out refuted that, and the reuse removed most of the proposed surface.
+
+### Added — the Fable escalation rung (Step 5)
+
+- The top rung of the knowing-vs-trying ladder in `04-fix-first-review.md`
+  **previously dead-ended** at "surface to the user as a Fable-credits candidate …
+  NEVER switch models yourself". It is now autonomous but hard-bounded: an Opus 4.8
+  agent that is confidently-wrong-with-full-context on the SAME task *after* the
+  hard-lane bump escalates to ONE Fable-pinned fix agent for THAT TASK ONLY.
+- **Cap 2 per run** (`PLAN_W_TEAM_FABLE_ESCALATION_CAP`). Exhausted cap falls through
+  to the existing hard-gate / human-escalation path, unchanged.
+
+### Added — the guard (`plan-w-team-fable-guard.sh`)
+
+Single gate for every Fable spawn: env overrides, weekly-bucket budget, per-run cap,
+evidence ledger. `exit 0` ALLOW / `exit 10` SKIP / `exit 2` usage. Only exit 0
+authorizes a spawn — including `127`, which is what a consumer repo missing the
+script produces.
+
+- **Fails CLOSED to skipping Fable** on every unknown: unresolvable bucket,
+  unwritable ledger, corrupt ledger line, or missing `jq`. An unknown budget never
+  authorizes spend, and a skip never fails the run.
+- **Budget reads the Fable-scoped weekly bucket only** (`limits[] | kind ==
+  "weekly_scoped", scope.model.display_name ~ "Fable"`). There is deliberately NO
+  fallback to `.seven_day.utilization`: that is the all-models bucket, systematically
+  lower and causally unrelated, so a fallback would silently degrade the guard into a
+  permissive unrelated number the day "Fable" is renamed at GA. Unresolvable is
+  reported as `bucket-unresolved` so the degradation is visible.
+- **The ledger IS the counter.** The cap counts the guard's own
+  `verdict=="ALLOW" and kind=="escalation"` rows — one artifact, no second source that
+  can disagree. Rows are emitted with `jq -cn --arg`, never printf interpolation: a
+  malformed row would be a cap bypass, not just bad logging. An unparseable line fails
+  closed rather than being skipped, because a skipped line may be a real ALLOW.
+- Ledger resolves to the MAIN checkout via `git rev-parse --git-common-dir`, so a
+  worktree cannot fork the counter into "2 per checkout"; a `mkdir` lock serializes
+  read-count-append so concurrent escalations cannot both read `used=1`.
+- `PWT_PLAN_USAGE_CMD` test seam (`plan-w-team-test-green.sh` precedent) — without it
+  the budget tests would make a live keychain + network call inside `make test-skill`.
+
+### Changed — propagation, docs, env hygiene
+
+- `sync-to-project.sh`: the agent joins all three profile allowlists **and** the guard
+  gets an explicit `cp` line. `scripts/` is excluded from the rsync, so without that
+  line a consumer would receive the spender without the brake.
+- `pwt-goal.sh`: `unset PLAN_W_TEAM_FORCE_FABLE_CONSULT` beside the existing
+  `ALLOW_CONTEXT_BLIND` unset — exported once in a shell, FORCE would inherit into the
+  worker and every nested pwt-goal, turning a one-run override into a fleet-wide spend
+  amplifier. **Spawn-site `--model` pins are untouched.**
+- Manifest Model Strategy table gains the Fable row (the ONE sanctioned literal-id site
+  in `.claude/commands`); repo `CLAUDE.md` and `design-principles.md` §10 updated.
+- `design-principles.md` §10 also corrected: it still described the Hands tier as
+  **Opus 4.7**, retired back in 1.51.0 (doc-decay GAP-5 from the 2026-07-15 audit).
+
+### Added — invariant guards (`tests/skill/cases/model-tiering-v3.bats`, 48 tests)
+
+- **Negative fan-out sweep**: `claude-fable-5` appears in exactly two sanctioned places
+  (the consult agent's frontmatter, the manifest table row) and nowhere else in
+  `.claude/{scripts,hooks,commands,agents}`; zero occurrences in `pwt-goal.sh`, whose
+  ≥4 pinned `--bg … --model "` spawn sites are re-asserted. Uses `grep -F` on the
+  literal — a case-insensitive `fable` grep false-positives on six `spoofable` lines.
+- Guard behavior: override precedence, budget, clamping, cap, fail-closed paths,
+  note-injection safety, slug validation, one-row-per-invocation, worktree path.
+- Ordering guard: the stage text's guard invocation must textually PRECEDE the spawn
+  instruction — the only property that survives the prose-invocation residual below.
+- MT5 in `model-tiering-v2.bats` asserted the now-deleted literal `NEVER assume credits
+  exist`; its replacement is strictly stronger (guard named, `ONE task`, `Cap 2 per run`)
+  rather than a deletion. MT12/MT14 inventories grew by the new agent.
+
+### Known residual (recorded, not hidden)
+
+The guard is invoked by stage-file prose read by an LLM lead, so it is deterministic
+**once invoked**, not a chokepoint: a lead that skips the call spawns Fable uncapped and
+unrecorded. The structural fix is a `PreToolUse` binding on `Agent` spawns (the
+`no-github-actions.md` "ENFORCING — backed by a real mechanism, not just prose" pattern)
+and is tracked as a P1 deferred item on the spec. Partial mitigations shipped here: the
+negative fan-out guard, the ordering assertion, and fail-closed recording.
+
 ## [1.56.0] — 2026-07-16 (d3d918b)
 
 Bottom-line-loops hardening + the 2026-07-16 goal-integrity field defects.

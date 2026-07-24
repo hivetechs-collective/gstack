@@ -2,7 +2,7 @@
 name: builder-opus
 color: magenta
 description: Brain-tier hard-lane builder — same role and protocol as builder, pinned to Opus 4.8 for tasks flagged difficulty:hard (novel architecture, cross-cutting refactors, ambiguous spec areas, security-sensitive logic, concurrency correctness)
-model: claude-opus-4-8
+model: claude-opus-5
 effort: high
 isolation: worktree
 permissionMode: auto

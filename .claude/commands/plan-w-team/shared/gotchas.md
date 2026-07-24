@@ -72,13 +72,13 @@ Opt-out only via `PWT_DISABLE_WORKER_WORKTREE=1`.
 
 ## G4 — The Agent tool's `model` param accepts ONLY aliases, never a full model ID
 
-**Bites you**: passing `model: claude-opus-4-8` to an Agent call fails input validation; passing
+**Bites you**: passing `model: claude-opus-5` to an Agent call fails input validation; passing
 an alias defeats a generation pin (the alias overrides the agent-definition frontmatter).
 
 **Why**: the tool only accepts `opus` / `sonnet` / `haiku`.
 
 **Do instead**: pin a specific generation in the **agent-definition frontmatter**
-(e.g. `model: claude-opus-4-8` in `.claude/agents/team/evaluator.md`) and do **not** set
+(e.g. `model: claude-opus-5` in `.claude/agents/team/evaluator.md`) and do **not** set
 `model:` in the Agent call. For mechanical lead work, no pin is needed.
 
 **Source**: `.claude/commands/plan-w-team.md` §How tier pinning works.
