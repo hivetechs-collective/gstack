@@ -4,6 +4,16 @@ description: Use this agent when reviewing code changes to identify silent failu
 model: claude-opus-5
 effort: high
 color: yellow
+# Read-only reviewer. This agent had NO tool key at all, so it inherited every
+# tool — including Write/Edit/Agent — while 04-fix-first-review.md:482 asks it
+# to be read-only in prose alone. It is a Step-5 Pass-1 slot-3 reviewer
+# (04-fix-first-review.md:457) that reads a diff and reports; the lead applies
+# fixes and does all spawning. Mirrors agents/team/validator.md.
+disallowedTools:
+  - Write
+  - Edit
+  - NotebookEdit
+  - Agent
 ---
 
 <!--

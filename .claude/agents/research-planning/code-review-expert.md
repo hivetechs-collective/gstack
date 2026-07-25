@@ -19,17 +19,21 @@ context: fork
 # ============================================================================
 # TOOL CONFIGURATION
 # ============================================================================
-allowed-tools:
-  - Read
+# `allowed-tools:` was REMOVED here (2026-07-25): it is a SKILL frontmatter key,
+# not an agent key, so it was inert — the agent was silently inheriting every
+# tool including Write/Edit/Agent. Canonical agent allowlist is `tools:`
+# (.claude/docs/CLAUDE_CODE_CLI_REFERENCE.md:249, "inherits all if omitted");
+# `disallowedTools:` IS honored, so read-only posture is enforced there instead.
+# This agent is a MANDATORY Step-5 Pass-1 reviewer (04-fix-first-review.md:444,
+# "Skip If: Never") and a Step-1 spec reviewer (01-specification.md:336). Both
+# roles are read-and-report: the LEAD spawns reviewers and applies every fix
+# (01-specification.md:339), so `Agent` is denied too — a reviewer must neither
+# edit what it reviews nor fan out. Mirrors agents/team/validator.md.
+disallowedTools:
   - Write
   - Edit
-  - Bash
-  - Grep
-  - Glob
-  - Task
-  - TodoWrite
-
-disallowedTools: []
+  - NotebookEdit
+  - Agent
 
 # ============================================================================
 # PERMISSION CONFIGURATION (New in v2.0.43)

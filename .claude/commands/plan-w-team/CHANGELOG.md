@@ -14,6 +14,158 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.59.1] — 2026-07-25 (d92aafb)
+
+Distribution fix: the sync profiles omitted the Step-5 pipeline agents, so
+1.59.0 would have shipped its stage-file changes without the agent changes they
+depend on.
+
+Trigger: found while pre-flighting the 1.59.0 rollout to consumer repos. Caught
+before syncing, not after.
+
+### Fixed — `minimal` profile shipped stage files without the agents they mandate
+
+`.claude/commands/` is **always** synced; `.claude/agents/` is filtered by
+profile — and `sync-all-projects.sh` passes no `--profile`, so every bulk sync
+runs `minimal`. That profile carried only `team/silent-failure-hunter` out of the
+six agents 1.59.0 touched.
+
+The failure mode is silent rather than loud: consumers already hold all ~160
+agent files from an earlier full sync, so the omitted agents are **stale, not
+missing**. Nothing errors — the consumer simply runs `04-fix-first-review.md`'s
+new instructions against the previous revision of every agent it names, keeping
+the under-reporting gap analyzers and the write-granted reviewers indefinitely.
+
+- **`minimal` gains five pipeline agents**: `code-review-expert` and
+  `security-expert` (Pass-1 slots 1-2, "Skip If: Never" at `04-fix-first-review.md:443`
+  and `:444`), `test-gap-analyzer` and `security-gap-analyzer` (§5c-bis / §5d-bis,
+  default-on for any code diff), and `system-architect` (§1b-pre spec fan-out,
+  `01-specification.md:336`).
+- **`web` and `backend` gain three**: `system-architect`, `test-gap-analyzer`,
+  `security-gap-analyzer` (both already carried the two reviewers).
+- The invariant is now stated in-file above the profile definitions: *every agent
+  a synced stage file mandates must appear in every profile.*
+
+### Added
+
+- **`tests/skill/cases/sync-profile-pipeline-agents.bats`** (4 cases) pins the
+  invariant across `minimal`/`web`/`backend`, and additionally asserts each
+  profile entry resolves to a real file on disk — a typo'd or moved path makes
+  the rsync `--include` a silent no-op, which is the same class of invisible
+  failure.
+
+## [1.59.0] — 2026-07-25 (62e47b3)
+
+Opus 5 prompt-hygiene correction + reviewer read-only enforcement. Theme:
+**1.58.0 rolled the model but not the prompts.** The Brain tier became Opus 5,
+while three pieces of instruction text still encoded Opus 4.7/4.8 behavior that
+Opus 5 inverts — and the Step-5 reviewers turned out never to have been read-only
+in the first place.
+
+Trigger: an audit of the pipeline against Anthropic's published Opus 5 prompting
+guidance and a third-party "graph engineering" rubric. The graph-structural half
+came back clean (typed nodes, deterministic gates, durable state, bounded cycles,
+a real worker/invigilator/evaluator split); every defect below is Anthropic-sourced
+except the reviewer tool grants, which the rubric surfaced.
+
+**Provenance — read this before re-litigating any change below.** The rubric arrived
+via a viral X post that credited it to Boris Cherny; **he has since publicly stated
+he did not write it**, so it carries no authority and none of the changes here rest
+on it:
+
+- The two delegation/reporting fixes are sourced **verbatim from Anthropic's official
+  Opus 5 prompting guide** (`platform.claude.com/docs/en/build-with-claude/`
+  `prompt-engineering/prompting-claude-opus-5`, §"Controlling subagent spawning" and
+  §"Capability improvements → Code review and bug-finding"). Independent of the post.
+- The reviewer read-only fix rests on **this repo contradicting itself** —
+  `04-fix-first-review.md:482` ("Do not edit files… Read-only review") and `:824`
+  (reviewers "lose their neutral-reviewer frame when they touch code") versus
+  frontmatter that granted Write/Edit — plus the empirically verified fact that
+  `allowed-tools:` is inert in an agent file (`CLAUDE_CODE_CLI_REFERENCE.md:249`).
+  The rubric pointed at where to look; it is not the evidence.
+- Recommendations that rested on the rubric ALONE were **declined**: the ~500-token
+  router budget, splitting stage files under "one idea per file", re-adding an
+  `expired` terminal state (deliberately removed 2026-05-19, `goal-conditions.md:217`),
+  and per-answer token accounting.
+
+Known limitation: the audit's organizing taxonomy came from that rubric, so the sweep
+is shaped by what it thinks to ask about. Treat it as one lens, not a complete review.
+
+### Changed — delegation guidance is INVERTED for Opus 5
+
+- **`shared/opus-4-7-practices.md` §3 rewritten** from "Deliberate Subagent
+  Spawning" (push the lead to fan out — correct for 4.7/4.8, which under-delegated)
+  to **"Bounding Subagent Spawning"**. Opus 5 delegates readily on its own, so the
+  section now carries a three-part warrant test (disjoint files · more than a
+  handful of tool calls · results need not be read together), "prefer one subagent
+  over several", and "never delegate verification of your own work". The
+  structurally-independent Step-5 reviewer fan-out is explicitly carved out and
+  KEPT — those reviewers never saw the builder's reasoning, which is the point.
+- **New Opus 5 banner** at the top of the same file. The 4.8 banner's blanket claim
+  that "Every pattern below still applies" was the load-bearing error; it is now
+  scoped to history, with §5 (effort) and §7 (length) flagged inline as known-stale
+  pending revision, and a standing "do not add self-verification scaffolding" rule.
+  Deterministic gates — test suites, `tsc --noEmit`, the ship gate's exit code —
+  are explicitly excluded from that rule: they are not model self-verification.
+- **Two duplicate sites corrected** so the inversion cannot be read the old way:
+  `plan-w-team.md` Opus practices bullet, and `03-execute.md` §3 tip. The §9
+  cross-reference table row for Steps 3-4 now reads "bounded parallelism".
+
+### Fixed — Step-5 gap analyzers instructed themselves to under-report
+
+- **`test-gap-analyzer.md` and `security-gap-analyzer.md`** both carried the
+  byte-identical line _"Report 5 well-reasoned high-severity gaps over 30
+  low-severity ones."_ Anthropic documents this exact prompt shape as one Opus 5
+  follows literally, suppressing recall. Both are pinned `model: claude-opus-5` and
+  run default-on for any code diff (§5c-bis, §5d-bis), so the suppression was live.
+  Replaced with report-everything-with-severity-and-confidence; the lead-side filter
+  that converts findings into tasks already existed, so no new machinery.
+  Note the original bolded label ("Prefer coverage over completeness") already
+  argued the opposite of the sentence beneath it.
+
+### Fixed — Step-5 reviewers were never actually read-only
+
+`04-fix-first-review.md:482` has always said "Do not edit files. Do not auto-fix.
+Read-only review." — enforced by **prose only**. The frontmatter disagreed:
+
+- **`code-review-expert`** declared `allowed-tools:` — which is a **skill**
+  frontmatter key, not an agent key (`CLAUDE_CODE_CLI_REFERENCE.md:249`), so it was
+  inert — plus `disallowedTools: []`. It inherited every tool including Write/Edit.
+  The harness confirmed it as "All tools", while `security-expert`'s
+  `disallowedTools: [Write]` WAS honored ("All tools except Write"). Now denies
+  Write/Edit/NotebookEdit/Agent; the inert key is removed with a note explaining why.
+- **`silent-failure-hunter`** had no tool key at all — same total inheritance. Now
+  denies Write/Edit/NotebookEdit/Agent.
+- **`security-expert`** gains NotebookEdit/Agent denials but **deliberately keeps
+  `Edit`**: it is both a mandatory Pass-1 reviewer (§5b-pre slot 1) and the assignee
+  that implements retroactive-security-coverage tasks (`04-fix-first-review.md:684`).
+  Denying Edit would have broken that lane. The reviewer/implementer role overlap is
+  recorded in-file as a tracked residual — the real fix is splitting the agent.
+- **`system-architect`** gains NotebookEdit/Agent denials and
+  `supports_subagent_creation: false`; the lead owns spec fold-in
+  (`01-specification.md:339`). Write/Edit intentionally retained — it authors design
+  docs and is not a Step-5 code invigilator.
+- `Agent` is denied across all four because the **lead** does every reviewer spawn
+  (`01-specification.md:336`, `04-fix-first-review.md:463-466`) — verified before the
+  change, so the fan-out is unaffected.
+
+### Added
+
+- **`tests/skill/cases/reviewer-readonly-guard.bats`** (5 cases) pins the above.
+  The ratchet asserts each mutating tool is PRESENT in `disallowedTools` rather than
+  absent from an allowlist — asserting on an allowlist would pass vacuously against
+  the inert key, which is the bug being prevented. Case 3 pins `security-expert`'s
+  Edit retention in **both** directions, so a maintainer "completing" the lockdown
+  fails the test and reads the reason.
+
+### Known residuals (not fixed here)
+
+- `shared/opus-4-7-practices.md` §5 and §7 bodies are flagged by the new banner but
+  not yet rewritten (effort sweep; explicit length calibration for Opus 5).
+- `06-post-ship.md` still has no written-deliverable length calibration.
+- 60 agent files repo-wide still carry the inert `allowed-tools:` key; only the four
+  reviewers were corrected. The new test scopes its ratchet accordingly.
+
 ## [1.58.0] — 2026-07-24
 
 Model Tiering v4 — **Opus 5 rollover**. Brain tier moves `claude-opus-4-8` →

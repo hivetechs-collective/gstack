@@ -3,7 +3,7 @@ name: system-architect
 version: 1.2.0
 description: Use this agent when you need comprehensive system design, architectural planning, or technology integration decisions. This agent should be used proactively at the start of new projects, when scaling existing systems, or when making major architectural decisions. Examples:
 color: green
-model: claude-opus-4-7
+model: claude-opus-5
 context: fork
 
 # ============================================================================
@@ -22,12 +22,19 @@ allowed-tools:
   - TaskList    # Read-only: view orchestrated task board
   - TaskGet     # Read-only: get task details for context
 
-disallowedTools: []
+# Step-1 spec reviewer (01-specification.md:336). The LEAD folds findings into
+# the draft spec (01-specification.md:339), so this agent must not spawn its own
+# subagents — `supports_subagent_creation` below is set false to match.
+# Write/Edit are intentionally RETAINED: this is a design agent that authors
+# architecture docs and ADRs, and it is not a Step-5 code invigilator.
+disallowedTools:
+  - NotebookEdit
+  - Agent
 
 sdk_features: [subagents, sessions, cost_tracking, extended_thinking, task_visibility]
 cost_optimization: true
 session_aware: true
-supports_subagent_creation: true
+supports_subagent_creation: false # lead owns spec fold-in (01-specification.md:339)
 last_updated: 2026-01-26
 ---
 

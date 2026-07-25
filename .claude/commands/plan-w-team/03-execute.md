@@ -15,7 +15,7 @@
 
 **Opus 4.7/4.8 tips** (read `shared/opus-4-7-practices.md` before spawning):
 
-- §3 **Deliberate subagent spawning**: the Brain-tier lead is judicious about fan-out. When you want parallelism, state "spawn N parallel builders" explicitly — do not assume the lead will fan out.
+- §3 **Bounding subagent spawning** (INVERTED on Opus 5): the Brain-tier lead now fans out readily on its own, so your job is to BOUND it, not to push for it. Spawn only when the tracks touch disjoint files, each is more than a handful of tool calls, and the results don't need to be read together. Prefer one builder over several; for tightly-coupled work state "implement sequentially — do not spawn subagents". The batch cap below is a backstop, not a target.
 - §4 **Auto mode + completion hooks**: default builders to `mode: "auto"` and rely on `desktop-notify.sh` rather than polling.
 - §6 **Delegate outcomes**: give builders the acceptance criteria and files touched, not step-by-step instructions.
 

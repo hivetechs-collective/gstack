@@ -4,6 +4,14 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 
 > **Opus 4.8 update (2026-05-28, v2.1.154):** The Brain tier is now **Opus 4.8** (full model ID in the skill manifest's canonical Model Strategy table). Every pattern below still applies. Two deltas: (1) Opus 4.8 **defaults to high effort** and `/effort xhigh` is reachable from the CLI for the hardest tasks — see §5. (2) Opus 4.8 works independently for longer and is more honest about its own progress (flags uncertainty, fewer unsupported claims) — lean into delegate-outcomes (§6). Use its self-reports as **non-terminal corroboration only**: an objective, user-verifiable metric (commits, AC-pass count, open PRs) still governs the STALL-ALERT decision per the durable anti-gaming rule in `supervisor-protocol.md` §"Progress Check" ("measured objectively, never self-reported"). A self-reported blocker informs your read; it never overrides the objective verdict at the terminal force-action point. The filename keeps the `-4-7-` slug for backward-compatible references across the skill.
 
+> **Opus 5 update (2026-07-25) — READ BEFORE §3, §5 AND §7.** The Brain tier rolled to **Opus 5** in skill 1.58.0. Treat the 4.8 banner above as history: its tiering _rationale_ still holds, but its blanket claim that "every pattern below still applies" does **not**. Anthropic's published Opus 5 prompting guidance inverts three of them:
+>
+> - **§3 delegation is INVERTED — §3 has been rewritten below.** Opus 4.7/4.8 under-delegated and needed an explicit push to fan out. Opus 5 delegates _more_ readily and must be **bounded**, not encouraged.
+> - **§5 effort — body not yet revised; read it with this correction.** `low`/`medium` are unusually strong on Opus 5 and are the _primary_ cost/latency control, not a quality risk to be avoided. §5's under-thinking warning is 4.7-scoped. Start at `xhigh` for coding/agentic and `high` elsewhere, then sweep _downward_ against evals.
+> - **§7 length — body not yet revised; read it with this correction.** An explicit concision instruction is now a legitimate, working instrument: Opus 5 writes longer by default, and `effort` does **not** reliably shorten visible output. §7's advice to use a positive exemplar _instead of_ saying "be concise" is no longer sufficient on its own.
+>
+> Opus 5 also **self-verifies without being asked**: do not add "double-check your work", "re-verify before responding", or a verify-with-a-subagent step to any stage prompt — on this model they compound with the behavior and buy nothing. This does **not** touch deterministic gates (test suites, `tsc --noEmit`, the ship gate's exit code): those are not model self-verification and stay exactly as they are.
+
 ## 1. Front-Load Task Specification
 
 **Rule**: Give Opus 4.7 the full task shape at the start — intent, constraints, acceptance criteria, file locations — instead of revealing requirements progressively.
@@ -30,17 +38,19 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 - Scope Challenge (Step 0): default to terse thinking — it's a gate, not a design session.
 - Fix-First Review (Step 5): signal deep thinking for Pass 1 CRITICAL checks; signal quick response for Pass 2 informational items.
 
-## 3. Deliberate Subagent Spawning
+## 3. Bounding Subagent Spawning (INVERTED on Opus 5)
 
-**Rule**: 4.7 is _more judicious_ than 4.5/4.6 about spawning subagents. If you want parallelism, say so explicitly.
+**Rule**: Opus 5 delegates readily on its own. Your job is to **bound** delegation, not to encourage it. Spawn only when the work is genuinely independent and sizeable; otherwise do it inline.
 
-**Why**: Prior Opus generations over-delegated. 4.7 defaults to doing the work itself unless the prompt signals the work is independent/fan-out-able.
+**Why**: This reverses what this section said for 4.7/4.8. Those generations under-delegated, so the old advice was to say "spawn N parallel builders" explicitly. On Opus 5 that same phrasing pushes an already-eager delegator into fan-out for work it could finish in a handful of tool calls — and every subagent re-establishes context, re-explores, reports back, and then costs the lead another read to absorb the report.
 
 **How to apply**:
 
-- In Step 3 execution, use the phrase "spawn N parallel builders" (not "you may want to parallelize").
-- For independent file operations, state "these tasks are fully independent — fan out".
-- For tightly-coupled work, say "implement sequentially — do not spawn subagents".
+- **Warrant test — delegate only when all three hold**: (1) the tracks touch disjoint files with no shared state, (2) each track is more than a handful of tool calls, (3) the results don't have to be read together to make sense.
+- **Prefer one subagent over several.** If one agent can do the job, use one. Keep spawn counts low.
+- **Never delegate verification of your own work.** Opus 5 self-verifies, so a verify-subagent is pure duplicated cost. Structurally independent review is a _different thing and stays_: the Step-5 reviewer fan-out is valuable precisely because those reviewers never saw the builder's reasoning.
+- **For tightly-coupled work, say "implement sequentially — do not spawn subagents".** This half of the original guidance is unchanged and still worth stating explicitly.
+- Treat the deterministic caps as a backstop, not a target: the `03-execute.md` batch cap, the `shared/deep-audit.md` fan-out cap, the `agents/team/supervisor.md` ceiling, and the `--bg` worker caps in `.claude/scripts/pwt-goal.sh`. Sitting at the cap by default is the failure mode this section now exists to prevent.
 
 ## 4. Auto Mode + Completion Hooks
 
@@ -110,7 +120,7 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 | ---------------------- | -------------------------------------------------------------------------------- |
 | Step 0 (Scope)         | §2 adaptive thinking (terse mode)                                                |
 | Step 1 (Spec)          | §1 front-load, §6 outcome-oriented AC, §7 prose                                  |
-| Step 3-4 (Execute)     | §3 explicit parallelism, §4 auto mode, §6 delegate                               |
+| Step 3-4 (Execute)     | §3 **bounded** parallelism (warrant test), §4 auto mode, §6 delegate             |
 | Step 4b (Evaluator)    | §1 front-load criteria, §2 think carefully, §7 form                              |
 | Step 5 (Review)        | §2 deep-think Pass 1, quick Pass 2                                               |
 | Step 6-7 (Ship / Docs) | §5 medium effort, lead session (Hands delegation optional), §7 prose calibration |

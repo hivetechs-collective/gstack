@@ -701,7 +701,7 @@ Lead and Brain-tier agents follow the Opus 4.7/4.8 patterns in `shared/opus-4-7-
 
 - **Front-load task specification** — give the full task shape upfront (intent, constraints, AC, files).
 - **Adaptive thinking** — guide intent ("think carefully" / "respond quickly"), don't fix a token budget.
-- **Deliberate subagent spawning** — 4.7 is judicious; state "spawn N parallel builders" explicitly when parallelism is wanted.
+- **Bounded subagent spawning** (INVERTED on Opus 5) — Opus 5 delegates readily; bound it rather than encourage it. Delegate only for disjoint-file tracks that each exceed a handful of tool calls; prefer one subagent over several; never delegate verification of your own work.
 - **Auto mode + completion hooks** — let runs proceed without polling; rely on desktop notifications.
 - **Default effort: high** — drop to medium/low only for narrow cost/latency-sensitive tasks.
 - **Delegate outcomes, not instructions** — Opus 4.7 is a capable engineer, not a line-by-line pair.

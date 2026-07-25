@@ -10,7 +10,7 @@ description: |
   by unit-testing-specialist before retro. Pure read-only analysis — does
   not write code.
 color: yellow
-model: claude-opus-4-7
+model: claude-opus-5
 context: fork
 sdk_utilization: 70%
 sdk_features:
@@ -44,7 +44,7 @@ last_updated: 2026-05-22
 
 It produces a structured **test gap report** — untested branches, error paths, and edge cases that are reachable from the touched files but lack corresponding tests. The /plan-w-team lead consumes the report and converts each finding into a queued retroactive-coverage task (`N.c`) assigned to `unit-testing-specialist`. Those tasks execute before Step 8 retro.
 
-## Why Brain-Tier (Opus 4.7)
+## Why Brain-Tier
 
 The analyzer must reason about reachable execution paths across functions and modules, not pattern-match. Identifying _which_ branches lack tests requires understanding behavior, not just lexical scanning. Hands-tier models miss the cases where "the test exists but does not exercise the branch" — that nuance is the bulk of the report's value.
 
@@ -132,12 +132,12 @@ The agent must not modify any file. It enumerates code via Read/Grep/Glob, trace
 ## Integration Touchpoints
 
 - **Step 5 (Fix-First Review)** — invokes this agent after the CRITICAL pass and before the INFORMATIONAL pass. The lead converts each finding to a retroactive-coverage task.
-- **Step 8 (Retro)** — reads the per-run report count and the eventual closure rate (how many findings became merged tests) as a quality signal.
+- **Step 8 (Retro)** — reads the per-run report count and the eventual closure rate (how many findings became merged tests) as a quality signal, in §8e "Retroactive-Coverage Closure & Gap-Analyzer Cost" (07-retro.md) — which also tracks the `test_gap_analyzer_tokens` cost row.
 - **shared/qa-tiers.md** — the analyzer's output flows into the "retroactive coverage" lane; tiers that require it are documented there.
 
 ## Best Practices
 
-1. **Prefer coverage over completeness.** Report 5 well-reasoned high-severity gaps over 30 low-severity ones — the lead must convert each into a task.
+1. **Coverage first — do not self-filter.** Report every gap you find, each tagged with a severity AND a confidence level. Do not withhold findings you judge low-severity or uncertain. The lead applies the filter when converting findings into tasks (`04-fix-first-review.md` §5c-bis), so a finding that gets dropped downstream costs one line — while a gap you silently withheld is indistinguishable from a clean scan. Rank within your report so the lead can triage top-down.
 2. **Quote line numbers from the diff exactly.** Findings without a line range are hard to action; downstream task descriptions need them.
 3. **Suggest the test contract, not the test code.** "Assert X" is more useful than `expect(foo).toBe(bar)` — let the test specialist write the test.
 4. **Note when a branch is intentionally untested.** A `// no-cover` comment or an existing `mockImplementation` should be respected. Do not flag deliberately-skipped paths as gaps.
