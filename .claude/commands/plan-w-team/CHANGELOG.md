@@ -14,6 +14,84 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.60.0] — 2026-07-26 (e58b208)
+
+Hook enforcement contract repaired. Theme: **the guards reported blocking while
+allowing.** Four block sites across two PreToolUse hooks used a non-blocking exit
+code, and damage-control's entire `ask` tier used the wrong event's schema — so
+the operations they exist to gate proceeded silently.
+
+Trigger: surfaced while auditing `/plan-w-team` against Boris Cherny's AI-adoption
+ladder; unrelated to the ladder itself, and verified directly against the hook
+sources and both hook references before any edit.
+
+Why this is severe here rather than cosmetic: the standing posture is
+`bypassPermissions`, so there is no permission dialog behind these hooks. As
+`.claude/docs/SKILL_PERMISSION_CONVENTION.md` puts it, "Safety is in the hooks,
+not the allow-list" — this layer was 100% of the policy.
+
+### Fixed — `exit 1` does not block
+
+The contract (`CLAUDE_CODE_CLI_REFERENCE.md:471-477`,
+`claude-sdk-expert/docs/hooks.md:126-138`): exit 0 allows and **stdout is parsed
+for JSON control**; exit 2 **blocks** and shows **stderr**; any other code is a
+non-blocking error and **the tool call proceeds**.
+
+- `block-protected-paths.sh` (3 sites) and `block-gh-actions-build.sh` (1 site)
+  printed `{"decision":"block"}` to stdout and then `exit 1` — failing twice
+  over: exit 1 did not block, and the JSON was never read because stdout is only
+  parsed on exit 0. All four now write the reason to **stderr** and `exit 2`.
+- This silently disabled the PWT-C4 guard that stops a bg worker self-authoring
+  the secret-scan allow-file, and the PWT-P9b no-GitHub-Actions governance guard.
+- `block-gh-actions-build.sh:5-8` was itself written to eliminate "ENFORCING but
+  doesn't enforce" theater, and reproduced the bug inside the fix.
+
+### Fixed — the whole `ask` tier was inert
+
+`damage-control.sh` emitted a top-level `{"decision":"ask"}` with `exit 0`. That
+is the **PermissionRequest** schema (`CLAUDE_CODE_CLI_REFERENCE.md:484-492`); for
+PreToolUse it is `hookSpecificOutput.permissionDecision` (`hooks.md:249-262`).
+Exit 0 with an unrecognized payload means **allow**, so `DROP`/`TRUNCATE TABLE`,
+`gcloud … delete`, `az … delete`, `docker system prune`, `redis-cli FLUSHDB` and
+the final-artifact `rm` guard were all ungated. Now emits the correct schema,
+with quote/backslash escaping so a malformed payload cannot reintroduce the same
+silent-allow failure.
+
+Its `block` path already exited 2 (so it did block) but printed the reason to
+stdout, which is not read on exit 2 — Claude was never told why. Reason now goes
+to stderr.
+
+### Changed — `ask` fails closed in an unattended worker (BEHAVIOR CHANGE)
+
+An `ask` needs a human at the keyboard. A bg `/plan-w-team` worker has none, and
+under `bypassPermissions` an ask auto-approves — so unattended, `ask` degraded to
+`allow` on exactly the irreversible operations it exists to gate. When
+`PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1` (set by `pwt-goal.sh` for every spawned
+session), an `ask` now becomes a block telling the worker to surface a
+`pending_escalation`. Interactive sessions are unchanged.
+
+**Operator note:** autonomous runs that previously performed an ask-tier
+operation will now stop instead. Escape hatch:
+`PLAN_W_TEAM_ALLOW_DESTRUCTIVE_UNATTENDED=1`.
+
+### Added
+
+- **`tests/skill/cases/hook-enforcement-contract.bats`** (11 cases): per-hook
+  behavioral assertions plus two class-level ratchets scoped to hooks actually
+  registered on PreToolUse and stripped of comments. Both scopings are
+  load-bearing — a **Stop** hook legitimately uses top-level
+  `{"decision":"block"}` with exit 0 (`plan-w-team-goal-evaluator.sh:1106`), and
+  the fixed hooks document the old shape in their own headers.
+- A third ratchet asserts the resolver finds ≥3 PreToolUse hooks. It caught the
+  first version of itself returning **zero** files, which made the other two
+  ratchets pass vacuously — the same invisible-failure class they exist to catch.
+
+### Fixed — a test that pinned the bug
+
+`tests/skill/cases/secret-allow-worker-guard.bats:23` and `:42` asserted
+`status -eq 1`, encoding the broken behavior as the expectation. Both now assert
+`-eq 2`.
+
 ## [1.59.1] — 2026-07-25 (d92aafb)
 
 Distribution fix: the sync profiles omitted the Step-5 pipeline agents, so

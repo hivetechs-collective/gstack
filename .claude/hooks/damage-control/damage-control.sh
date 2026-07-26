@@ -38,11 +38,50 @@ respond() {
     # Build additionalContext for Claude to understand the block reason
     local context="DAMAGE CONTROL: $reason. Target: $target. This is a safety guardrail - consider alternative approaches."
 
+    # -----------------------------------------------------------------------
+    # HOOK ENFORCEMENT CONTRACT (fixed 2026-07-26)
+    # -----------------------------------------------------------------------
+    # Registered PreToolUse (Bash|Write|Edit|MultiEdit|Read). Contract:
+    #   exit 0 → allow; stdout IS parsed for JSON control
+    #   exit 2 → BLOCK; STDERR is shown to Claude; stdout is NOT parsed
+    #   other  → non-blocking error; the tool call PROCEEDS
+    # (CLAUDE_CODE_CLI_REFERENCE.md:471-477; claude-sdk-expert/docs/hooks.md:126-138)
+    #
+    # Two bugs fixed here:
+    #  1. `block` printed its reason to STDOUT and exited 2. The exit code did
+    #     block, but on exit 2 stdout is not parsed — so Claude never saw WHY.
+    #     The reason now goes to STDERR.
+    #  2. `ask` emitted a legacy TOP-LEVEL {"decision":"ask"} and exit 0. For
+    #     PreToolUse the schema is hookSpecificOutput.permissionDecision
+    #     (hooks.md:249-262); the top-level form is PermissionRequest's
+    #     (CLAUDE_CODE_CLI_REFERENCE.md:484-492). Exit 0 with an unrecognized
+    #     payload means ALLOW, so the whole ask tier — DROP/TRUNCATE TABLE,
+    #     gcloud/az delete, docker system prune, redis-cli FLUSHDB, and the
+    #     final-artifact rm guard — was inert in every lane.
+    local esc_reason esc_message esc_context
+    esc_reason=$(printf '%s' "$reason" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    esc_message=$(printf '%s' "$message" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    esc_context=$(printf '%s' "$context" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
     if [ "$decision" = "block" ]; then
-        echo "{\"decision\": \"block\", \"reason\": \"$reason\", \"systemMessage\": \"$message\", \"additionalContext\": \"$context\"}"
+        printf '⛔ BLOCKED (damage-control): %s\n%s\n' "$reason" "$message" >&2
         exit 2
     elif [ "$decision" = "ask" ]; then
-        echo "{\"decision\": \"ask\", \"reason\": \"$reason\", \"systemMessage\": \"$message\", \"additionalContext\": \"$context\"}"
+        # An `ask` needs a human at the keyboard. A bg /plan-w-team worker has
+        # none, and under the standing `bypassPermissions` posture an ask
+        # auto-approves — so in an unattended session `ask` silently degrades to
+        # `allow` on exactly the irreversible operations it exists to gate.
+        # Fail closed there instead; interactive sessions still get the prompt.
+        # Escape hatch, consistent with the other guards:
+        #   PLAN_W_TEAM_ALLOW_DESTRUCTIVE_UNATTENDED=1
+        if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-}" = "1" ] \
+           && [ "${PLAN_W_TEAM_ALLOW_DESTRUCTIVE_UNATTENDED:-}" != "1" ]; then
+            printf '⛔ BLOCKED (damage-control, unattended): %s\n%s\nThis operation is gated by an `ask` that no one can answer inside a bg worker. Surface a pending_escalation to the human, or re-run interactively. Override: PLAN_W_TEAM_ALLOW_DESTRUCTIVE_UNATTENDED=1\n' \
+                "$reason" "$message" >&2
+            exit 2
+        fi
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"%s"},"systemMessage":"%s","additionalContext":"%s"}\n' \
+            "$esc_reason" "$esc_message" "$esc_context"
         exit 0
     else
         exit 0

@@ -2,6 +2,27 @@
 # Autonomous Pipeline: Path protection hook
 # Blocks writes to protected paths based on .claude/project.json configuration
 # Generic template - reads from .claude/project.json
+#
+# ---------------------------------------------------------------------------
+# HOOK ENFORCEMENT CONTRACT (fixed 2026-07-26 — this hook did not enforce)
+# ---------------------------------------------------------------------------
+# Registered PreToolUse (Write|Edit|MultiEdit). The contract is:
+#   exit 0  → allow. stdout IS parsed for JSON control.
+#   exit 2  → BLOCK. stderr is shown to Claude. stdout is NOT parsed.
+#   other   → non-blocking error; the tool call PROCEEDS.
+# (.claude/docs/CLAUDE_CODE_CLI_REFERENCE.md:471-477;
+#  agents/research-planning/claude-sdk-expert/docs/hooks.md:126-138)
+#
+# Every block site here previously printed {"decision":"block"} to STDOUT and
+# then `exit 1`. That failed twice over: exit 1 is a non-blocking error so the
+# write proceeded, and the JSON was never parsed because stdout is only read on
+# exit 0. The guard reported blocking while allowing — the exact "ENFORCING but
+# doesn't enforce" theater that block-gh-actions-build.sh:5-8 was written to
+# eliminate. Blocks now write the reason to STDERR and exit 2.
+#
+# Under `bypassPermissions` (the standing posture) there is no permission
+# backstop, so this hook layer is 100% of the policy — see
+# .claude/docs/SKILL_PERMISSION_CONVENTION.md "Safety is in the hooks".
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CONFIG_FILE="$PROJECT_ROOT/.claude/project.json"
@@ -39,14 +60,10 @@ fi
 # See audit C4 (docs/operations/pwt-principles-enforcement-audit-2026-06-02.md).
 if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-}" = "1" ] && \
    printf '%s' "$FILE_PATH" | grep -qE 'plan-w-team-secret-scan-allow-'; then
-    cat << JSONEOF
-{
-  "decision": "block",
-  "reason": "secret-scan-allow is a user-only hard-gate; a bg worker may not self-author the allow-file",
-  "systemMessage": "⛔ BLOCKED (PWT-C4): writing the secret-scan allow-file ($FILE_PATH) from inside a bg /plan-w-team worker would suppress the fail-closed secret scanner with no human review. secret-scan-allow is a user-only hard-gate. Surface a pending_escalation (secret-scan-allow) to the human instead of writing the allow-file; an interactive operator can approve it."
-}
-JSONEOF
-    exit 1
+    cat >&2 << MSGEOF
+⛔ BLOCKED (PWT-C4): writing the secret-scan allow-file ($FILE_PATH) from inside a bg /plan-w-team worker would suppress the fail-closed secret scanner with no human review. secret-scan-allow is a user-only hard-gate. Surface a pending_escalation (secret-scan-allow) to the human instead of writing the allow-file; an interactive operator can approve it.
+MSGEOF
+    exit 2
 fi
 
 # Check if file is in a protected path
@@ -58,16 +75,12 @@ if [ -f "$CONFIG_FILE" ] && command -v jq &> /dev/null; then
             # Convert glob pattern to regex
             pattern=$(echo "$protected" | sed 's/\*/.*/g')
             if echo "$FILE_PATH" | grep -qE "$pattern"; then
-                # Output JSON with systemMessage (Claude Code v1.0.64+)
-                # This provides better integration with Claude's context display
-                cat << JSONEOF
-{
-  "decision": "block",
-  "reason": "Protected path: $protected",
-  "systemMessage": "⛔ BLOCKED: $FILE_PATH is in protected path ($protected). Check .claude/project.json governance.protectedPaths to modify permissions."
-}
-JSONEOF
-                exit 1
+                # Reason goes to STDERR + exit 2 — the documented PreToolUse
+                # blocking path. See HOOK ENFORCEMENT CONTRACT at the top.
+                cat >&2 << MSGEOF
+⛔ BLOCKED: $FILE_PATH is in protected path ($protected). Check .claude/project.json governance.protectedPaths to modify permissions.
+MSGEOF
+                exit 2
             fi
         fi
     done <<< "$PROTECTED_PATHS"
@@ -80,15 +93,10 @@ JSONEOF
             pattern=$(echo "$blocked" | sed 's/\*/.*/g')
             if echo "$FILE_PATH" | grep -qE "$pattern"; then
                 FEATURE_NAME=$(jq -r ".features[] | select(.path == \"$blocked\") | .name" "$CONFIG_FILE" 2>/dev/null)
-                # Output JSON with systemMessage (Claude Code v1.0.64+)
-                cat << JSONEOF
-{
-  "decision": "block",
-  "reason": "Feature not approved: $FEATURE_NAME",
-  "systemMessage": "⛔ BLOCKED: Feature '$FEATURE_NAME' requires approval. Path $FILE_PATH is blocked until feature is unblocked in .claude/project.json."
-}
-JSONEOF
-                exit 1
+                cat >&2 << MSGEOF
+⛔ BLOCKED: Feature '$FEATURE_NAME' requires approval. Path $FILE_PATH is blocked until feature is unblocked in .claude/project.json.
+MSGEOF
+                exit 2
             fi
         fi
     done <<< "$BLOCKED_PATHS"

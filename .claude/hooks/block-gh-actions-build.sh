@@ -48,14 +48,14 @@ print('\n'.join(parts))
 # Build/CI/deploy signal: a jobs: block that runs steps (run:/uses:).
 if printf '%s' "$CONTENT" | grep -qE '^[[:space:]]*jobs:' \
    && printf '%s' "$CONTENT" | grep -qE '^[[:space:]]*-?[[:space:]]*(run|uses):'; then
-    cat << JSONEOF
-{
-  "decision": "block",
-  "reason": "No GitHub Actions for build/CI/deploy (governance rule)",
-  "systemMessage": "⛔ BLOCKED (PWT-P9b): $FILE_PATH is a GitHub Actions workflow that runs build/CI/deploy steps (a jobs: block with run:/uses:). This repo's governance forbids GitHub Actions for build/CI/deploy — the canonical path is the local Makefile + admin-squash-merge (shared/no-github-actions.md), which saves GH-minutes and ships with /plan-w-team to every repo. Observer-only workflows (ci-alert*, board-auto-add*) are exempt; add a genuine exemption to the allowlist in this hook, or set PLAN_W_TEAM_DISABLE_GH_ACTIONS_GUARD=1 for a one-off."
-}
-JSONEOF
-    exit 1
+    # STDERR + exit 2 is the documented PreToolUse blocking path. This hook's
+    # own header (:5-8) was written to eliminate "ENFORCING but doesn't enforce"
+    # theater — and then reproduced it by emitting stdout JSON with exit 1,
+    # which is a NON-blocking error. Fixed 2026-07-26.
+    cat >&2 << MSGEOF
+⛔ BLOCKED (PWT-P9b): $FILE_PATH is a GitHub Actions workflow that runs build/CI/deploy steps (a jobs: block with run:/uses:). This repo's governance forbids GitHub Actions for build/CI/deploy — the canonical path is the local Makefile + admin-squash-merge (shared/no-github-actions.md), which saves GH-minutes and ships with /plan-w-team to every repo. Observer-only workflows (ci-alert*, board-auto-add*) are exempt; add a genuine exemption to the allowlist in this hook, or set PLAN_W_TEAM_DISABLE_GH_ACTIONS_GUARD=1 for a one-off.
+MSGEOF
+    exit 2
 fi
 
 exit 0

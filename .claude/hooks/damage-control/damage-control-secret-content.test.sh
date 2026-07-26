@@ -13,7 +13,7 @@
 #   T3  Edit new_string with GitHub token   → block (exit 2)
 #   T4  Write clean content                 → allow (exit 0)
 #   T5  kill switch disables content scan   → allow (exit 0)
-#   T6  block emits decision:block JSON
+#   T6  block delivers its reason on STDERR (exit 2)
 #   T7  non-Write/Edit (Read) unaffected    → exit 0
 
 set -u
@@ -32,6 +32,9 @@ assert() {
 }
 run() { printf '%s' "$1" | bash "$DC" >/dev/null 2>&1; echo $?; }
 run_out() { printf '%s' "$1" | bash "$DC" 2>/dev/null; }
+# A block writes its reason to STDERR and exits 2 (PreToolUse contract:
+# stdout is only parsed on exit 0). Capture stderr for block assertions.
+run_err() { printf '%s' "$1" | bash "$DC" 2>&1 >/dev/null; }
 
 # T1 — live AWS key in Write content.
 assert "T1 Write live AWS key blocks" "2" \
@@ -53,10 +56,10 @@ assert "T4 Write clean content allows" "0" \
 RC=$(DAMAGE_CONTROL_DISABLE_SECRET_CONTENT=1 bash -c "printf '%s' '{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"/tmp/a.ts\",\"content\":\"$AWS\"}}' | bash '$DC' >/dev/null 2>&1; echo \$?")
 assert "T5 kill switch allows" "0" "$RC"
 
-# T6 — block emits decision:block JSON.
-OUT=$(run_out "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"/tmp/a.ts\",\"content\":\"$AWS\"}}")
-case "$OUT" in *'"decision": "block"'*) JSON_OK=1 ;; *) JSON_OK=0 ;; esac
-assert "T6 block emits decision JSON" "1" "$JSON_OK"
+# T6 — a block delivers its reason on STDERR (was: decision:block JSON on stdout).
+OUT=$(run_err "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"/tmp/a.ts\",\"content\":\"$AWS\"}}")
+case "$OUT" in *BLOCKED*) JSON_OK=1 ;; *) JSON_OK=0 ;; esac
+assert "T6 block delivers its reason on stderr" "1" "$JSON_OK"
 
 # T7 — Read tool is unaffected by content scan (no content key anyway).
 assert "T7 Read unaffected" "0" \
