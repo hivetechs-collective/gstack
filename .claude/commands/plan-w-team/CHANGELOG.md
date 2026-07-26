@@ -14,6 +14,66 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.63.0] — 2026-07-26 (3302f19)
+
+The `allowed-tools:` sweep. 42 agent files declared tool policy through a key the
+harness does not read — the same failure class as the 1.60.0 hook bug: a
+declaration that reads as a guarantee and enforces nothing.
+
+Count correction: an earlier note said 56. That came from a raw grep matching
+`allowed-tools:` anywhere in a file, including prose — and it IS a legitimate key
+for *skills*, so agent-bundled docs discuss it correctly. Parsing only YAML
+frontmatter gives **42**.
+
+### Fixed — the dead key removed from all 42
+
+`allowed-tools:` is a SKILL frontmatter key; in an agent file it is inert. The
+canonical agent allowlist is `tools:` ("inherits all if omitted",
+`CLAUDE_CODE_CLI_REFERENCE.md:249`) and the denial key is `disallowedTools:`.
+Removed from every agent frontmatter, each with a note naming the canonical keys.
+
+**Not converted to `tools:`, deliberately.** Activating 42 dormant allowlists —
+written while they had no effect and never validated — would restrict each agent
+to that list, and any agent whose list omits a tool its own prompt tells it to
+use would simply break. The sweep removed the dead key and re-expressed only the
+restrictions it genuinely implied.
+
+### Fixed — nine agents whose read-only intent was never enforced
+
+Eight cloud specialists (`aws`, `azure`, `gcp`, `argocd`, `kubernetes`,
+`terraform`, `mongodb`, `redis`) had allowlists omitting **both** `Write` and
+`Edit`, while live config denied only `Write` — the harness reported them as "All
+tools except Write", leaving `Edit` open. These fill Step-5 domain **reviewer**
+slots (`04-fix-first-review.md` §5b-pre slot 3), so this is the same defect fixed
+in `code-review-expert` earlier today: a reviewer able to edit the code it
+reviews. Both are now denied. `github-security-orchestrator` — a security auditor
+whose denial list was empty — gains `Write`/`Edit`/`NotebookEdit`.
+
+If a consumer repo assigns one of these as an *implementer*, it will now refuse.
+That refusal matches what the frontmatter author expressed; override deliberately
+by editing the agent.
+
+### Deliberately NOT done
+
+- **`MultiEdit` denials.** Absent from the current tool table, so denying it would
+  add a fresh inert declaration — exactly what this removes.
+- **`security-expert` keeps `Edit`** (implements retroactive-security-coverage
+  tasks) and **`system-architect` keeps `Write`/`Edit`** (authors design docs).
+  Both pinned by a test that fails in **both** directions, so a later sweep cannot
+  "complete" the lockdown and silently break those lanes.
+- **A `NotebookEdit` denial inferred purely from omission.** Applied across all 42
+  at first, then reverted for `mlops-specialist` and `llm-application-specialist`,
+  which plausibly edit notebooks. An omission is not an expressed intent.
+
+### Added
+
+- `tests/skill/cases/agent-tool-key-canonical.bats` (5 cases): no frontmatter may
+  carry the dead key; the read-only specialists deny both mutating tools; the two
+  exceptions retain theirs; no invented `MultiEdit` denial; plus a non-vacuity
+  guard. Its matchers are scoped to frontmatter — the first version false-positived
+  on an SDK doc discussing `MultiEdit` in prose, the third over-broad-matcher slip
+  of the day.
+
 ## [1.62.0] — 2026-07-26 (86499d1)
 
 The scheduled follow-up drainer 1.61.0 declined to build, plus a retraction of

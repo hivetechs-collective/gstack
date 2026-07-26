@@ -18,18 +18,17 @@ model: haiku  # 95% cost savings vs Opus
 # ============================================================================
 # TOOL CONFIGURATION - MINIMAL FOR MECHANICAL OPS
 # ============================================================================
-allowed-tools:
-  - Read
-  - Grep
-  - Bash
-
+# `allowed-tools:` REMOVED 2026-07-26 — it is a SKILL frontmatter key and is
+# INERT in an agent file (canonical agent allowlist is `tools:`; omitting it
+# inherits all). Any restriction it expressed now lives in `disallowedTools:`,
+# which the harness actually honours. See CHANGELOG [1.63.0].
 # Block reasoning-heavy tools
 disallowedTools:
-  - Write
   - Edit
-  - WebSearch
+  - NotebookEdit
   - Task
-
+  - WebSearch
+  - Write
 # ============================================================================
 # PERMISSION CONFIGURATION
 # ============================================================================

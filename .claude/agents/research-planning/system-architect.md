@@ -9,19 +9,10 @@ context: fork
 # ============================================================================
 # TOOL CONFIGURATION
 # ============================================================================
-allowed-tools:
-  - Read
-  - Write
-  - Edit
-  - Bash
-  - Grep
-  - Glob
-  - WebFetch
-  - WebSearch
-  - TodoWrite
-  - TaskList    # Read-only: view orchestrated task board
-  - TaskGet     # Read-only: get task details for context
-
+# `allowed-tools:` REMOVED 2026-07-26 — it is a SKILL frontmatter key and is
+# INERT in an agent file (canonical agent allowlist is `tools:`; omitting it
+# inherits all). Any restriction it expressed now lives in `disallowedTools:`,
+# which the harness actually honours. See CHANGELOG [1.63.0].
 # Step-1 spec reviewer (01-specification.md:336). The LEAD folds findings into
 # the draft spec (01-specification.md:339), so this agent must not spawn its own
 # subagents — `supports_subagent_creation` below is set false to match.

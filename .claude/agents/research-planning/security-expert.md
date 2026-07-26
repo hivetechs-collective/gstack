@@ -20,16 +20,10 @@ context: fork
 # ============================================================================
 # TOOL CONFIGURATION
 # ============================================================================
-allowed-tools:
-  - Read
-  - WebSearch
-  - WebFetch
-  - Grep
-  - Glob
-  - TodoWrite
-  - TaskList # Read-only: view orchestrated task board for coordination context
-  - TaskGet # Read-only: get task details when part of larger security workflow
-
+# `allowed-tools:` REMOVED 2026-07-26 — it is a SKILL frontmatter key and is
+# INERT in an agent file (canonical agent allowlist is `tools:`; omitting it
+# inherits all). Any restriction it expressed now lives in `disallowedTools:`,
+# which the harness actually honours. See CHANGELOG [1.63.0].
 # DUAL ROLE — do NOT add `Edit` here without reading this. security-expert is
 # both a MANDATORY Step-5 Pass-1 reviewer (04-fix-first-review.md:443) and the
 # assignee that IMPLEMENTS retroactive-security-coverage tasks
