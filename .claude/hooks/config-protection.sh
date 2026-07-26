@@ -25,6 +25,56 @@ fi
 
 BASENAME=$(basename "$FILE_PATH")
 
+# ---------------------------------------------------------------------------
+# Shell startup files — DIRECT CHILDREN OF $HOME ONLY
+# ---------------------------------------------------------------------------
+# A ~/.zshrc write is the one blast radius that escapes every repo-scoped
+# guardrail: damage-control.sh's zero_access/read_only arrays contain no shell
+# rc file, and every other guard here is scoped to the repo.
+#
+# Path scoping is load-bearing, not a nicety. A basename-only match over-blocks
+# legitimate in-repo .zshrc/.profile fixtures across consumer repos, which is
+# exactly why this was DEFERRED rather than shipped on 2026-06-28 — see
+# docs/operations/version-uplift-reports/2026-06-27-2.1.195.md:55-58 for the
+# design this implements.
+#
+# bash 3.2 compatible (mac-mini runs /bin/bash 3.2): no associative arrays, no
+# ${var,,}, no realpath. Blocks with exit 2 + stderr, per the PreToolUse
+# contract — see the 1.60.0 CHANGELOG entry and hook-enforcement-contract.bats.
+case "$BASENAME" in
+    .zshrc|.zshenv|.zprofile|.zlogin|.zlogout|.bashrc|.bash_profile|.bash_login|.bash_logout|.profile|.inputrc)
+        __cp_path="$FILE_PATH"
+        # Expand a leading "~/" so "~/.zshrc" is treated as "$HOME/.zshrc".
+        case "$__cp_path" in
+            "~/"*) __cp_path="$HOME/${__cp_path#\~/}" ;;
+        esac
+        __cp_home="${HOME%/}"
+        __cp_dir=$(dirname "$__cp_path")
+        case "$__cp_dir" in */.) __cp_dir="${__cp_dir%/.}" ;; esac
+        __cp_dir="${__cp_dir%/}"
+
+        # Fail closed on traversal aimed into $HOME (e.g. $HOME/repo/../.zshrc):
+        # dirname would report .../repo/.. and the equality test below would
+        # miss it, so refuse rather than resolve it in pure bash.
+        case "$__cp_path" in
+            *"/../"*|*"/..")
+                case "$__cp_path" in
+                    "$__cp_home"/*)
+                        echo "BLOCKED: refusing to write $BASENAME through a path containing '..' under \$HOME ($FILE_PATH). Shell startup files in \$HOME are protected; pass an unambiguous absolute path if this is a legitimate in-repo file. Override: CLAUDE_DISABLED_HOOKS=pre:edit:config-protection" >&2
+                        exit 2
+                        ;;
+                esac
+                ;;
+        esac
+
+        if [ "$__cp_dir" = "$__cp_home" ]; then
+            echo "BLOCKED: $FILE_PATH is a shell startup file in \$HOME. Editing it changes every future shell on this machine — the one blast radius no repo-scoped guardrail covers. In-repo .zshrc/.profile files are unaffected. If this is deliberate, edit it yourself or set CLAUDE_DISABLED_HOOKS=pre:edit:config-protection" >&2
+            exit 2
+        fi
+        # Not a direct child of $HOME → fall through to the linter/formatter case.
+        ;;
+esac
+
 # Protected linter/formatter config files (ESLint, Prettier, Biome, Ruff, shellcheck, stylelint, markdownlint)
 case "$BASENAME" in
     .eslintrc|.eslintrc.js|.eslintrc.cjs|.eslintrc.json|.eslintrc.yml|.eslintrc.yaml|eslint.config.js|eslint.config.mjs|eslint.config.cjs|eslint.config.ts|eslint.config.mts|.prettierrc|.prettierrc.js|.prettierrc.cjs|.prettierrc.json|.prettierrc.yml|.prettierrc.yaml|prettier.config.js|prettier.config.cjs|prettier.config.mjs|biome.json|biome.jsonc|.ruff.toml|ruff.toml|.shellcheckrc|.stylelintrc|.stylelintrc.json|.stylelintrc.yml|.markdownlint.json|.markdownlint.yaml|.markdownlintrc)

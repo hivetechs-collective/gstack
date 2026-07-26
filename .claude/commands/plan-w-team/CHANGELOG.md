@@ -14,6 +14,80 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.61.0] — 2026-07-26 (d7053cd)
+
+Three queued follow-ups, closed. Theme continues from 1.60.0: **a guard that
+cannot fail is indistinguishable from one that works.** All three items are
+variants of that.
+
+Trigger: these were the surviving actionable output of the ladder audit. An
+autonomous run was attempted first and stalled mid-specification, producing a
+comment-only hook edit that documented protection it did not perform and a
+NUL-corrupted script — so the work was completed in-session instead. That run's
+worktree was discarded; nothing from it was reused.
+
+### Added — shell-rc write guard (was deferred 2026-06-28)
+
+`.claude/hooks/config-protection.sh` now blocks writes to shell startup files
+(`.zshrc`, `.zshenv`, `.zprofile`, `.zlogin`, `.zlogout`, `.bashrc`,
+`.bash_profile`, `.bash_login`, `.bash_logout`, `.profile`, `.inputrc`) that sit
+**directly in `$HOME`**. A `~/.zshrc` write is the one blast radius that escapes
+every repo-scoped guardrail — `damage-control.sh`'s `zero_access`/`read_only`
+arrays contain no shell rc file.
+
+**Path scoping is the whole point, not a refinement.** Basename-only matching
+over-blocks legitimate in-repo `.zshrc`/`.profile` fixtures across ~22 consumer
+repos, which is exactly why this was deferred rather than shipped — the design
+implemented here is the one specified at
+`docs/operations/version-uplift-reports/2026-06-27-2.1.195.md:55-58`. Traversal
+aimed into `$HOME` (`$HOME/r/../.zshrc`) fails closed rather than being resolved
+in pure bash. bash 3.2 compatible; `patterns.yaml` deliberately untouched (dead
+config — `damage-control.sh:11` assigns it and never reads path lists from it).
+
+- `tests/skill/cases/shell-rc-write-guard.bats` (8 cases). The *allow* cases are
+  load-bearing, not filler — they encode the reason for the original deferral.
+
+### Added — non-vacuity guards for the ratchets
+
+`tests/skill/cases/ratchet-non-vacuity.bats` (6 cases). A large share of this
+suite passes when a search finds **nothing**; if the enumeration breaks, the
+search finds nothing for the wrong reason and the ratchet reports PASS.
+
+This is not hypothetical: while writing `hook-enforcement-contract.bats` for
+1.60.0, its resolver silently returned zero files, making two class-level
+ratchets vacuous. Rather than rewrite each ratchet, this guards the **corpora**
+they sweep — the four fable fan-out roots, the nine stage files, the bats
+corpus, the `settings.json` hook registry, and the agent corpus. A final case
+proves the counting helper discriminates, so this file cannot itself become the
+vacuous guard. Thresholds are tripwires for a broken enumeration, not coverage
+targets.
+
+### Added — follow-up ledger tooling
+
+`.claude/scripts/plan-w-team-followups.sh` — `list` / `stats` / `show` / `close`
+over `plan-w-team-recursive-followups.jsonl` (34 open, oldest 2026-06-07).
+Closure **requires a reason** and **appends** a resolution row rather than
+rewriting history, matching the existing writers. Allowlisted in
+`sync-to-project.sh` so it reaches consumer repos.
+
+The Step-0 preflight now surfaces the **age of the oldest open row** and states
+that it is showing 5 of N. The count was always shown; five recent lines out of
+thirty-four read like a short list rather than a two-month backlog.
+
+- `tests/skill/cases/followups-ledger-tool.bats` (7 cases).
+
+### Deliberately NOT done
+
+- **Auto-close by slug match**, which the audit recommended. A follow-up is a
+  deferral recorded *during* run X — precisely the work X did not do. Closing
+  rows because X shipped would erase the backlog rather than drain it, turning a
+  visible debt invisible. The reason-required test pins this decision.
+- **A scheduled worker to drain the queue.** Four `/plan-w-team` worktrees have
+  now stalled on this same work, the most recent parking at `specification` with
+  `strategy: unresolved`. Scheduling autonomous workers against a queue is
+  premature until that stall is understood; the ledger is now drainable by hand,
+  which is the prerequisite either way.
+
 ## [1.60.0] — 2026-07-26 (e58b208)
 
 Hook enforcement contract repaired. Theme: **the guards reported blocking while

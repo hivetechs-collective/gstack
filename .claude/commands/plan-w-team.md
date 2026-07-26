@@ -553,7 +553,13 @@ if [ -f "$FOLLOWUPS_LOG" ] && command -v jq >/dev/null 2>&1; then
   if [ "${OPEN:-0}" -gt 0 ]; then
     echo "🔁 $OPEN open recursive-improvement follow-up(s) from prior retros — consider folding into this run's scope:"
     jq -rs '[.[] | select(.status=="open")] | .[-5:][] | "   • [\(.slug)] \(.text)"' "$FOLLOWUPS_LOG" 2>/dev/null || true
-    echo "   (resolve one by appending a {status:\"done\"} row or editing it; this is advisory, not a gate.)"
+    # Surface AGE and the truncation explicitly. The count above was always
+    # shown, but five recent lines out of thirty-four reads like a short list
+    # rather than a backlog with rows from two months ago.
+    OLDEST=$(jq -rs '[.[] | select(.status=="open")] | map(.ts // .timestamp // "") | map(select(. != "")) | sort | first // ""' "$FOLLOWUPS_LOG" 2>/dev/null || echo "")
+    [ "${OPEN:-0}" -gt 5 ] && echo "   … showing 5 of $OPEN — full list: .claude/scripts/plan-w-team-followups.sh list --all"
+    [ -n "$OLDEST" ] && echo "   oldest open: $OLDEST"
+    echo "   (close one with: .claude/scripts/plan-w-team-followups.sh close <index> \"<reason>\" — advisory, not a gate.)"
   fi
 fi
 ```
