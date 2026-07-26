@@ -47,8 +47,13 @@
     <array>
         <string>/bin/bash</string>
         <string>-lc</string>
-        <!-- worktree GC (merged + idle, orphans preserved) then companion GC -->
-        <string>cd "__REPO_PATH__" &amp;&amp; .claude/scripts/plan-w-team-worktree-gc.sh --execute --json ; .claude/scripts/plan-w-team-companion-gc.sh --execute --json ; .claude/scripts/plan-w-team-orphan-session-reaper.sh --execute --json</string>
+        <!-- worktree GC (merged + idle, orphans preserved), then companion GC,
+             then ONE follow-up drain. The drainer is DEFAULT OFF and exits 0
+             immediately unless enabled, so it is inert here until you opt in
+             (touch .claude/state/pwt-followup-drain-enabled). It rides this
+             timer deliberately rather than getting its own installer — one
+             timer, one plist, one thing to reason about. -->
+        <string>cd "__REPO_PATH__" &amp;&amp; .claude/scripts/plan-w-team-worktree-gc.sh --execute --json ; .claude/scripts/plan-w-team-companion-gc.sh --execute --json ; .claude/scripts/plan-w-team-orphan-session-reaper.sh --execute --json ; .claude/scripts/plan-w-team-followup-drain.sh</string>
     </array>
 
     <key>StartCalendarInterval</key>

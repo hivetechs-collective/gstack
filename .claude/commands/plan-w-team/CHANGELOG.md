@@ -14,6 +14,67 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.62.0] — 2026-07-26 (86499d1)
+
+The scheduled follow-up drainer 1.61.0 declined to build, plus a retraction of
+the reasoning that declined it.
+
+### Fixed — a false claim, already shipped to 22 repos
+
+1.61.0 recorded that four `/plan-w-team` worktrees had stalled on the same work
+and concluded that "scheduling autonomous workers against a queue is premature
+until that stall is understood." **That was wrong.** The interruptions were
+external — a machine reboot and an Anthropic account switch mid-session — with no
+pipeline fault involved. The claim is retracted in place (struck through, not
+deleted, so the correction is visible to anyone who read the original) in both
+the 1.61.0 entry and `.claude/state/pwt-brief-followup-hardening.md`.
+
+This matters because that sentence read as evidence of a reliability problem and
+was already synced to 22 repos. A future session — human or agent — would have
+found it and made decisions on it. Do not cite those worktrees as evidence; they
+are debris, and the worktree GC reclaims them.
+
+### Added — opt-in scheduled ledger drainer
+
+`.claude/scripts/plan-w-team-followup-drain.sh` spawns **one**
+`pwt-goal.sh --worker-only` run against the **oldest** open ledger row.
+
+The surviving design constraint was always the *actor problem*: the friction-log
+timer was removed because a scheduled **writer** with no actor is theatre. A
+`--worker-only` run is an actor, which answers that objection on its own terms —
+and the distinction deliberately does not generalise to digests or notifications.
+
+Refusal is the behaviour under test, since the dangerous failure is spawning when
+it should not:
+
+- **Default OFF.** Enable via `PWT_FOLLOWUP_DRAIN_ENABLE=1` **or** by touching
+  `.claude/state/pwt-followup-drain-enabled` — the file form exists because
+  launchd does not reliably inherit an interactive shell's environment.
+- **One row per invocation**, never a batch. Most rows are LOW severity; a
+  parallel drain would spend a weekly Max budget on the least important work in
+  the repo.
+- **Oldest row first** — the backlog head, so two-month-old rows actually get
+  picked rather than the queue draining from the wrong end.
+- **Capacity chain, all three must return `SPAWN_OK`**: `ram-budget.sh --bg-only`,
+  `disk-budget.sh`, `pwt-fair-share.sh`. An unreadable gate **fails closed** — it
+  is never treated as permission.
+- **Refuses when a bg session is already live** for the repo (no self-competition
+  for the same files).
+- **Never crosses the PWT-DS2 cascade boundary**: refuses outright when
+  `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1`. Additive to that guard, never an
+  exception to it.
+- The generated brief scopes the run to one row and states that **closing the row
+  with a reason is a valid outcome**, so a worker does not invent work to look
+  productive.
+
+Rides the **existing** GC timer (`plan-w-team-worktree-gc.plist.template`) rather
+than shipping a second installer — one timer, one plist. It is inert there until
+opted in. Allowlisted in `sync-to-project.sh`.
+
+- `tests/skill/cases/followup-drain.bats` (10 cases), including one asserting
+  there is still exactly **one** plist template, since a second installer is
+  precisely what this avoided.
+
 ## [1.61.0] — 2026-07-26 (d7053cd)
 
 Three queued follow-ups, closed. Theme continues from 1.60.0: **a guard that
@@ -21,10 +82,12 @@ cannot fail is indistinguishable from one that works.** All three items are
 variants of that.
 
 Trigger: these were the surviving actionable output of the ladder audit. An
-autonomous run was attempted first and stalled mid-specification, producing a
-comment-only hook edit that documented protection it did not perform and a
-NUL-corrupted script — so the work was completed in-session instead. That run's
-worktree was discarded; nothing from it was reused.
+autonomous run was attempted first and was interrupted mid-specification —
+externally, by a machine reboot and an account switch, **not** by a pipeline
+fault (see the retraction under "Deliberately NOT done"). Its partial output was
+unusable (a comment-only hook edit documenting protection it did not perform, and
+a NUL-corrupted script), so the work was completed in-session and that worktree
+was discarded.
 
 ### Added — shell-rc write guard (was deferred 2026-06-28)
 
@@ -82,11 +145,16 @@ thirty-four read like a short list rather than a two-month backlog.
   deferral recorded *during* run X — precisely the work X did not do. Closing
   rows because X shipped would erase the backlog rather than drain it, turning a
   visible debt invisible. The reason-required test pins this decision.
-- **A scheduled worker to drain the queue.** Four `/plan-w-team` worktrees have
-  now stalled on this same work, the most recent parking at `specification` with
-  `strategy: unresolved`. Scheduling autonomous workers against a queue is
-  premature until that stall is understood; the ledger is now drainable by hand,
-  which is the prerequisite either way.
+- **A scheduled worker to drain the queue.** ~~Four `/plan-w-team` worktrees have
+  now stalled on this same work… premature until that stall is understood.~~
+  **CORRECTED 2026-07-26 — this reasoning was wrong and is retracted.** The
+  stalled worktrees were caused by external interruptions during the session (a
+  machine reboot and an Anthropic account switch mid-run), not by any pipeline
+  defect. There was no stall to understand. Do not cite those worktrees as
+  evidence of a `/plan-w-team` reliability problem — they are debris, and the
+  worktree GC reclaims them. The drainer ships in **1.62.0**; the surviving
+  design constraint was always the actor problem, which a `--worker-only` run
+  satisfies.
 
 ## [1.60.0] — 2026-07-26 (e58b208)
 
