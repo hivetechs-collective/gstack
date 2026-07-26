@@ -1,5 +1,7 @@
 # Agent Metadata Specification v1.0.0
 
+> **HISTORICAL SNAPSHOT** — model-tier statements below reflect the date of writing. The live tier→model-ID map is the Model Strategy table in `.claude/commands/plan-w-team.md` (Model Tiering v2, 2026-07-09: Brain = Opus 4.8; Hands routine = Sonnet 5; `difficulty: hard` → `builder-opus`).
+
 **Status**: Definitive Specification **Version**: 1.0.0 **Last Updated**:
 2025-11-25 **Applies To**: All agents in
 `/Users/veronelazio/Developer/Private/claude-pattern/.claude/agents/`

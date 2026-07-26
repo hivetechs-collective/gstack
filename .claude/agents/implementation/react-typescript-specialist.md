@@ -3,7 +3,8 @@ name: react-typescript-specialist
 version: 1.1.0
 description: Use this agent when you need to develop React components with TypeScript, implement modern React patterns with strict type safety, or refactor existing React code to follow TypeScript best practices. Examples:
 color: cyan
-model: claude-opus-4-6
+model: claude-sonnet-5
+effort: high
 sdk_features: [sessions, cost_tracking, tool_restrictions]
 cost_optimization: true
 session_aware: true

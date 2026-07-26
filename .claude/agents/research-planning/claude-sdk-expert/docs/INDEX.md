@@ -1,5 +1,7 @@
 # Claude Agent SDK Documentation Index
 
+> **HISTORICAL SNAPSHOT** — model-tier statements below reflect the date of writing. The live tier→model-ID map is the Model Strategy table in `.claude/commands/plan-w-team.md` (Model Tiering v2, 2026-07-09: Brain = Opus 4.8; Hands routine = Sonnet 5; `difficulty: hard` → `builder-opus`).
+
 **Last Updated**: 2026-04-17 **Total Files**: 30+ documentation files (18 core +
 7 Skills + 2 agent config + 3 updates) **Total Content**: ~6,500 lines of
 comprehensive technical documentation **Documentation Size**: ~330KB

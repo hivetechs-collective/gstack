@@ -4,7 +4,8 @@ version: 1.0.0
 category: implementation
 description: Use this agent when you need to build high-performance backends with Rust, implement async APIs, optimize memory usage, or design concurrent systems. Specializes in Tokio, async/await, WebSocket servers, and zero-cost abstractions. Examples:
 color: orange
-model: claude-opus-4-6
+model: claude-sonnet-5
+effort: high
 sdk_utilization: 70%
 sdk_features:
   context_management:

@@ -14,6 +14,50 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.63.1] — 2026-07-26 (d6856ff)
+
+Two sync-profile defects found while verifying that 1.63.0 actually reached the
+consumers. It had not. Third instance today of the same class: a declaration that
+reads as a guarantee and enforces nothing.
+
+### Fixed — 1.63.0 never reached consumer repos
+
+`sync-all-projects.sh` passes no `--profile`, so every bulk sync runs `minimal`,
+which refreshed ~17 of 160 agents. Seven of the eight Step-5 slot-3 domain
+reviewers named by `04-fix-first-review.md`'s selection table were absent from it,
+so the allowed-tools sweep landed in source while **36 stale agent files survived
+in every consumer** — still declaring a read-only posture nothing enforced.
+
+`api-expert`, `database-expert`, `documentation-expert`, `kubernetes-specialist`,
+`llm-application-specialist`, `style-theme-expert` and `terraform-specialist` are
+now in all three profiles (minimal 17→24, web 25→28, backend 25→29).
+
+### Fixed — my own ratchet was passing on an incomplete list
+
+1.59.1 codified "every agent a synced stage file mandates must appear in every
+profile" and then shipped a required-list naming only the Pass-1 slots and the
+`team/*` agents, omitting the slot-3 domain reviewers. The guard ran and proved
+less than it appeared to — the vacuity trap of `ratchet-non-vacuity.bats`, reached
+through an incomplete list rather than an empty corpus.
+
+### Fixed — 14 profile entries pointed at a directory that does not exist
+
+`web` and `backend` each carried 7 entries under `specialists/`. **There is no
+`.claude/agents/specialists/` directory**; all 14 agents live under
+`research-planning/`. An rsync `--include` of a missing path is a **silent no-op**,
+so any repo synced with those profiles had been receiving nothing for those
+entries, with no error and no warning. All 14 remapped to their real paths.
+
+The required-list check could not catch this because it only inspected its own
+list. `sync-profile-pipeline-agents.bats` gains a case asserting **every** entry in
+**every** profile resolves to a real file.
+
+### Note
+
+Shipping this requires a one-time `--profile full` sync to flush the 36 stale
+agent files already present in each consumer; the corrected `minimal` only keeps
+them current from here forward.
+
 ## [1.63.0] — 2026-07-26 (3302f19)
 
 The `allowed-tools:` sweep. 42 agent files declared tool policy through a key the
