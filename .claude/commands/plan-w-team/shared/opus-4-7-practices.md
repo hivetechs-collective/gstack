@@ -7,8 +7,8 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 > **Opus 5 update (2026-07-25) — READ BEFORE §3, §5 AND §7.** The Brain tier rolled to **Opus 5** in skill 1.58.0. Treat the 4.8 banner above as history: its tiering _rationale_ still holds, but its blanket claim that "every pattern below still applies" does **not**. Anthropic's published Opus 5 prompting guidance inverts three of them:
 >
 > - **§3 delegation is INVERTED — §3 has been rewritten below.** Opus 4.7/4.8 under-delegated and needed an explicit push to fan out. Opus 5 delegates _more_ readily and must be **bounded**, not encouraged.
-> - **§5 effort — body not yet revised; read it with this correction.** `low`/`medium` are unusually strong on Opus 5 and are the _primary_ cost/latency control, not a quality risk to be avoided. §5's under-thinking warning is 4.7-scoped. Start at `xhigh` for coding/agentic and `high` elsewhere, then sweep _downward_ against evals.
-> - **§7 length — body not yet revised; read it with this correction.** An explicit concision instruction is now a legitimate, working instrument: Opus 5 writes longer by default, and `effort` does **not** reliably shorten visible output. §7's advice to use a positive exemplar _instead of_ saying "be concise" is no longer sufficient on its own.
+> - **§5 effort — REVISED 2026-07-26.** Now says: start `xhigh` for coding/agentic and `high` elsewhere, then sweep _downward_ against evals. `low`/`medium` are unusually strong on Opus 5 and are the primary cost/latency control. The old 4.7-scoped under-thinking warning is gone.
+> - **§7 length — REVISED 2026-07-26.** Now says: an explicit length instruction is a legitimate instrument (a positive exemplar is an addition, not a substitute), written deliverables need their own calibration separate from conversational output, and `effort` does **not** reliably shorten visible output.
 >
 > Opus 5 also **self-verifies without being asked**: do not add "double-check your work", "re-verify before responding", or a verify-with-a-subagent step to any stage prompt — on this model they compound with the behavior and buy nothing. This does **not** touch deterministic gates (test suites, `tsc --noEmit`, the ship gate's exit code): those are not model self-verification and stay exactly as they are.
 
@@ -64,18 +64,23 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 - For long runs, wire desktop notifications via the existing `.claude/hooks/desktop-notify.sh` hook — no manual polling.
 - Use `run_in_background: true` for evaluator/builder spawns and rely on completion notifications.
 
-## 5. Effort Levels: Default High, Drop Deliberately
+## 5. Effort Levels: Start High, Then Sweep DOWN (revised for Opus 5)
 
-**Rule**: Default effort to `high` (Opus 4.8 already defaults to high). On **Opus 4.8** (v2.1.154+), `/effort xhigh` IS reachable from the Claude Code CLI for the hardest Brain-tier tasks — use it for one-way-door reviews and gnarly specs. The earlier limitation (xhigh API-only / unreachable on Max, pre-4.8) is lifted. When xhigh is unavailable (older model, non-CLI host), substitute with prompt-level phrasing per §2 ("think very carefully, consider all edge cases"). Drop to `medium`/`low` only for cost/latency-sensitive narrow tasks.
+**Rule**: Start at `xhigh` for coding and agentic work and `high` elsewhere, then **sweep downward against your own evals**. On Opus 5, `low` and `medium` are unusually strong — they are the primary cost and latency control, not a quality risk to be avoided. `/effort xhigh` is reachable from the CLI; `max` exists for genuinely hard, latency-insensitive work and can overthink simpler tasks.
 
-**Why**: 4.7 balances autonomy and intelligence at high effort without token runaway. Low effort on complex work produces shallow output, and on 4.7 the effort calibration is _stricter_ than 4.6 — `low`/`medium` now scope to exactly what was asked, so under-thinking risk on complex tasks is higher than on prior generations.
+**Why**: this reverses the 4.7-era framing that used to sit here. On 4.7 the effort calibration was strict enough that `low`/`medium` scoped to exactly what was asked, so dropping effort carried real under-thinking risk and the safe move was to stay high. Opus 5 raises the floor: lower effort often matches what a prior generation produced at `xhigh`. Treating `high` as an unexamined default now overspends the weekly Max budget for no measured gain — and effort defaults inherited from a previous model are rarely the right setting after a generation rollover.
+
+**Note the one thing effort does NOT do**: it does not reliably shorten _visible_ output on Opus 5. Length is a prompting problem (§7), not an effort dial.
 
 **How to apply**:
 
-- Brain-tier work (scope challenge, spec, review) → `high` by default; **one-way-door reviews and gnarly specs → `/effort xhigh`** (Opus 4.8, reachable from the CLI). Fall back to "think very carefully" prompt phrasing only when xhigh is unavailable (older model / non-CLI host). The evaluator stays at `high` — it is a throughput-sensitive per-iteration loop, so reserve xhigh for the critical security / one-way-door pass. As of skill 1.52.2/1.52.3 this is enforced structurally: `effort: high` frontmatter pins on all team pipeline agents (builder, builder-opus, evaluator, validator, supervisor, silent-failure-hunter) and the two named Hands specialists insulate them from session-level effort bleed in BOTH directions — an xhigh lead cannot silently escalate them, and a low-effort lead cannot silently degrade them (edit the pins in claude-pattern to change this deliberately). Roster-specialist-routed tasks still inherit session effort (documented residual — see manifest pinning item 3).
-- Hands-tier mechanical work (sync scripts, changelog bump, retro metrics) → `medium`.
+- **Coding and agentic Brain-tier work** (execute, review) → start `xhigh`. **Other intelligence-sensitive work** (scope challenge, spec) → start `high`. Then sweep down and keep the lowest level your evals still pass.
+- **Run the sweep at every model rollover.** Opus 5 arrived in skill 1.58.0 and no sweep has been run since — the current pins are Opus-4.8-era values that happen to still be in place. Sweep the cheapest stages first (Step 0 scope challenge, Step 8 retro) where a wrong call is visible and harmless, and record per-stage results so the next rollover starts from evidence rather than habit.
+- The evaluator stays at `high` — a throughput-sensitive per-iteration loop, so it is the wrong place to spend `xhigh`.
+- Structural pins (skill 1.52.2/1.52.3 onward): `effort: high` in frontmatter on the team pipeline agents (builder, builder-opus, evaluator, validator, supervisor, silent-failure-hunter) plus the two named Hands specialists. These insulate them from session-level effort bleed in **both** directions — an `xhigh` lead cannot silently escalate them, and a `low` lead cannot silently degrade them. Change a pin deliberately in claude-pattern; the sweep above is how you decide to. Roster-specialist-routed tasks still inherit session effort (documented residual — manifest pinning item 3).
+- Hands-tier mechanical work (sync scripts, changelog bump, retro metrics) → `medium`, and try `low`.
 - One-off triage, log parsing, trivial grep → `low` or Haiku 4.5.
-- If you observe shallow reasoning at `high`, **raise effort (or add "think harder")** — do not try to prompt around it with more scaffolding.
+- If you observe shallow reasoning, **raise effort one rung** — do not prompt around it with more scaffolding. But check the next bullet first, because raising effort is the wrong lever for the more common failure.
 - **Effort fixes trying-harder failures only** (skipped files, unrun tests, bailed refactors). If the model had full context, clearly tried, and was still _confidently wrong_, raise the **model** (hard lane / Brain tier), not the effort — more effort on the same model buys a more elaborate wrong answer. See the escalation diagnostic in `04-fix-first-review.md` (Anthropic, "knowing more vs. trying harder").
 
 ## 6. Delegate Like an Engineer, Not a Pair
@@ -91,15 +96,20 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 
 ## 7. Response Length & Tone Calibration
 
-**Rule**: 4.7 calibrates response length to judged task complexity, and produces more direct / less validation-forward prose than 4.6. When you need to steer either dimension, use _positive_ examples (show the desired shape) rather than negative instructions (forbid the undesired shape).
+**Rule**: On Opus 5, an **explicit** length instruction is a legitimate and effective instrument. State the target directly; a positive exemplar is a useful _addition_, not a substitute. Two separate dimensions need steering, and the second is the one this repo keeps getting wrong:
 
-**Why**: 4.7's literalism makes negative instructions brittle — it follows "don't do X" as exactly "don't do X" and may still do X-adjacent. A single positive exemplar ("respond like this: ...") calibrates verbosity and tone in one shot. 4.7 prose is also more direct and less warm by default, which will surface in free-form outputs (retros, ship notes, spec narratives) even when you did not change the prompt.
+1. **Conversational output** — what the model says back. Prompting cuts it materially.
+2. **Written deliverables** — files the model writes to disk (specs, retros, changelogs, docs). Opus 5 pads these by default with filler sections, redundant summaries and boilerplate. This dimension needs its own instruction; the conversational one does not cover it.
+
+**Why**: this supersedes the 4.7-era advice that used to sit here ("use a positive exemplar _rather than_ saying 'be concise'"). That was right when literalism made negative instructions brittle. On Opus 5 a direct conciseness instruction works, and withholding one just leaves the default verbosity in place. Critically, **`effort` does not reliably shorten visible output** — reaching for a lower effort level to get shorter prose changes thinking spend without changing length. Length is a prompting problem.
 
 **How to apply**:
 
-- Tool-call prompts (builder, evaluator): already structured — no action. The machine-fenced verdict block in Step 4b is exactly the positive-exemplar pattern 4.7 wants.
-- Free-form prose prompts (`07-retro.md` narrative, `01-specification.md` overview sections, `06-post-ship.md` changelog): if a prior output voice felt too warm or too long, add one short positive exemplar inline rather than adding "be concise" or "avoid enthusiasm".
-- If a stage prompt currently says "Provide a detailed report with sections X/Y/Z", that already works. Do not strip it — structured scaffolding is still helpful; only _forced verbosity_ ("write at least 500 words") is now a liability.
+- Tool-call prompts (builder, evaluator): already structured — no action. The machine-fenced verdict block in Step 4b is the right shape.
+- Free-form prose prompts: state the target plainly, and add a short positive exemplar alongside it if the shape matters. Both, not either.
+- **Long stage prompts need a tail reminder.** A conciseness instruction near the top of a long prompt gets diluted; repeat it in one line near the END.
+- **Calibrate written deliverables explicitly** — see `06-post-ship.md` §7a for the worked pattern (match the replaced section's length, no unrequested summary/overview/further-reading sections). Apply the same to `01-specification.md` overview sections and the `07-retro.md` narrative.
+- Structured scaffolding still helps: "Provide a report with sections X/Y/Z" is fine and should not be stripped. Only _forced_ verbosity ("write at least 500 words") is a liability.
 
 ## 8. Tokenization Awareness (~1x–1.35x tokens on 4.7)
 

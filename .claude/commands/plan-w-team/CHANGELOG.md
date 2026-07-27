@@ -14,6 +14,72 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.64.0] — 2026-07-26 (458fa3f)
+
+Four deferred items closed, including a design flaw the operator caught: the
+drainer's 03:00 timer is close to useless on a laptop.
+
+### Fixed — the drainer was scheduled for a machine that is asleep
+
+`StartCalendarInterval` at 03:00 assumes an always-on host. On a laptop that is
+shut or asleep at that hour the drainer would almost never fire — a mechanism
+that reads as scheduled and effectively is not, which is the same class of defect
+as 1.60.0's hooks and 1.63.1's dead sync paths.
+
+The drainer is now also invoked from **`SessionStart`** — the moment the machine
+is demonstrably awake and in use — following the precedent already in the repo
+(`session-start.sh` is how `plan-w-team-gc-timer-install.sh` gets run).
+Backgrounded, fail-open, kill switch `PWT_FOLLOWUP_DRAIN_DISABLE=1`. The launchd
+entry stays as post-wake catch-up for always-on machines; nothing depends on it.
+
+Two trigger paths need a rate limit, so the drainer gained a **cooldown**:
+`PWT_FOLLOWUP_DRAIN_COOLDOWN_H` (default 20h — roughly daily without pinning to a
+wall-clock hour a laptop may sleep through). The stamp is written **before** the
+spawn, so a crashed spawn cannot free the cooldown and retry in a tight loop; a
+test asserts that ordering.
+
+### Fixed — the self-competition gate could never open
+
+It counted **any** background session for the repo. A laptop accumulates bg
+sessions from ordinary work, so the drainer refused indefinitely — six live
+sessions were already blocking it on the day it shipped. It now counts only live
+`/plan-w-team` **workers**: a background session named by a goal-state whose
+`terminal_state` is still null. That is what actually competes for the same files.
+
+### Changed — `opus-4-7-practices.md` §5 and §7 rewritten (were banner-corrected only)
+
+1.60.0 flagged both as stale with a banner but left the bodies intact. Now:
+
+- **§5 effort** — start `xhigh` for coding/agentic and `high` elsewhere, then sweep
+  **downward** against evals. `low`/`medium` are the primary cost/latency control
+  on Opus 5, not a quality risk. The 4.7-scoped under-thinking warning is gone.
+  Notes explicitly that **no sweep has been run since the Opus 5 rollover** in
+  1.58.0, so current pins are inherited 4.8-era values.
+- **§7 length** — an explicit length instruction is a legitimate instrument (a
+  positive exemplar is an *addition*, not a substitute — reversing the 4.7 advice).
+  Separates conversational output from **written deliverables**, which need their
+  own calibration. States that `effort` does **not** reliably shorten visible
+  output, so length is a prompting problem. Adds the tail-reminder pattern for
+  long prompts.
+
+The banner now reads REVISED rather than claiming the bodies are unrevised.
+
+### Added — length calibration in `06-post-ship.md` §7a
+
+The stage that writes to disk most had no length guidance in 329 lines. Adds a
+REQUIRED budget per classification: **mechanical** touches only the stale token
+(no reflowing, no explanatory notes); **substantive rewrite** stays within ~±20%
+of the section it replaces; **new section** gets one paragraph plus at most one
+example. Plus an explicit never-add list — no unrequested summary/overview,
+"further reading", table of contents, or closing restatement — and the reader test
+("would someone who knows this codebase skip this sentence?").
+
+### Added
+
+- `tests/skill/cases/followup-drain.bats` grows to 15 cases, covering the
+  cooldown in both directions, the stamp-before-spawn ordering, the narrowed
+  worker predicate, and the SessionStart trigger wiring.
+
 ## [1.63.1] — 2026-07-26 (d6856ff)
 
 Two sync-profile defects found while verifying that 1.63.0 actually reached the

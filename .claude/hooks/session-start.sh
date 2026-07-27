@@ -599,6 +599,25 @@ if [ -x "$GC_TIMER_INSTALL" ] && [ "${PWT_GC_TIMER_DISABLE:-0}" != "1" ]; then
 fi
 
 # =================================================================
+# /plan-w-team: opportunistic follow-up drain (laptop-aware trigger)
+# A 03:00 launchd StartCalendarInterval is close to useless on a LAPTOP: the
+# machine is usually asleep or shut at that hour, so the timer alone would
+# rarely fire. The drainer is therefore ALSO invoked here — the moment the
+# machine is demonstrably awake and in use — with its own cooldown
+# (PWT_FOLLOWUP_DRAIN_COOLDOWN_H, default 20h) so opening Claude repeatedly
+# does not spawn repeatedly. The launchd entry is kept as a second chance for
+# always-on machines and post-wake catch-up; neither path is required.
+# Still DEFAULT OFF: it no-ops unless PWT_FOLLOWUP_DRAIN_ENABLE=1 or
+# .claude/state/pwt-followup-drain-enabled exists. Backgrounded and fail-open,
+# so it can never slow or break session start. Kill switch:
+# PWT_FOLLOWUP_DRAIN_DISABLE=1.
+# =================================================================
+FOLLOWUP_DRAIN="$PROJECT_ROOT/.claude/scripts/plan-w-team-followup-drain.sh"
+if [ -x "$FOLLOWUP_DRAIN" ] && [ "${PWT_FOLLOWUP_DRAIN_DISABLE:-0}" != "1" ]; then
+    nohup "$FOLLOWUP_DRAIN" >/dev/null 2>&1 &
+fi
+
+# =================================================================
 # /plan-w-team: friction-log triage-due advisory (T4 right-sizing)
 # The friction log (.claude/state/plan-w-team-friction-log.jsonl) had a
 # writer, 3 schema generations across its live rows, and ZERO programmatic

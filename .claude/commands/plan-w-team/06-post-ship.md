@@ -105,6 +105,33 @@ DOC_DECISION=$(route_orchestrator post-ship-docs-target "$SLUG" \
 >
 > **Substantive:** v1.5.0 introduces a new `--profile` flag that changes how the CLI resolves config. The README's "How It Works" section explains the old (single-profile) behavior. The lead must decide: does the README still target single-profile users (keep), get rewritten as multi-profile-first (substantive change), or grow a sibling section (new section)? Ask the user.
 
+### Length calibration (Opus 5 — REQUIRED, not advisory)
+
+Opus 5 pads written deliverables by default: unrequested summary sections,
+restatements of what the section above already said, "further reading" blocks,
+and preambles explaining what is about to be explained. This stage is the one
+that writes to disk most, so it is where that shows up worst.
+
+**`effort` will not fix this.** Lowering effort changes thinking spend, not
+visible output length. Length is a prompting problem — so the budget is stated
+here, per classification:
+
+| Classification          | Length budget                                                                                                                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Mechanical**          | Change ONLY the stale token. Do not reflow the paragraph, do not "improve" adjacent prose, do not add a note explaining the change. A version bump touches the version string. |
+| **Substantive rewrite** | Match the replaced section's length within roughly ±20%. If the rewrite is materially longer, the extra text needs a reason you can state — otherwise cut it.                  |
+| **New section**         | One paragraph plus at most one example, unless the spec's AC explicitly asks for more.                                                                                         |
+
+**Never add, unless explicitly requested:** a summary or overview section, a
+"further reading" / "see also" block, a table of contents, a changelog entry
+inside the doc itself (the CHANGELOG is a separate artifact), or a closing
+paragraph restating the opening one.
+
+**The test to apply before writing:** would a reader who already knows this
+codebase skip this sentence? If yes, do not write it. Documentation length is
+not evidence of documentation quality, and a padded doc costs every future
+reader the time it saved you.
+
 ## 7a-bis. Net-New Surface Scan (A1/A6/C2 — complements §7a, does NOT replace it)
 
 The §7a audit above greps **existing** docs for a changed file's basename. It is

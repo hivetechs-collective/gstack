@@ -106,13 +106,46 @@ for gate in "ram-budget.sh --bg-only" "disk-budget.sh" "pwt-fair-share.sh"; do
     esac
 done
 
-# ── no self-competition ─────────────────────────────────────────────────────
-# A live worker for this repo means the backlog is already being worked; a second
-# one would race it for the same files.
-if [ -x "$SCRIPTS/claude-agents-extended.sh" ]; then
-    LIVE=$("$SCRIPTS/claude-agents-extended.sh" --json --bg-only 2>/dev/null \
-           | grep -c '"kind"[[:space:]]*:[[:space:]]*"background"' || echo 0)
-    [ "${LIVE:-0}" -gt 0 ] && _skip "$LIVE background session(s) already live for this repo"
+# ── no self-competition (live /plan-w-team WORKERS only) ────────────────────
+# Earlier this counted ANY background session for the repo, which was far too
+# coarse: a laptop accumulates bg sessions from ordinary work, so the drainer
+# would refuse indefinitely and never run at all. What actually competes for the
+# same files is a live /plan-w-team worker — a bg session named by a goal-state
+# whose terminal_state is still null. Count only those.
+LIVE_WORKERS=0
+if [ -x "$SCRIPTS/claude-agents-extended.sh" ] && command -v jq >/dev/null 2>&1; then
+    LIVE_SIDS=$("$SCRIPTS/claude-agents-extended.sh" --json --bg-only 2>/dev/null \
+        | jq -r '(if type=="array" then . else (.sessions // .agents // []) end)[]
+                 | select(.kind=="background") | (.sessionId // .id // "")' 2>/dev/null \
+        | cut -c1-8 | sort -u)
+    for sid in $LIVE_SIDS; do
+        [ -n "$sid" ] || continue
+        # Any unfinished goal-state naming this session => a live PWT worker.
+        if grep -l "\"worker_sid\"[[:space:]]*:[[:space:]]*\"$sid" \
+               "$REPO_ROOT"/.claude/state/plan-w-team-goal-*.json 2>/dev/null \
+           | while read -r gf; do
+                 jq -e '.terminal_state == null' "$gf" >/dev/null 2>&1 && echo hit
+             done | grep -q hit; then
+            LIVE_WORKERS=$((LIVE_WORKERS+1))
+        fi
+    done
+fi
+[ "$LIVE_WORKERS" -gt 0 ] && _skip "$LIVE_WORKERS live /plan-w-team worker(s) already running for this repo"
+
+# ── cooldown ────────────────────────────────────────────────────────────────
+# The drainer is invoked from BOTH a launchd timer and SessionStart (see below),
+# so it needs its own rate limit or opening Claude repeatedly would spawn
+# repeatedly. One run per PWT_FOLLOWUP_DRAIN_COOLDOWN_H hours (default 20, i.e.
+# roughly daily without pinning to a wall-clock hour a laptop may sleep through).
+STAMP="$REPO_ROOT/.claude/state/pwt-followup-drain-last-run"
+COOLDOWN_H="${PWT_FOLLOWUP_DRAIN_COOLDOWN_H:-20}"
+if [ -f "$STAMP" ]; then
+    now=$(date +%s)
+    then_=$(cat "$STAMP" 2>/dev/null || echo 0)
+    case "$then_" in ''|*[!0-9]*) then_=0 ;; esac
+    age_h=$(( (now - then_) / 3600 ))
+    [ "$age_h" -lt "$COOLDOWN_H" ] \
+        && _skip "cooldown — last run ${age_h}h ago (< ${COOLDOWN_H}h)"
 fi
 
 # ── spawn ───────────────────────────────────────────────────────────────────
@@ -143,6 +176,8 @@ if [ "$MODE" = "--dry-run" ]; then
 fi
 
 _say "spawning worker for row $NEXT_IDX [$NEXT_SLUG]"
+date +%s > "$STAMP" 2>/dev/null || true   # stamp BEFORE spawning: a crashed
+                                          # spawn must not free the cooldown
 cd "$REPO_ROOT" || _skip "cannot cd to repo root"
 "$SCRIPTS/pwt-goal.sh" --worker-only --brief "$BRIEF" \
     "resolve recursive-followup row $NEXT_IDX ($NEXT_SLUG): ${NEXT_TEXT:0:200}" \
