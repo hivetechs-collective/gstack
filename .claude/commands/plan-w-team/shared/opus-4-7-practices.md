@@ -60,7 +60,7 @@ Condensed lessons from Boris Cherny's "Best Practices for Using Claude Opus 4.7 
 
 **How to apply**:
 
-- `/plan-w-team` sets `mode: "auto"` for builders by default (already present).
+- `/plan-w-team` builders run uninterrupted via the session `defaultMode: bypassPermissions`. The Agent-tool `mode:` parameter that previously expressed this is **deprecated and ignored** as of CLI 2.1.212 — do not pass it.
 - For long runs, wire desktop notifications via the existing `.claude/hooks/desktop-notify.sh` hook — no manual polling.
 - Use `run_in_background: true` for evaluator/builder spawns and rely on completion notifications.
 

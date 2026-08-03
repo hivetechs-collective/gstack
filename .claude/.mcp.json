@@ -3,7 +3,10 @@
   "mcpServers": {
     "memory": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ],
       "env": {
         "MEMORY_FILE_PATH": "${HOME}/.claude/memory/knowledge-graph.json"
       },
@@ -14,23 +17,34 @@
       "args": [
         "-y",
         "@modelcontextprotocol/server-filesystem",
-        "/Users/veronelazio/Developer/Private"
+        "${HOME}/Developer/Private"
       ],
-      "description": "Secure file operations scoped to Developer/Private directory"
+      "description": "Secure file operations scoped to ~/Developer/Private. Adjust this path if your projects live elsewhere; only this server is affected."
     },
     "sequential-thinking": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ],
       "description": "Dynamic problem-solving through structured thought sequences"
     },
     "git": {
       "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-git", "--repository", "."],
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-git",
+        "--repository",
+        "."
+      ],
       "description": "Git repository operations with structured output"
     },
     "ref": {
       "command": "npx",
-      "args": ["-y", "ref-tools-mcp@latest"],
+      "args": [
+        "-y",
+        "ref-tools-mcp@latest"
+      ],
       "env": {
         "REF_API_KEY": "${REF_API_KEY}"
       },
@@ -39,16 +53,6 @@
         "Requires REF_API_KEY environment variable in .env file",
         "Get API key from https://ref.tools/",
         "Copy .env.example to .env and add your key"
-      ]
-    },
-    "notion": {
-      "url": "https://mcp.notion.com/mcp",
-      "description": "Official Notion remote MCP server — CleanRev Ideas workspace read/write. OAuth via /mcp.",
-      "notes": [
-        "Authenticate with /mcp then follow browser OAuth flow",
-        "No API key required — user-based OAuth only",
-        "Used for CleanRev Ideas intake from Alex and Beth",
-        "Build spec: .claude/state/cleanrev-notion-design.md"
       ]
     }
   },

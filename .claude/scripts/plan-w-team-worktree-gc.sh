@@ -203,6 +203,25 @@ fi
 # owner. classify_one's guard converts every SAFE-PRUNE-* candidate to UNSAFE-KEEP
 # while this is set. The two test seams (TEST_LIVE_CWDS / TEST_MODE) keep it 0 so
 # the existing SAFE-PRUNE tests still fire — only a REAL failed probe sets it.
+# ─── python3 availability (FAIL-CLOSED — 2026-07-30 review finding) ─────────
+# EVERY structural guard in this script is implemented in python3: lock
+# detection (is_worktree_locked / worktree_lock_reason), the dirty-ignore filter
+# (__pwt_dirty_ignore_filter), the live-cwd extraction, and the JSON serializer.
+# Each of those helpers returns non-zero / empty when python3 cannot run, and
+# non-zero from `is_worktree_locked` means "NOT locked" — so a missing or broken
+# python3 silently disarmed the lock veto and the dirty veto at once.
+#
+# Measured 2026-07-30 with a `python3` stub exiting 127: a MERGED worktree that
+# was git-locked classified SAFE-PRUNE-MERGED and `--execute` DELETED it
+# (`removed: 1`). That is the same silently-inert-guard failure this script's
+# four vetoes exist to prevent, reachable by an environment gap rather than a
+# race. So python3 is now a hard precondition: without it the classifier cannot
+# be trusted at all, and nothing is reaped.
+PY_OK=1
+if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'pass' >/dev/null 2>&1; then
+    PY_OK=0
+fi
+
 LIVE_CWDS=""
 LIVE_QUERY_FAILED=0
 if [ "${PWT_WORKTREE_GC_TEST_QUERY_FAILED:-0}" = "1" ]; then
@@ -370,6 +389,70 @@ sys.exit(0 if hit else 1)
     return $?
 }
 
+# ─── lock reason + PID liveness (VETO 3) ───────────────────────────────────
+# `git worktree list --porcelain` emits the lock reason on the `locked` line as
+# `locked <reason>` (a bare `locked` means "locked with no reason"). pwt-goal.sh
+# and Claude Code both write a reason carrying the owning PID, e.g.
+#   locked claude session <slug> (pid 74860 start Thu Jul 30 11:27:02 2026)
+# That PID is an INDEPENDENT liveness signal, and a strictly earlier one than
+# `claude agents --json`: the lock is written by `git worktree add` at spawn,
+# whereas the bg session becomes observable only once it registers (measured
+# 2026-07-30: lock at 11:27:02 vs goal-state started_at 12:10:22 — a ~43 min
+# window in which the path-matching probe returns nothing).
+worktree_lock_reason() {
+    local wt_path="$1"
+    [ -z "$WORKTREE_LIST_PORCELAIN" ] && return 0
+    local real_wt
+    real_wt="$(realpath "$wt_path" 2>/dev/null || echo "$wt_path")"
+    printf '%s\n' "$WORKTREE_LIST_PORCELAIN" | LOCK_TARGET="$real_wt" python3 -c '
+import sys, os
+target = os.environ.get("LOCK_TARGET","")
+try: target = os.path.realpath(target)
+except Exception: pass
+cur=None; reason=None; found=None
+def flush():
+    global found
+    if cur is not None and reason is not None:
+        try: rp=os.path.realpath(cur)
+        except Exception: rp=cur
+        if rp==target: found=reason
+for line in sys.stdin:
+    line=line.rstrip("\n")
+    if line.startswith("worktree "):
+        flush(); cur=line[len("worktree "):]; reason=None
+    elif line=="locked":
+        reason=""
+    elif line.startswith("locked "):
+        reason=line[len("locked "):]
+    elif line=="":
+        flush(); cur=None; reason=None
+flush()
+if found is not None: sys.stdout.write(found)
+' 2>/dev/null
+}
+
+# Extract the owning PID from a lock reason, if it carries one.
+lock_reason_pid() {
+    printf '%s' "${1:-}" | sed -n 's/.*[(, ]pid[= ]\{1,\}\([0-9]\{1,\}\).*/\1/p' | head -1
+}
+
+# ─── worktree age (VETO 4 — newborn grace window) ──────────────────────────
+# A freshly-created worktree is the most dangerous thing to reap: its seed branch
+# is already pushed (⇒ origin-reachable ⇒ prunable), it has no commits of its own
+# yet, and its owning session has not registered with the liveness probe. The
+# `.git` FILE inside a linked worktree is written exactly once, by
+# `git worktree add`, so its mtime is a faithful birth timestamp.
+# PWT_WORKTREE_MIN_AGE_MINUTES=0 disables the grace window (used by the test
+# suite, whose fixtures are seconds old by construction).
+worktree_age_minutes() {
+    local wt_path="$1" born now
+    born="$(stat -f %m "$wt_path/.git" 2>/dev/null || stat -c %Y "$wt_path/.git" 2>/dev/null || echo "")"
+    [ -z "$born" ] && born="$(stat -f %m "$wt_path" 2>/dev/null || stat -c %Y "$wt_path" 2>/dev/null || echo "")"
+    [ -z "$born" ] && { echo ""; return 0; }   # unknowable → caller fails closed
+    now="$(date +%s)"
+    echo $(( (now - born) / 60 ))
+}
+
 # ─── safety invariant 1: real-path containment ────────────────────────────
 real_worktrees_dir="$(realpath "$WORKTREES_DIR" 2>/dev/null || echo "$WORKTREES_DIR")"
 
@@ -496,6 +579,14 @@ origin_reachable() {
 # runs in python).
 PWT_DIRTY_IGNORE_DEFAULT=".claude/:tests/skill/:docs/operations/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist"
 
+# BACKUP-only ignore set (preserve_then_reap). Deliberately NARROWER than the
+# classify set: it drops `.claude/`, `tests/skill/` and `docs/operations/` so an
+# untracked authored file under those prefixes is still copied into the backup
+# before a reap, and keeps only regenerable build trees plus machine-written
+# runtime state (`.claude/state/`). See the rationale block in preserve_then_reap.
+# Override with PWT_WORKTREE_GC_PRESERVE_IGNORE (empty = preserve everything).
+PWT_PRESERVE_IGNORE_DEFAULT=".claude/state/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist"
+
 # Shared porcelain dirty-filter (python source). Contract at BOTH call sites:
 #   stdin:  `git status --porcelain` output
 #   env:    IGNORE_PREFIXES = colon-separated ignore tokens (as above)
@@ -543,11 +634,35 @@ classify_one() {
     CLASS=""; BRANCH=""; REASON=""; LAST_COMMIT_AGE_DAYS=""; UNCOMMITTED=0
     MERGED=0; OPEN_PR=0; IN_USE=0; ACTIVE_RUN=0; OUTSIDE=0; MERGED_BY=""; ORIGIN_GONE=0
     LOCKED=0; STALE_LOCK=0; IN_USE_SOURCE=""; ORIGIN_REACHABLE=0; ORPHAN_DIR=0
+    UNCOMMITTED_TRACKED=0; LOCK_REASON=""; LOCK_PID=""; LOCK_PID_ALIVE=0
+    LOCK_UNVERIFIABLE=0; AGE_MINUTES=""; NEWBORN=0
 
     if ! is_under_worktrees_dir "$wt_path"; then
         CLASS="REFUSED-OUTSIDE-CLAUDE-WORKTREES"
         REASON="path is outside .claude/worktrees/ — invariant 1 refusal"
         OUTSIDE=1
+        return 0
+    fi
+
+    # ══ VETO 0 — python3 unavailable ⇒ NOTHING is reapable ═══════════════════
+    # Placed ahead of EVERY other branch (including the orphan-dir check below)
+    # because it invalidates the EVIDENCE they all rest on. With python3 broken,
+    # `is_worktree_locked` reports "not locked" and the dirty filter reports
+    # "clean", so vetoes 2 and 3 read as satisfied when they were never
+    # evaluated — and `is_registered_worktree` reports "not registered", so
+    # every live worktree looks like a git-unregistered orphan.
+    #
+    # That orphan arm is why this gate sits here rather than just above VETO 1,
+    # where it was first written. ORPHAN-ASK is normally a safe keep, but it is
+    # reapable under `--orphans-ok` — so `--execute --orphans-ok` with a broken
+    # interpreter classified all 8 live lanes in this repo `dry-remove`,
+    # including the worktree authoring this fix. VETO 0 covered `classify_one`'s
+    # veto chain but not the branch that returned before reaching it: the same
+    # data-loss class, one arm over. Only `is_under_worktrees_dir` (pure shell,
+    # realpath) may be trusted ahead of this gate.
+    if [ "${PY_OK:-1}" != "1" ]; then
+        CLASS="UNSAFE-KEEP"
+        REASON="python3 unavailable — lock/dirty/liveness/registration guards cannot be evaluated; fail-closed"
         return 0
     fi
 
@@ -588,6 +703,31 @@ classify_one() {
     else
         real_dirty="$(printf '%s\n' "$porcelain" | __pwt_dirty_ignore_filter "$ignore_prefixes")"
         if [ -n "$real_dirty" ]; then UNCOMMITTED=1; else UNCOMMITTED=0; fi
+    fi
+
+    # VETO 2 — TRACKED-file modification is an ABSOLUTE veto, in ANY path,
+    # ignore-set prefixes included. This is the gap that made the 2026-07-29
+    # incident lossy: /plan-w-team tooling lanes do their work under `.claude/`,
+    # `tests/skill/` and `docs/operations/`, which the ignore set (correctly, for
+    # its own purpose) filters out — so UNCOMMITTED was 0 while five hand-edited
+    # hook files sat in the tree, and `preserve_then_reap` skipped the backup for
+    # exactly the same reason. Measured on the live
+    # `pwt-please-use-plan-w-team-…` lane 2026-07-30.
+    #
+    # Scoped to TRACKED changes on purpose. Making *all* dirt an absolute veto
+    # would revert the 2026-06-08 leak fix — hooks rewrite `.claude/state/*` into
+    # every worktree, so "any dirt pins forever" is what fed the 2026-05-29
+    # 67-worktree / 64 GB ENOSPC pileup. `git status --porcelain` gives us the
+    # exact discriminator: `??` is untracked (machine churn — stays ignorable),
+    # `!!` is ignored, and every other XY code means a tracked, committed file was
+    # deliberately edited/staged/deleted/renamed. That is authored work in every
+    # case, and no ignore prefix may override it.
+    UNCOMMITTED_TRACKED=0
+    if [ -n "$porcelain" ]; then
+        local tracked_lines
+        tracked_lines="$(printf '%s\n' "$porcelain" \
+            | grep -v '^??' | grep -v '^!!' | grep -v '^[[:space:]]*$' || true)"
+        [ -n "$tracked_lines" ] && UNCOMMITTED_TRACKED=1
     fi
 
     # Last commit age — used for SAFE-PRUNE-IDLE and stale-lock detection.
@@ -653,10 +793,20 @@ classify_one() {
     #   PWT_WORKTREE_GC_TRUST_LOCKS=1  → restore legacy any-lock=in-use.
     if [ "${PWT_WORKTREE_GC_IGNORE_LOCKS:-0}" != "1" ] && is_worktree_locked "$wt_path"; then
         LOCKED=1
+        LOCK_REASON="$(worktree_lock_reason "$wt_path")"
+        LOCK_PID="$(lock_reason_pid "$LOCK_REASON")"
+        if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
+            # VETO 3 (proof arm) — the lock names a PID and that PID is ALIVE.
+            # This is positive proof of an owning process, independent of the
+            # `claude agents --json` path match, and available from the instant
+            # `git worktree add` runs. It closes the newborn race directly.
+            LOCK_PID_ALIVE=1
+            IN_USE=1; IN_USE_SOURCE="lock-pid-alive"
+        fi
         if [ "${PWT_WORKTREE_GC_TRUST_LOCKS:-0}" = "1" ]; then
             IN_USE=1; [ -z "$IN_USE_SOURCE" ] && IN_USE_SOURCE="lock-trusted"
         elif [ "$IN_USE" = "1" ]; then
-            : # a live session already corroborates the lock
+            : # a live session (or a live lock PID) already corroborates the lock
         else
             local lock_stale_hours recent_commit age_hours
             # E1 (2026-05-29 ENOSPC incident): a lock older than this AND
@@ -672,8 +822,26 @@ classify_one() {
             fi
             if [ "$recent_commit" = "1" ]; then
                 IN_USE=1; IN_USE_SOURCE="lock-recent"  # fresh lock, agent may be live but unseen
+            elif [ -n "$LOCK_PID" ]; then
+                # Lock names a PID and that PID is DEAD (the alive branch above
+                # already returned) — the owner is PROVABLY gone, so the lock has
+                # outlived it and must not pin the worktree. This is the arm that
+                # preserves the E1 / 2026-05-29 ENOSPC fix: every lock written by
+                # pwt-goal.sh or Claude Code carries a PID, so the automated
+                # majority stays reclaimable once its process exits.
+                STALE_LOCK=1
             else
-                STALE_LOCK=1                            # lock outlived its owner — ignore it
+                # VETO 3 (fail-closed arm) — a lock with NO parseable PID cannot
+                # be proven abandoned. Commit recency is only a proxy, and it is
+                # the wrong proxy: a hand-written `git worktree lock` reason, or a
+                # bare lock with no reason at all, was previously reported as
+                # "stale lock ignored" and removed anyway — so a human explicitly
+                # marking a tree do-not-touch got no protection whatsoever
+                # (2026-07-29 finding). Absence of proof of death is not proof of
+                # absence of an owner: keep it, and let the operator opt out via
+                # PWT_WORKTREE_GC_IGNORE_LOCKS=1.
+                LOCK_UNVERIFIABLE=1
+                IN_USE_SOURCE="lock-unverifiable"
             fi
         fi
     fi
@@ -693,17 +861,71 @@ classify_one() {
     #      carrying a stale row is exactly the post-merge garbage this GC sweeps.
     #   3. ACTIVE_RUN keeps an UNMERGED worktree (a genuinely in-flight run).
     #   4. An unmerged branch with an open PR is a keep (work in review).
+    # ══ VETO 1 — LIVENESS WINS UNCONDITIONALLY ═══════════════════════════════
+    # First and absolute, ahead of MERGED / PUSHED / IDLE alike. The 2026-07-29
+    # incident showed the failure is not this ordering but the *derivation* of
+    # IN_USE from one fallible path-matching probe; VETO 3's lock-PID arm now
+    # feeds this same gate from an independent source, so a single blind probe
+    # can no longer authorize a reap.
     if [ "$IN_USE" = "1" ]; then
         CLASS="UNSAFE-KEEP"
         case "$IN_USE_SOURCE" in
+            lock-pid-alive) REASON="locked by LIVE pid $LOCK_PID — owning process alive (independent of session probe)" ;;
             lock-recent)  REASON="locked, recent activity (<${PWT_STALE_LOCK_HOURS:-${PWT_WORKTREE_LOCK_STALE_HOURS:-6}}h) — possible live agent" ;;
             lock-trusted) REASON="locked worktree (PWT_WORKTREE_GC_TRUST_LOCKS=1)" ;;
             *)            REASON="in-use by live claude session" ;;
         esac
         return 0
     fi
+
+    # ══ VETO 2 — UNCOMMITTED IS AN ABSOLUTE VETO ═════════════════════════════
+    # Tracked-file modifications first, because they are NOT subject to the
+    # dirty-ignore set. This is the arm that saves a /plan-w-team tooling lane
+    # whose entire diff lives under `.claude/` — the shape of the measured
+    # incident, where UNCOMMITTED read 0 with five hand-edited hook files present.
+    if [ "$UNCOMMITTED_TRACKED" = "1" ]; then
+        CLASS="UNSAFE-KEEP"
+        REASON="uncommitted tracked-file changes (absolute veto — ignore-set does not apply)"
+        return 0
+    fi
     if [ "$UNCOMMITTED" = "1" ]; then
         CLASS="UNSAFE-KEEP"; REASON="uncommitted changes"; return 0
+    fi
+
+    # ══ VETO 3 — ANY LOCK WE CANNOT PROVE ABANDONED IS A VETO ════════════════
+    # A lock with a live PID already returned via VETO 1. A lock with a dead PID
+    # is provably abandoned (STALE_LOCK) and stays reclaimable so the 2026-05-29
+    # ENOSPC fix is not reverted. What is left is a lock we cannot adjudicate —
+    # no parseable PID, e.g. a hand-written `git worktree lock` reason or a bare
+    # lock. Previously reported "stale lock ignored" and removed anyway, which is
+    # why a human marking a tree do-not-touch got no protection at all. Keep it.
+    if [ "$LOCK_UNVERIFIABLE" = "1" ]; then
+        CLASS="UNSAFE-KEEP"
+        REASON="locked, owner not verifiable (no pid in lock reason) — fail-closed; override with PWT_WORKTREE_GC_IGNORE_LOCKS=1"
+        return 0
+    fi
+
+    # ══ VETO 4 — NEWBORN-WORKTREE GRACE WINDOW ═══════════════════════════════
+    # The window between `git worktree add` (+ seed-branch push, which makes HEAD
+    # origin-reachable and therefore prunable) and the owning bg session becoming
+    # visible to the liveness probe. Nothing authored exists to protect yet, and
+    # every other signal reads "safe" — so age is the only guard left. Fails
+    # CLOSED when the birth time is unreadable.
+    local min_age="${PWT_WORKTREE_MIN_AGE_MINUTES:-30}"
+    if [ "$min_age" -gt 0 ] 2>/dev/null; then
+        AGE_MINUTES="$(worktree_age_minutes "$wt_path")"
+        if [ -z "$AGE_MINUTES" ]; then
+            NEWBORN=1
+            CLASS="UNSAFE-KEEP"
+            REASON="worktree age unreadable — fail-closed inside newborn grace window (${min_age}m)"
+            return 0
+        fi
+        if [ "$AGE_MINUTES" -lt "$min_age" ] 2>/dev/null; then
+            NEWBORN=1
+            CLASS="UNSAFE-KEEP"
+            REASON="newborn worktree ${AGE_MINUTES}m old (< ${min_age}m grace) — owning session may not have registered yet"
+            return 0
+        fi
     fi
 
     # ── FAIL-CLOSED liveness guard (directive 2026-06-07) ──────────────────────
@@ -801,9 +1023,20 @@ preserve_then_reap() {
     real_wt="$(realpath "$wt_path" 2>/dev/null || echo "$wt_path")"
     [ -n "$wt_top" ] && wt_top="$(realpath "$wt_top" 2>/dev/null || echo "$wt_top")"
 
-    # SAME default + SAME matcher as classify_one's dirtiness decision (shared
-    # block above) — the backup decision must never desynchronize from it.
-    local ignore_set="${PWT_WORKTREE_GC_DIRTY_IGNORE-$PWT_DIRTY_IGNORE_DEFAULT}"
+    # The CLASSIFY ignore set answers "may this worktree be reaped?"; the BACKUP
+    # ignore set answers "what must survive if it is?". Those are different
+    # questions and using one set for both lost data (measured 2026-07-30):
+    #   • a TRACKED modification under `.claude/` IS captured, because
+    #     `git diff HEAD` ignores the prefix filter entirely — verified.
+    #   • an UNTRACKED authored file under `.claude/` (a brand-new script, spec,
+    #     or test — the normal shape of a /plan-w-team tooling lane) is invisible
+    #     to `git diff HEAD` AND filtered out of `real_dirty` by the `.claude/`
+    #     prefix, so both arms of the guard below saw "nothing real to preserve"
+    #     and the file was destroyed with no backup at all.
+    # So the backup path uses a deliberately NARROWER set: only genuinely
+    # regenerable trees and machine-written runtime state. Widening what we
+    # preserve costs a few KB of patch; narrowing it costs authored work.
+    local ignore_set="${PWT_WORKTREE_GC_PRESERVE_IGNORE-$PWT_PRESERVE_IGNORE_DEFAULT}"
 
     if [ -n "$wt_top" ] && [ "$wt_top" = "$real_wt" ]; then
         # Genuine worktree → diff + untracked list, filtered to non-ignored paths.
@@ -1052,13 +1285,21 @@ row = {
     "origin_reachable": sys.argv[21] == "1",
     "orphan_dir": sys.argv[22] == "1",
     "live_query_failed": sys.argv[23] == "1",
+    # veto telemetry (2026-07-30 data-loss fix)
+    "uncommitted_tracked": sys.argv[24] == "1",
+    "lock_pid": int(sys.argv[25]) if sys.argv[25].isdigit() else None,
+    "lock_pid_alive": sys.argv[26] == "1",
+    "lock_unverifiable": sys.argv[27] == "1",
+    "age_minutes": int(sys.argv[28]) if sys.argv[28].isdigit() else None,
+    "newborn": sys.argv[29] == "1",
 }
 sys.stdout.write(json.dumps(row))
 ' "$wt_path" "$name" "$BRANCH" "$CLASS" "$REASON" "$ACTION" \
   "$REMOVED_WT" "$REMOVED_BRANCH" "$UNCOMMITTED" "$MERGED" "$OPEN_PR" \
   "$IN_USE" "$ACTIVE_RUN" "${LAST_COMMIT_AGE_DAYS:-?}" "$MERGE_SOURCE" "${MERGED_BY:-}" "${ORIGIN_GONE:-0}" \
   "${LOCKED:-0}" "${STALE_LOCK:-0}" "${IN_USE_SOURCE:-}" "${ORIGIN_REACHABLE:-0}" "${ORPHAN_DIR:-0}" \
-  "${LIVE_QUERY_FAILED:-0}" >> "$RESULTS_JSON_TMP"
+  "${LIVE_QUERY_FAILED:-0}" "${UNCOMMITTED_TRACKED:-0}" "${LOCK_PID:-}" "${LOCK_PID_ALIVE:-0}" \
+  "${LOCK_UNVERIFIABLE:-0}" "${AGE_MINUTES:-}" "${NEWBORN:-0}" >> "$RESULTS_JSON_TMP"
 
     # Human table row
     if [ "$MODE_JSON" = "0" ]; then

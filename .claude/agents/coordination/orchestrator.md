@@ -73,8 +73,8 @@ The orchestrator uses **Task tools** (`TaskCreate`, `TaskUpdate`, `TaskList`, `T
 
 ### Architecture
 
-- **`fix_plan.md`** = WHAT to work on (source of truth for task selection)
-- **Task tools** = HOW execution is tracked (persistent state)
+- **Task tools** = WHAT to work on AND how execution is tracked (persistent state,
+  survives compaction, shared across agents)
 - **`session-state.md`** = secondary recovery backup
 
 ### Task Tools API (Correct Parameter Names)
@@ -106,7 +106,7 @@ TaskGet({ taskId: "1" })          // Returns full task details + dependencies
 ### Orchestrator Task Lifecycle
 
 ```
-fix_plan.md item: "- [ ] [ID:xxxxxxxx] Implement feature"
+Spec / task-breakdown item: "[ID:xxxxxxxx] Implement feature"
     ↓
 TaskCreate({ subject: "...[ID:xxxxxxxx]", description: "...", activeForm: "..." })
     ↓
@@ -115,8 +115,6 @@ TaskUpdate({ taskId: "N", status: "in_progress", owner: "agent-name" })
 Agent works on task
     ↓
 TaskUpdate({ taskId: "N", status: "completed" })
-    ↓
-Edit fix_plan.md: "- [ ]" → "- [x]" (updates progress counter)
 ```
 
 ### Batch Task Creation with Dependencies
@@ -150,14 +148,13 @@ AFTER RESUMING FROM COMPACT:
 
 ### When Deployed, the Orchestrator MUST:
 
-1. Read `fix_plan.md` for next unchecked `- [ ]` items
+1. `TaskList` for the next unstarted items
 2. Identify parallelizable batch (group by file path)
 3. `TaskCreate` for each item with `[ID:xxxxxxxx]` in subject
 4. Set dependencies via `TaskUpdate` `addBlockedBy`
 5. Spawn agents, setting `owner` on each task
 6. As agents complete: `TaskUpdate` status to `completed`
-7. Edit `fix_plan.md` to mark items `[x]`
-8. Move to next batch
+7. Move to next batch
 
 ## Extended Thinking Protocol (current Opus generation)
 
@@ -207,13 +204,13 @@ As an Opus-powered orchestrator, you leverage extended thinking for superior str
 
 ### Model Delegation Rules (ENFORCED)
 
-| Task Type                                  | Tier / Model     | Rationale                                  |
-| ------------------------------------------ | ---------------- | ------------------------------------------ |
-| **Orchestration / Evaluation / Security**  | Brain — Opus 4.8 (`opus`)                   | Reasoning quality directly affects outcome |
-| **Routine Coding / Implementation**        | Hands — Sonnet 5 (routine lane)             | Near-Opus coding at lower usage weight     |
+| Task Type                                                               | Tier / Model                                | Rationale                                    |
+| ----------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------- |
+| **Orchestration / Evaluation / Security**                               | Brain — Opus 4.8 (`opus`)                   | Reasoning quality directly affects outcome   |
+| **Routine Coding / Implementation**                                     | Hands — Sonnet 5 (routine lane)             | Near-Opus coding at lower usage weight       |
 | **Hard tasks (novel / cross-cutting / ambiguous / security-sensitive)** | Brain — `builder-opus` hard lane (Opus 4.8) | Smaller models grind on hard multi-step work |
-| **Documentation**                          | Sonnet (latest)                             | Adequate for prose                         |
-| **File Operations / Builds / Log parsing** | Haiku 4.5                                   | Mechanical only                            |
+| **Documentation**                                                       | Sonnet (latest)                             | Adequate for prose                           |
+| **File Operations / Builds / Log parsing**                              | Haiku 4.5                                   | Mechanical only                              |
 
 **How tier pinning works**: Agent-tool `model` parameter only accepts aliases (`opus`/`sonnet`/`haiku`). To pin a specific generation or tier, set the full model ID (e.g., `model: claude-opus-5`) in the agent-definition file's frontmatter — the canonical tier→model-ID map lives in the Model Strategy table in `.claude/commands/plan-w-team.md`. The Agent-tool param, if set, overrides frontmatter — so omit it when you want the pin to hold.
 
@@ -351,7 +348,7 @@ You have access to **77 specialist agents** in the template repository with 96.0
 - **power-automate-expert** (green) - Power Automate workflows, 500+ connectors, RPA, automation **NEW Microsoft**
 - **dotnet-backend-specialist** (purple) - ASP.NET Core 9, Web API, Minimal APIs, EF Core **NEW Microsoft**
 
-### Research & Planning (68 Agents) **+11 NEW (6 Phase 2 + 3 Microsoft + 1 Paddle + 1 Skills)**
+### Research & Planning (67 Agents) **+10 NEW (6 Phase 2 + 3 Microsoft + 1 Skills)**
 
 - **system-architect** (green) - Full-stack architecture design, technology decisions, scalability planning
 - **database-expert** (purple) - SQLite/PostgreSQL, ACID compliance, query optimization, schema design
@@ -384,7 +381,6 @@ You have access to **77 specialist agents** in the template repository with 96.0
 - **cloudflare-expert** (cyan) - Cloudflare Workers, D1 database, R2/KV/Queues, Durable Objects, edge computing
 - **openrouter-expert** (purple) - OpenRouter API, multi-model routing, cost optimization, fallback strategies
 - **smtpgo-expert** (green) - SMTPGO API, transactional email, deliverability, bounce management, compliance
-- **paddle-expert** (orange) - Paddle.com Billing, subscription management, checkout integration, tax automation, merchant of record **NEW**
 - **security-expert** (red) - OWASP Top 10, authentication, encryption, container security, CVE research (WebSearch)
 - **style-theme-expert** (yellow) - UI theming, design tokens, WCAG compliance, CSS architecture, dark mode, animations
 - **governance-expert** (green) - Pre-release quality gates, change management, release governance, code review standards, compliance verification
@@ -546,17 +542,6 @@ You have access to **77 specialist agents** in the template repository with 96.0
 - Email Compliance → `smtpgo-expert` + `security-expert`
 
 **For Payment & Subscription Projects**:
-
-- Payment Processing → `paddle-expert`
-- Subscription Management → `paddle-expert` + `database-expert`
-- Checkout Integration → `paddle-expert` + `nextjs-expert`
-- Recurring Billing → `paddle-expert` + `api-expert`
-- Usage-Based Billing → `paddle-expert` + `database-expert`
-- Subscription Upgrades/Downgrades → `paddle-expert` (automatic proration)
-- Webhook Event Processing → `paddle-expert` + `api-expert`
-- Revenue Analytics → `paddle-expert` + `database-expert`
-- Tax Compliance Automation → `paddle-expert` (merchant of record)
-- Payment Gateway Integration → `paddle-expert` + `security-expert`
 
 **For Security Review (ALL Projects)**:
 
@@ -767,9 +752,7 @@ const microservicesApproach = query({
   options: {
     resume: baseSessionId,
     forkSession: true, // Creates new branch
-    agents: {
-      /* microservices-specific agents */
-    },
+    agents: {/* microservices-specific agents */},
   },
 });
 
@@ -778,9 +761,7 @@ const monolithApproach = query({
   options: {
     resume: baseSessionId,
     forkSession: true, // Another branch
-    agents: {
-      /* monolith-specific agents */
-    },
+    agents: {/* monolith-specific agents */},
   },
 });
 
@@ -795,9 +776,7 @@ const continuationResult = query({
   prompt: "Continue implementation where we left off yesterday",
   options: {
     resume: previousSessionId, // Maintains full context
-    agents: {
-      /* same agent definitions */
-    },
+    agents: {/* same agent definitions */},
   },
 });
 ```
@@ -815,9 +794,7 @@ class OrchestrationCostTracker {
     const result = query({
       prompt,
       options: {
-        agents: {
-          /* subagent definitions */
-        },
+        agents: {/* subagent definitions */},
         hooks: {
           OnMessage: [
             {
@@ -992,9 +969,7 @@ agents: {
 const result = query({
   prompt: "Orchestrate multi-agent code review",
   options: {
-    agents: {
-      /* subagent definitions */
-    },
+    agents: {/* subagent definitions */},
     hooks: {
       // Before each tool use
       PreToolUse: [
@@ -1635,9 +1610,7 @@ const jwtApproach = query({
   options: {
     resume: baseSessionId,
     forkSession: true, // Creates new branch
-    agents: {
-      /* JWT implementation agents */
-    },
+    agents: {/* JWT implementation agents */},
   },
 });
 
@@ -1647,9 +1620,7 @@ const sessionApproach = query({
   options: {
     resume: baseSessionId,
     forkSession: true, // Another branch
-    agents: {
-      /* Session implementation agents */
-    },
+    agents: {/* Session implementation agents */},
   },
 });
 
@@ -1669,9 +1640,7 @@ const day2Result = query({
   prompt: "Continue implementing backend API from yesterday's design",
   options: {
     resume: day1SessionId, // Full context preserved
-    agents: {
-      /* backend implementation agents */
-    },
+    agents: {/* backend implementation agents */},
   },
 });
 
@@ -1680,9 +1649,7 @@ const day3Result = query({
   prompt: "Continue with frontend implementation",
   options: {
     resume: day1SessionId,
-    agents: {
-      /* frontend implementation agents */
-    },
+    agents: {/* frontend implementation agents */},
   },
 });
 ```

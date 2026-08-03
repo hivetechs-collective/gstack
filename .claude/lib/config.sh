@@ -74,7 +74,7 @@ get_phase_target() {
 
 # Ralph helpers removed 2026-05-22 (Ralph deprecated 2026-05-19).
 # If a legacy .claude/project.json still has a "ralph" block, it is ignored.
-# Current autonomous workflow uses /plan-w-team + /develop + /loop + /goal.
+# Current autonomous workflow uses /plan-w-team + /loop + /goal.
 
 get_build_command() {
     get_config '.commands.build' 'npm run build'

@@ -13,6 +13,14 @@ set -u
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 GC="$SCRIPT_DIR/plan-w-team-worktree-gc.sh"
 
+# VETO 4 (newborn grace window) is ON in production with a 30-minute default.
+# Every fixture below is created seconds before it is classified, so leaving the
+# production default in place would make EVERY case classify UNSAFE-KEEP/newborn
+# and mask what the case is actually asserting. Disable it suite-wide; the four
+# dedicated grace-window cases (Test 32) set it explicitly and are the only place
+# the window's behaviour is under test.
+export PWT_WORKTREE_MIN_AGE_MINUTES=0
+
 PASS=0
 FAIL=0
 ROOTS=()
@@ -423,29 +431,64 @@ backdate_tip_hours() {  # $1 worktree, $2 hours — push tip commit N hours into
     ( cd "$wt" && GIT_COMMITTER_DATE="$old_iso" git commit -q --amend --no-edit --date "$old_iso" >/dev/null 2>&1 )
 }
 
-# ── Test 19: stale lock — locked + merged + OLD commit → lock ignored, pruned ─
-# This is the disk-bloat root cause: a lock left behind by a dead subagent must
-# NOT pin a merged worktree forever (Change B, 2026-05).
-echo "[19] stale lock (locked + merged + old commit) → SAFE-PRUNE-MERGED"
+# ── Test 19: BARE lock (no reason, no pid) — CONTRACT CHANGED 2026-07-30 ─────
+# Was: "locked + merged + old commit → lock ignored, pruned", on the theory that
+# commit recency proves abandonment. It does not. A bare `git worktree lock` — or
+# any hand-written reason — carries no owner identity, so the old rule reported
+# "stale lock ignored" and reaped the tree anyway, meaning a human explicitly
+# marking a worktree do-not-touch got NO protection. VETO 3 now fails closed on
+# any lock whose owner cannot be adjudicated. Disk hygiene is preserved by the
+# pid-dead arm instead (Test 19c), which is what real locks always carry.
+echo "[19] BARE lock (no pid in reason) + merged + old commit → UNSAFE-KEEP (fail-closed)"
 R=$(new_repo)
 WT=$(add_worktree "$R" "stalelock-feat")          # not merged locally
 backdate_tip "$WT"                                 # commit > LOCK_STALE_HOURS old
 make_gh_merged "$R" "worktree-stalelock-feat"      # gh says merged
 git -C "$R" worktree lock "$WT" >/dev/null 2>&1
 JSON=$(run_gc_locks "$R" _gh --json)
-assert_eq "stale-locked merged → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" stalelock-feat)"
-assert_eq "stale-locked locked flag true" "true" "$(field_of "$JSON" stalelock-feat locked)"
-assert_eq "stale-locked stale_lock flag true" "true" "$(field_of "$JSON" stalelock-feat stale_lock)"
+assert_eq "bare-locked merged → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" stalelock-feat)"
+assert_eq "bare-locked locked flag true" "true" "$(field_of "$JSON" stalelock-feat locked)"
+assert_eq "bare-locked lock_unverifiable flag true" "true" "$(field_of "$JSON" stalelock-feat lock_unverifiable)"
+assert_eq "bare-locked NOT marked stale_lock" "false" "$(field_of "$JSON" stalelock-feat stale_lock)"
+# --execute must not remove it either
+( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+  PATH="$R/_gh:$PATH" bash "$GC" --execute --json >/dev/null 2>&1 )
+assert_eq "bare-locked survives --execute" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+# ESCAPE HATCH still works — the documented operator override reaps it.
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+        PWT_WORKTREE_GC_IGNORE_LOCKS=1 PATH="$R/_gh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "IGNORE_LOCKS=1 → bare-locked reclaimable again" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" stalelock-feat)"
 
-# ── Test 19b: E1 default 24h→6h — locked + merged + ~10h-old commit → PRUNED ──
+# ── Test 19c: AC7 disk-hygiene non-regression — lock naming a DEAD pid ───────
+# The 2026-05-29 ENOSPC fix must survive VETO 3. Every lock pwt-goal.sh / Claude
+# Code writes carries `pid N`, so once that process exits the owner is PROVABLY
+# gone and the worktree is still reaped — no unbounded pinning, no disk leak.
+echo "[19c] lock naming a DEAD pid + merged → SAFE-PRUNE-MERGED (AC7 disk hygiene)"
+R=$(new_repo)
+WT=$(add_worktree "$R" "deadpidlock-feat")
+backdate_tip "$WT"
+make_gh_merged "$R" "worktree-deadpidlock-feat"
+# Spawn-and-reap a real process so its pid is guaranteed dead, not merely unlikely.
+sh -c 'exit 0' & DEAD_PID=$!; wait "$DEAD_PID" 2>/dev/null || true
+git -C "$R" worktree lock --reason "claude session deadpidlock (pid $DEAD_PID start Mon Jul 27 13:12:48 2026)" "$WT" >/dev/null 2>&1
+JSON=$(run_gc_locks "$R" _gh --json)
+assert_eq "dead-pid lock merged → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" deadpidlock-feat)"
+assert_eq "dead-pid lock parsed pid" "$DEAD_PID" "$(field_of "$JSON" deadpidlock-feat lock_pid)"
+assert_eq "dead-pid lock_pid_alive false" "false" "$(field_of "$JSON" deadpidlock-feat lock_pid_alive)"
+assert_eq "dead-pid lock stale_lock true" "true" "$(field_of "$JSON" deadpidlock-feat stale_lock)"
+
+# ── Test 19b: E1 default 24h→6h — 10h-old commit, DEAD-pid lock → PRUNED ─────
 # Under the OLD 24h default this 10h-old lock was "recent" and KEPT; under the new
 # 6h default (PWT_STALE_LOCK_HOURS) it is stale and the merged worktree is reaped.
-echo "[19b] stale lock (locked + merged + 10h-old commit) → SAFE-PRUNE-MERGED (6h default)"
+# Uses a dead-pid reason so VETO 3's fail-closed arm does not shadow the knob
+# under test — the staleness threshold is what this case is about.
+echo "[19b] stale lock (dead pid + merged + 10h-old commit) → SAFE-PRUNE-MERGED (6h default)"
 R=$(new_repo)
 WT=$(add_worktree "$R" "tenhrlock-feat")
 backdate_tip_hours "$WT" 10
 make_gh_merged "$R" "worktree-tenhrlock-feat"
-git -C "$R" worktree lock "$WT" >/dev/null 2>&1
+sh -c 'exit 0' & DEAD_PID2=$!; wait "$DEAD_PID2" 2>/dev/null || true
+git -C "$R" worktree lock --reason "claude session tenhrlock (pid $DEAD_PID2 start Mon Jul 27 13:12:48 2026)" "$WT" >/dev/null 2>&1
 JSON=$(run_gc_locks "$R" _gh --json)
 assert_eq "10h-old locked merged → SAFE-PRUNE-MERGED (new 6h default)" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" tenhrlock-feat)"
 # And the legacy 24h knob still wins when set explicitly (kept as lock-recent).
@@ -621,6 +664,247 @@ assert_eq "probe-failed worktree survives --execute" "yes" "$([ -d "$WT" ] && ec
 JSON=$(run_gc "$R" --json)
 assert_eq "probe-OK same fixture → SAFE-PRUNE-PUSHED" "SAFE-PRUNE-PUSHED" "$(class_of "$JSON" failclosed-feat)"
 assert_eq "probe-OK live_query_failed flag false" "false" "$(field_of "$JSON" failclosed-feat live_query_failed)"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2026-07-30 data-loss vetoes (docs/specs/worktree-gc-liveness-vetoes-2026-07-30.md)
+#
+# Every case below pairs the veto assertion with a CONTRAST case that reaps the
+# SAME fixture once the veto's input is removed. Without the contrast an assertion
+# like "live worktree → UNSAFE-KEEP" can pass for the wrong reason (e.g. the
+# fixture was never reapable at all), which is how a veto ends up believed-tested
+# and actually inert.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Test 29 (AC1): liveness beats MERGED *and* origin-reachable ──────────────
+# The measured incident flipped live lanes to SAFE-PRUNE-**MERGED**, not only
+# -PUSHED, so the veto must sit above every SAFE-PRUNE-* class.
+echo "[29] AC1: live session + merged + origin-reachable → UNSAFE-KEEP"
+R=$(new_repo); make_nogh "$R"; add_origin "$R"
+WT=$(add_worktree "$R" "ac1-live-feat" merge)
+push_branch "$R" "worktree-ac1-live-feat"
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_IGNORE_LOCKS=1 \
+        PWT_WORKTREE_GC_TEST_LIVE_CWDS="$WT" PATH="$R/_nogh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "AC1 live+merged+pushed → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" ac1-live-feat)"
+assert_eq "AC1 in_use flag true" "true" "$(field_of "$JSON" ac1-live-feat in_use)"
+assert_eq "AC1 action keep" "keep" "$(action_of "$JSON" ac1-live-feat)"
+( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_IGNORE_LOCKS=1 \
+  PWT_WORKTREE_GC_TEST_LIVE_CWDS="$WT" PATH="$R/_nogh:$PATH" bash "$GC" --execute --json >/dev/null 2>&1 )
+assert_eq "AC1 live worktree survives --execute" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+# CONTRAST: drop the liveness signal → same fixture is reapable
+JSON=$(run_gc "$R" --json)
+assert_eq "AC1 contrast (no live cwd) → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" ac1-live-feat)"
+
+# ── Test 30 (AC2): tracked-file edit under an IGNORE prefix is an absolute veto ─
+# This is the exact shape that made the incident lossy: a /plan-w-team tooling
+# lane's whole diff lives under `.claude/`, which the classify ignore-set filters,
+# so UNCOMMITTED read 0 while real authored work sat in the tree.
+echo "[30] AC2: tracked edit under .claude/ (ignored prefix) → UNSAFE-KEEP"
+R=$(new_repo); make_nogh "$R"
+WT=$(add_worktree "$R" "ac2-tracked-feat" merge)
+# .claude/state/.gitkeep is TRACKED by new_repo — edit it, so the only dirt is a
+# tracked modification whose path the ignore set covers.
+echo "authored change" >> "$WT/.claude/state/.gitkeep"
+JSON=$(run_gc "$R" --json)
+assert_eq "AC2 tracked edit in ignored path → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" ac2-tracked-feat)"
+assert_eq "AC2 uncommitted_tracked true" "true" "$(field_of "$JSON" ac2-tracked-feat uncommitted_tracked)"
+assert_eq "AC2 legacy uncommitted flag still false (ignore-set applied)" "false" "$(field_of "$JSON" ac2-tracked-feat uncommitted)"
+( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+  PWT_WORKTREE_GC_IGNORE_LOCKS=1 PATH="$R/_nogh:$PATH" bash "$GC" --execute --json >/dev/null 2>&1 )
+assert_eq "AC2 tracked-dirty worktree survives --execute" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+# CONTRAST: revert the tracked edit, leave only UNTRACKED ignore-set churn →
+# reapable, so the 2026-06-08 leak fix (hook state churn must not pin) still holds.
+git -C "$WT" checkout -- .claude/state/.gitkeep
+echo '{"cache":1}' > "$WT/.claude/state/bg-agents-cache.json"
+JSON=$(run_gc "$R" --json)
+assert_eq "AC2 contrast (untracked churn only) → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" ac2-tracked-feat)"
+assert_eq "AC2 contrast uncommitted_tracked false" "false" "$(field_of "$JSON" ac2-tracked-feat uncommitted_tracked)"
+
+# ── Test 31 (AC3): a lock naming a LIVE pid is positive liveness proof ───────
+# Independent of the `claude agents --json` path match, and available from the
+# instant `git worktree add` runs — which is what closes the newborn race.
+echo "[31] AC3: lock naming a LIVE pid → UNSAFE-KEEP via lock-pid-alive"
+R=$(new_repo)
+WT=$(add_worktree "$R" "ac3-livepid-feat")
+backdate_tip "$WT"                                  # old commit: no lock-recent help
+make_gh_merged "$R" "worktree-ac3-livepid-feat"
+# $$ is this test process — guaranteed alive for the duration of the assertion.
+git -C "$R" worktree lock --reason "claude session ac3-livepid (pid $$ start Thu Jul 30 11:27:02 2026)" "$WT" >/dev/null 2>&1
+JSON=$(run_gc_locks "$R" _gh --json)
+assert_eq "AC3 live-pid lock → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" ac3-livepid-feat)"
+assert_eq "AC3 in_use_source lock-pid-alive" "\"lock-pid-alive\"" "$(field_of "$JSON" ac3-livepid-feat in_use_source)"
+assert_eq "AC3 lock_pid_alive true" "true" "$(field_of "$JSON" ac3-livepid-feat lock_pid_alive)"
+assert_eq "AC3 parsed pid matches" "$$" "$(field_of "$JSON" ac3-livepid-feat lock_pid)"
+assert_eq "AC3 in_use true (feeds VETO 1)" "true" "$(field_of "$JSON" ac3-livepid-feat in_use)"
+( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+  PATH="$R/_gh:$PATH" bash "$GC" --execute --json >/dev/null 2>&1 )
+assert_eq "AC3 live-pid worktree survives --execute" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+# CONTRAST is Test 19c: identical fixture with a DEAD pid → SAFE-PRUNE-MERGED.
+
+# ── Test 32 (AC4): newborn grace window ─────────────────────────────────────
+# Same fixture, two thresholds. Fixtures are seconds old, so a 60m window keeps
+# and a 0m window (suite default) reaps — the window itself is what differs.
+echo "[32] AC4: newborn grace window keeps a seconds-old reapable worktree"
+R=$(new_repo); make_nogh "$R"; add_origin "$R"
+WT=$(add_worktree "$R" "ac4-newborn-feat" merge)
+push_branch "$R" "worktree-ac4-newborn-feat"
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+        PWT_WORKTREE_GC_IGNORE_LOCKS=1 PWT_WORKTREE_MIN_AGE_MINUTES=60 \
+        PATH="$R/_nogh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "AC4 newborn (< 60m grace) → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" ac4-newborn-feat)"
+assert_eq "AC4 newborn flag true" "true" "$(field_of "$JSON" ac4-newborn-feat newborn)"
+( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+  PWT_WORKTREE_GC_IGNORE_LOCKS=1 PWT_WORKTREE_MIN_AGE_MINUTES=60 \
+  PATH="$R/_nogh:$PATH" bash "$GC" --execute --json >/dev/null 2>&1 )
+assert_eq "AC4 newborn survives --execute" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+# CONTRAST: grace window off → the SAME fixture is reaped
+JSON=$(run_gc "$R" --json)
+assert_eq "AC4 contrast (grace=0) → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" ac4-newborn-feat)"
+assert_eq "AC4 contrast newborn flag false" "false" "$(field_of "$JSON" ac4-newborn-feat newborn)"
+
+# ── Test 33 (AC5): REGRESSION — the measured 2026-07-29/30 incident ──────────
+# Reproduces the exact live shape: a running /plan-w-team lane whose branch is
+# merged AND origin-reachable (pwt-goal.sh pushes the seed branch at spawn), whose
+# only dirt is tracked files under `.claude/`, which is git-locked with its owning
+# pid — while the liveness probe SUCCEEDS but returns a session list that does not
+# contain this worktree (the missed tick / registration lag). Pre-fix this
+# classified SAFE-PRUNE-MERGED + dry-remove; measured live on 2026-07-30 against
+# `pwt-why-is-it-waiting-…` and `pwt-please-use-plan-w-team-…`.
+echo "[33] AC5 regression: live lane, merged+pushed, .claude/-only dirt, probe misses it"
+R=$(new_repo); make_gh_merged "$R" "worktree-ac5-incident-feat"; add_origin "$R"
+WT=$(add_worktree "$R" "ac5-incident-feat")
+# Order matters: backdate_tip AMENDS the tip, so it must run BEFORE the push or
+# HEAD stops being the pushed commit and origin_reachable goes false — i.e. the
+# fixture would silently stop reproducing the incident's prune trigger.
+backdate_tip "$WT"                                   # old tip: no lock-recent rescue
+push_branch "$R" "worktree-ac5-incident-feat"        # HEAD now on origin/* → prunable
+# merged-ness comes from the gh stub above, so no local merge is needed (a local
+# merge would also be invalidated by the amend).
+echo "in-flight authored work" >> "$WT/.claude/state/.gitkeep"   # tracked, ignore-prefixed
+git -C "$R" worktree lock --reason "claude session ac5-incident (pid $$ start Thu Jul 30 11:27:02 2026)" "$WT" >/dev/null 2>&1
+# Probe SUCCEEDS (not the fail-closed path) but lists a different session's cwd.
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main \
+        PWT_WORKTREE_GC_TEST_LIVE_CWDS="/tmp/some-other-live-session" \
+        PATH="$R/_gh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "AC5 incident shape → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" ac5-incident-feat)"
+assert_eq "AC5 action keep (was dry-remove)" "keep" "$(action_of "$JSON" ac5-incident-feat)"
+assert_eq "AC5 live_query_failed false (probe worked — not the fail-closed path)" "false" "$(field_of "$JSON" ac5-incident-feat live_query_failed)"
+assert_eq "AC5 origin_reachable true (was the prune trigger)" "true" "$(field_of "$JSON" ac5-incident-feat origin_reachable)"
+assert_eq "AC5 merged true (was the prune trigger)" "true" "$(field_of "$JSON" ac5-incident-feat merged)"
+assert_eq "AC5 rescued by tracked-dirt veto" "true" "$(field_of "$JSON" ac5-incident-feat uncommitted_tracked)"
+assert_eq "AC5 rescued by live-pid lock veto" "true" "$(field_of "$JSON" ac5-incident-feat lock_pid_alive)"
+# The destructive path must be a no-op on this fixture.
+( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main \
+  PWT_WORKTREE_GC_TEST_LIVE_CWDS="/tmp/some-other-live-session" \
+  PATH="$R/_gh:$PATH" bash "$GC" --execute --json >/dev/null 2>&1 )
+assert_eq "AC5 in-flight lane survives the hourly --execute timer" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+assert_eq "AC5 in-flight authored work still on disk" "yes" \
+    "$(grep -q 'in-flight authored work' "$WT/.claude/state/.gitkeep" 2>/dev/null && echo yes || echo no)"
+# COUNTERFACTUAL: remove every veto input (unlock, revert dirt, disable grace) and
+# the identical fixture IS reaped — proving the assertions above are load-bearing
+# and this fixture was reapable all along.
+git -C "$R" worktree unlock "$WT" >/dev/null 2>&1
+git -C "$WT" checkout -- .claude/state/.gitkeep
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main \
+        PWT_WORKTREE_GC_TEST_LIVE_CWDS="/tmp/some-other-live-session" \
+        PATH="$R/_gh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "AC5 counterfactual (no vetoes) → SAFE-PRUNE-MERGED" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" ac5-incident-feat)"
+assert_eq "AC5 counterfactual action dry-remove" "dry-remove" "$(action_of "$JSON" ac5-incident-feat)"
+
+# ── Test 34 (AC6/backup): untracked authored file under an ignore prefix ─────
+# preserve_then_reap used the CLASSIFY ignore set, so an untracked `.claude/`
+# file was invisible to `git diff HEAD` AND filtered out of the untracked list —
+# both arms read "nothing to preserve" and it was destroyed with no backup.
+echo "[34] backup: untracked authored file under .claude/ is preserved before reap"
+R=$(new_repo); make_nogh "$R"
+WT=$(add_worktree "$R" "ac6-untracked-feat" merge)
+echo "brand new authored script" > "$WT/.claude/scripts-new-authored.sh"
+JSON=$(run_gc "$R" --json)
+# Untracked ignore-prefixed churn is still REAPABLE (leak fix intact)…
+assert_eq "untracked .claude/ file → still reapable" "SAFE-PRUNE-MERGED" "$(class_of "$JSON" ac6-untracked-feat)"
+( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+  PWT_WORKTREE_GC_IGNORE_LOCKS=1 PATH="$R/_nogh:$PATH" bash "$GC" --execute --json >/dev/null 2>&1 )
+assert_eq "untracked-file worktree removed" "no" "$([ -d "$WT" ] && echo yes || echo no)"
+# …but its authored content MUST appear in a backup artifact.
+BACKUP_HIT=$(grep -rl "scripts-new-authored" "$R/.claude/state/hygiene-backups" 2>/dev/null | head -1)
+assert_eq "authored untracked file recorded in a backup" "yes" "$([ -n "$BACKUP_HIT" ] && echo yes || echo no)"
+
+# ── Test 35 (VETO 0): python3 unavailable ⇒ nothing reapable ────────────────
+# Found by the Step-5 review of this very diff, and MEASURED before the fix: with
+# a `python3` stub exiting 127, a git-LOCKED merged worktree classified
+# SAFE-PRUNE-MERGED and `--execute` DELETED it (removed: 1). Cause: every
+# structural guard here is implemented in python3, and `is_worktree_locked`
+# returning non-zero means "NOT locked" — so a broken interpreter silently
+# disarmed the lock veto AND the dirty veto at once. Same silently-inert-guard
+# class as the incident, reachable via an environment gap instead of a race.
+echo "[35] VETO 0: python3 unavailable → UNSAFE-KEEP, --execute removes nothing"
+R=$(new_repo)
+WT=$(add_worktree "$R" "veto0-feat" merge)
+git -C "$R" worktree lock "$WT" >/dev/null 2>&1
+PYSTUB="$R/_nopy"; mkdir -p "$PYSTUB"
+printf '#!/bin/sh\nexit 127\n' > "$PYSTUB/python3"; chmod +x "$PYSTUB/python3"
+# NOTE: --json is unusable here (the serializer is itself python3), so this case
+# asserts on the human table + on-disk survival — the properties that matter.
+OUT=$( cd "$R" && PATH="$PYSTUB:$PATH" PWT_WORKTREE_GC_DEFAULT_BRANCH=main \
+       PWT_WORKTREE_GC_TEST_MODE=1 bash "$GC" 2>&1 | grep 'veto0-feat' )
+case "$OUT" in
+  *UNSAFE-KEEP*) pass "python3-broken → UNSAFE-KEEP" ;;
+  *)             fail "python3-broken → UNSAFE-KEEP" "got: $OUT" ;;
+esac
+case "$OUT" in
+  *python3\ unavailable*) pass "python3-broken reason names the cause" ;;
+  *)                     fail "python3-broken reason names the cause" "got: $OUT" ;;
+esac
+( cd "$R" && PATH="$PYSTUB:$PATH" PWT_WORKTREE_GC_DEFAULT_BRANCH=main \
+  PWT_WORKTREE_GC_TEST_MODE=1 bash "$GC" --execute >/dev/null 2>&1 )
+assert_eq "python3-broken worktree survives --execute" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+# CONTRAST: restore python3 → the SAME fixture is reapable (proves the fixture
+# was never merely un-reapable, and that VETO 0 is what held it).
+JSON=$(run_gc_locks "$R" _nogh --json 2>/dev/null || true)
+OUT2=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_TEST_MODE=1 \
+        PWT_WORKTREE_GC_IGNORE_LOCKS=1 bash "$GC" 2>&1 | grep 'veto0-feat' )
+case "$OUT2" in
+  *SAFE-PRUNE-MERGED*) pass "contrast (python3 OK, locks ignored) → SAFE-PRUNE-MERGED" ;;
+  *)                   fail "contrast (python3 OK, locks ignored) → SAFE-PRUNE-MERGED" "got: $OUT2" ;;
+esac
+
+# ── Test 36 (VETO 0, orphan arm): python3 broken + --orphans-ok ─────────────
+# Test 35 pins VETO 0 inside classify_one's veto chain, but it runs with
+# PWT_WORKTREE_GC_TEST_MODE=1, which SKIPS the git-unregistered-orphan branch —
+# and that branch `return`s BEFORE the veto chain. `is_registered_worktree` is
+# python3, so a broken interpreter makes every REGISTERED worktree look
+# unregistered ⇒ ORPHAN-ASK. ORPHAN-ASK is a safe keep by default but is
+# REAPABLE under --orphans-ok, so the hole was real: measured on the live repo
+# (dry-run), python3-broken + --orphans-ok marked all 8 in-flight lanes
+# `dry-remove`, including the worktree authoring this fix. Hence no TEST_MODE
+# here — the orphan branch must be live for this case to mean anything.
+echo "[36] VETO 0 orphan arm: python3 broken + --orphans-ok → still UNSAFE-KEEP"
+R=$(new_repo)
+WT=$(add_worktree "$R" "veto0-orphan-feat" merge)
+PYSTUB="$R/_nopy2"; mkdir -p "$PYSTUB"
+printf '#!/bin/sh\nexit 127\n' > "$PYSTUB/python3"; chmod +x "$PYSTUB/python3"
+OUT=$( cd "$R" && PATH="$PYSTUB:$PATH" PWT_WORKTREE_GC_DEFAULT_BRANCH=main \
+       bash "$GC" --orphans-ok 2>&1 | grep 'veto0-orphan-feat' )
+case "$OUT" in
+  *UNSAFE-KEEP*) pass "python3-broken + --orphans-ok → UNSAFE-KEEP (not ORPHAN-ASK)" ;;
+  *)             fail "python3-broken + --orphans-ok → UNSAFE-KEEP (not ORPHAN-ASK)" "got: $OUT" ;;
+esac
+case "$OUT" in
+  *dry-remove*) fail "python3-broken + --orphans-ok is never dry-remove" "got: $OUT" ;;
+  *)            pass "python3-broken + --orphans-ok is never dry-remove" ;;
+esac
+( cd "$R" && PATH="$PYSTUB:$PATH" PWT_WORKTREE_GC_DEFAULT_BRANCH=main \
+  bash "$GC" --execute --orphans-ok >/dev/null 2>&1 )
+assert_eq "survives --execute --orphans-ok" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+# CONTRAST: a genuinely unregistered dir (python3 WORKING) still classifies
+# ORPHAN-ASK — proving VETO 0 did not blanket-disable the orphan arm itself.
+ORPHAN_DIR="$R/.claude/worktrees/really-orphaned"
+mkdir -p "$ORPHAN_DIR"
+OUT2=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main bash "$GC" 2>&1 \
+        | grep 'really-orphaned' )
+case "$OUT2" in
+  *ORPHAN-ASK*) pass "contrast (python3 OK, truly unregistered) → ORPHAN-ASK" ;;
+  *)            fail "contrast (python3 OK, truly unregistered) → ORPHAN-ASK" "got: $OUT2" ;;
+esac
 
 echo ""
 echo "── results: $PASS passed, $FAIL failed ──"

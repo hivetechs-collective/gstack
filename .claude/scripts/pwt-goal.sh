@@ -1671,11 +1671,22 @@ if [ "$LAUNCH" = "1" ]; then
     #       path. This is what the worker's evaluator finds via PWD_STATE_DIR.
     #   (2) the canonical MAIN_REPO_ROOT/.claude/state (ALWAYS) — await-terminal
     #       resolves this on its main path, and the worker's goal-evaluator
-    #       resolves it via the git-common-dir MAIN lookup (defense-in-depth
-    #       Fix B), so the anchor is active even if the worktree-race ever
-    #       leaves (1) unwritten. The :0:60 truncation MUST match the
+    #       resolves it via its THIRD goal-file source: the MAIN checkout from
+    #       `git rev-parse --git-common-dir` (see the "MAIN-checkout state dir"
+    #       block in .claude/hooks/plan-w-team-goal-evaluator.sh). So the anchor
+    #       stays active even when the worktree race leaves (1) unwritten — which
+    #       in practice it usually does. The :0:60 truncation MUST match the
     #       --worktree flag (${WT_NAME:0:60}) so the path lands on the real
     #       worktree, not a truncation miss.
+    #
+    #       HISTORY (recursive-followup row 1, re-opened + fixed 2026-07-31):
+    #       this comment previously ASSERTED that git-common-dir lookup as
+    #       "defense-in-depth Fix B" — but it was never implemented in the
+    #       evaluator, which read only $PWD and $CLAUDE_PROJECT_DIR. Under
+    #       `claude --bg --worktree` BOTH equal the worktree, so (1) losing its
+    #       race left the anchor INERT. Live probe on run f52cd09d:
+    #       `cpd=<worktree> pwd=<worktree> goalfiles=0`. The lookup now exists;
+    #       regression: .claude/scripts/plan-w-team-goal-evaluator-main-lookup.test.sh
     MAIN_REPO_ROOT=$(__pwt_main_repo_root)
     SEED_NOW_ISO=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 

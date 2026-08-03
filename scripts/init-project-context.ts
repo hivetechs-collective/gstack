@@ -49,8 +49,6 @@ interface ClaudeIntegration {
   agentCount: number;
   commandCount: number;
   hookCount: number;
-  hasRalph: boolean;
-  hasFixPlan: boolean;
 }
 
 interface GitInfo {
@@ -492,8 +490,6 @@ function detectClaudeIntegration(): ClaudeIntegration {
     agentCount: countInDirectory(".claude/agents", "*.md", true), // Recursive
     commandCount: countInDirectory(".claude/commands", "*.md"),
     hookCount: countInDirectory(".claude/hooks", "*.sh"),
-    hasRalph: fileExists("ralph-start.sh") || fileExists("PROMPT.md"),
-    hasFixPlan: fileExists("fix_plan.md"),
   };
 }
 
@@ -643,12 +639,6 @@ function generateClaudeMd(context: ProjectContext): string {
   lines.push(`- **Agents**: ${ci.agentCount} available`);
   lines.push(`- **Commands**: ${ci.commandCount} configured`);
   lines.push(`- **Hooks**: ${ci.hookCount} active`);
-  lines.push(
-    `- **Ralph Integration**: ${ci.hasRalph ? "Ready" : "Not configured"}`,
-  );
-  if (ci.hasFixPlan) {
-    lines.push(`- **fix_plan.md**: Active task queue present`);
-  }
   lines.push("");
 
   // Current State
@@ -788,9 +778,6 @@ function main() {
     `  🔧 ${context.claudeIntegration.commandCount} commands configured`,
   );
   console.log(`  🪝 ${context.claudeIntegration.hookCount} hooks active`);
-  console.log(
-    `  🤖 Ralph: ${context.claudeIntegration.hasRalph ? "Ready" : "Not configured"}`,
-  );
   console.log("");
   console.log("Memory bank updated. Context ready for development.");
 }

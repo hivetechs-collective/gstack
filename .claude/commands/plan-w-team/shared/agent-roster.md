@@ -89,7 +89,6 @@ Use `subagent_type` value when spawning builders in Step 3.
 | subagent_type           | Domain                              | Color  |
 | ----------------------- | ----------------------------------- | ------ |
 | `discord-expert`        | Webhooks, bots, notifications       | purple |
-| `paddle-expert`         | Billing, subscriptions, checkout    | orange |
 | `smtpgo-expert`         | Transactional email, deliverability | green  |
 | `youtube-api-expert`    | YouTube Data API v3, quota mgmt     | red    |
 | `reddit-api-expert`     | Reddit API, rate limiting           | orange |

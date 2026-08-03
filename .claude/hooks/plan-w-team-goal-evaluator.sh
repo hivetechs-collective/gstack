@@ -76,23 +76,121 @@ fi
 # aggregate goal files from both locations so the evaluator catches active
 # goals regardless of where they were written. See 2026-05-20 holistic-check
 # retro for the failure this fixes.
+# ── MAIN-checkout state dir (recursive-followup row 1, 2026-07-31) ────────────
+# Under `claude --bg --worktree`, BOTH $PWD and $CLAUDE_PROJECT_DIR equal the
+# WORKTREE (verified by a live Stop-hook probe on run f52cd09d:
+# `cpd=<worktree> pwd=<worktree> goalfiles=0`), so the two sources above are
+# really ONE source. `pwt-goal.sh --worker-only` dual-seeds the goal-state, but
+# its worktree arm is gated on `[ -d "$WORKER_WT_ROOT" ]` and loses the race
+# against `claude --bg` worktree creation — leaving ONLY the MAIN copy. The
+# evaluator therefore found nothing, exited 0, and the deterministic anti-skip
+# anchor was INERT on exactly the autonomous path it exists to protect.
+#
+# Resolving the MAIN checkout via `git rev-parse --git-common-dir` (a worktree's
+# .git file points at the common dir, so no env var is needed) makes the
+# always-written MAIN copy reachable — and makes true the "git-common-dir MAIN
+# lookup (defense-in-depth Fix B)" that pwt-goal.sh already documents.
+# `PWT_PROJECT_ROOT_OVERRIDE` wins first, matching 01-specification.md §1.5 and
+# the hermetic test-corpus isolation contract (without it, sandboxed suites
+# would see the real repo's live goal states).
+# Fail-open on every error: an unresolvable MAIN degrades to the prior
+# two-source behavior. A Stop hook that errors is worse than one that
+# under-detects.
+MAIN_STATE_DIR=""
+if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+    MAIN_STATE_DIR="$PWT_PROJECT_ROOT_OVERRIDE/.claude/state"
+else
+    __cdir=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+    case "$__cdir" in
+        "") MAIN_STATE_DIR="" ;;
+        /*) MAIN_STATE_DIR="$(dirname "$__cdir")/.claude/state" ;;
+        *)  __mroot=$(cd "$(dirname "$__cdir")" 2>/dev/null && pwd || echo "")
+            [ -n "$__mroot" ] && MAIN_STATE_DIR="$__mroot/.claude/state" ;;
+    esac
+    unset __cdir __mroot
+fi
+
+# CONTAINMENT (required — without it this source breaks hermetic sandboxes).
+# `git rev-parse --git-common-dir` answers about $PWD's repo, which is NOT
+# necessarily the repo the effective PROJECT_ROOT belongs to. A hermetic test
+# (or any caller) that points CLAUDE_PROJECT_DIR at a temp dir while running
+# with cwd inside a real repo would otherwise inherit that real repo's live
+# goal-states and block on someone else's run.
+# The MAIN source is only legitimate when PROJECT_ROOT actually belongs to the
+# resolved MAIN repo — i.e. it IS MAIN, or it is nested under it (the
+# `<main>/.claude/worktrees/<wt>` production case). An explicit
+# PWT_PROJECT_ROOT_OVERRIDE is a deliberate caller instruction and is exempt.
+if [ -n "$MAIN_STATE_DIR" ] && [ -z "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+    # Identity, not path-prefix: a git worktree may live anywhere on disk, so
+    # "is PROJECT_ROOT under MAIN?" is the wrong question. The right one is
+    # "does PROJECT_ROOT belong to the SAME repository?" — i.e. does it resolve
+    # to the same common git dir. Non-repo / foreign-repo project roots resolve
+    # to something else (or nothing) and are excluded.
+    __main_root="${MAIN_STATE_DIR%/.claude/state}"
+    __proj_cdir=$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir 2>/dev/null || echo "")
+    case "$__proj_cdir" in
+        "") __proj_main="" ;;
+        /*) __proj_main=$(cd "$(dirname "$__proj_cdir")" 2>/dev/null && pwd || echo "") ;;
+        *)  __proj_main=$(cd "$PROJECT_ROOT/$(dirname "$__proj_cdir")" 2>/dev/null && pwd || echo "") ;;
+    esac
+    [ -n "$__proj_main" ] && [ "$__proj_main" = "$__main_root" ] || MAIN_STATE_DIR=""
+    unset __main_root __proj_cdir __proj_main
+fi
+
+# Resolve a dir to its absolute physical path (empty if it does not exist), so
+# de-duplication compares real paths rather than spellings.
+__abs_dir() { [ -n "${1:-}" ] && [ -d "$1" ] && (cd "$1" 2>/dev/null && pwd) || echo ""; }
+
 shopt -s nullglob
 declare -a GOAL_FILES=()
-if [ -d "$PWD_STATE_DIR" ] && [ "$PWD_STATE_DIR" != "$FALLBACK_STATE_DIR" ]; then
-    for f in "$PWD_STATE_DIR"/plan-w-team-goal-*.json; do
+__seen_dirs=""
+__collect_goals() {
+    local d
+    d=$(__abs_dir "${1:-}")
+    [ -n "$d" ] || return 0
+    # De-dup by resolved path: in a MAIN-checkout run these collapse to the same
+    # dir, and evaluating one goal twice would emit duplicate blocks.
+    case "$__seen_dirs" in *"|$d|"*) return 0 ;; esac
+    __seen_dirs="$__seen_dirs|$d|"
+    local f
+    for f in "$d"/plan-w-team-goal-*.json; do
         GOAL_FILES+=("$f")
     done
+}
+__collect_goals "$PWD_STATE_DIR"
+__collect_goals "$FALLBACK_STATE_DIR"
+
+# MAIN is a FALLBACK, not a union member: consult it only when the local scope
+# ($PWD / project root) yielded no goal at all. That is precisely the broken
+# case — a worktree worker whose own state dir is empty because pwt-goal.sh's
+# worktree seed lost its race, leaving only the MAIN copy.
+# Making it unconditional would be wrong in the other direction: a caller that
+# DOES scope state locally (every hermetic test in this repo passes its
+# goal-state via $PWD and sets no CLAUDE_PROJECT_DIR) would silently inherit the
+# real repo's live goal-states and block on another run's work.
+#
+# It is additionally gated on an EXPLICIT project-root signal
+# (CLAUDE_PROJECT_DIR, which settings.json requires to even invoke this hook, or
+# PWT_PROJECT_ROOT_OVERRIDE). Without one, PROJECT_ROOT is only a guess derived
+# from $0's location, and guessing our way into another checkout's state is the
+# failure this whole fix exists to prevent — just pointed the other way.
+if [ "${#GOAL_FILES[@]}" -eq 0 ] \
+   && { [ -n "${CLAUDE_PROJECT_DIR:-}" ] || [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; }; then
+    __collect_goals "$MAIN_STATE_DIR"
 fi
-for f in "$FALLBACK_STATE_DIR"/plan-w-team-goal-*.json; do
-    GOAL_FILES+=("$f")
-done
 shopt -u nullglob
 
 # Pick effective STATE_DIR for any downstream writes: prefer $PWD if it holds a
-# matching goal, else fall back. (Used by terminal-state persistence below.)
-if [ -d "$PWD_STATE_DIR" ] && [ "$PWD_STATE_DIR" != "$FALLBACK_STATE_DIR" ] && \
-   compgen -G "$PWD_STATE_DIR/plan-w-team-goal-*.json" >/dev/null 2>&1; then
+# matching goal, then the project-root fallback, then the MAIN checkout.
+# (Used by terminal-state persistence below. Note the per-goal write-back uses
+# $GOAL_FILE — the file actually read — so a MAIN-only goal is persisted in
+# MAIN, which is where await-terminal.sh and the Run-State Router read it.)
+if [ -d "$PWD_STATE_DIR" ] && compgen -G "$PWD_STATE_DIR/plan-w-team-goal-*.json" >/dev/null 2>&1; then
     STATE_DIR="$PWD_STATE_DIR"
+elif compgen -G "$FALLBACK_STATE_DIR/plan-w-team-goal-*.json" >/dev/null 2>&1; then
+    STATE_DIR="$FALLBACK_STATE_DIR"
+elif [ -n "$MAIN_STATE_DIR" ] && compgen -G "$MAIN_STATE_DIR/plan-w-team-goal-*.json" >/dev/null 2>&1; then
+    STATE_DIR="$MAIN_STATE_DIR"
 else
     STATE_DIR="$FALLBACK_STATE_DIR"
 fi

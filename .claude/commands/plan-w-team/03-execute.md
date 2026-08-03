@@ -16,7 +16,7 @@
 **Opus 4.7/4.8 tips** (read `shared/opus-4-7-practices.md` before spawning):
 
 - §3 **Bounding subagent spawning** (INVERTED on Opus 5): the Brain-tier lead now fans out readily on its own, so your job is to BOUND it, not to push for it. Spawn only when the tracks touch disjoint files, each is more than a handful of tool calls, and the results don't need to be read together. Prefer one builder over several; for tightly-coupled work state "implement sequentially — do not spawn subagents". The batch cap below is a backstop, not a target.
-- §4 **Auto mode + completion hooks**: default builders to `mode: "auto"` and rely on `desktop-notify.sh` rather than polling.
+- §4 **Uninterrupted execution + completion hooks**: builders run uninterrupted via the session's `bypassPermissions` default — do NOT pass `mode:` (deprecated and ignored at CLI 2.1.212) — and rely on `desktop-notify.sh` rather than polling.
 - §6 **Delegate outcomes**: give builders the acceptance criteria and files touched, not step-by-step instructions.
 
 ## Step 3: Choose Execution Strategy
@@ -322,8 +322,7 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
      - Implement, commit, mark complete with metadata
      - Check TaskList for next task (self-claiming loop)
      ...",
-     isolation: "worktree",
-     mode: "auto"
+     isolation: "worktree"
    )
    ```
 
@@ -726,8 +725,7 @@ while iteration < max_iterations:
 
         The orchestrator parses this block with jq. Plain-English
         'the build passes' without the fenced block is treated as
-        ESCALATE — ambiguity is not a pass.",
-      mode: "auto"
+        ESCALATE — ambiguity is not a pass."
     )
 
     # 2. Parse evaluator verdict from machine-fenced block (NOT prose matching)

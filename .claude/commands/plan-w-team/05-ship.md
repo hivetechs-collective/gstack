@@ -54,8 +54,20 @@ __pwt_write_ship_verdict() {
   [ "${SHIP_PUSH_CONFIRMED:-0}" = "1" ] || return 0   # fail-safe: never write pre-push
   local sv=".claude/state/plan-w-team-ship-verdict-${SLUG}.json"
   mkdir -p .claude/state 2>/dev/null || true
-  printf '{"slug":"%s","verdict":"PASS","ts":"%s"}\n' \
-    "$SLUG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$sv" 2>/dev/null || true
+  # 1.65.2 — stamp skill provenance. The goal-state carries skill_version +
+  # skill_commit_sha, but it is REAPED once terminal, and then the ship-verdict is
+  # the only surviving record of the run. Without a stamp a completed run becomes
+  # untraceable to the release that produced it (field evidence 2026-08-03: the
+  # 1.57.0 model-tiering run survived only as retro + ship-verdict, both unstamped).
+  # Prefer pwt-goal.sh's exported values so every artifact in one run agrees; fall
+  # back to VERSION + HEAD so an attended ship still records provenance. Every leg
+  # is fail-open — a missing VERSION or a non-repo cwd yields "" and never blocks.
+  local skv="${PWT_SKILL_VERSION:-}"
+  local sksha="${PWT_SKILL_COMMIT_SHA:-}"
+  [ -n "$skv" ] || skv=$(cat .claude/commands/plan-w-team/VERSION 2>/dev/null || echo "")
+  [ -n "$sksha" ] || sksha=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+  printf '{"slug":"%s","verdict":"PASS","ts":"%s","skill_version":"%s","skill_commit_sha":"%s"}\n' \
+    "$SLUG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$skv" "$sksha" > "$sv" 2>/dev/null || true
 }
 ```
 

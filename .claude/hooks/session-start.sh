@@ -71,7 +71,13 @@ fi
 # =================================================================
 # AUTO-SYNC FROM CLAUDE-PATTERN (keeps all projects up to date)
 # =================================================================
-CLAUDE_PATTERN="/Users/veronelazio/Developer/Private/claude-pattern"
+# Path to the claude-pattern SOURCE repo. This hook is synced INTO consumer
+# projects, so it must NOT be derived from this file's location — a consumer's
+# copy lives in the consumer repo, not in claude-pattern. Resolution order:
+#   1. CLAUDE_PATTERN_ROOT if exported (works for any layout)
+#   2. a `claude-pattern` sibling of the current project (the common convention)
+# If neither exists, auto_sync_from_pattern no-ops via its SYNC_SCRIPT check.
+CLAUDE_PATTERN="${CLAUDE_PATTERN_ROOT:-$(dirname "$PROJECT_ROOT")/claude-pattern}"
 LOCAL_VERSION_FILE="$PROJECT_ROOT/.claude/.sync-version"
 SOURCE_VERSION_FILE="$CLAUDE_PATTERN/.claude/.sync-version"
 SYNC_SCRIPT="$CLAUDE_PATTERN/.claude/scripts/sync-to-project.sh"
@@ -521,7 +527,7 @@ else
 fi
 
 echo ""
-echo "📖 Commands: /init /context /blocked /safe /governance"
+echo "📖 Commands: /plan-w-team /pwt-goal /init /context /review-pr"
 echo "═══════════════════════════════════════════════════════════════"
 
 # =================================================================

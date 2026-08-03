@@ -59,12 +59,27 @@ if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-}" = "1" ]; then
 fi
 
 # ── next row ────────────────────────────────────────────────────────────────
+# The ledger is APPEND-ONLY: closing a row appends a resolution row carrying
+# `closes_index` and never rewrites the original, so the original keeps
+# `status:"open"` forever. Selecting on `.status` alone — as this did until
+# 1.65.1 — treats every closed row as open, so the drain would keep re-spawning
+# runs for work that is already done, and the backlog head would stick on a
+# resolved row permanently. $cidx is the DISTINCT set of closed indices (pre-fix
+# ledgers carry duplicate closures). Kept in lockstep with the same resolution
+# in plan-w-team-followups.sh; see shared/state-artifacts.md for the contract.
+_JQ_OPEN='
+  (map(.closes_index // empty) | map(tonumber? // empty) | unique) as $cidx
+  | to_entries
+  | map(select(.value | has("closes_index") | not))
+  | map(select(.key as $k | ($cidx | index($k)) == null))
+  | map(select(.value.status == "open"))
+'
 NEXT_IDX=""; NEXT_SLUG=""; NEXT_TEXT=""; OPEN_N=0
 if [ -f "$LEDGER" ] && command -v jq >/dev/null 2>&1; then
-    OPEN_N=$(jq -rs '[.[] | select(.status=="open")] | length' "$LEDGER" 2>/dev/null || echo 0)
+    OPEN_N=$(jq -rs "$_JQ_OPEN"' | length' "$LEDGER" 2>/dev/null || echo 0)
     # Oldest open row: the backlog head, not the newest arrival.
     read -r NEXT_IDX NEXT_SLUG <<EOF
-$(jq -rs 'to_entries | map(select(.value.status=="open"))
+$(jq -rs "$_JQ_OPEN"'
           | sort_by(.value.ts // .value.timestamp // "9999")
           | first // empty
           | "\(.key) \(.value.slug // "unknown")"' "$LEDGER" 2>/dev/null || echo "")

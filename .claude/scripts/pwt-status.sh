@@ -79,6 +79,33 @@ PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 STATE_DIR="$PROJECT_ROOT/.claude/state"
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+single_json() { # $1=captured output, $2=fallback → exactly ONE valid JSON document
+    # Helper output is NOT safe to interpolate directly. Two traps, both live:
+    #
+    #  1. `$(helper || echo FALLBACK)` CONCATENATES when the helper prints its
+    #     payload AND exits non-zero — which claude-agents-extended.sh does by
+    #     design ("here is what I have, but I learned nothing reliable", exit 1).
+    #     The capture then holds TWO documents, e.g. `[]\n[]`.
+    #  2. `jq -e .` does NOT reject that: a multi-document stream is valid jq
+    #     input, so the old guard passed it through. Downstream, `--argjson`
+    #     died ("invalid JSON text") and `... | length` emitted one number PER
+    #     document, so `[ "$N" -gt 0 ]` got `0\n0` → "integer expression
+    #     expected" (pwt-status rollup, both human and --json modes).
+    #
+    # Slurping is the check AND the repair: `jq -s` reads the whole stream into
+    # an array, so `length == 1` is a true single-document assertion, and on a
+    # multi-document capture we keep the LAST document (the helper's real
+    # payload precedes any appended fallback). Anything unparseable → fallback.
+    local raw="${1:-}" fallback="${2:-}" n
+    [ -n "$raw" ] || { printf '%s' "$fallback"; return 0; }
+    n=$(printf '%s' "$raw" | jq -s 'length' 2>/dev/null) || { printf '%s' "$fallback"; return 0; }
+    case "$n" in
+        1) printf '%s' "$raw" ;;
+        ''|0) printf '%s' "$fallback" ;;
+        *) printf '%s' "$raw" | jq -c -s '.[-1]' 2>/dev/null || printf '%s' "$fallback" ;;
+    esac
+}
+
 manifest_for() { # echo the manifest JSON for a slug, or empty
     [ -x "$MANIFEST" ] || return 0
     # Pin the manifest reader to the SAME state dir this tool scans, so the
@@ -135,15 +162,14 @@ if [ "$MODE" = "detail" ]; then
     FLEET='{"spawned":0,"completed":0,"failed":0,"running":0}'
     if [ -x "$FLEET_QUERY" ]; then
         FQ_ENV="$PROJECT_ROOT"; [ -n "$WT" ] && [ -d "$WT" ] && FQ_ENV="$WT"
-        FLEET=$(CLAUDE_PROJECT_DIR="$FQ_ENV" "$FLEET_QUERY" summary "$WANT_SLUG" 2>/dev/null || echo "$FLEET")
-        echo "$FLEET" | jq -e . >/dev/null 2>&1 || FLEET='{"spawned":0,"completed":0,"failed":0,"running":0}'
+        FLEET=$(single_json "$(CLAUDE_PROJECT_DIR="$FQ_ENV" "$FLEET_QUERY" summary "$WANT_SLUG" 2>/dev/null)" \
+                            '{"spawned":0,"completed":0,"failed":0,"running":0}')
     fi
 
     # Live sessions in the worktree (lead + nested builder subagents).
     AGENTS='[]'
     if [ -x "$AGENTS_EXTENDED" ] && [ -n "$WT" ]; then
-        AGENTS=$("$AGENTS_EXTENDED" --cwd "$WT" 2>/dev/null || echo '[]')
-        echo "$AGENTS" | jq -e . >/dev/null 2>&1 || AGENTS='[]'
+        AGENTS=$(single_json "$("$AGENTS_EXTENDED" --cwd "$WT" 2>/dev/null)" '[]')
     fi
 
     if [ "$WANT_JSON" = "1" ]; then

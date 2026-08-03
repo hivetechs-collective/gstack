@@ -7,6 +7,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HOOK="$PROJECT_ROOT/.claude/hooks/plan-w-team-goal-evaluator.sh"
 STATE_DIR="$PROJECT_ROOT/.claude/state"
+# Pin the evaluator's MAIN-checkout resolution to this same tree. Without it the
+# hook's git-common-dir fallback (added for recursive-followup row 1) reaches the
+# REAL main checkout whenever a scenario deliberately leaves the local scope empty
+# (U1: "no active goal"), and blocks on another run's live goal-state. This is the
+# documented isolation mechanism — the override always wins over git-common-dir.
+export PWT_PROJECT_ROOT_OVERRIDE="$PROJECT_ROOT"
 
 TEST_SLUG="goal-eval-test-$$"
 GOAL_FILE="$STATE_DIR/plan-w-team-goal-${TEST_SLUG}.json"
@@ -29,7 +35,10 @@ done
 shopt -u nullglob
 
 cleanup() {
-    rm -f "$GOAL_FILE" "$TRANSCRIPT"
+    # SHIP_VERDICT_FILE too: it lives in the live state tree next to the goal
+    # file (that adjacency is the contract the evaluator reads), so leaving one
+    # behind trips run.sh's state-leak guard and fails the whole shell phase.
+    rm -f "$GOAL_FILE" "$TRANSCRIPT" "${SHIP_VERDICT_FILE:-}"
 }
 
 final_cleanup() {
@@ -63,7 +72,22 @@ run_hook() {
     echo "$input" | "$HOOK" 2>/dev/null
 }
 
+# PWT-TERM1 anti-spoof (1.46.0+): generic SUCCESS anchors alone are NOT enough —
+# the evaluator withholds SUCCESS until Step 6 has written a PASS ship-verdict
+# next to the goal file. These fixtures predate that contract, so each
+# SUCCESS-expecting scenario stages the artifact the real pipeline would have
+# produced. BLOCK-expecting scenarios must NOT have one: a PASS verdict alone
+# also satisfies the PWT-TERM2 runaway guard and would flip them to SUCCESS.
+SHIP_VERDICT_FILE="$STATE_DIR/plan-w-team-ship-verdict-${TEST_SLUG}.json"
+write_ship_verdict() {
+    cat > "$SHIP_VERDICT_FILE" <<EOF
+{"slug":"$TEST_SLUG","verdict":"PASS","ts":"$(date -u +%Y-%m-%dT%H:%M:%SZ)"}
+EOF
+}
+clear_ship_verdict() { rm -f "$SHIP_VERDICT_FILE"; }
+
 write_state() {
+    clear_ship_verdict
     # Legacy positional args (turns, cap) accepted for backward compat with
     # existing test calls — ignored, since the hook no longer tracks them.
     local started="${3:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
@@ -113,6 +137,7 @@ assert_eq "no turn counter field" "false" "$TURNS_FIELD"
 
 echo "U5: SUCCESS — stage=retro-complete + workflow_lock=done → allow stop"
 write_state 5 200
+write_ship_verdict
 cat > "$TRANSCRIPT" <<EOF
 some earlier output
 {"slug":"$TEST_SLUG","stage":"retro-complete","workflow_lock":"done","ts":"2026-05-19T22:00:00Z"}
@@ -158,6 +183,7 @@ TERMINAL=$(jq -r '.terminal_state' "$GOAL_FILE")
 assert_eq "no terminal set" "null" "$TERMINAL"
 
 echo "U9: already-terminal goal → exit 0 (no re-evaluation)"
+write_ship_verdict
 # Manually set the goal to terminal to verify the early-return path
 jq '.terminal_state = "SUCCESS" | .terminal_reason = "prev run"' "$GOAL_FILE" > "$GOAL_FILE.tmp" && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
 OUT=$(echo "{\"transcript_path\":\"$TRANSCRIPT\"}" | "$HOOK" 2>/dev/null)
@@ -185,6 +211,7 @@ echo ""
 echo "=== PWT-T5c: feature-specific definition-of-done criteria ==="
 
 write_state_with_criteria() {
+    clear_ship_verdict
     local criteria_json="$1"
     # Legacy positional args (turns, cap) accepted for backward compat — ignored.
     cat > "$GOAL_FILE" <<EOF
@@ -200,6 +227,7 @@ EOF
 
 echo "U18: criteria=[] → T5b backward compat (SUCCESS fires on generic anchors alone)"
 write_state_with_criteria '[]' 5 200
+write_ship_verdict
 cat > "$TRANSCRIPT" <<EOF
 {"slug":"$TEST_SLUG","stage":"retro-complete","workflow_lock":"done","ts":"2026-05-19T22:00:00Z"}
 EOF
@@ -216,6 +244,7 @@ assert_eq "blocks when generic absent" "block" "$(echo "$OUT" | jq -r '.decision
 
 echo "U20: criteria + generic + all met → SUCCESS terminal"
 write_state_with_criteria '[{"pattern":"AC1.*PASS","description":"thing one","met":false,"met_at":null}]' 5 200
+write_ship_verdict
 cat > "$TRANSCRIPT" <<EOF
 AC1: PASS verified by Step 5 review
 {"slug":"$TEST_SLUG","stage":"retro-complete","workflow_lock":"done","ts":"2026-05-19T22:00:00Z"}
@@ -240,6 +269,7 @@ assert_eq "AC1 marked met" "true" "$(jq -r '.feature_specific_done_criteria[0].m
 assert_eq "AC2 still unmet" "false" "$(jq -r '.feature_specific_done_criteria[1].met' "$GOAL_FILE")"
 
 echo "U22: criterion met persists across invocations (first match wins)"
+write_ship_verdict
 # AC1 is already marked met from previous invocation. Run again with extended transcript.
 cat > "$TRANSCRIPT" <<EOF
 AC1: PASS verified

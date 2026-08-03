@@ -37,9 +37,44 @@ CMD="${1:-list}"; shift || true
 command -v jq >/dev/null 2>&1 || { echo "followups: jq not available — skipping (advisory tooling)" >&2; exit 0; }
 [ -f "$LEDGER" ] || { echo "followups: no ledger at $LEDGER (nothing to do)" >&2; exit 0; }
 
+# ── Effective-status resolution ──────────────────────────────────────────────
+# The ledger is append-only: `close` appends a resolution row and never rewrites
+# the original, which therefore keeps `status:"open"` FOREVER. So "is this row
+# open?" cannot be answered by reading the row alone — it is open only if no
+# LATER row closes it, which a resolution row records as `closes_index: <i>`
+# (the closed row's 0-based index in the raw file; stable because we only ever
+# append).
+#
+# Reading `.status` directly — as list/stats did until 2026-08-02 — meant a
+# closed row stayed listed as open and the counters never moved. The ledger was
+# structurally undrainable: closing rows only ever ADDED "closed" rows on top of
+# a permanently-open one. Row 1 was closed on 2026-07-31 and still listed open,
+# which then let a second run close it again.
+#
+# $cidx = the DISTINCT set of closed indices, so a double-close (the old bug's
+# own residue) counts once and cannot inflate `closed`.
+_JQ_PRELUDE='
+  (map(.closes_index // empty) | map(tonumber? // empty) | unique) as $cidx
+  | to_entries as $e
+  | ($e | map(select(.value | has("closes_index") | not))) as $orig
+  | ($orig
+     | map(select(.key as $k | ($cidx | index($k)) == null))
+     | map(select(.value.status == "open"))) as $open
+'
+
 # Open rows, newest last, with their 0-based index in the raw file.
 _open_rows() {
-  jq -rs 'to_entries | map(select(.value.status=="open"))' "$LEDGER" 2>/dev/null || echo '[]'
+  jq -rs "$_JQ_PRELUDE"' | $open' "$LEDGER" 2>/dev/null || echo '[]'
+}
+
+# Is raw index $1 already closed by a resolution row?
+# Coerces via tonumber in lockstep with $cidx above: a hand-edited or legacy
+# ledger may carry `closes_index` as a STRING, and a strict `==` would miss it
+# and silently re-allow the double-close this guard exists to stop.
+_close_count() {
+  jq -rs --argjson i "$1" \
+    '[.[] | select((.closes_index // empty | tonumber? // empty) == $i)] | length' \
+    "$LEDGER" 2>/dev/null || echo 0
 }
 
 case "$CMD" in
@@ -65,13 +100,18 @@ case "$CMD" in
     ;;
 
   stats)
-    jq -rs --argjson j "$JSON_OUT" '
-      (map(select(.status=="open"))) as $open
-      | (map(select(.status=="done" or .status=="closed"))) as $closed
-      | ($open | map(.ts // .timestamp // "") | map(select(. != "")) | sort | first) as $oldest
+    # Counts are over ORIGINAL follow-up rows only ($orig — resolution rows are
+    # bookkeeping, not backlog). closed = originals no longer open, which covers
+    # both closes_index closures and legacy rows written `status:"done"` inline.
+    jq -rs --argjson j "$JSON_OUT" "$_JQ_PRELUDE"'
+      | ($open | map(.value.ts // .value.timestamp // "")
+              | map(select(. != "")) | sort | first) as $oldest
+      | ($orig | length) as $total
+      | ($open | length) as $nopen
+      | ($total - $nopen) as $nclosed
       | if $j == 1
-        then {open: ($open|length), closed: ($closed|length), total: length, oldest_open: $oldest}
-        else "open: \($open|length)   closed: \($closed|length)   total: \(length)\noldest open: \($oldest // "n/a")"
+        then {open: $nopen, closed: $nclosed, total: $total, oldest_open: $oldest}
+        else "open: \($nopen)   closed: \($nclosed)   total: \($total)\noldest open: \($oldest // "n/a")"
         end
     ' "$LEDGER"
     exit 0
@@ -90,6 +130,16 @@ case "$CMD" in
     [ -n "$ROW" ] || { echo "followups: no row at index $IDX" >&2; exit 1; }
     STATUS=$(printf '%s' "$ROW" | jq -r '.status // "?"')
     [ "$STATUS" = "open" ] || { echo "followups: row $IDX is already '$STATUS' — nothing to close" >&2; exit 1; }
+    # The row's own `.status` stays "open" forever (append-only), so it cannot
+    # detect a prior closure — only a later resolution row can. Without this the
+    # same row is closeable an unbounded number of times; row 1 was in fact
+    # closed twice (2026-07-31, 2026-08-02) before this guard existed.
+    PRIOR=$(_close_count "$IDX")
+    [ "${PRIOR:-0}" -eq 0 ] || {
+      echo "followups: row $IDX was already closed by $PRIOR resolution row(s) — nothing to close" >&2
+      echo "  (see: plan-w-team-followups.sh show $IDX)" >&2
+      exit 1
+    }
     SLUG=$(printf '%s' "$ROW" | jq -r '.slug // "?"')
     # Append a resolution row; never rewrite history.
     printf '%s\n' "$ROW" | jq -c \

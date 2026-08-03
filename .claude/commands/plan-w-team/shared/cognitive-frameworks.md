@@ -30,6 +30,8 @@ One-line examples to make the "When to Apply" column actionable:
 
 ## Plan Approval vs Direct Build
 
-Plan approval is **optional and reserved for security-critical work**. With `mode: "auto"`, builders execute immediately. Use `mode: "plan"` when the lead needs to review each builder's approach before coding starts.
+Plan approval is **optional and reserved for security-critical work**. Builders execute immediately by default.
+
+> **Changed at CLI 2.1.212:** the Agent/Task tool's `mode` parameter is **deprecated and ignored**. `mode: "auto"` and `mode: "plan"` no longer do anything — do not pass them. Builders' effective permission posture comes from the session `defaultMode` (this setup pins `bypassPermissions`) and from a subagent definition's `permissionMode` frontmatter. To force plan-first behaviour for a security-critical builder, set `permissionMode: plan` in that agent's definition, or instruct it in the prompt to submit a plan and wait for lead approval before editing.
 
 **Skip plan approval for**: most feature work, single-task bug fixes, tasks where the lead provides explicit implementation instructions, trivial changes.

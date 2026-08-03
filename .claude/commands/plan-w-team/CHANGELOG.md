@@ -14,6 +14,246 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.66.1] — 2026-08-03 (7a87ecc)
+
+**The 1.66.0 backfill hook never fired — `set -o pipefail` inverted its own guard.**
+The hook piped `git show HEAD:CHANGELOG.md` into `grep -q`. `grep -q` exits on the
+first match, which SIGPIPEs the still-writing `git show`; under `pipefail` the
+pipeline then reports FAILURE even though the match SUCCEEDED — so the guard read
+"no PENDING heading" and the hook exited 0 without doing anything, every time.
+
+**It is size-dependent, which is why the unit test passed.** The test fixture was a
+5-line CHANGELOG: `git show` finished writing before `grep -q` exited, the pipe never
+broke, and the hook worked. The real CHANGELOG is 3400+ lines, so grep always exits
+early and the pipe always breaks. Caught only by running the shipped hook against
+the real repo — 10/10 green unit tests said it was fine.
+
+**Fixed** — capture `git show` output into a variable first, then match against it,
+so no pipeline exists to fail. Applied to both the PENDING guard and the version
+extraction (`grep -m1` exits early for the same reason). The test fixture now pads
+to 4000 lines so a reintroduced early-exit pipeline fails in the suite rather than
+in production.
+
+Lesson worth keeping: `set -o pipefail` + any early-exiting reader (`grep -q`,
+`grep -m1`, `head`) is a latent inversion whenever the producer is large enough to
+still be writing. Capture, then match.
+
+## [1.66.0] — 2026-08-03 (d75c980)
+
+**The CHANGELOG SHA backfill is no longer a "remember to do it" step.** Each release
+heading names the commit that shipped it — but that SHA cannot exist before the
+commit it names, so it is written one commit later. That step was manual, and manual
+steps get skipped: 1.65.1 needed a catch-up backfill commit, and the 1.57.0 entry
+went unbackfilled long enough that when its run's goal-state was reaped, the run
+could not be traced to its release at all (the defect 1.65.2 fixed).
+
+**Added — `post-commit-pwt-changelog-sha.sh` (PostToolUse, matcher `Bash`).** After a
+`git commit`, if the CHANGELOG **in HEAD** carries a `(PENDING)` release heading, the
+hook resolves it to HEAD's short SHA and commits just that file.
+
+It deliberately does **not** `--amend`: amending rewrites the commit and changes its
+hash, so a SHA written into amended content would name a commit that no longer
+exists. The one-commit-later follow-up is the only correct resolution; the hook
+removes the human step, not the extra commit.
+
+Guards, each test-covered — this hook writes commits autonomously, so its refusals
+matter more than its happy path:
+
+| Guard                          | Why                                                              |
+| ------------------------------ | ---------------------------------------------------------------- |
+| not `git commit` / `--amend`   | only a real commit establishes a nameable SHA                    |
+| commit message contains "backfill" | recursion — the hook's own commit must not re-trigger it      |
+| `(PENDING)` absent from **HEAD**   | if it is only in the worktree the commit did not include it, and naming HEAD would attribute the release to the wrong commit |
+| index non-empty after commit   | never bundle unrelated staged work into a `docs()` commit        |
+| CHANGELOG dirty                | same — surface it and let the human resolve                      |
+| any missing tool/path/git failure | fail-open: a missing SHA is a traceability nit, a blocked commit is a work stoppage |
+
+Mirrors `pre-commit-pwt-version-bump.sh` (same jq-first payload parsing, same
+`CLAUDE_PROJECT_DIR` resolution, same never-block contract) — that hook already
+carried a "backfill" skip clause, so the two now form a matched pair: one bumps
+VERSION on the way in, the other closes the SHA on the way out.
+
+Verified: 10/10 in `post-commit-pwt-changelog-sha.test.sh`, and this very entry was
+shipped as `(PENDING)` and resolved by the hook itself.
+
+## [1.65.2] — 2026-08-03 (4844a00)
+
+**The ship-verdict artifact carried no skill provenance, so a reaped run became
+untraceable.** The versioning system's whole purpose is that any run can be traced
+back to the exact release that produced it — `pwt-goal.sh` stamps `skill_version` +
+`skill_commit_sha` into the goal-state for precisely this reason. But the goal-state
+is **reaped once terminal**, and the Step-6 ship-verdict writer (PWT-TERM3) emitted
+only `{slug, verdict, ts}`. Once the goal-state was gone, the ship-verdict was the
+only surviving record of the run — and it did not say which release wrote it.
+
+Field evidence (2026-08-03 fleet audit): the 1.57.0 model-tiering-v3 run
+(`…4148b226`) survives *only* as its retro + ship-verdict artifacts; its goal-state
+was reaped. Both carried `skill_version` from an older writer but no
+`skill_commit_sha`, and today's writer stamps **neither** — so the regression had
+widened silently. Across 4 repos / 210 versioned runs those were the only two gaps;
+both have been backfilled to `aa09ae5` from this CHANGELOG's 1.57.0 heading.
+
+**Fixed — `__pwt_write_ship_verdict` now stamps provenance (`05-ship.md` §6-0a-bis).**
+The writer records `skill_version` + `skill_commit_sha` alongside the existing
+fields. It prefers `PWT_SKILL_VERSION` / `PWT_SKILL_COMMIT_SHA` — already exported by
+`pwt-goal.sh` — so every artifact within one run agrees even if HEAD moves mid-run,
+and falls back to the `VERSION` file plus `git rev-parse --short HEAD` so an
+**attended** ship (no `pwt-goal.sh` in the chain) still records provenance. Every leg
+is fail-open: a missing VERSION or a non-repo cwd yields `""` and never blocks a
+ship. Purely additive — the goal-evaluator's `jq -r '.verdict // ""'` reader and the
+C3 anti-spoof corroboration are untouched.
+
+Verified: the bats extractor (`ship-verdict-post-push-reliability.bats`) still lifts
+the helper cleanly — 24 lines terminating at the column-0 `}` — `bash -n` clean, all
+three structural assertions hold, the pre-push fail-safe still refuses to write, and
+both the exported-env and self-derived fallback paths produce correct stamps.
+
+## [1.65.1] — 2026-08-02 (cd60cdb)
+
+**Ship-merge of the recursive-followup row 1 fix.** The 1.64.1 work below was cut
+from `188f330` and passed its ship-readiness gate on 2026-07-31 (SUITE_EXIT=0,
+866 bats + 93/93 shell + 1/1 TS) — but the run then **stopped short of its own
+Step 6 merge and Step 8 retro**, leaving the branch unmerged while `main` moved on
+to 1.65.0. That is precisely the failure class the fix addresses, reproduced one
+more time on the run that fixed it. This entry records the merge to `main` and the
+renumber 1.64.1 → 1.65.1 (the branch predates 1.65.0; no content changed).
+
+A second, independent defect surfaced during recovery: the SessionStart auto-sync
+ran its **consumer** gitignore self-heal against a *source-repo worktree*, appending
+consumer ignore rules and `git rm --cached`-ing the 106-file skill test corpus. The
+worktree was restored from HEAD; the self-heal scoping is filed as a follow-up.
+
+**Fixed — `pwt-status.sh` rollup broke on a two-document capture (found by the ship
+gate, pre-existing on `main`).** `pwt-status.sh` captured helper output as
+`$(helper ... || echo FALLBACK)`. `claude-agents-extended.sh` **prints its payload
+and exits 1** by design ("here is what I have, but I learned nothing reliable"), so
+that idiom CONCATENATED the fallback onto the payload and the variable held two JSON
+documents. The validity guard did not catch it: `jq -e .` accepts a multi-document
+stream. Downstream, `jq -n --argjson` died with "invalid JSON text" (so `--json`
+rollup emitted **nothing**, 3 assertions red) and `... | length` returned one number
+per document, so `[ "$WF_N" -gt 0 ]` got `0\n0` → `integer expression expected` on
+stderr. Replaced both call sites with a `single_json` helper that slurps (`jq -s`) —
+which is simultaneously the true single-document assertion (`length == 1`) and the
+repair (keep the last document) — and falls back on anything unparseable.
+`pwt-status.test.sh` 35/38 → **38/38**. Swept the other wrapper consumers
+(`plan-w-team-route-prompt.sh`, `plan-w-team-followup-drain.sh`): they capture
+without `|| echo`, so `pwt-status.sh` was the only site with this bug.
+
+**Fixed — the row-1 regression test was not hermetic against its own subject.**
+`plan-w-team-goal-evaluator-main-lookup.test.sh` asserts how the evaluator
+*resolves* goal-state sources, but inherited the two env families that rewrite
+exactly that resolution. With `PWT_PROJECT_ROOT_OVERRIDE` set in the caller's
+shell — the documented workaround for worktree-CWD fragility, so a plausible
+operator shell — the override won over git-common-dir and AC1/AC6 went red
+(`passed=6 failed=2`) while the code under test was correct. The
+`PLAN_W_TEAM_DISABLE_*` family is worse: `pwt-goal.sh --worker-only` **exports**
+it, so the suite could go red inside precisely the autonomous worker this test
+protects. The test now scrubs both families at the top (AC3 re-exports the
+override per-invocation, its one legitimate use). Verified 8/8 under a clean
+env, under `PWT_PROJECT_ROOT_OVERRIDE=<worktree>`, and under
+`PLAN_W_TEAM_DISABLE_GOAL=1`.
+
+**Fixed — closing a follow-up row never drained the ledger (found while closing
+this run's own row 1).** The ledger is append-only, so `close` appends a
+resolution row and the ORIGINAL keeps `status:"open"` forever — but `list` and
+`stats` filtered on `.status` read straight off the raw rows. A closed row was
+therefore still reported open and the counters never moved: closure only ever
+stacked another "closed" row on top of a permanently-open one, and the backlog
+was **structurally undrainable** (34 open on 2026-07-26, 36 by 2026-08-02, none
+removable). Row 1 proved it end-to-end — closed 2026-07-31, still listed open,
+and closed a *second* time on 2026-08-02 because the pre-existing "already
+closed?" guard reads the row's own `.status`, which append-only pins at "open".
+Fixed by resolving effective status through the `closes_index` back-reference:
+`list`/`stats` treat a row as closed when a later row closes it, `stats` counts
+over ORIGINAL rows only (resolution rows are bookkeeping, not backlog) and
+de-duplicates by distinct closed INDEX so pre-fix duplicate closures count once,
+and `close` now scans for a prior resolution row instead of trusting `.status`.
+Row 1 drains on the fixed reader (`oldest_open` advances 2026-06-07 →
+2026-06-08). Regression: 5 new cases in `followups-ledger-tool.bats` (12 total),
+all verified RED against the pre-fix script. The existing case pinned that the
+resolution row is *appended*; nothing pinned that it takes *effect* — precisely
+the gap the bug lived in.
+
+## [1.65.0] — 2026-07-31 (58adc49)
+
+CLI version uplift **2.1.195 → 2.1.220** (25 versions). Full analysis:
+[`docs/operations/version-uplift-reports/2026-07-31-2.1.220.md`](../../../docs/operations/version-uplift-reports/2026-07-31-2.1.220.md).
+
+**Fixed — dead Agent-tool parameter (breaking at CLI 2.1.212).** The `mode` parameter on
+the Agent/Task tool is deprecated and **ignored**. The skill was still emitting
+`mode: "auto"` in both builder spawn blocks (`03-execute.md`) and — worse — documenting
+`mode: "plan"` in `shared/cognitive-frameworks.md` as the plan-approval switch for
+security-critical work. That escape hatch had silently become a no-op. Removed the
+parameter from both spawn blocks and rewrote the plan-approval guidance to use
+`permissionMode` frontmatter or an explicit submit-plan-and-wait instruction. Builders'
+effective posture is unchanged (it comes from the session `defaultMode: bypassPermissions`,
+not from `mode:`), so this is a correctness/documentation fix, not a behaviour change.
+
+**Docs — knowledge truth-up.** Hook-event table corrected 20 → **29** events in `CLAUDE.md`
+(adds `UserPromptExpansion`, `PermissionDenied`, `PostToolBatch`, `TaskCreated`,
+`StopFailure`, `CwdChanged`, `FileChanged`, `PostCompact`, `Elicitation`,
+`ElicitationResult`, `DirectoryAdded`), plus the newer hook output fields
+(`permissionDecision: "defer"`, `updatedToolOutput`, `watchPaths`, `applyPermissionRules`).
+Backfilled the 2.1.155–2.1.220 rows in `docs/operations/claude-code-compatibility.md` — the
+2.1.195 report's step 4 was never executed, leaving a 65-version hole. Recorded the new
+subagent fan-out limits and the `docs.claude.com` → `code.claude.com` host move.
+
+**Tests.** `opus48-uplift.bats` AC5 assertion updated to the new count and renamed into BDD
+shape; stale `r10-legacy-allowlist.txt` entry removed rather than extended. 474/474 green.
+
+**Not adopted this pass (tracked in the report):** explicit pinning of the three new subagent
+limits (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` / `_MAX_SUBAGENTS_PER_SESSION` /
+`_MAX_CONCURRENT_SUBAGENTS`), the `AskUserQuestion` no-auto-continue hang risk (2.1.200) and
+the `waitingFor` candidate it reopens, and verification of the reduced background-subagent
+tool pool (2.1.198). These change runtime behaviour and warrant their own change.
+## [1.64.1] — 2026-07-31 (02006fa)
+
+Recursive-followup **row 1** (`worker-only-stops-short-rootcause`) resolved — and it
+was NOT the bookkeeping closure it looked like. The row's own text said "Fixed in
+1.35.0"; all three 1.35.0 components were still present at 1.64.0; and the bug was
+reproducing anyway. This run caught it **on itself**.
+
+**The gap.** `pwt-goal.sh --worker-only` dual-seeds the anti-skip goal-state:
+(1) the worker's runtime worktree, (2) the canonical MAIN `.claude/state/`. Arm (1)
+is gated on `[ -d "$WORKER_WT_ROOT" ]` and loses its race against `claude --bg`
+worktree creation, so in practice **only the MAIN copy exists**. The worker's
+goal-evaluator resolved state from `$PWD/.claude/state` and
+`$CLAUDE_PROJECT_DIR/.claude/state` — and under `--worktree` **both equal the
+worktree**. Two nominal sources, one effective source, neither reaching MAIN.
+`GOAL_FILES` came back empty, the hook exited 0, and the deterministic anti-skip
+anchor was **inert on exactly the autonomous path it exists to protect**.
+
+`pwt-goal.sh:1674-1676` had asserted a "git-common-dir MAIN lookup (defense-in-depth
+Fix B)" since 1.35.0. It was never implemented — canon describing a control that did
+not exist.
+
+**Evidence (live, this run).** A temporary probe in the real Stop hook recorded
+`cpd=<worktree> pwd=<worktree> fallback=<worktree>/.claude/state goalfiles=0`, while
+the same hook with `CLAUDE_PROJECT_DIR=<main>` found the slug and blocked the stop.
+
+- **Evaluator third source** — `.claude/hooks/plan-w-team-goal-evaluator.sh` now also
+  reads the MAIN checkout via `git rev-parse --git-common-dir`
+  (`PWT_PROJECT_ROOT_OVERRIDE` wins first, preserving hermetic test-corpus isolation),
+  de-duplicated by resolved path so a MAIN-checkout run still evaluates each goal once.
+  Fail-open throughout: unresolvable MAIN degrades to the prior two-source behavior.
+  Terminal write-back targets `$GOAL_FILE` — the file actually read — so a MAIN-only
+  goal now persists its terminal state where `await-terminal.sh` and the Run-State
+  Router read it.
+- **§1.5 criteria injection** — `01-specification.md` derived `GOAL_FILE` cwd-relative,
+  so a worktree worker hit "state file missing — skipping" and injected **no**
+  `feature_specific_done_criteria` at all: the run's entire AC contract silently
+  un-enforced. MAIN resolution is now hoisted above the guard (and the later
+  dual-write block reuses it instead of re-deriving).
+- **Comment accuracy** — `pwt-goal.sh` now points at the real implementation and
+  records the history, so the claim and the code agree.
+- **Regression** — `.claude/scripts/plan-w-team-goal-evaluator-main-lookup.test.sh`
+  (8 assertions, hermetic git repo + real worktree, bash 3.2). Verified RED before
+  the fix (4 failures) and GREEN after. Added to the `sync-to-project.sh` allowlist.
+
+Note for whoever picks up row 43 (`criteria-marking-never-flips-met`): that path is
+still broken and was deliberately NOT used to verify AC6 here — the test drives a real
+terminal instead, so it asserts this fix rather than someone else's bug.
+
 ## [1.64.0] — 2026-07-26 (458fa3f)
 
 Four deferred items closed, including a design flaw the operator caught: the

@@ -517,6 +517,30 @@ SLUG="<feature-slug>"   # MUST be the directive's pre-seeded slug when one is na
 SPEC="docs/specs/${SLUG}.md"
 GOAL_FILE=".claude/state/plan-w-team-goal-${SLUG}.json"
 
+# ── MAIN-checkout resolution, hoisted (recursive-followup row 1, 2026-07-31) ──
+# Under a `--worker-only` run cwd is a WORKTREE, and pwt-goal.sh's worktree seed
+# arm is race-gated — so the worktree copy of the goal-state frequently does NOT
+# exist and ONLY the main copy does. The cwd-relative GOAL_FILE above then misses,
+# and this whole block used to print "state file missing — skipping": the run's
+# entire AC contract silently un-enforced, on exactly the autonomous path the
+# anti-skip anchor exists to protect. Resolve MAIN first and fall back to it.
+# (Same resolution as the goal-evaluator's third source and the dual-write below.)
+if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+    MAIN_ROOT="$PWT_PROJECT_ROOT_OVERRIDE"
+else
+    CDIR=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+    case "$CDIR" in
+        "") MAIN_ROOT="" ;;
+        /*) MAIN_ROOT=$(dirname "$CDIR") ;;
+        *)  MAIN_ROOT=$(cd "$(dirname "$CDIR")" 2>/dev/null && pwd || echo "") ;;
+    esac
+fi
+if [ ! -f "$GOAL_FILE" ] && [ -n "$MAIN_ROOT" ] \
+   && [ -f "$MAIN_ROOT/.claude/state/plan-w-team-goal-${SLUG}.json" ]; then
+    GOAL_FILE="$MAIN_ROOT/.claude/state/plan-w-team-goal-${SLUG}.json"
+    echo "[§1.5] worktree goal-state absent — resolved MAIN copy: $GOAL_FILE"
+fi
+
 # Skip if /goal disabled or state file absent (top-of-pipeline activation skipped)
 if [ "${PLAN_W_TEAM_DISABLE_GOAL:-}" = "1" ] || [ ! -f "$GOAL_FILE" ]; then
     echo "[§1.5] /goal disabled or state file missing — skipping criteria derivation"
@@ -574,19 +598,9 @@ else
         # above patches only the worktree-local copy, and the main-repo seeded copy
         # (read by the evaluator, await-terminal watcher, and Run-State Router)
         # stranded at terminal_state:null forever (field evidence 2026-07-09, 3 runs).
-        # Mirror pwt-goal.sh's dual-seed: resolve the main root via git-common-dir
-        # and apply the same injection there when it is a DIFFERENT file.
-        MAIN_ROOT=""
-        if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
-            MAIN_ROOT="$PWT_PROJECT_ROOT_OVERRIDE"
-        else
-            CDIR=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
-            case "$CDIR" in
-                "") MAIN_ROOT="" ;;
-                /*) MAIN_ROOT=$(dirname "$CDIR") ;;
-                *)  MAIN_ROOT=$(cd "$(dirname "$CDIR")" 2>/dev/null && pwd || echo "") ;;
-            esac
-        fi
+        # Mirror pwt-goal.sh's dual-seed: apply the same injection to the main copy
+        # when it is a DIFFERENT file. MAIN_ROOT is resolved once, hoisted above —
+        # do NOT re-derive it here (one resolution, one behavior).
         MAIN_GOAL_FILE="${MAIN_ROOT}/.claude/state/plan-w-team-goal-${SLUG}.json"
         if [ -n "$MAIN_ROOT" ] && [ -f "$MAIN_GOAL_FILE" ] \
            && [ "$MAIN_GOAL_FILE" != "$(cd "$(dirname "$GOAL_FILE")" 2>/dev/null && pwd)/$(basename "$GOAL_FILE")" ]; then
