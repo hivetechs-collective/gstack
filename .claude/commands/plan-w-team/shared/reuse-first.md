@@ -30,13 +30,25 @@ Grep pattern='formatCurrency|slugify|retry|debounce|parseDate'   # whatever your
 - **Good**: task needs currency formatting → grep finds `formatCurrency()` in `src/util/money.ts` → `import { formatCurrency }` and call it.
 - **Anti-pattern**: writing a fresh `function fmtMoney(...)` inline that duplicates the existing helper. This is the reuse-ignored anti-pattern (**+15% WTF**, `shared/self-regulation.md`).
 
+## Nascent shared abstractions
+
+Grep-before-write above only sees what already exists in the repo at your worktree's fork point. It has no way to see an abstraction that does **not exist yet** — one a sibling builder, working in a different worktree at the same moment, is about to write. Each builder greps, correctly finds nothing, and both write their own version of the same generic helper; the branches merge cleanly into a divergent duplicate that grep-before-write had no way to catch.
+
+`plan-w-team-claim-abstraction.sh` closes this gap with two layers, and the ordering is the whole design:
+
+- **Layer 1 — `verify`. THE GATE.** Diff-driven: reads the run's merged diff, normalizes each newly-added definition's symbol to a concept key, and flags a key defined in more than one new file. Requires **zero builder participation** and works even with no ledger at all — this is what actually blocks ship (`04-fix-first-review.md` §5c-quater).
+- **Layer 2 — `claim`/`release`/`list`. ADVISORY early warning.** A builder about to write a plausibly-shared new abstraction claims the concept key first; a CONFLICT response saves it from writing code that Layer 1 would only flag for consolidation later. This layer is optional and voluntary — Layer 1 is what actually holds regardless of compliance (a voluntary-only protocol catches the different-name case only if BOTH builders comply, ~p²; diff-driven detection moves that guarantee to 1).
+
+Builder-facing rule (spawn prompt): the NASCENT ABSTRACTION CLAIM block in `03-execute.md`, mirrored into `team/builder.md` + `team/builder-opus.md`.
+
 ## Where this rule is enforced across the pipeline
 
-| Gate                  | Mechanism                                                                                                                |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| **Step 0** (scope)    | Premise Q2 "80% of value from what exists?" + cross-feature overlap scan (`00-scope-challenge.md` §0f).                  |
-| **Step 1** (spec)     | Mandatory **Existing-Code Survey / Reuse Audit** section + freeze gate (`plan-w-team-reuse-audit-gate.sh`).              |
-| **Steps 3-4** (build) | CODE PRESERVATION block inlined in the builder spawn prompt (`03-execute.md`) + this file + `shared/self-regulation.md`. |
-| **Step 5** (review)   | Reviewer reuse/duplication remit + `consolidate-into-existing` routing (`04-fix-first-review.md`); opt-in clone scan.    |
+| Gate                                 | Mechanism                                                                                                                                                                                         |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Step 0** (scope)                   | Premise Q2 "80% of value from what exists?" + cross-feature overlap scan (`00-scope-challenge.md` §0f).                                                                                           |
+| **Step 1** (spec)                    | Mandatory **Existing-Code Survey / Reuse Audit** section + freeze gate (`plan-w-team-reuse-audit-gate.sh`).                                                                                       |
+| **Steps 3-4** (build)                | CODE PRESERVATION block inlined in the builder spawn prompt (`03-execute.md`) + this file + `shared/self-regulation.md`.                                                                          |
+| **Steps 3-5** (nascent abstractions) | Claim lock (`plan-w-team-claim-abstraction.sh`) — Layer 2 advisory claim in the builder spawn prompt (`03-execute.md`), Layer 1 diff-driven gate at Step 5 (`04-fix-first-review.md` §5c-quater). |
+| **Step 5** (review)                  | Reviewer reuse/duplication remit + `consolidate-into-existing` routing (`04-fix-first-review.md`); opt-in clone scan.                                                                             |
 
 The reuse decision is therefore made **on paper at spec time**, **enforced at build time**, and **re-checked at review time** — not left implicit.

@@ -106,7 +106,7 @@ do not advance the pipeline while it is red.
 A flaky test is fixed by **removing the source of non-determinism**, never by masking it:
 
 | Source of non-determinism                             | Correct repair                                        |
-| ----------------------------------------------------- | ----------------------------------------------------- |
+| ------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------- |
 | Live network / DB / clock-dependent vendor call       | Mock or stub the live dependency                      |
 | Unpinned random seed / `Date.now()` / `Math.random()` | Pin the seed; inject a fixed clock                    |
 | Shared mutable state across tests                     | Isolate state (fresh fixture per test, reset between) |
@@ -173,7 +173,7 @@ TaskGet -> metadata.evaluator_report
 ```
 
 | Evaluator Outcome                                                     | Review Adjustment                                                                                                                                                                                                                                                     |
-| --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------- |
 | **All PASS** (all criteria met)                                       | Standard review. The evaluator validated criteria; it does NOT check security, race conditions, LLM trust boundaries, or one-way door safety. Never skip Pass 2 — informational items (dead code, stale comments, magic numbers) flag drift the evaluator cannot see. |
 | **PASS with notes** (criteria met but evaluator flagged observations) | Standard review, but prioritize evaluator's flagged areas in Pass 1.                                                                                                                                                                                                  |
 | **ESCALATE** (evaluator couldn't get builder to pass)                 | Intensify review — read evaluator's failure report first. The failures it flagged are likely real issues. Present to user as ASK items.                                                                                                                               |
@@ -523,7 +523,7 @@ To revert to single-reviewer Pass 1 globally, delete this §5b-pre block. The ex
 ## 5b. Pass 1 — CRITICAL (blockers, must fix before ship)
 
 | Check                                               | What to Look For                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| --------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------- |
 | SQL safety                                          | Raw string interpolation in queries, missing parameterization                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Race conditions                                     | TOCTOU (time-of-check-time-of-use) patterns, shared mutable state                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | LLM trust boundaries                                | User input passed directly to prompts without sanitization                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -541,7 +541,7 @@ To revert to single-reviewer Pass 1 globally, delete this §5b-pre block. The ex
 Runs only when `.claude/qa-profile.json` exists in the target repo. Each check below is Pass 1 CRITICAL — a hit blocks merge and invokes the fix-first heuristic from §5d.
 
 | Check                    | What to Look For                                                                                                                                                                                                                                                                                                 |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------- |
 | Inline locators in specs | Any `page.locator(...)`, `page.getByRole(...)`, `page.getByTestId(...)`, or sibling getter called directly in a `.spec.ts` file (i.e., NOT via a page-object method). **REJECT** and route to fix-first. Page-object-only is non-negotiable per `shared/ui-tdd-enforcement.md`.                                  |
 | Missing `data-testid`    | Any interactive element (`<button>`, `<input>`, `<a href>`, `<form>`, custom role=button components) added in the diff without `data-testid`. The ESLint rule should catch this pre-merge — if it surfaces in review, the rule was disabled or the file is excluded. Investigate both.                           |
 | Wrong testid attribute   | Diff contains `data-test=`, `data-cy=`, `data-qa=`, or `testid=` (without the `data-` prefix). Migrate to `data-testid` — the scaffolded Playwright config pins `testIdAttribute: 'data-testid'` and will not see the others.                                                                                    |
@@ -590,7 +590,7 @@ When the diff contains no data-mutating endpoint and matches no content signal, 
 > verify-GREEN→note). You may not advance with such an item merely "noted".
 
 | Check                      | What to Look For                                                                                                                                                                                                                                                                                                                                      |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------- |
 | Dead code                  | New functions never called, unreachable branches introduced in this diff                                                                                                                                                                                                                                                                              |
 | Cross-codebase duplication | New code that re-implements a function/helper/util/constant that **already exists** elsewhere (not just dead NEW code). Grep the codebase by name and by concept for near-duplicates; prefer consolidation. Runs in the DEFAULT Pass-2 path — see the `consolidate-into-existing` routing option in §5d. (Reuse-first rule: `shared/reuse-first.md`.) |
 | Magic numbers              | Unexplained numeric literals                                                                                                                                                                                                                                                                                                                          |
@@ -757,6 +757,47 @@ PLAN_W_TEAM_CLONE_SCAN=1 .claude/scripts/plan-w-team-reuse-clone-scan.sh --paths
 ```
 
 The script runs `jscpd` if it is already installed (PATH or `npx --no-install`) and **degrades gracefully (exit 0) when the tool is absent** — it never adds a required dependency and never blocks ship. Findings are advisory: review the reported clones and consolidate per `shared/reuse-first.md` (route via the §5d `consolidate-into-existing` option). When unset, this sub-step is byte-for-byte a no-op — the default Step-5 path is unchanged.
+
+## 5c-quater. Nascent-Abstraction Duplicate Scan (Layer 1 — the gate)
+
+Unlike M3 above, this scan is **default-ON and dependency-free** — no `jscpd`, no opt-in flag. It closes the one gap grep-before-write cannot: an abstraction that did not exist yet at any builder's worktree-fork time, so a plain "search the repo first" check correctly finds nothing and every parallel builder writes its own version. Layer 1 of `plan-w-team-claim-abstraction.sh` (`shared/reuse-first.md` §Nascent shared abstractions) reads the run's merged diff directly — it requires **zero builder participation** and works even if no builder ever called `claim`.
+
+```bash
+# PASS --diff-base. It is optional only in the sense that the script will try to
+# infer it; the inference cannot succeed when HEAD already IS the default branch
+# (no origin refs, or origin/main == HEAD after a ship), and an empty range is
+# NOT a clean run. Use this run's base — the commit the work branched from.
+.claude/scripts/plan-w-team-claim-abstraction.sh verify --slug "$SLUG" \
+  --diff-base "$(git merge-base HEAD origin/main 2>/dev/null || echo '<run-base-sha>')" \
+  [--root <dir>]
+```
+
+Exit `0` = **verified clean**. Exit `11` = findings (graded below). Exit `12` = **could not verify** (no repo, no run base, empty range, scan error) — re-run with an explicit `--diff-base`; it is not a blocker, but it is not a pass either. Exit `2` = usage error (bad `--slug`, malformed args) — a broken invocation, never a clean run.
+
+**Only `CLEAN` (exit `0`) is a pass.** The non-verifying outcomes exit `12` precisely so a caller keying off the exit code can tell "verified clean" from "did not verify" — the difference between a gate and a rubber stamp:
+
+| Output                   | Exit | Meaning                                                                                                             |
+| ------------------------ | ---- | ------------------------------------------------------------------------------------------------------------------- |
+| `CLEAN base=… commits=…` | `0`  | the diff really was scanned and holds no duplicate — and it names the base and window it scanned, so the pass is auditable |
+| `SKIP reason=…`          | `12` | the diff half was **not** scanned (no run base, empty range, no repo, no tmp)                                        |
+| `UNKNOWN reason=…`       | `12` | a scan was attempted and failed — unverified, never clean                                                            |
+| `DEGRADED: …` (prefix)   | any  | the claim layer failed open ≥1 time, so Layer-2 severity grading is not authoritative                                |
+
+A `SKIP` or `UNKNOWN` at this gate means re-run it with an explicit `--diff-base`; do not record it as a passing scan.
+
+Findings are graded against the claim ledger (Layer 2, `.claude/state/plan-w-team-abstraction-claims-$SLUG.jsonl`) when one exists. With no ledger at all the scan still runs, and every finding is INFORMATIONAL:
+
+| Situation                                                                                                                      | Severity      | Routing                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| ≥2 definition sites for the same concept key, plus a `conflict` ledger record for that key, and the extra site is **untagged** | **CRITICAL**  | Pass 1 (§5b) — an explicit coordination signal (the CONFLICT) was ignored                                                                                  |
+| ≥2 sites, extra site tagged `PWT-CLAIM-DUP:<key>`                                                                              | INFORMATIONAL | `consolidate-into-existing` (§5d) — builder complied with the CONFLICT protocol                                                                            |
+| ≥2 sites, key was never claimed at all                                                                                         | INFORMATIONAL | `consolidate-into-existing` (§5d)                                                                                                                          |
+| A `conflict` ledger record for a key with **0** definition sites                                                               | INFORMATIONAL | `contested-never-built` — the loser stood down and the incumbent never actually built it; flag as a possible functionality hole, not a duplication finding |
+| `granted`-only claim, 0 definition sites                                                                                       | —             | Not a finding — abandoned or released work is normal                                                                                                       |
+
+All duplication findings from this scan route through the **existing** `consolidate-into-existing` classification (§5d) and the **existing** Pass-2 ASK `options=` list — this scan is a new detector feeding the classifier M1/M3 already use, not a new classification value. A `DEGRADED` notice in the scan's output means Layer 2 failed open at least once this run (unresolvable root, unwritable ledger, row cap, or a malformed row) — Layer-1 findings above are still authoritative on their own, but the `conflict`-record grading in the table depends on Layer-2 evidence that is not.
+
+**Honest limit**: this scan covers the diff between the run's base and the builder-merge product only. Code written in later Step-5 fix rounds — retroactive-coverage tasks (`04-fix-first-review.md:604`), §5-0 fix loops, Pass-2 ASK fixes — is not re-scanned; it is unclaimed and unverified by this mechanism.
 
 ## 5d. Fix-First Heuristic — Classify Each Finding
 

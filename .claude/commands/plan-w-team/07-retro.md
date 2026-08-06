@@ -837,6 +837,29 @@ if [ "${RETRO_SUCCESS:-0}" = "1" ]; then
   # per-run retirement). Reaching retro means we shipped past the §6 gate → safe.
   rm -f ".claude/state/plan-w-team-ship-verdict-${SLUG}.json"   # PWT-TERM2 per-run ship-verdict
 
+  # Nascent-abstraction claim ledger + degraded sentinel (recursive-followup row 4).
+  # UNLIKE the cwd-relative rm -f lines above, this ledger lives ONLY in the MAIN
+  # checkout by design (`shared/state-artifacts.md`) — under `--worker-only` cwd is
+  # a WORKTREE, so a bare cwd-relative `rm -f` here would silently miss the MAIN
+  # copy and leak it on every worker-only run. Resolve MAIN_ROOT with the same case
+  # arm as `01-specification.md:528-540` before removing (no $PWD fallback — an
+  # unresolvable root just skips this cleanup rather than guessing a location).
+  CLAIM_MAIN_ROOT=""
+  if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+      CLAIM_MAIN_ROOT="$PWT_PROJECT_ROOT_OVERRIDE"
+  else
+      CLAIM_CDIR=$(git rev-parse --git-common-dir 2>/dev/null || echo "")
+      case "$CLAIM_CDIR" in
+          "") CLAIM_MAIN_ROOT="" ;;
+          /*) CLAIM_MAIN_ROOT=$(dirname "$CLAIM_CDIR") ;;
+          *)  CLAIM_MAIN_ROOT=$(cd "$(dirname "$CLAIM_CDIR")" 2>/dev/null && pwd || echo "") ;;
+      esac
+  fi
+  if [ -n "$CLAIM_MAIN_ROOT" ]; then
+    rm -f "${CLAIM_MAIN_ROOT}/.claude/state/plan-w-team-abstraction-claims-${SLUG}.jsonl" \
+          "${CLAIM_MAIN_ROOT}/.claude/state/plan-w-team-abstraction-claims-${SLUG}.degraded"
+  fi
+
   # Janitor pass: sweep up leftover SUCCESS goal files — this run's now-shipped
   # state plus any older SUCCESS files from runs whose own retro cleanup never
   # fired. Uses the SINGLE reconciled janitor (plan-w-team-cleanup-stale-goal-states.sh,

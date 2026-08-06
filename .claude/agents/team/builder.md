@@ -205,6 +205,8 @@ in Rails). The invariants, not the syntax, are the rule.
 - Write code without reading existing implementations first
 - Re-implement a function/helper/utility/constant that already exists
   - Good: grep-before-write (`Grep pattern='function <name>|const <name> =|def <name>|fn <name>'`), then import/call or extend the existing one — the CODE PRESERVATION rule in `shared/self-regulation.md` and `shared/reuse-first.md`
+- Write a brand-new generic helper/constant/util module in a multi-builder run without checking for a nascent-abstraction claim first — grep-before-write cannot see what a sibling builder is writing right now
+  - Good: before implementing a plausibly-shared new abstraction, follow the NASCENT ABSTRACTION CLAIM block in your spawn prompt (`plan-w-team-claim-abstraction.sh claim`) — see `shared/reuse-first.md` §Nascent shared abstractions
 - Spread `req.body` / request body directly into an ORM update or insert (mass assignment)
   - Good: allow-list the mutable fields — `z.object({...}).strict().pick({ name: true, email: true })`, then pass only the parsed result to the ORM
 - Query/update by id without a tenant or owner predicate in the `where` clause

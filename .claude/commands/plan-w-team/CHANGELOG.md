@@ -14,6 +14,105 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.68.0] — 2026-08-06 (d806026)
+
+> Shipped as 1.68.0, not 1.67.0: this run authored its entry as 1.67.0 while a
+> concurrent run (`c58efb9`, the agent-roster prompt-audit) took that number on
+> `main` first. Renumbered at merge; both releases are real and both are below.
+
+**The last anti-duplication gap: an abstraction that doesn't exist yet.** Every
+existing gate protects something that is already there to find — grep-before-write
+sees code, `creates_types` sees a plan-time declaration. Neither covers a shared
+helper that (a) does not exist at worktree-fork time and (b) was not predicted at
+Step 2. Two parallel builders each need it, each greps, each correctly finds
+nothing, each writes a version under a different name, and the branches merge
+cleanly into two divergent implementations of one concept. This closes recursive-
+followup row 4 of `enhance-the-plan-w-team-skill-to-close-its-code-reuse-anti-
+duplication-protectio-e6b61e7d` (spec:
+`docs/specs/resolve-recursive-followup-row-4-enhance-the-plan-w-team-skill-to-
+close-its-code-6baae17d.md`).
+
+**Added — `plan-w-team-claim-abstraction.sh`, two layers, ordered strongest-first.**
+Layer 1 (`verify`) is **the gate**: diff-driven, reading the run's merged diff at
+Step 5, normalizing every newly-added definition's symbol to a concept key, and
+flagging a key defined in more than one new file. Zero builder participation
+required, and it works with no ledger at all. Layer 2 (`claim`/`release`/`list`) is
+advisory: a builder about to write a plausibly-shared new abstraction claims it by
+key, and a later builder claiming the same key gets an actionable CONFLICT.
+
+**Why the gate is diff-driven and not ledger-driven.** A voluntary claim protocol
+is a duty performed mid-task by an LLM agent. At per-builder compliance `p`, a
+two-builder collision is only caught with probability `p²` — and a ledger-driven
+verifier can only ever look for symbols that were claimed, so a non-claiming
+builder's differently-named duplicate stays invisible regardless of how careful the
+other builder was. Making the detector diff-driven moves the guarantee from `p²`
+to `1` and demotes the claim layer to honest upside — cutting every dotted
+(advisory) edge in the design still leaves a working detector.
+
+**CRUD verbs are deliberately KEPT in the concept-key normalizer, not dropped as
+noise.** The first draft of the normalizer dropped `get`/`set`/`create`/`new` as
+boilerplate, which collapses `getUser`, `createUser`, `setUser`, and `newUser` onto
+the single key `user` — a confident CONFLICT against genuinely different functions.
+A false CONFLICT is strictly worse than a missed one: fail-open can rescue a wedged
+builder, but nothing rescues a *wrong* verdict once a builder has acted on it. Only
+true noise (`util`, `helper`, `common`, `impl`, `shared`, prepositions, articles) is
+dropped, and any key that reduces to a single surviving token is downgraded to
+advisory-only — one word is never enough evidence to block.
+
+**The same class bit again during Step-5 review, and only adversarial probing found
+it.** Sorting tokens is what makes `retryWithBackoff` and `backoff_retry_helper`
+collide — but sorting also destroys argument ORDER, and `to` is a noise word. So both
+directions of an inverse converter collapsed onto one key: `userToRole` and
+`roleToUser` → `role-user`, `centsToDollars` and `dollarsToCents` → `cents-dollars`.
+Two genuinely different functions, one blocking CONFLICT. Reading the normalizer did
+not surface this; running it over a list of deliberately adversarial symbol pairs did.
+Fixed with a directional disambiguator (when a symbol carries `to`/`from`/`into`,
+append the first meaningful token), with tests pinning the fix AND both behaviours it
+must not break. Lesson worth keeping: for a normalizer, the test that matters is not
+"does it collide what should collide" but "does it collide what must NOT".
+
+**A failed `git diff` made the gate report CLEAN.** The Layer-1 scan was
+`git diff … | awk`, and in a pipeline `$?` is the LAST stage's status — so a failed
+diff handed awk an empty stream, awk exited 0, and `verify` reported clean having
+scanned nothing. Measured: `git diff BOGUSREF..HEAD | awk '{print}'` yields `$?=0`.
+This is the 1.66.1 pipefail inversion wearing a different hat, and the same fix
+applies: capture first, then match.
+
+**The CONFLICT protocol replaces an instruction that can't actually be executed.**
+"Import the incumbent" sounds like the obvious loser response, but the incumbent's
+symbol does not exist in the loser's worktree — the import fails the PostToolUse
+type check, and the builder prompt's own TEST EXECUTION rule then forces a
+resolution whose cheapest form is writing the helper locally anyway, which
+manufactures the exact duplicate the mechanism exists to prevent, plus a red build.
+The real protocol: if the incumbent's declared path already resolves in your
+worktree, import it and you're done; otherwise implement locally and tag the
+definition with `PWT-CLAIM-DUP:<key> — see <symbol>@<path>`. The loser is never
+blocked — the tag costs one comment line, keeps the build green, and makes
+Step-5 consolidation deterministic (Layer 1 grades an untagged duplicate with a
+recorded CONFLICT as CRITICAL; a tagged one as informational).
+
+**No lock — deliberately, and this is the third time this decision has been made
+in this skill and the first time it's been written down as a decision rather than
+just an omission.** `pwt-ram-claim.sh:39` and `pwt-claims-cleanup.sh:38` each carry
+a hand-written comment — `# keep in sync with <the other> acquire_lock — same lock
+dir, same semantics` — because both scripts read-modify-write the same registry and
+have to serialize. This ledger doesn't: it's read-then-append, rows are ~300 bytes
+(under `PIPE_BUF`), so `O_APPEND` never interleaves. Adding a third hand-synced
+`acquire_lock` copy to a feature whose entire purpose is preventing hand-synced
+duplication would be self-refuting. The residual same-instant race grants both
+claimants; Layer 1 catches the resulting duplicate regardless.
+
+Also: fail-open on every infrastructure error (never wedges a builder), a
+`.degraded` sentinel so a failed-open run can never look clean, a `PLAN_W_TEAM_
+DISABLE_CLAIM_LOCK=1` kill switch, and exit codes `10`/`11` for CONFLICT/findings
+sitting outside the `0/1/2` band so neither is confusable with a crashed script or
+a missing script in a partially-synced consumer repo. Documented at
+`docs/operations/plan-w-team-abstraction-claims.md`, including the honest limits:
+pure synonyms (`fmtMoney`/`formatCurrency`) don't collide and can't without
+semantics, and `verify` covers the builder-merge product only — code added by
+later Step-5 fix rounds is not re-scanned. Script added to the `sync-to-project.sh`
+allowlist (its bats corpus lives in `tests/skill/cases/`, which rsyncs wholesale
+and needs no separate entry).
 ## [1.67.0] — 2026-08-06 (c58efb9)
 
 **Agent-roster prompt audit applied — the orchestrator sheds its Opus 4.5-era scaffolding.**
