@@ -473,6 +473,16 @@
         ]
       }
     ],
+    "StopFailure": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/stop-failure-notify.sh"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
