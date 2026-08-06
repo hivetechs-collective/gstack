@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   Spring Boot Java framework expert specializing in Spring ecosystem, JPA,
-  Spring Security, and enterprise Java development with 2025 knowledge including
+  Spring Security, and enterprise Java development, including
   Spring Boot 3.3 and virtual threads.
 color: orange
 model: inherit

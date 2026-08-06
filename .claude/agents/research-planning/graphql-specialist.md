@@ -6,7 +6,7 @@ name: graphql-specialist
 color: purple
 description: |
   GraphQL API expert specializing in schema design, Apollo Server/Client, federation,
-  and GraphQL best practices with 2025 knowledge including GraphQL Yoga 5 and Relay improvements.
+  and GraphQL best practices, including GraphQL Yoga 5 and Relay improvements.
 version: 1.2.0
 
 # ============================================================================

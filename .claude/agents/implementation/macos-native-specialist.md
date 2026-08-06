@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   macOS native development expert specializing in Swift, AppKit, SwiftUI for
-  Mac, and macOS platform features with 2025 knowledge including macOS 15
+  Mac, and macOS platform features, including macOS 15
   Sequoia APIs and App Intents.
 color: blue
 model: inherit

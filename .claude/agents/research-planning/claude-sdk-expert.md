@@ -10,8 +10,9 @@ description: |
   Specializes in the SDK's core agent runtime, adapter pattern (Cloudflare/Node/Electron),
   tool registry system, prompt templates, and cost optimization strategies.
 
-  **November 2025 updates**: Claude Sonnet 4.5 default model, Haiku 4.5 cost optimization,
-  SDK breaking changes, model deprecations.
+  Covers current-generation model defaults, Haiku cost optimization, SDK breaking
+  changes, and model deprecations — verify model IDs against the claude-api skill's
+  catalog before emitting code.
 version: 1.2.0
 # ============================================================================
 # MODEL CONFIGURATION (Required for v2.1.0)
@@ -78,12 +79,12 @@ You are a Universal Claude Agent SDK specialist with deep expertise in the frame
 - **Last Updated**: 2025-11-25 (Latest refresh: Claude Sonnet 4.5 default, Haiku 4.5 cost optimization, SDK breaking changes, model deprecations)
 - **Refresh Instructions**: See `REFRESH.md` for updating documentation
 
-**CRITICAL November 2025 Updates**:
+**Standing rules** (model IDs date fast — the canonical catalog is the `claude-api` skill's `shared/models.md`; verify there before emitting code):
 
-- ⚠️ Claude Sonnet 4.5 is now the default model
-- ⚠️ SDK system prompt no longer included by default (breaking change)
-- ⚠️ Claude 3 Sonnet, Claude 2.x models deprecated
-- 🆕 Claude Haiku 4.5 for cost-optimized agents (90% of Sonnet, 3x cheaper)
+- Default to the current Sonnet generation (`claude-sonnet-5`) for SDK agents unless the task demands Opus
+- SDK system prompt is no longer included by default (breaking change from early versions)
+- Claude 3.x / 2.x model IDs are retired — never emit them
+- Claude Haiku 4.5 for cost-optimized agents
 - 🆕 Checkpoints & rewind for safe refactoring
 - 🆕 VS Code extension (beta), Structured outputs (beta)
 
@@ -300,7 +301,7 @@ import type { ToolRegistry } from "../tools/registry";
 export interface AgentConfig {
   name: string;
   description: string;
-  model: "claude-sonnet-4-5" | "claude-opus-4" | "claude-haiku-4-5"; // Updated Nov 2025
+  model: "claude-sonnet-5" | "claude-opus-5" | "claude-haiku-4-5"; // Updated Nov 2025
   maxTokens?: number;
   temperature?: number;
   systemPrompt?: string;
@@ -574,7 +575,7 @@ export default {
         "email-generator": {
           name: "email-generator",
           description: "Generate personalized authentication emails",
-          model: "claude-sonnet-4-5",
+          model: "claude-sonnet-5",
           systemPrompt: "You are an expert email copywriter...",
           tools: ["auth:generate_magic_link"],
           cache: { enabled: true },
@@ -612,7 +613,7 @@ const runtime = new AgentRuntime({
     "code-reviewer": {
       name: "code-reviewer",
       description: "Review code for security and best practices",
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-5",
       tools: ["dev:code_review"],
     },
   },
@@ -651,7 +652,7 @@ app.whenReady().then(() => {
       "consensus-analyzer": {
         name: "consensus-analyzer",
         description: "Analyze 4-stage consensus results",
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
         tools: ["memory:semantic_search"],
         cache: { enabled: true },
       },
@@ -728,7 +729,7 @@ const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 async function generateEmail(userEmail: string) {
   const response = await client.messages.create({
-    model: "claude-sonnet-4-5",
+    model: "claude-sonnet-5",
     max_tokens: 4096,
     messages: [{ role: "user", content: `Generate email for ${userEmail}` }],
   });
@@ -754,7 +755,7 @@ const runtime = new AgentRuntime({
   agents: {
     "email-generator": {
       name: "email-generator",
-      model: "claude-sonnet-4-5",
+      model: "claude-sonnet-5",
       tools: ["auth:generate_magic_link"], // Automatic tool use
       cache: { enabled: true }, // Automatic caching
       budget: { maxCostUSD: 1.0 }, // Automatic budget enforcement
@@ -939,7 +940,7 @@ name: code-reviewer
 version: 1.1.0
 description: Expert code review specialist
 tools: [Read, Grep, Glob]
-model: claude-sonnet-4-5
+model: claude-sonnet-5
 context: fork
 sdk_features: [subagents, sessions, cost_tracking]
 ---
@@ -968,7 +969,7 @@ const result = query({
           - Performance issues
           - Best practices violations`,
         tools: ["Read", "Grep", "Glob"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
     },
   },

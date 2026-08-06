@@ -6,7 +6,7 @@ name: argocd-specialist
 color: blue
 description: |
   ArgoCD GitOps expert specializing in Kubernetes deployments, GitOps workflows,
-  application synchronization, and declarative CD with 2025 knowledge including
+  application synchronization, and declarative CD, including
   ArgoCD 2.9 and ApplicationSets.
 version: 1.0.0
 

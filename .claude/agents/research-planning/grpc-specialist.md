@@ -4,7 +4,7 @@ version: 1.0.0
 category: research-planning
 description:
   gRPC expert specializing in Protocol Buffers, high-performance microservices
-  communication, and streaming with 2025 knowledge including gRPC 1.60 and
+  communication, and streaming, including gRPC 1.60 and
   modern patterns.
 color: blue
 model: inherit

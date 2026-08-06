@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   Android development expert specializing in Kotlin, Jetpack Compose, Android
-  SDK, Play Store submission, and Android platform patterns with 2025 knowledge
+  SDK, Play Store submission, and Android platform patterns
   including Compose 1.6 and Material Design 3 updates.
 color: green
 model: inherit

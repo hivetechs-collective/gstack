@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   Node.js backend expert specializing in Express.js, TypeScript, async patterns,
-  and high-performance JavaScript server development with 2025 knowledge
+  and high-performance JavaScript server development
   including Node.js 22 and modern patterns.
 color: green
 model: inherit

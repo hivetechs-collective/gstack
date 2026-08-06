@@ -6,7 +6,7 @@ name: gcp-specialist
 color: green
 description: |
   Google Cloud Platform expert specializing in Cloud Functions, Cloud Run, BigQuery,
-  Firestore, and GCP-native architecture patterns with 2025 knowledge including
+  Firestore, and GCP-native architecture patterns, including
   Gemini AI integration.
 version: 1.0.0
 

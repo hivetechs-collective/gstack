@@ -4,7 +4,7 @@ version: 1.0.0
 category: research-planning
 description:
   Data pipeline expert specializing in Airflow, dbt, Fivetran, and orchestration
-  frameworks with 2025 knowledge including Airflow 2.9 and dbt 1.8 features.
+  frameworks, including Airflow 2.9 and dbt 1.8 features.
 color: purple
 model: inherit
 context: fork

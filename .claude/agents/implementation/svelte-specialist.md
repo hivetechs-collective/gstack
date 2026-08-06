@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   Svelte framework expert specializing in Svelte 5 runes, SvelteKit, reactive
-  stores, and compile-time optimization with 2025 knowledge including Svelte 5
+  stores, and compile-time optimization, including Svelte 5
   stable release.
 color: purple
 model: inherit

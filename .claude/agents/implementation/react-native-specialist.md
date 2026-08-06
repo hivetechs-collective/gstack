@@ -5,7 +5,7 @@ category: implementation
 description:
   React Native cross-platform expert specializing in React Native New
   Architecture, Expo, native module bridging, and unified iOS/Android
-  development with 2025 knowledge including Expo SDK 51 and Hermes improvements.
+  development, including Expo SDK 51 and Hermes improvements.
 color: blue
 model: inherit
 sdk_utilization: 65%

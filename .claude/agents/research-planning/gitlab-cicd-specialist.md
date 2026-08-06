@@ -4,7 +4,7 @@ version: 1.0.0
 category: research-planning
 description:
   GitLab CI/CD expert specializing in .gitlab-ci.yml pipelines, GitLab Runner,
-  DevSecOps, and GitLab-native workflows with 2025 knowledge including GitLab
+  DevSecOps, and GitLab-native workflows, including GitLab
   16.x features and AI-assisted pipelines.
 color: orange
 model: inherit

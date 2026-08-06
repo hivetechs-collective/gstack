@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   iOS development expert specializing in Swift, SwiftUI, UIKit, Xcode, App Store
-  submission, and iOS platform patterns with 2025 knowledge including Swift 6
+  submission, and iOS platform patterns, including Swift 6
   concurrency improvements and visionOS support.
 color: cyan
 model: inherit

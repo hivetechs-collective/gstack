@@ -4,8 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   FastAPI Python framework expert specializing in async APIs, Pydantic
-  validation, OpenAPI documentation, and high-performance Python backends with
-  2025 knowledge including Pydantic v2 and async improvements.
+  validation, OpenAPI documentation, and high-performance Python backends, including Pydantic v2 and async improvements.
 color: green
 model: inherit
 sdk_utilization: 65%

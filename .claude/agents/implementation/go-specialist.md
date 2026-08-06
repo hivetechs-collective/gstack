@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   Go backend expert specializing in goroutines, channels, high-performance APIs,
-  and concurrent systems with 2025 knowledge including Go 1.23 generics and
+  and concurrent systems, including Go 1.23 generics and
   modern patterns.
 color: cyan
 model: inherit

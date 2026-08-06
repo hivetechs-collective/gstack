@@ -73,7 +73,7 @@ class GitWorkflowComparator {
               'Expert in Git Flow methodology, release management, hotfix workflows',
             tools: ['Bash', 'Read', 'Grep'],
             allowedTools: ['Bash', 'Read', 'Grep'], // Read-only
-            model: 'claude-sonnet-4-5',
+            model: 'claude-sonnet-5',
           },
         },
       },
@@ -98,7 +98,7 @@ class GitWorkflowComparator {
               'Expert in GitHub Flow, continuous deployment, PR workflows',
             tools: ['Bash', 'Read', 'Grep'],
             allowedTools: ['Bash', 'Read', 'Grep'],
-            model: 'claude-sonnet-4-5',
+            model: 'claude-sonnet-5',
           },
         },
       },
@@ -123,7 +123,7 @@ class GitWorkflowComparator {
               'Expert in trunk-based development, feature flags, high-frequency integration',
             tools: ['Bash', 'Read', 'Grep'],
             allowedTools: ['Bash', 'Read', 'Grep'],
-            model: 'claude-sonnet-4-5',
+            model: 'claude-sonnet-5',
           },
         },
       },
@@ -176,7 +176,7 @@ class GitWorkflowComparator {
               'Analyze project characteristics for Git workflow selection',
             tools: ['Read', 'Grep'],
             allowedTools: ['Read', 'Grep'],
-            model: 'claude-sonnet-4-5',
+            model: 'claude-sonnet-5',
           },
         },
       },
@@ -243,7 +243,7 @@ const gitExpert = query({
         prompt:
           'Use session forking to compare Git Flow, GitHub Flow, and Trunk-Based Development',
         tools: ['Bash', 'Read', 'Grep'],
-        model: 'claude-sonnet-4-5',
+        model: 'claude-sonnet-5',
         // git-expert internally uses session forking
       },
     },
@@ -302,7 +302,7 @@ class ParallelBranchCoordinator {
           - Recommendation: Sequential execution`,
         tools: ['Bash', 'Read', 'Grep'],
         allowedTools: ['Bash', 'Read', 'Grep'], // Read-only
-        model: 'claude-sonnet-4-5',
+        model: 'claude-sonnet-5',
       },
 
       'branch-creator': {
@@ -318,7 +318,7 @@ class ParallelBranchCoordinator {
           3. Set up branch tracking
           4. Report branch name to agent`,
         tools: ['Bash', 'TodoWrite'],
-        model: 'claude-sonnet-4-5',
+        model: 'claude-sonnet-5',
       },
 
       'merge-orchestrator': {
@@ -335,7 +335,7 @@ class ParallelBranchCoordinator {
           - Tests fail
           - CI fails`,
         tools: ['Bash', 'TodoWrite'],
-        model: 'claude-sonnet-4-5',
+        model: 'claude-sonnet-5',
       },
 
       'conflict-resolver': {
@@ -353,7 +353,7 @@ class ParallelBranchCoordinator {
           - Ours: First agent's changes
           - Theirs: Second agent's changes`,
         tools: ['Bash', 'Read', 'Edit'],
-        model: 'claude-sonnet-4-5',
+        model: 'claude-sonnet-5',
       },
     };
   }
@@ -700,7 +700,7 @@ const gitExpertWithSafety = query({
         description: 'Git workflow specialist with safety hooks',
         prompt: 'Execute Git operations with safety validation',
         tools: ['Bash', 'Read', 'TodoWrite'],
-        model: 'claude-sonnet-4-5',
+        model: 'claude-sonnet-5',
       },
     },
     hooks: {
@@ -828,7 +828,7 @@ const gitExpertWithSanitization = query({
         prompt: 'Analyze git history with output sanitization',
         tools: ['Bash', 'Read'],
         allowedTools: ['Bash', 'Read'],
-        model: 'claude-sonnet-4-5',
+        model: 'claude-sonnet-5',
       },
     },
     hooks: {
@@ -1078,13 +1078,14 @@ class GitBudgetEnforcer {
   }
 
   private calculateCost(usage: any, model: string): number {
+    // Model IDs and prices date fast — canonical catalog: claude-api skill shared/models.md
     const pricing = {
-      'claude-sonnet-4-5': { input: 3.0, output: 15.0 },
-      'claude-opus-4': { input: 15.0, output: 75.0 },
-      'claude-haiku-4': { input: 0.25, output: 1.25 },
+      'claude-sonnet-5': { input: 3.0, output: 15.0 },
+      'claude-opus-5': { input: 5.0, output: 25.0 },
+      'claude-haiku-4-5': { input: 1.0, output: 5.0 },
     };
 
-    const rates = pricing[model] || pricing['claude-sonnet-4-5'];
+    const rates = pricing[model] || pricing['claude-sonnet-5'];
 
     const inputCost = (usage.input_tokens / 1_000_000) * rates.input;
     const outputCost = (usage.output_tokens / 1_000_000) * rates.output;

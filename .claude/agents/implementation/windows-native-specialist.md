@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   Windows native development expert specializing in .NET 8+, WPF, WinUI 3, and
-  Windows platform APIs with 2025 knowledge including Windows App SDK 1.5 and
+  Windows platform APIs, including Windows App SDK 1.5 and
   .NET 9 features.
 color: purple
 model: inherit

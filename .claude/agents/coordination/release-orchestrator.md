@@ -391,16 +391,9 @@ xcrun notarytool history --keychain-profile hive-notary
 **Critical**: Prevents unsigned builds from being created
 **Failure**: Fix forge.config.ts before proceeding
 
-#### Gate 2: Clean Environment Check
+#### Gate 2: (retired)
 
-**Purpose**: Double-check environment is clean (redundant after Gate 0.0)
-**Actions**:
-
-- Verify `out/` directory removed by Gate 0.0
-- Confirm webpack cache cleared by Gate 0.0
-- Final verification of clean slate
-
-**Note**: This gate is now redundant with enhanced Gate 0.0 artifact cleanup, but remains for backward compatibility and defense-in-depth verification
+Removed 2026-08-06 — its only purpose was re-verifying the cleanup Gate 0.0 already performs, and its own text marked it redundant. Gate numbering is preserved because later gates are cross-referenced by number in this file and in pipeline logs.
 
 #### Gate 3: Build Execution
 
@@ -930,7 +923,7 @@ const result = query({
           - Gate 6: Pre-release comprehensive verification
           - Check codesign, stapling, and Gatekeeper`,
         tools: ["Bash", "Read"],
-        model: "claude-sonnet-4-5", // Use Sonnet for critical signing validation
+        model: "claude-sonnet-5", // Use Sonnet for critical signing validation
       },
       "homebrew-coordinator": {
         description: "Coordinates Gate 7 and Homebrew publication",
@@ -969,9 +962,7 @@ let releaseSessionId: string;
 const buildPhase = query({
   prompt: "Execute Gates 1-3: Pre-build checks and build execution",
   options: {
-    agents: {
-      /* build agents */
-    },
+    agents: {/* build agents */},
   },
 });
 
@@ -988,9 +979,7 @@ const notarizationPhase = query({
   prompt: "Continue with Gates 4-6: Signing and notarization",
   options: {
     resume: releaseSessionId, // Maintains full release context
-    agents: {
-      /* signing agents */
-    },
+    agents: {/* signing agents */},
   },
 });
 
@@ -999,9 +988,7 @@ const publicationPhase = query({
   prompt: "Complete Gate 7 and publish to Homebrew",
   options: {
     resume: releaseSessionId,
-    agents: {
-      /* publication agents */
-    },
+    agents: {/* publication agents */},
   },
 });
 ```
@@ -1035,9 +1022,7 @@ class ReleaseCostTracker {
     const result = query({
       prompt: `Release v${version}`,
       options: {
-        agents: {
-          /* release agents */
-        },
+        agents: {/* release agents */},
         hooks: {
           OnMessage: [
             {
@@ -1093,7 +1078,7 @@ class ReleaseCostTracker {
 
   private calculateCost(usage: any, model: string): number {
     const pricing = {
-      "claude-sonnet-4-5": { input: 3.0, output: 15.0, cacheRead: 0.3 },
+      "claude-sonnet-5": { input: 3.0, output: 15.0, cacheRead: 0.3 },
       "claude-haiku-3-5": { input: 1.0, output: 5.0, cacheRead: 0.1 },
     }[model] || { input: 3.0, output: 15.0, cacheRead: 0.3 };
 

@@ -4,7 +4,7 @@ version: 1.0.0
 category: research-planning
 description:
   WebAssembly (WASM) expert specializing in Rust/C++ to WASM, performance
-  optimization, and WASM in browser and edge environments with 2025 knowledge
+  optimization, and WASM in browser and edge environments
   including WASI 0.2 and Component Model.
 color: orange
 model: inherit

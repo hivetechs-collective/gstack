@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   Angular framework expert specializing in Angular 18+, TypeScript, RxJS, and
-  enterprise Angular applications with 2025 knowledge including signals and
+  enterprise Angular applications, including signals and
   standalone components.
 color: red
 model: inherit

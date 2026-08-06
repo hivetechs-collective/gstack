@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   Vue.js framework expert specializing in Vue 3 Composition API, Pinia state
-  management, Vite, and Vue ecosystem with 2025 knowledge including Vue 3.4 and
+  management, Vite, and Vue ecosystem, including Vue 3.4 and
   Vapor Mode preview.
 color: green
 model: inherit

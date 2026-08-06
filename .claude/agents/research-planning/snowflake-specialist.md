@@ -4,7 +4,7 @@ version: 1.0.0
 category: research-planning
 description:
   Snowflake data warehousing expert specializing in SQL optimization, data
-  modeling, Snowpipe, and cloud data warehouse architecture with 2025 knowledge
+  modeling, Snowpipe, and cloud data warehouse architecture
   including Snowflake Cortex AI and Iceberg Tables.
 color: cyan
 model: inherit

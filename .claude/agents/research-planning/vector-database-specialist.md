@@ -4,7 +4,7 @@ version: 1.0.0
 category: research-planning
 description:
   Vector database expert specializing in Pinecone, Weaviate, Chroma, Qdrant, and
-  semantic search for AI/ML applications with 2025 knowledge including hybrid
+  semantic search for AI/ML applications, including hybrid
   search and multimodal embeddings.
 color: purple
 model: inherit

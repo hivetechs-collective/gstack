@@ -4,7 +4,7 @@ version: 1.0.0
 category: research-planning
 description:
   Databricks data engineering expert specializing in Apache Spark, Delta Lake,
-  ML workflows, and data lakehouse architecture with 2025 knowledge including
+  ML workflows, and data lakehouse architecture, including
   Unity Catalog AI and Delta Lake 3.2.
 color: orange
 model: inherit

@@ -4,7 +4,7 @@ version: 1.0.0
 category: implementation
 description:
   Flutter cross-platform expert specializing in Dart, Flutter framework, and
-  multi-platform development (iOS, Android, Web, Desktop) with 2025 knowledge
+  multi-platform development (iOS, Android, Web, Desktop)
   including Flutter 3.22 and Impeller renderer.
 color: blue
 model: inherit
