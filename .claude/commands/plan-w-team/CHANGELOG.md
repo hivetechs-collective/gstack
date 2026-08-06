@@ -14,6 +14,34 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.67.0] — 2026-08-06 (c58efb9)
+
+**Agent-roster prompt audit applied — the orchestrator sheds its Opus 4.5-era scaffolding.**
+First application of the `claude-api` skill's `prompt-audit` subcommand (CLI 2.1.221)
+to the roster, targeting Opus 5 / Sonnet 5 per Model Tiering v4. Full report:
+`docs/operations/prompt-audit-reports/2026-08-06-agent-roster.md`.
+
+- **orchestrator**: description fossil removed ("79 agents / 96.0% / OPUS 4.5
+  OPTIMIZED" — this text rode in every session's Agent-tool roster listing); the
+  7-phase Extended Thinking Protocol (a 4.5-era planning scaffold that makes
+  Opus 5 over-plan) replaced by a four-point "Before Spawning" contract; all
+  parenthetical model-generation pins removed in favor of deferring to the
+  canonical Model Strategy table, so the next generation rollover cannot strand
+  this file again. Body counts + `claude-sonnet-4-5` code samples updated.
+- **release-orchestrator**: the self-admittedly-redundant Gate 2 environment
+  re-check retired (gate numbering preserved — later gates are cross-referenced
+  by number in-file and in pipeline logs, deviating from the report's "renumber");
+  stale model IDs in samples/pricing updated.
+- **claude-sdk-expert / git-expert/SDK_ENHANCEMENTS / llm-application-specialist**:
+  retired-generation model IDs (`claude-sonnet-4-5`, `claude-opus-4`,
+  `Claude 3.5 Sonnet`) and stale pricing replaced with current IDs plus a
+  standing deferral to the claude-api skill's model catalog.
+- **37 specialist descriptions**: "with 2025 knowledge" year claims stripped
+  (framework specifics kept — they are real routing signal).
+- Deliberately untouched: builder / builder-opus / evaluator / supervisor
+  (audited clean), and openrouter-expert / chatgpt-expert (deprioritized by
+  standing policy; flagged as retirement candidates, not repaired).
+
 ## [1.66.1] — 2026-08-03 (7a87ecc)
 
 **The 1.66.0 backfill hook never fired — `set -o pipefail` inverted its own guard.**

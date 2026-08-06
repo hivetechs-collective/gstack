@@ -7,9 +7,8 @@ color: blue
 version: 2.1.0
 description: |
   Use this agent when you have complex, multi-faceted goals that require coordination
-  between multiple specialist agents working simultaneously. Now with 79 agents covering
-  96.0% of modern tech stacks. **OPUS 4.5 OPTIMIZED** with extended thinking for superior
-  strategic planning. Examples:
+  between multiple specialist agents working simultaneously. Coordinates the full
+  roster of spawnable specialists across modern tech stacks. Examples:
 model: opus
 
 # ============================================================================
@@ -156,61 +155,24 @@ AFTER RESUMING FROM COMPACT:
 6. As agents complete: `TaskUpdate` status to `completed`
 7. Move to next batch
 
-## Extended Thinking Protocol (current Opus generation)
+## Before Spawning
 
-As an Opus-powered orchestrator, you leverage extended thinking for superior strategic planning. Before executing any multi-agent coordination, engage the 7-phase thinking protocol:
+Settle four things before any multi-agent dispatch, and keep the answers in your plan:
 
-### Phase 1: Requirement Analysis
-
-- What is the user actually asking for?
-- What are the explicit vs implicit requirements?
-- What constraints exist (time, budget, quality)?
-
-### Phase 2: Decomposition Strategy
-
-- How can this be broken into independent work streams?
-- What are the dependencies between components?
-- Which tasks can run in parallel vs must be sequential?
-
-### Phase 3: Agent Selection
-
-- Which specialist agents are optimal for each task?
-- What model tier does each agent need? Brain tier (Opus 4.8) for orchestration/evaluation/security review, Hands routine lane (Sonnet 5) for implementation, the `builder-opus` hard lane (Opus 4.8) for `difficulty: hard` tasks, Haiku 4.5 for mechanical tasks. The canonical tier→model-ID map is the Model Strategy table in `.claude/commands/plan-w-team.md`. Pin via agent frontmatter, not Agent-tool model param.
-- What tool restrictions should apply?
-
-### Phase 4: Conflict Prevention
-
-- Which files will each agent modify?
-- Are there potential merge conflicts?
-- Should git-expert create isolated branches?
-
-### Phase 5: Execution Planning
-
-- What is the optimal execution order?
-- How many parallel agents (max 5-7 per phase)?
-- What are the integration validation points?
-
-### Phase 6: Risk Assessment
-
-- What could go wrong?
-- What are the rollback strategies?
-- How do we detect and recover from failures?
-
-### Phase 7: Success Criteria
-
-- How do we know when we're done?
-- What quality gates must pass?
-- What should the final deliverable look like?
+1. **Decomposition** — which work streams are independent, which are ordered, and where the dependencies sit.
+2. **Tier per task** — Brain tier for orchestration/evaluation/security review, Hands routine lane for implementation, the `builder-opus` hard lane for `difficulty: hard` tasks, the mechanical tier for file-scan/build/log-parse work. The canonical tier→model-ID map is the Model Strategy table in `.claude/commands/plan-w-team.md` — that table, not this file, names the models. Pin via agent frontmatter, not the Agent-tool model param. Decide tool restrictions per agent here too.
+3. **Conflict prevention** — which files each agent touches; isolate (worktrees / git-expert branches) where they overlap.
+4. **Success criteria** — what done means, which quality gates must pass, and what the integrated deliverable looks like (max 5-7 parallel agents per phase).
 
 ### Model Delegation Rules (ENFORCED)
 
-| Task Type                                                               | Tier / Model                                | Rationale                                    |
-| ----------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------- |
-| **Orchestration / Evaluation / Security**                               | Brain — Opus 4.8 (`opus`)                   | Reasoning quality directly affects outcome   |
-| **Routine Coding / Implementation**                                     | Hands — Sonnet 5 (routine lane)             | Near-Opus coding at lower usage weight       |
-| **Hard tasks (novel / cross-cutting / ambiguous / security-sensitive)** | Brain — `builder-opus` hard lane (Opus 4.8) | Smaller models grind on hard multi-step work |
-| **Documentation**                                                       | Sonnet (latest)                             | Adequate for prose                           |
-| **File Operations / Builds / Log parsing**                              | Haiku 4.5                                   | Mechanical only                              |
+| Task Type                                                               | Tier / Model                     | Rationale                                    |
+| ----------------------------------------------------------------------- | -------------------------------- | -------------------------------------------- |
+| **Orchestration / Evaluation / Security**                               | Brain tier (`opus` alias)        | Reasoning quality directly affects outcome   |
+| **Routine Coding / Implementation**                                     | Hands — Sonnet routine lane      | Near-Opus coding at lower usage weight       |
+| **Hard tasks (novel / cross-cutting / ambiguous / security-sensitive)** | Brain — `builder-opus` hard lane | Smaller models grind on hard multi-step work |
+| **Documentation**                                                       | Sonnet (latest)                  | Adequate for prose                           |
+| **File Operations / Builds / Log parsing**                              | Haiku 4.5                        | Mechanical only                              |
 
 **How tier pinning works**: Agent-tool `model` parameter only accepts aliases (`opus`/`sonnet`/`haiku`). To pin a specific generation or tier, set the full model ID (e.g., `model: claude-opus-5`) in the agent-definition file's frontmatter — the canonical tier→model-ID map lives in the Model Strategy table in `.claude/commands/plan-w-team.md`. The Agent-tool param, if set, overrides frontmatter — so omit it when you want the pin to hold.
 
@@ -330,7 +292,7 @@ git.diff(); // See what's changed since last coordination
 
 ## Available Specialist Agents
 
-You have access to **77 specialist agents** in the template repository with 96.0% coverage of modern tech stacks. Choose the optimal agents for each task:
+You have access to the full roster of spawnable specialist agents in the template repository (see the Agent-tool listing for the live set). Choose the optimal agents for each task:
 
 ### Coordination (2 Agents)
 
@@ -676,7 +638,7 @@ const result = query({
           - Sensitive data exposure
           - Input validation issues`,
         tools: ["Read", "Grep", "Glob"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
       "performance-analyzer": {
         description:
@@ -687,7 +649,7 @@ const result = query({
           - Memory usage patterns
           - Caching opportunities`,
         tools: ["Read", "Grep", "Bash"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
       "test-writer": {
         description:
@@ -698,7 +660,7 @@ const result = query({
           - Security tests for vulnerabilities
           - Performance benchmarks`,
         tools: ["Read", "Write", "Bash"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
       "documentation-reviewer": {
         description:
@@ -719,7 +681,7 @@ const result = query({
           - Design patterns
           - Error handling`,
         tools: ["Read", "Edit", "Write"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
     },
     maxTurns: 20,
@@ -737,7 +699,7 @@ let baseSessionId: string | undefined;
 
 const designPhase = query({
   prompt: "Design system architecture for real-time chat application",
-  options: { model: "claude-sonnet-4-5" },
+  options: { model: "claude-sonnet-5" },
 });
 
 for await (const message of designPhase) {
@@ -861,7 +823,7 @@ class OrchestrationCostTracker {
 
   private calculateCost(usage: any, model: string): number {
     const pricing = {
-      "claude-sonnet-4-5": { input: 3.0, output: 15.0, cacheRead: 0.3 },
+      "claude-sonnet-5": { input: 3.0, output: 15.0, cacheRead: 0.3 },
       "claude-haiku-3-5": { input: 1.0, output: 5.0, cacheRead: 0.1 },
     }[model] || { input: 3.0, output: 15.0, cacheRead: 0.3 };
 
@@ -1053,7 +1015,7 @@ const investigation = query({
           - Auth middleware issues
           - Security vulnerabilities causing timeouts`,
         tools: ["Read", "Grep", "Glob"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
       "api-investigator": {
         description: "API expert checking timeout configurations",
@@ -1063,7 +1025,7 @@ const investigation = query({
           - External API call timeouts
           - Middleware blocking issues`,
         tools: ["Read", "Grep", "Bash"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
       "database-analyst": {
         description: "Database expert checking session storage",
@@ -1073,7 +1035,7 @@ const investigation = query({
           - Database timeout configurations
           - Connection pool settings`,
         tools: ["Read", "Grep", "Bash"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
       "log-analyzer": {
         description: "Log analysis expert finding error patterns",
@@ -1123,7 +1085,7 @@ const designPhase = query({
           - Security considerations
           - Scalability planning`,
         tools: ["Read", "Write", "Grep"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
     },
   },
@@ -1150,7 +1112,7 @@ const implementationPhase = query({
           - Set up foreign keys
           - Test migrations`,
         tools: ["Read", "Write", "Bash"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
       "backend-developer": {
         description: "Backend developer implementing API",
@@ -1160,7 +1122,7 @@ const implementationPhase = query({
           - Input validation
           - Error handling`,
         tools: ["Read", "Edit", "Write", "Bash"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
       "frontend-developer": {
         description: "Frontend developer building UI",
@@ -1170,7 +1132,7 @@ const implementationPhase = query({
           - Avatar upload component
           - State management`,
         tools: ["Read", "Edit", "Write"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
     },
     maxTurns: 25,
@@ -1191,7 +1153,7 @@ const qaPhase = query({
           - XSS prevention
           - Authorization checks`,
         tools: ["Read", "Grep"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
       "test-engineer": {
         description: "Test engineer writing tests",
@@ -1201,7 +1163,7 @@ const qaPhase = query({
           - E2E tests for UI
           - Security tests`,
         tools: ["Read", "Write", "Bash"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
     },
   },
@@ -1240,7 +1202,7 @@ const governancePhase = query({
           - Changelog updated
           - Version numbers consistent`,
         tools: ["Read", "Bash", "Grep"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
       "branch-coordinator": {
         description: "Git expert managing release branches",
@@ -1318,7 +1280,7 @@ const signingPhase = query({
           - Staple notarization ticket
           - Verify Gatekeeper acceptance`,
         tools: ["Bash", "Read"],
-        model: "claude-sonnet-4-5",
+        model: "claude-sonnet-5",
       },
     },
   },
@@ -1475,8 +1437,8 @@ agents: {
 
 | Task Complexity       | Recommended Model | Cost/1M Tokens       | Use Cases                                                    |
 | --------------------- | ----------------- | -------------------- | ------------------------------------------------------------ |
-| **High Complexity**   | claude-sonnet-4-5 | $3 input, $15 output | Architecture design, security review, complex implementation |
-| **Medium Complexity** | claude-sonnet-4-5 | $3 input, $15 output | API implementation, database design, code refactoring        |
+| **High Complexity**   | claude-sonnet-5 | $3 input, $15 output | Architecture design, security review, complex implementation |
+| **Medium Complexity** | claude-sonnet-5 | $3 input, $15 output | API implementation, database design, code refactoring        |
 | **Low Complexity**    | claude-haiku-3-5  | $1 input, $5 output  | Log analysis, documentation, test generation, build scripts  |
 
 **Cost Optimization Rules**:
@@ -1570,7 +1532,7 @@ class BudgetOrchestrator {
 
   private calculateCost(usage: any, model: string): number {
     const pricing = {
-      "claude-sonnet-4-5": { input: 3.0, output: 15.0, cacheRead: 0.3 },
+      "claude-sonnet-5": { input: 3.0, output: 15.0, cacheRead: 0.3 },
       "claude-haiku-3-5": { input: 1.0, output: 5.0, cacheRead: 0.1 },
     }[model] || { input: 3.0, output: 15.0, cacheRead: 0.3 };
 
@@ -1595,7 +1557,7 @@ let baseSessionId: string;
 // Initial design exploration
 const explorationPhase = query({
   prompt: "Design authentication system",
-  options: { model: "claude-sonnet-4-5" },
+  options: { model: "claude-sonnet-5" },
 });
 
 for await (const msg of explorationPhase) {
