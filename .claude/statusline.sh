@@ -487,6 +487,15 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
     # silently collapses to nothing.
     own_sid="${own_sid:0:8}"
   fi
+  # Interactive panes have no CLAUDE_JOB_DIR — fall back to the session_id
+  # Claude Code passes on statusline stdin. This is what makes the agents
+  # line PANE-SCOPED: with own_sid known, each pane shows only its own
+  # agent tree (2026-08-06 operator directive — multiple panes on one repo
+  # previously all showed the union of the repo's sessions).
+  if [ -z "$own_sid" ] && [ "$HAS_JQ" -eq 1 ]; then
+    own_sid=$(echo "$input" | jq -r '.session_id // empty' 2>/dev/null)
+    own_sid="${own_sid:0:8}"
+  fi
 
   # Build set of "my-launch" sessionIds from pwt-launches.jsonl (transitive: a sid
   # is mine if it's in the file OR its parent_sid chain reaches a sid that is)
@@ -545,17 +554,22 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
 
     # Build the sub-bucket dashboard array (kind: "subagent" — emitted by
     # claude-agents-extended.sh from ~/.claude/projects/*/subagents/agent-*.jsonl).
-    # Subagents are always "mine" (sidechain children of the current session),
-    # so the role-filter isn't applied here; the cwd filter is the only gate.
-    sub_dashboard_json=$(jq --arg cwd "$PWD" '
+    # PANE-SCOPED (2026-08-06): a subagent is "mine" only when its
+    # parentSessionId is THIS session (or a session this one spawned, per the
+    # launches registry). The old assumption "subagents are always mine" broke
+    # whenever two sessions shared a repo — every pane showed the union.
+    # Empty own_sid (no session_id on stdin, old harness) keeps legacy behavior.
+    sub_dashboard_json=$(jq --arg cwd "$PWD" --arg own "$own_sid" --argjson mine "$my_sids_json" '
       [.[]
         | select(.kind == "subagent")
         | select(.cwd == $cwd or (.cwd | startswith($cwd + "/")))
+        | ((.parentSessionId // "")[:8]) as $p
         | {
             sid:    ((.agentId // .sessionId // "")[:8]),
             status: (.status // "busy"),
             busy:   ((.status // "busy") == "busy"),
-            role:   "worker"
+            role:   "worker",
+            mine:   ($own == "" or $p == $own or (($mine | index($p)) != null))
           }
       ]
     ' "$bg_cache" 2>/dev/null || echo "[]")
@@ -565,27 +579,36 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
     # always "mine" (children of THIS session's `Workflow` tool call), so only the
     # cwd gate applies. Previously uncaptured entirely: a running workflow showed
     # no dots, so the line read as "idle" while a fan-out was actively churning.
-    wf_dashboard_json=$(jq --arg cwd "$PWD" '
+    wf_dashboard_json=$(jq --arg cwd "$PWD" --arg own "$own_sid" --argjson mine "$my_sids_json" '
       [.[]
         | select(.kind == "workflow")
         | select(.cwd == $cwd or (.cwd | startswith($cwd + "/")))
+        | ((.parentSessionId // "")[:8]) as $p
         | {
             sid:    ((.agentId // .sessionId // "")[:8]),
             status: (.status // "busy"),
             busy:   ((.status // "busy") == "busy"),
             role:   "worker",
-            run:    (.workflowRun // "")
+            run:    (.workflowRun // ""),
+            mine:   ($own == "" or $p == $own or (($mine | index($p)) != null))
           }
       ]
     ' "$bg_cache" 2>/dev/null || echo "[]")
 
-    bg_total=$(echo "$dashboard_json"     | jq 'length' 2>/dev/null || echo 0)
-    sub_total=$(echo "$sub_dashboard_json" | jq 'length' 2>/dev/null || echo 0)
-    wf_total=$(echo "$wf_dashboard_json"  | jq 'length' 2>/dev/null || echo 0)
+    # PANE-SCOPED SPLIT (2026-08-06): dots render only THIS pane's agent tree;
+    # everything else in the repo collapses to a muted "+N other" count.
+    bg_mine_json=$(echo "$dashboard_json"      | jq '[.[] | select(.role != "other")]' 2>/dev/null || echo "[]")
+    sub_mine_json=$(echo "$sub_dashboard_json" | jq '[.[] | select(.mine)]' 2>/dev/null || echo "[]")
+    wf_mine_json=$(echo "$wf_dashboard_json"   | jq '[.[] | select(.mine)]' 2>/dev/null || echo "[]")
+    bg_total=$(echo "$bg_mine_json"   | jq 'length' 2>/dev/null || echo 0)
+    sub_total=$(echo "$sub_mine_json" | jq 'length' 2>/dev/null || echo 0)
+    wf_total=$(echo "$wf_mine_json"   | jq 'length' 2>/dev/null || echo 0)
+    other_count=$(( \
+      $(echo "$dashboard_json"      | jq '[.[] | select(.role == "other")] | length' 2>/dev/null || echo 0) + \
+      $(echo "$sub_dashboard_json"  | jq '[.[] | select(.mine | not)] | length' 2>/dev/null || echo 0) + \
+      $(echo "$wf_dashboard_json"   | jq '[.[] | select(.mine | not)] | length' 2>/dev/null || echo 0) ))
     total_count=$(( bg_total + sub_total + wf_total ))
-    mine_count=$(echo "$dashboard_json" | jq '[.[] | select(.role != "other")] | length' 2>/dev/null || echo 0)
-    # Subagents and workflow lens-agents are always "mine" by definition.
-    mine_count=$(( mine_count + sub_total + wf_total ))
+    mine_count=$total_count
 
     # Phase label decision:
     #   - mine_count > 0           → "🚀 Agents Running"   (supervisor chain alive)
@@ -643,9 +666,14 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
     # visually subordinates it to the main statusline.
     if [ "$total_count" != "0" ]; then
       printf '\n  👤 %smain%s' "$(C '38;5;117')" "$(rst)"
-      _render_bucket "bg"  "$dashboard_json"
-      _render_bucket "sub" "$sub_dashboard_json"
-      _render_bucket "wf"  "$wf_dashboard_json"
+      _render_bucket "bg"  "$bg_mine_json"
+      _render_bucket "sub" "$sub_mine_json"
+      _render_bucket "wf"  "$wf_mine_json"
+      [ "$other_count" != "0" ] && printf '  %s+%s other in repo%s' "$(C '38;5;240')" "$other_count" "$(rst)"
+    elif [ "$other_count" != "0" ]; then
+      # Nothing of this pane's is running, but other sessions in this repo
+      # have live agents — show a muted count, never their dots.
+      printf '\n  👤 %smain%s  %s👥 %s agent(s) in repo — other sessions%s' "$(C '38;5;117')" "$(rst)" "$(C '38;5;240')" "$other_count" "$(rst)"
     elif [ "$summaries_count" != "0" ]; then
       printf '\n  ✅ %sAgents Completed%s — summary in chat ↓' "$(C '38;5;46')" "$(rst)"
     fi

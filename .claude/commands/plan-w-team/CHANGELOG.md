@@ -14,6 +14,44 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [1.69.0] — 2026-08-06 (6e0bdaf)
+
+**Goal-run resilience + operator visibility.** Batch of operator-driven fixes
+from the 2026-08-06 session, born from a live incident: the roster-restructure
+run parked idle 90+ minutes over a 3-minute rate-limit wall at a 5h-block
+boundary.
+
+- **StopFailure halt-notifier** (`hooks/stop-failure-notify.sh`): any turn
+  dying on an API error fires a desktop notification, a durable
+  `state/stop-failures.log` breadcrumb, and an optional ntfy phone push
+  (`~/.config/claude/halt-ntfy-topic`). Out-of-band by design — survives dead
+  credentials. Proven in production the evening it shipped (3 rate_limit pings).
+- **Rate-limit auto-resume** (`hooks/plan-w-team-rate-limit-resume.sh`, chained
+  after the notifier on StopFailure): closes the gap where the goal evaluator
+  re-engages via Stop but a rate-limited turn dies as StopFailure. Pure local
+  shell (fires with zero API capacity); waits for the real gate-lift
+  (error-stated reset time → weekly-cap aware, else ccusage block end, else
+  15m); resume ladder = continue → fallback-model rung (/model
+  claude-opus-5, the interactive analog of the spawn sites'
+  --fallback-model) → final continue → loud give-up; repeated-give-up breaker
+  (2 ladders/24h = weekly cap, stop re-arming). tmux-pane injection only —
+  unattended goals launch inside tmux per the README. 8/8 tests
+  (`hooks/plan-w-team-rate-limit-resume.test.sh`). Kill switch:
+  `PWT_RATE_RESUME_DISABLE=1`.
+- **Pane-scoped statusline agents line** (`statusline.sh`): each pane shows
+  only its own agent tree (parentSessionId-gated vs the stdin session_id +
+  launch-registry descendants); everything else collapses to a muted "+N other
+  in repo". Fixes the multi-pane-same-repo union display.
+- **Operator on-ramp**: `scripts/operator-doctor.sh` preflight (per-item ✅/❌
+  with fix commands, sync-allowlisted), README rebuilt setup-first for
+  non-developer operators (Step 0 Mac setup → protections → launch → done),
+  /goal taught as the real unattended command, the NL route form demoted to a
+  documented guardrail (fail-open, never an interface).
+- Friction-logged for the next skill run (not fixed here): goal evaluator is
+  context-blind across sessions (misfired 15+ times in an operator session);
+  route hook fails open silently; evaluator should natively re-engage on
+  StopFailure rather than relying on this hook.
+
 ## [1.68.0] — 2026-08-06 (d806026)
 
 > Shipped as 1.68.0, not 1.67.0: this run authored its entry as 1.67.0 while a
