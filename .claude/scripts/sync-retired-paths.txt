@@ -350,3 +350,69 @@
 # a stray copy from an older sync generation costs one no-op line to sweep.
 .claude/scripts/agent-manager.sh
 .claude/scripts/agent-switcher.sh
+
+# --- 2026-08-07: skills/hive — pre-restructure retirement the roster-restructure
+# manifest missed (gap found by the 2.0.0 post-ship consumer spot-check).
+# The subtree was retired from source in 0aef29f ("remove the Ralph cluster and
+# orphaned past-project content", 2026-08-03) but no rows were added, so every
+# consumer kept all 25 hive-* skill dirs. Rows are the UNION of every path ever
+# committed under .claude/skills/hive (verified to cover the live consumer trees).
+# Files first, then dirs children-first, then the emptied hive/ root.
+.claude/skills/hive/hive-agent-ecosystem/SKILL.md
+.claude/skills/hive/hive-ai-cli-integration/SKILL.md
+.claude/skills/hive/hive-binary-bundling/SKILL.md
+.claude/skills/hive/hive-cli-tools-integration/SKILL.md
+.claude/skills/hive/hive-consensus-engine/SKILL.md
+.claude/skills/hive/hive-crash-debugger/SKILL.md
+.claude/skills/hive/hive-database-migration/SKILL.md
+.claude/skills/hive/hive-documentation-standards/SKILL.md
+.claude/skills/hive/hive-electron-typescript/SKILL.md
+.claude/skills/hive/hive-enterprise-hooks/SKILL.md
+.claude/skills/hive/hive-git-workflow/SKILL.md
+.claude/skills/hive/hive-global-installation/SKILL.md
+.claude/skills/hive/hive-ipc-patterns/SKILL.md
+.claude/skills/hive/hive-memory-service-api/SKILL.md
+.claude/skills/hive/hive-memory-service/SKILL.md
+.claude/skills/hive/hive-openrouter-integration/SKILL.md
+.claude/skills/hive/hive-performance-benchmarking/SKILL.md
+.claude/skills/hive/hive-performance-benchmarks/SKILL.md
+.claude/skills/hive/hive-pty-terminals/SKILL.md
+.claude/skills/hive/hive-python-bundling/SKILL.md
+.claude/skills/hive/hive-python-runtime/SKILL.md
+.claude/skills/hive/hive-qa-checklist/SKILL.md
+.claude/skills/hive/hive-release-docs/SKILL.md
+.claude/skills/hive/hive-release-verification/SKILL.md
+.claude/skills/hive/hive-rust-implementation/SKILL.md
+.claude/skills/hive/hive-security-audit/SKILL.md
+.claude/skills/hive/hive-state-management/SKILL.md
+.claude/skills/hive/hive-testing-strategy/SKILL.md
+.claude/skills/hive/hive-tui-development/SKILL.md
+.claude/skills/hive/hive-tui-development
+.claude/skills/hive/hive-testing-strategy
+.claude/skills/hive/hive-state-management
+.claude/skills/hive/hive-security-audit
+.claude/skills/hive/hive-rust-implementation
+.claude/skills/hive/hive-release-verification
+.claude/skills/hive/hive-release-docs
+.claude/skills/hive/hive-qa-checklist
+.claude/skills/hive/hive-python-runtime
+.claude/skills/hive/hive-python-bundling
+.claude/skills/hive/hive-pty-terminals
+.claude/skills/hive/hive-performance-benchmarks
+.claude/skills/hive/hive-performance-benchmarking
+.claude/skills/hive/hive-openrouter-integration
+.claude/skills/hive/hive-memory-service-api
+.claude/skills/hive/hive-memory-service
+.claude/skills/hive/hive-ipc-patterns
+.claude/skills/hive/hive-global-installation
+.claude/skills/hive/hive-git-workflow
+.claude/skills/hive/hive-enterprise-hooks
+.claude/skills/hive/hive-electron-typescript
+.claude/skills/hive/hive-documentation-standards
+.claude/skills/hive/hive-database-migration
+.claude/skills/hive/hive-crash-debugger
+.claude/skills/hive/hive-consensus-engine
+.claude/skills/hive/hive-cli-tools-integration
+.claude/skills/hive/hive-binary-bundling
+.claude/skills/hive/hive-ai-cli-integration
+.claude/skills/hive/hive-agent-ecosystem
