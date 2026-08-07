@@ -80,6 +80,17 @@ fi
 
 # Pattern catalog. Each entry is "NAME|REGEX|REMEDIATION".
 # Order matters only for reporting; dedup happens by (file:line:token).
+#
+# ⚠ THE REGEX FIELD MUST NOT CONTAIN A LITERAL `|`.
+# Parsing is positional (`${rest%%|*}` at scan_text/diff-mode below), so it
+# truncates the regex at the FIRST pipe. An alternation written the obvious way,
+# e.g. `(discord|discordapp)\.com/...`, silently parses down to `(discord` — an
+# unterminated group that grep rejects with exit 2, which the `2>/dev/null || true`
+# at the match site swallows. The pattern then matches NOTHING while the suite
+# still reports green: the scanner goes blind to that entire provider.
+# Express alternation without a pipe instead — optional groups (`discord(app)?`)
+# or character classes (`[Dd]`) — as the discord-webhook entry does below.
+# Enforced by the structural test in tests/skill/cases/secret-scan.bats.
 PATTERNS=(
   'aws|AKIA[A-Z0-9]{16}|Revoke at AWS IAM console; rotate access keys'
   'github-token|gh[pousr]_[a-zA-Z0-9_]{36,}|Revoke at github.com/settings/tokens'
@@ -90,6 +101,7 @@ PATTERNS=(
   'stripe-test-secret|sk_test_[a-zA-Z0-9]{20,}|Roll at dashboard.stripe.com/test/apikeys'
   'stripe-live-pub|pk_live_[a-zA-Z0-9]{20,}|Stripe publishable key — confirm intent before committing'
   'slack|xox[baprs]-[A-Za-z0-9-]{10,}|Revoke at api.slack.com/apps'
+  'discord-webhook|[Dd][Ii][Ss][Cc][Oo][Rr][Dd]([Aa][Pp][Pp])?\.[Cc][Oo][Mm]/api/(v[0-9]{1,2}/)?webhooks/[0-9]{16,21}/[A-Za-z0-9_-]{55,}|Delete at Server Settings → Integrations → Webhooks'
   'gitlab-pat|glpat-[A-Za-z0-9_-]{20,}|Revoke at gitlab.com/-/profile/personal_access_tokens'
   'azure-conn|DefaultEndpointsProtocol=https;AccountName=|Rotate Azure storage account keys'
   'azure-accountkey|AccountKey=[A-Za-z0-9+/=]{40,}|Rotate Azure storage account keys'
@@ -258,7 +270,13 @@ scan_text() {
     regex="${rest%%|*}"
     remediation="${rest#*|}"
     local matches
-    matches=$(printf '%s\n' "$text" | grep -nE "$regex" 2>/dev/null || true)
+    # `--` is load-bearing: without it, a regex that begins with `-` (the
+    # private-key pattern, `-----BEGIN ... PRIVATE KEY-----`) is parsed by grep
+    # as a bundle of options, grep exits 2, and the `2>/dev/null || true` below
+    # swallows the error — leaving the scanner permanently blind to that
+    # provider while still reporting "Clean". Same silent-failure class as the
+    # pipe-in-regex trap documented at the PATTERNS catalog above.
+    matches=$(printf '%s\n' "$text" | grep -nE -- "$regex" 2>/dev/null || true)
     [[ -z "$matches" ]] && continue
     while IFS= read -r line; do
       [[ -z "$line" ]] && continue
@@ -269,7 +287,7 @@ scan_text() {
         continue
       fi
       local token
-      token=$(printf '%s' "$content" | grep -oE "$regex" | head -1)
+      token=$(printf '%s' "$content" | grep -oE -- "$regex" | head -1)
       [[ -z "$token" ]] && continue
       # B3: suppress ONLY when the marker is adjacent to / inside the token,
       # not merely somewhere on the line.
@@ -366,7 +384,7 @@ case "$MODE" in
             rest="${entry#*|}"
             regex="${rest%%|*}"
             remediation="${rest#*|}"
-            token=$(printf '%s' "$added" | grep -oE "$regex" 2>/dev/null | head -1 || true)
+            token=$(printf '%s' "$added" | grep -oE -- "$regex" 2>/dev/null | head -1 || true)
             [[ -z "$token" ]] && continue
             # B3: token-adjacency placeholder check (not whole-line) — a real
             # secret on a line whose only marker is in a distant comment is NOT

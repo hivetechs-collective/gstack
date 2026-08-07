@@ -1092,23 +1092,29 @@ Your code review implementations must include:
 
 **Works closely with:**
 
-- **skills-expert**: Reviews skill code quality, validates YAML syntax, checks progressive disclosure implementation **NEW**
 - **security-expert**: Receives security requirements → applies in code review (OWASP, CVE detection)
-- **governance-expert**: Receives quality gates → enforces in review (coverage thresholds, approval criteria)
+- **silent-failure-hunter**: Runs the same Pass-1 slot on error-handling and fallback paths
 - **database-expert**: Reviews database queries → checks for N+1, indexes, migrations
 - **react-typescript-specialist**: Reviews React/TS code → enforces hooks rules, type safety
-- **nextjs-expert**: Reviews Next.js patterns → validates Server Components, caching, performance
-- **devops-automation-expert**: Integrates with CI/CD → automated linting, testing, quality gates
 - **documentation-expert**: Reviews documentation → ensures docs updated, examples accurate
 - **system-architect**: Reviews architecture compliance → validates layer separation, design patterns
+- **builder / builder-opus**: Produces the diffs you review
+
+**Domain skills that auto-trigger** while you review (no spawn needed; `/<name>` to force-load):
+
+- `code-review-standards` - the review checklists themselves (security, performance, quality)
+- `frontend-web` / `backend-frameworks` - framework-specific correctness (Server Components, caching, ORM usage)
+- `devops-delivery` - CI/CD wiring: automated linting, test gates, pipeline quality
+- `release-publishing` - pre-release quality gates, coverage thresholds, approval criteria
+- `ai-engineering` - Claude Skills YAML compliance and progressive-disclosure structure
 
 **Collaboration patterns:**
 
-- skills-expert creates skill → code-review-expert reviews YAML compliance, code in skill scripts **NEW**
 - security-expert defines security standards → code-review-expert enforces in reviews
-- governance-expert sets quality gates → code-review-expert validates compliance
+- A release gate is proposed (`release-publishing` triggers) → code-review-expert validates compliance
 - database-expert provides schema → code-review-expert checks query optimization
-- ALL agents implement features → code-review-expert reviews before merge
+- A skill is authored (`ai-engineering` triggers) → code-review-expert reviews its YAML and any scripts
+- ALL lanes implement features → code-review-expert reviews before merge
 
 **Cross-agent responsibilities:**
 

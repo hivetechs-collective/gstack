@@ -1,128 +1,112 @@
 # Agent Roster — Quick Reference for Task Assignment
 
-Use `subagent_type` value when spawning builders in Step 3.
+Two different things live here, and confusing them is the mistake this file exists to
+prevent.
 
-## Implementation Specialists
+- **Agents** are separate sessions. You spawn one with `subagent_type` in Step 3. An
+  agent exists only when a session boundary does real work: an isolated context, a
+  binding tool restriction, a model/effort pin, or a stage-file spawn mandate.
+- **Skills** are knowledge. Nothing spawns them. They trigger on the task's own wording
+  inside whatever session is already running, and load progressively (a lean router
+  plus per-technology reference files).
 
-| subagent_type                      | Domain                               | Color  |
-| ---------------------------------- | ------------------------------------ | ------ |
-| `nodejs-specialist`                | Node.js, Express, TypeScript backend | green  |
-| `react-typescript-specialist`      | React components, TSX, hooks         | cyan   |
-| `nextjs-expert`                    | Next.js App Router, SSR, RSC         | black  |
-| `vue-specialist`                   | Vue 3, Pinia, Vite                   | green  |
-| `svelte-specialist`                | Svelte 5, SvelteKit                  | purple |
-| `angular-specialist`               | Angular 18+, RxJS                    | red    |
-| `rust-backend-specialist`          | Rust, Tokio, async APIs              | orange |
-| `go-specialist`                    | Go, goroutines, high-perf APIs       | cyan   |
-| `fastapi-specialist`               | FastAPI, Pydantic, async Python      | green  |
-| `django-specialist`                | Django 5, DRF, ORM                   | green  |
-| `spring-boot-specialist`           | Spring Boot, JPA, Java               | orange |
-| `dotnet-backend-specialist`        | ASP.NET Core, EF Core, C#            | purple |
-| `flutter-specialist`               | Flutter, Dart, cross-platform        | blue   |
-| `react-native-specialist`          | React Native, Expo                   | blue   |
-| `ios-specialist`                   | Swift, SwiftUI, UIKit                | cyan   |
-| `android-specialist`               | Kotlin, Jetpack Compose              | green  |
-| `macos-native-specialist`          | Swift, AppKit, macOS APIs            | blue   |
-| `windows-native-specialist`        | .NET 8+, WPF, WinUI 3                | purple |
-| `python-ml-expert`                 | PyTorch, Transformers, ML            | orange |
-| `remotion-specialist`              | Programmatic video, React            | blue   |
-| `webassembly-specialist`           | WASM, Rust/C++ to browser            | orange |
-| `whisper-transcription-specialist` | Audio transcription, yt-dlp          | purple |
-| `stagehand-expert`                 | E2E tests, Stagehand/Playwright      | cyan   |
+**Default task assignment is `builder`, or `builder-opus` when the task carries
+`metadata.difficulty: hard`. The domain skill auto-triggers inside that lane.** Write
+assignments that way — `builder; the backend-frameworks skill auto-triggers
+(/backend-frameworks to force-load)` — not as a specialist name. A named agent belongs
+in a task's assignee field only when one of the four reasons above applies.
 
-## API & Data
+## Keep-tier agents (33)
 
-| subagent_type                | Domain                            | Color  |
-| ---------------------------- | --------------------------------- | ------ |
-| `api-expert`                 | REST, GraphQL, OAuth, OpenAPI     | red    |
-| `graphql-specialist`         | Schema design, Apollo, federation | purple |
-| `grpc-specialist`            | Protocol Buffers, streaming       | blue   |
-| `database-expert`            | SQLite, PostgreSQL, schemas       | purple |
-| `mongodb-specialist`         | Document modeling, aggregation    | green  |
-| `redis-specialist`           | Caching, pub/sub, sessions        | red    |
-| `elasticsearch-specialist`   | Full-text search, ELK stack       | yellow |
-| `kafka-specialist`           | Event streaming, CDC, topics      | purple |
-| `vector-database-specialist` | Pinecone, Chroma, embeddings      | purple |
-| `snowflake-specialist`       | Data warehouse, SQL, Cortex AI    | cyan   |
-| `databricks-specialist`      | Spark, Delta Lake, lakehouse      | orange |
-| `etl-specialist`             | Airflow, dbt, data pipelines      | purple |
+Tags: **RESTRICT** = binding tool restriction · **PIN** = model/effort pin ·
+**MANDATE** = a stage file spawns it by name · **GF** = grandfathered.
 
-## Cloud & Infrastructure
+### Coordination (4)
 
-| subagent_type                | Domain                               | Color   |
-| ---------------------------- | ------------------------------------ | ------- |
-| `aws-specialist`             | Lambda, ECS, RDS, CloudFormation     | orange  |
-| `azure-specialist`           | Functions, Cosmos DB, ARM            | blue    |
-| `gcp-specialist`             | Cloud Run, BigQuery, Firestore       | green   |
-| `cloudflare-expert`          | Workers, D1, R2, KV, edge            | cyan    |
-| `docker-advanced-specialist` | Dockerfile, multi-stage, security    | cyan    |
-| `kubernetes-specialist`      | K8s manifests, Helm, HPA             | purple  |
-| `terraform-specialist`       | IaC, modules, state management       | blue    |
-| `argocd-specialist`          | GitOps, ApplicationSets              | blue    |
-| `gitlab-cicd-specialist`     | .gitlab-ci.yml, pipelines            | orange  |
-| `devops-automation-expert`   | GitHub Actions, shell scripts, CI/CD | magenta |
+| subagent_type                  | Tag      | Role                                                                                                      |
+| ------------------------------ | -------- | --------------------------------------------------------------------------------------------------------- |
+| `orchestrator`                 | MANDATE  | Multi-agent coordination (see `shared/orchestrator-interception.md` for the in-pipeline routing contract) |
+| `release-orchestrator`         | MANDATE  | Release pipelines, one-way-door quality gates                                                             |
+| `meta-agent`                   | MANDATE  | `/create-agent` engine; applies the agent-vs-skill taxonomy gate                                          |
+| `github-security-orchestrator` | RESTRICT | Repo security, secret scanning, access-control audit — read-only auditor                                  |
 
-## Quality & Security
+### Execution team (7)
 
-| subagent_type                    | Domain                             | Color  |
-| -------------------------------- | ---------------------------------- | ------ |
-| `security-expert`                | OWASP, auth, encryption, audit     | red    |
-| `code-review-expert`             | Code quality, coverage, linting    | cyan   |
-| `unit-testing-specialist`        | Jest, pytest, TDD, property tests  | green  |
-| `performance-testing-specialist` | K6, load testing, bottlenecks      | orange |
-| `observability-specialist`       | Grafana, Prometheus, OpenTelemetry | yellow |
+| subagent_type           | Tag              | Role                                                     |
+| ----------------------- | ---------------- | -------------------------------------------------------- |
+| `builder`               | PIN              | General implementation — Hands routine lane              |
+| `builder-opus`          | PIN              | Hard lane — `difficulty: hard` tasks, Brain tier         |
+| `supervisor`            | PIN              | Owns Step 3-4 dispatch for one run                       |
+| `evaluator`             | PIN+RESTRICT     | Evaluates output against acceptance criteria (read-only) |
+| `validator`             | PIN+RESTRICT     | Read-only code inspection                                |
+| `silent-failure-hunter` | RESTRICT+MANDATE | Pass-1 reviewer for silent failures and fallbacks        |
+| `fable-spec-consult`    | PIN+RESTRICT     | §1b-pre read-only spec consult — the one Fable pin       |
 
-## Architecture & Planning
+### Mechanical (3)
 
-| subagent_type                | Domain                               | Color  |
-| ---------------------------- | ------------------------------------ | ------ |
-| `system-architect`           | System design, tech decisions        | green  |
-| `prd-writer`                 | Product requirements documents       | purple |
-| `documentation-expert`       | Docs, diagrams, Mermaid              | pink   |
-| `ui-designer`                | Visual specs, color theory (no code) | pink   |
-| `style-theme-expert`         | Tailwind, design tokens, a11y        | yellow |
-| `shadcn-expert`              | shadcn/ui component selection        | purple |
-| `llm-application-specialist` | RAG, embeddings, AI agents           | purple |
+| subagent_type  | Tag          | Role                                    |
+| -------------- | ------------ | --------------------------------------- |
+| `build-runner` | PIN+RESTRICT | Run builds/tests (haiku, cheap)         |
+| `file-scanner` | PIN+RESTRICT | File listing/search (haiku, cheap)      |
+| `log-parser`   | PIN+RESTRICT | Log filtering/extraction (haiku, cheap) |
 
-## Integration Specialists
+### Implementation (4)
 
-| subagent_type           | Domain                              | Color  |
-| ----------------------- | ----------------------------------- | ------ |
-| `discord-expert`        | Webhooks, bots, notifications       | purple |
-| `smtpgo-expert`         | Transactional email, deliverability | green  |
-| `youtube-api-expert`    | YouTube Data API v3, quota mgmt     | red    |
-| `reddit-api-expert`     | Reddit API, rate limiting           | orange |
-| `openrouter-expert`     | Multi-model AI routing, fallback    | purple |
-| `chatgpt-expert`        | OpenAI API, sentiment analysis      | purple |
-| `claude-sdk-expert`     | Claude Agent SDK, adapters          | purple |
-| `mcp-expert`            | MCP servers, tool selection         | blue   |
-| `power-automate-expert` | Power Automate, 500+ connectors     | green  |
-| `power-bi-expert`       | DAX, Power Query, dashboards        | yellow |
-| `microsoft-365-expert`  | Graph API, Teams, SharePoint        | cyan   |
-| `logic-apps-expert`     | Azure Logic Apps, iPaaS             | blue   |
+| subagent_type                 | Tag              | Role                                                  |
+| ----------------------------- | ---------------- | ----------------------------------------------------- |
+| `react-typescript-specialist` | PIN              | React components, TSX, hooks                          |
+| `rust-backend-specialist`     | PIN              | Rust, Tokio, async APIs                               |
+| `stagehand-expert`            | RESTRICT+MANDATE | E2E tests, Stagehand/Playwright — `tools: Read,Write` |
+| `claude-code-docs-updater`    | MANDATE+GF       | Claude Code documentation maintenance                 |
 
-## Coordination & Mechanical
+### Research, review & planning (15)
 
-| subagent_type  | Domain                                                                                                | Color   |
-| -------------- | ----------------------------------------------------------------------------------------------------- | ------- |
-| `orchestrator` | Multi-agent coordination (see `shared/orchestrator-interception.md` for in-pipeline routing contract) | blue    |
-| `git-expert`   | Branching, conflict resolution                                                                        | green   |
-| `builder`      | General implementation (Sonnet routine lane)                                                          | red     |
-| `builder-opus` | Hard-lane builder — `difficulty: hard` tasks (Brain tier)                                             | magenta |
-| `evaluator`    | Quality evaluation against acceptance criteria (read-only)                                            | orange  |
-| `validator`    | Read-only code inspection                                                                             | green   |
-| `build-runner` | Run builds/tests (haiku, cheap)                                                                       | cyan    |
-| `file-scanner` | File listing/search (haiku, cheap)                                                                    | cyan    |
-| `log-parser`   | Log filtering/extraction (haiku, cheap)                                                               | cyan    |
+| subagent_type                    | Tag              | Role                                                  |
+| -------------------------------- | ---------------- | ----------------------------------------------------- |
+| `system-architect`               | MANDATE          | System design, tech decisions; §1b-pre reviewer       |
+| `security-expert`                | RESTRICT+MANDATE | OWASP, auth, encryption, audit — Pass-1 slot 1        |
+| `code-review-expert`             | RESTRICT+MANDATE | Code quality, coverage, linting — Pass-1 slot 2       |
+| `security-gap-analyzer`          | MANDATE          | §5d-bis security-coverage analyzer                    |
+| `test-gap-analyzer`              | MANDATE          | §5c-bis test-coverage analyzer                        |
+| `api-expert`                     | MANDATE          | REST, GraphQL, OAuth, OpenAPI — slot-3 reviewer       |
+| `database-expert`                | MANDATE          | SQLite, PostgreSQL, schemas — slot-3 reviewer         |
+| `documentation-expert`           | MANDATE          | Docs, diagrams, Mermaid — slot-3 reviewer             |
+| `kubernetes-specialist`          | RESTRICT+MANDATE | K8s manifests, Helm, HPA — slot-3 reviewer            |
+| `terraform-specialist`           | RESTRICT+MANDATE | IaC, modules, state — slot-3 reviewer                 |
+| `llm-application-specialist`     | MANDATE          | RAG, embeddings, AI agents — slot-3 reviewer          |
+| `style-theme-expert`             | MANDATE          | Tailwind, design tokens, a11y — slot-3 reviewer       |
+| `unit-testing-specialist`        | MANDATE          | Jest, pytest, TDD — N.a slots + retro coverage        |
+| `performance-testing-specialist` | MANDATE          | K6, load testing, bottlenecks — N.p benchmark slot    |
+| `ui-designer`                    | RESTRICT+MANDATE | Visual specs, color theory — `tools: Read,Write,Edit` |
 
-## Release & Publishing
+## Domain skills (16)
 
-| subagent_type                  | Domain                           | Color  |
-| ------------------------------ | -------------------------------- | ------ |
-| `release-orchestrator`         | Release pipelines, quality gates | purple |
-| `homebrew-publisher`           | Cask publishing, tap management  | green  |
-| `npm-publisher`                | NPM versioning, publishing       | green  |
-| `macos-signing-expert`         | Code signing, notarization       | blue   |
-| `electron-debug-expert`        | Electron crash diagnosis         | red    |
-| `governance-expert`            | Quality gates, compliance        | green  |
-| `github-security-orchestrator` | Repo security, secret scanning   | red    |
+You never put these in `subagent_type`. They trigger on the task's wording inside
+whichever session is running; `/<skill-name>` force-loads one when the routing misses.
+
+| Skill                   | Trigger domain                                                                                                                 |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `frontend-web`          | Next.js App Router/RSC, Angular 18+ and RxJS, Vue 3 and Pinia, Svelte 5 and SvelteKit, shadcn/ui                               |
+| `backend-frameworks`    | Express and Node/TypeScript, FastAPI and Pydantic, Django 5 and DRF, Spring Boot and JPA, ASP.NET Core and EF Core, Go         |
+| `mobile`                | Flutter and Dart, React Native and Expo, native iOS (Swift/SwiftUI), native Android (Kotlin/Compose)                           |
+| `native-platforms`      | macOS AppKit/SwiftUI, Windows WPF and WinUI 3, WebAssembly                                                                     |
+| `data-stores`           | MongoDB, Redis, Elasticsearch/ELK, Kafka and CDC, vector DBs, Snowflake, Databricks, Airflow/dbt pipelines                     |
+| `api-protocols`         | GraphQL schema design, Apollo, federation; gRPC and Protocol Buffers                                                           |
+| `cloud-platforms`       | AWS (Lambda/ECS/RDS), Azure (Functions/Cosmos), GCP (Cloud Run/BigQuery), Cloudflare Workers/D1/R2/KV                          |
+| `devops-delivery`       | Dockerfiles and image hardening, GitHub Actions, GitLab CI, ArgoCD/GitOps, Grafana/Prometheus/OpenTelemetry, incident response |
+| `release-publishing`    | npm publishing, Homebrew casks, macOS signing and notarization, pre-release governance gates                                   |
+| `ai-engineering`        | Claude Agent SDK, MCP servers, Claude Skills authoring, PyTorch/Transformers, MLOps, OpenCode                                  |
+| `media-processing`      | Remotion programmatic video, Whisper transcription                                                                             |
+| `integrations`          | SMTP2Go transactional email, YouTube Data API v3, Reddit API (NOT Discord — retired 2026-08, nothing absorbed)                 |
+| `microsoft-ecosystem`   | Power Automate, Power BI and DAX, Microsoft 365 and Graph API, Azure Logic Apps                                                |
+| `git-workflows`         | Branching strategy, conflict prevention and resolution, merge coordination, history rewrite                                    |
+| `product-planning`      | PRDs, user stories, acceptance criteria, success metrics                                                                       |
+| `code-review-standards` | Deep security/compliance review checklists                                                                                     |
+
+## Adding an agent
+
+Before writing one, answer the taxonomy question: **would a skill do?** Knowledge and
+procedures are a skill. Only isolation, a tool restriction, or a model pin justifies an
+agent. If it really is an agent, adding it is a deliberate act — the 33-name set is
+asserted by `tests/skill/cases/agent-roster-keep-list.bats`, and a new agent means
+editing that keep list on purpose, in the same commit.

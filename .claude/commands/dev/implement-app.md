@@ -24,9 +24,8 @@ This command requires design outputs from `/design-app`:
 - `.claude/outputs/design/projects/[project-name]/[timestamp]/MANIFEST.md` - Requirements registry and roadmap
 - Agent outputs in `.claude/outputs/design/agents/`:
   - `ui-designer/` - Visual specifications, wireframes, component hierarchy
-  - `shadcn-expert/` - Component selections and implementation patterns
-  - `reddit-api-expert/` - API integration specifications
-  - `chatgpt-expert/` - AI service integration patterns
+  - `component-design/` - Component selections and implementation patterns
+  - `api-integration/` - Third-party API integration specifications
   - `stagehand-expert/` - Testing strategies (for reference)
 
 ## Arguments
@@ -70,18 +69,16 @@ Before writing any code, thoroughly analyze the design outputs to understand the
 // Example: Extract from ui-designer outputs
 interface DesignSpecification {
   colors: Record<string, string>; // Exact hex values from design
-  components: ComponentHierarchy; // From shadcn-expert
-  apiIntegration: ServicePatterns; // From reddit-api-expert
-  aiServices: AIServiceConfig; // From chatgpt-expert
+  components: ComponentHierarchy; // From component-design
+  apiIntegration: ServicePatterns; // From api-integration
 }
 ```
 
 **Implementation Validation Checklist**:
 
 - [ ] Visual specifications extracted from ui-designer outputs
-- [ ] Component selections and patterns from shadcn-expert
-- [ ] API integration patterns from reddit-api-expert
-- [ ] AI service configuration from chatgpt-expert
+- [ ] Component selections and patterns from the `component-design/` output
+- [ ] API integration patterns from the `api-integration/` output
 - [ ] Technology stack confirmed from MANIFEST.md
 
 **If design outputs are incomplete**:
@@ -95,9 +92,8 @@ interface DesignSpecification {
 
 - `MANIFEST.md` - Complete project scope, requirements, and 4-week roadmap
 - `ui-designer/design-specification.md` - Visual structure, wireframes, component hierarchy
-- `shadcn-expert/component-implementation.md` - Component selections and implementation patterns
-- `reddit-api-expert/reddit-integration.md` - API service architecture and caching
-- `chatgpt-expert/ai-integration.md` - Sentiment analysis and AI service integration
+- `component-design/component-implementation.md` - Component selections and implementation patterns
+- `api-integration/api-integration.md` - API service architecture and caching
 - `stagehand-expert/test-specifications.md` - Testing strategies (for reference)
 
 **1.2. API Integration Planning**
@@ -112,7 +108,7 @@ For Reddit Sentiment Monitor app, focus on:
 **Example from Design Specifications**:
 
 ```typescript
-// Based on reddit-api-expert outputs
+// Based on the api-integration output
 interface RedditPostData {
   id: string;
   subreddit: string;
@@ -152,14 +148,13 @@ Implement core services based on design specifications before UI:
 
 **Reddit API Service**
 
-- Implement service class from `reddit-api-expert` specifications
+- Implement service class from the `api-integration/` specifications
 - Add post and comment extraction with proper error handling
 - Implement OAuth authentication and rate limiting
 - Add caching mechanism per design specifications
 
 **OpenAI Sentiment Analysis Service**
 
-- Implement service class from `chatgpt-expert` specifications
 - Add GPT-3.5-turbo integration with 8-comment batching
 - Implement 7-day sentiment caching
 - Add cost optimization and rate limiting
@@ -186,7 +181,7 @@ Implement UI components based on design specifications:
 
 **shadcn/ui Component Integration**
 
-- Install and configure components from `shadcn-expert` specifications
+- Install and configure components from the `component-design/` specifications
 - Implement form components (Input, Button, Select) with proper validation
 - Add Card, Badge, and Progress components for widget display
 - Setup responsive layout with proper breakpoints
@@ -201,7 +196,7 @@ Implement UI components based on design specifications:
 **Key Implementation Principles**:
 
 - Follow design specifications exactly
-- Use established patterns from shadcn-expert outputs
+- Use established patterns from the `component-design/` output
 - Implement responsive design per ui-designer breakpoints
 - Focus on functional App over perfect polish
 
@@ -294,9 +289,8 @@ The implementation strategy prioritizes rapid delivery with design specification
 
 - `MANIFEST.md`: Complete requirements and 4-week roadmap
 - `ui-designer outputs`: Visual specifications and component hierarchy
-- `shadcn-expert outputs`: Component selections and implementation patterns
-- `reddit-api-expert outputs`: Service architecture and caching strategies
-- `chatgpt-expert outputs`: AI integration and cost optimization
+- `component-design/ outputs`: Component selections and implementation patterns
+- `api-integration/ outputs`: Service architecture and caching strategies
 - `stagehand-expert outputs`: Testing strategies for future enhancement
 
 ### Design Integration Points
@@ -310,15 +304,14 @@ The implementation strategy prioritizes rapid delivery with design specification
 
 **Phase 2 - Service Implementation:**
 
-- Follow reddit-api-expert specifications for Reddit API integration
-- Implement chatgpt-expert patterns for OpenAI sentiment analysis
+- Follow the `api-integration/` specifications for third-party API integration
 - Create caching strategies per API expert recommendations
 - Build proper TypeScript interfaces and error handling
 
 **Phase 3 - UI Implementation:**
 
 - Follow ui-designer specifications for visual design and layout
-- Implement shadcn-expert component selections and patterns
+- Implement the `component-design/` component selections and patterns
 - Match exact color scheme and responsive breakpoints
 - Create component hierarchy as specified in design outputs
 
@@ -375,8 +368,8 @@ The command automatically determines project setup requirements and implementati
 
 - **Must** read ALL design outputs before starting implementation
 - **Must** follow UI designer visual specifications and component hierarchy
-- **Must** use shadcn-expert component selections and patterns
-- **Must** implement API services per reddit-api-expert and chatgpt-expert specs
+- **Must** use the `component-design/` component selections and patterns
+- **Must** implement API services per the `api-integration/` specs
 - **Should** reference stagehand-expert for testing strategies
 
 ### Implementation Phase (Practical Approach)
@@ -391,7 +384,6 @@ The command automatically determines project setup requirements and implementati
 - Verify each feature works as designed before moving to next
 - Ensure API integrations handle edge cases properly
 - Validate responsive design matches ui-designer breakpoints
-- Confirm cost projections align with chatgpt-expert estimates
 
 ### User Confirmation Points
 
@@ -408,14 +400,13 @@ Translate design outputs directly into implementation:
 
 **Service Implementation Strategy**:
 
-1. Read `reddit-api-expert` outputs for API service architecture
-2. Read `chatgpt-expert` outputs for AI integration patterns
-3. Create services that implement EXACT specifications from design
+1. Read `api-integration/` outputs for API service architecture
+2. Create services that implement EXACT specifications from design
 
 **Component Implementation Strategy**:
 
 - **Visual Structure** → Follow ui-designer wireframes exactly
-- **Component Library** → Use shadcn-expert selections and patterns
+- **Component Library** → Use the `component-design/` selections and patterns
 - **Data Flow** → Connect UI to API services per specifications
 
 ### Progressive Implementation Pattern
@@ -449,13 +440,13 @@ Build functionality incrementally based on design outputs:
 
 - Verify Reddit API OAuth credentials are properly configured
 - Check OpenAI API key setup and quota limits
-- Implement proper error handling per reddit-api-expert specifications
+- Implement proper error handling per the `api-integration/` specifications
 - Test caching mechanisms work correctly
 
 ### UI Component Implementation Problems
 
 - Re-read ui-designer specifications for exact visual requirements
-- Verify shadcn-expert component selections are installed correctly
+- Verify the `component-design/` component selections are installed correctly
 - Check responsive breakpoints match design specifications
 - Ensure color scheme follows design system exactly
 

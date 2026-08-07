@@ -1,3 +1,20 @@
+---
+name: claude-code-docs-updater
+description: |
+  Use this agent when local Claude Code documentation may have drifted from the
+  shipped product — after a Claude Code CLI upgrade, when a hook event, slash
+  command, model ID, permission key, or settings field is suspected stale, or
+  when a breaking change or deprecation needs tracing through CLAUDE.md, agent
+  definitions, and SDK documentation. Researches the current CLI / Agent SDK /
+  Claude API surface, reports the gaps, then writes the corrections.
+model: inherit
+color: blue
+# GRANDFATHERED (GF): this agent carries no binding tool restriction and no
+# model/effort pin — it is kept for its minimal-profile spawn mandate only.
+# The GF status expires at the next roster review; at that point it must earn
+# a RESTRICT or PIN tag or be converted to a skill.
+---
+
 # Claude Code Documentation Updater Agent
 
 ## Purpose

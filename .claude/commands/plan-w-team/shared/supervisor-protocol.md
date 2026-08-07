@@ -113,7 +113,7 @@ Cleanup: `07-retro.md` removes on `RETRO_SUCCESS=1`
 ```jsonl
 {"ts":"2026-05-19T22:30:00Z","event":"supervisor_start","slug":"add-payment-api","supervisor_agent_id":"AGT-sup-1"}
 {"ts":"2026-05-19T22:30:02Z","event":"spawn_decision","slug":"add-payment-api","task_id":"201","agent_type":"react-typescript-specialist","reason":"deps complete + capacity 3/4"}
-{"ts":"2026-05-19T22:30:03Z","event":"spawn_decision","slug":"add-payment-api","task_id":"202","agent_type":"nodejs-specialist","reason":"deps complete + capacity 2/4"}
+{"ts":"2026-05-19T22:30:03Z","event":"spawn_decision","slug":"add-payment-api","task_id":"202","agent_type":"builder","reason":"deps complete + capacity 2/4"}
 {"ts":"2026-05-19T22:31:15Z","event":"route_delegation","slug":"add-payment-api","call_site":"qa-tier-selection","router_choice":"standard","router_confidence":"high"}
 {"ts":"2026-05-19T22:45:00Z","event":"escalation","slug":"add-payment-api","call_site":"push-ack","reason":"Step 6 reached; hard-gate requires user confirmation"}
 {"ts":"2026-05-19T22:45:00Z","event":"supervisor_stop","slug":"add-payment-api","reason":"escalation:push-ack","duration_s":900}

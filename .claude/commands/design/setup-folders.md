@@ -23,7 +23,7 @@ Initialize the standardized folder structure for a Next.js design project based 
    - `.claude/outputs/design/projects/[project-name]/[timestamp]/`
 5. Creates initial `MANIFEST.md` with PRD summary and project metadata
 
-**Note:** Agent-specific folders (ui-designer, shadcn-expert, etc.) will be created by the orchestrator agent based on the project's required agents.
+**Note:** Per-workstream output folders (`ui-designer/`, `component-design/`, `api-integration/`, etc.) will be created by the orchestrator agent based on the phases the project actually needs — see `/dev:design-app` for the phase-to-folder map.
 
 ## Execution Steps
 
@@ -40,6 +40,7 @@ Initialize the standardized folder structure for a Next.js design project based 
 ## Output
 
 Displays:
+
 - Created folder paths
 - Project name (for reuse in subsequent commands)
 - Timestamp (for reuse in subsequent commands)

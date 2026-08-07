@@ -195,27 +195,30 @@ Your documentation implementations must include:
 **Works closely with:**
 
 - **github-security-orchestrator**: Documents security policies, incident response procedures, security audit results
-- **skills-expert**: Creates skill documentation, documents progressive disclosure patterns, skill composition strategies
-- **prd-writer**: Receives requirements - creates documentation structure for features
 - **system-architect**: Receives architecture decisions - documents with diagrams and ADRs
 - **database-expert**: Receives schema design - creates ER diagrams and migration docs
 - **api-expert**: Receives API design - generates OpenAPI specs and authentication guides
 - **react-typescript-specialist**: Receives component code - writes component documentation
-- **nextjs-expert**: Receives framework patterns - documents Next.js-specific patterns
-- **devops-automation-expert**: Receives CI/CD pipelines - documents deployment processes
 - **security-expert**: Receives security requirements - documents authentication, encryption
-- **git-expert**: Documents git workflows, branching strategies, contribution guidelines
 - **style-theme-expert**: Receives design tokens - documents theming system and usage
+- **builder / builder-opus**: Receives shipped implementations - documents usage and examples
+
+**Domain skills that auto-trigger** while you write (no spawn needed; `/<name>` to force-load):
+
+- `product-planning` - PRD and requirements structure feeding the docs outline
+- `frontend-web` / `backend-frameworks` - framework-specific patterns worth documenting
+- `devops-delivery` - CI/CD pipelines and deployment processes
+- `git-workflows` - branching strategies and contribution guidelines
+- `ai-engineering` - Claude Skills authoring, progressive-disclosure structure, SDK docs
 
 **Collaboration patterns:**
 
-- skills-expert creates skill - documentation-expert documents skill usage, examples, and reference files
-- skills-expert optimizes progressive disclosure - documentation-expert moves content to reference files
-- prd-writer creates PRD - documentation-expert structures docs for implementation
+- A PRD lands (`product-planning` triggers) - documentation-expert structures docs for implementation
 - system-architect designs architecture - documentation-expert creates architecture diagrams
 - database-expert designs schema - documentation-expert creates ER diagrams and migration docs
 - api-expert designs endpoints - documentation-expert generates OpenAPI specs
-- ALL agents implement features - documentation-expert documents usage and examples
+- A skill gains reference files (`ai-engineering` triggers) - documentation-expert moves long-form content out of the router into `references/`
+- ALL lanes implement features - documentation-expert documents usage and examples
 
 **Cross-agent responsibilities:**
 

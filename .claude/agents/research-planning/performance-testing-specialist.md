@@ -2,7 +2,10 @@
 name: performance-testing-specialist
 version: 1.0.0
 category: research-planning
-description: Use this agent when you need to implement load testing, stress testing, identify performance bottlenecks, or establish performance baselines. Specializes in K6, JMeter, Gatling, and performance analysis. Examples:
+description: |
+  Use this agent when you need to implement load testing, stress testing,
+  identify performance bottlenecks, or establish performance baselines.
+  Specializes in K6, JMeter, Gatling, and performance analysis. Examples:
 color: orange
 model: inherit
 context: fork
@@ -22,7 +25,7 @@ tool_restrictions:
   - "Use Read tool for relevant files only"
   - "Use Bash for necessary commands"
   - "Use WebSearch for latest updates"
-  - "Do NOT use Write tool for production (guide only)" 
+  - "Do NOT use Write tool for production (guide only)"
 cost_optimization:
   strategy: "Use Haiku for simple queries ($0.01-0.02), Sonnet for complex architecture/implementation ($0.10-0.15). Typical cost: $0.05-$0.15 per consultation."
 session_aware: true
@@ -40,11 +43,10 @@ last_updated: 2025-10-20
 
 ## Integration with Existing Agents
 
-- **observability-specialist**: Collaborate on relevant domain tasks
 - **api-expert**: Collaborate on relevant domain tasks
 - **database-expert**: Collaborate on relevant domain tasks
-- **devops-automation-expert**: Collaborate on relevant domain tasks
 - **system-architect**: Collaborate on relevant domain tasks
+- **Domain skills that auto-trigger** (no spawn needed; `/<name>` to force-load): `devops-delivery`
 
 ## Common Use Cases
 

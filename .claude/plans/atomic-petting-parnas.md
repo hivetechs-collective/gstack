@@ -1,5 +1,12 @@
 # Implementation Plan: IndyDevDan's Agent Teams + Observability Dashboard
 
+> **COMPLETED PLAN — historical.** The team-agent tier described here shipped and is
+> now `.claude/agents/team/`. Every repo statistic below is from the date of writing
+> and is stale: the roster was cut to **33** agents by the 2026-08-06 restructure
+> (`find .claude/agents -mindepth 2 -maxdepth 2 -name '*.md' | wc -l`), with specialist
+> knowledge moved into **16** skill directories under `.claude/skills/`. Read this for
+> the design reasoning, not for counts.
+
 ## Context
 
 We are implementing the two actively maintained configurations by IndyDevDan (disler):
@@ -7,7 +14,7 @@ We are implementing the two actively maintained configurations by IndyDevDan (di
 1. **claude-code-hooks-mastery** (2,935 stars) - Agent team definitions (builder/validator), output styles, plan_w_team command, meta-agent for generating agents
 2. **claude-code-hooks-multi-agent-observability** (1,073 stars) - Real-time observability dashboard with Bun server, Vue 3 client, SQLite storage, WebSocket streaming, and send_event.py universal dispatcher
 
-These integrate into our existing claude-pattern infrastructure (150 agents, 13 hooks, 14 commands) without disrupting current functionality. The dual-hook pattern ensures existing bash hooks continue to run while send_event.py dispatches events to the observability server as a second hook command.
+These integrate into our existing claude-pattern infrastructure (at the time: a ~150-file agent roster, 13 hooks, 14 commands) without disrupting current functionality. The dual-hook pattern ensures existing bash hooks continue to run while send_event.py dispatches events to the observability server as a second hook command.
 
 ## Files to Create/Modify
 

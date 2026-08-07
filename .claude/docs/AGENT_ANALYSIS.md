@@ -408,7 +408,9 @@ claude
   - `.claude/agents/coordination/` - PM agents
   - `.claude/agents/implementation/` - Code writers
   - `.claude/agents/research-planning/` - Architects, planners
-  - `.claude/agents/hive/` - Project-specific (Hive example)
+  - the former project-specific subtree (a `hive` directory alongside the three
+    above) — retired 2026-08-06; project-specific agents are no longer a shape
+    this repo ships
 
 ### Agent Name (YAML frontmatter)
 

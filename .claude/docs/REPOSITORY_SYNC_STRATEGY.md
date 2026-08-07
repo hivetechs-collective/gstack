@@ -31,6 +31,7 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 **Location**: `/Users/veronelazio/Developer/Private/claude-pattern`
 
 **Contents** (112 agent markdown files):
+
 ```
 .claude/
 ├── agents/                          # 70+ specialist agents
@@ -72,17 +73,26 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 ```
 
 **Key Characteristics**:
+
 - **70+ agents** with 94% technology coverage
 - **SDK documentation** (17 files, 5,363 lines) offline reference
 - **Status line** custom script with token tracking, cost monitoring, burn rate
 - **MCP servers** (5 configured: memory, filesystem, sequential-thinking, git, ref)
 - **Slash commands** for agent invocation and design workflows
 
-### 1.2 Existing Project: hive
+### 1.2 Historical snapshot: hive (2025-10-08)
+
+> **Dated snapshot, not current state.** The `hive` repo is GitHub-archived
+> (read-only) and is no longer a sync target. Everything below records what that
+> consumer looked like on 2025-10-08 — including `AGENT_INTEGRATION_SUMMARY.md`
+> and the 31-agent v1.1.0 roster, both of which have since been retired in the
+> source. It is kept as the worked example the sync architecture in Part 2 was
+> designed against; do not read any line of it as describing a live repo.
 
 **Location**: `/Users/veronelazio/Developer/Private/hive`
 
-**Current .claude/ Structure** (108 agent markdown files):
+**.claude/ structure as of 2025-10-08** (108 agent markdown files):
+
 ```
 .claude/
 ├── AGENT_INTEGRATION_SUMMARY.md    # Last sync: 2025-10-08 12:20 PST
@@ -102,6 +112,7 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 ```
 
 **Integration Status**:
+
 - ✅ Has 31 agents (v1.1.0) from previous manual sync
 - ✅ Status line working (statusline.sh present)
 - ✅ MCP servers configured (.mcp.json)
@@ -111,11 +122,16 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 - ❌ Missing EXECUTION_SUMMARY.md
 - ❌ Missing some SDK enhancement files
 
-### 1.3 Existing Project: hivetechs-website
+### 1.3 Historical snapshot: hivetechs-website (2025-10-08)
+
+> **Dated snapshot, not current state** — same status as §1.2. This repo is no
+> longer a sync target, and the `AGENT_INTEGRATION_SUMMARY.md` and 31-agent
+> v1.1.0 roster shown below have both since been retired in the source.
 
 **Location**: `/Users/veronelazio/Developer/Private/hivetechs-website`
 
-**Current .claude/ Structure**:
+**.claude/ structure as of 2025-10-08**:
+
 ```
 .claude/
 ├── AGENT_INTEGRATION_SUMMARY.md    # Last sync: 2025-10-08 12:23 PST
@@ -129,6 +145,7 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 ```
 
 **Integration Status**:
+
 - ✅ Same as hive (31 agents, status line, MCP)
 - ❌ Missing same 39 agents as hive
 - ❌ Missing research/ and other new files
@@ -156,11 +173,13 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
    - `agents/research-planning/system-architect/` (subdirectory with SDK enhancements)
 
 **Files that DIFFER**:
+
 - `agents/GENERATION_REPORT.md` (updated in claude-pattern)
 - `settings.local.json` (project-specific, should NOT sync)
 - `statusline.log` (project-specific, should NOT sync)
 
 **Files ONLY in hive/hivetechs-website**:
+
 - `agents.backup.*/` (project-specific backups)
 - `statusline.log` (runtime logs)
 
@@ -171,6 +190,7 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 ### 2.1 Recommended Strategy: rsync with Selective Sync
 
 **Why rsync?**
+
 - ✅ Fast, incremental file synchronization
 - ✅ Preserves timestamps and permissions
 - ✅ Supports exclusion patterns (protect project-specific files)
@@ -179,6 +199,7 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 - ✅ Works across any directory structure
 
 **Why NOT git submodules/subtrees?**
+
 - ❌ Requires git repository in claude-pattern
 - ❌ Complex merge conflicts
 - ❌ Harder to understand for non-git users
@@ -186,6 +207,7 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 - ❌ Commit history pollution
 
 **Why NOT symlinks?**
+
 - ❌ Doesn't work across different projects
 - ❌ Breaks if source moves
 - ❌ No per-project customization
@@ -228,6 +250,7 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 ### 2.3 Sync Rules
 
 **ALWAYS Sync** (from claude-pattern to target projects):
+
 1. `agents/` directory (all subdirectories and files)
 2. `commands/` directory
 3. `docs/` directory
@@ -237,6 +260,7 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 7. `outputs/` directory structure (empty, for consistency)
 
 **NEVER Sync** (protect project-specific files):
+
 1. `settings.local.json` (project-specific permissions, paths)
 2. `statusline.log` (runtime logs)
 3. `agents.backup.*/` directories (project-specific backups)
@@ -244,6 +268,7 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 5. `.env*` files (if present)
 
 **MERGE Strategy** (if conflicts):
+
 - Default: **Source wins** (claude-pattern overwrites target)
 - Exception: User manually edited files (requires `--interactive` flag)
 
@@ -252,6 +277,7 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 **Use Case**: User improves an agent in `hive`, wants to push back to `claude-pattern`
 
 **Strategy**: Manual review process
+
 1. User identifies improved agent file in `hive/.claude/agents/`
 2. User copies file to `claude-pattern/.claude/agents/`
 3. User reviews diff in claude-pattern
@@ -259,12 +285,14 @@ This document provides a comprehensive strategy for **sharing and synchronizing*
 5. Next sync propagates improvement to all projects
 
 **Why Manual?**
+
 - ✅ Prevents accidental overwrites
 - ✅ Allows quality review before propagating
 - ✅ Avoids merge conflicts
 - ✅ Simple, explicit process
 
 **Automation Possibility** (future):
+
 - Script to detect modified agents in target projects
 - Prompt user: "Agent X modified in hive. Sync back to claude-pattern?"
 - Copy file and show diff
@@ -317,3 +345,4 @@ echo "1. Create $TARGET_DIR/settings.local.json with project-specific settings"
 echo "2. Test status line: cd $1 && .claude/statusline.sh"
 echo "3. Verify agents: ls $TARGET_DIR/agents/"
 echo "4. Start using agents in Claude Code"
+```

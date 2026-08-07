@@ -2,9 +2,9 @@
 allowed-tools: Task, Read, Write, TodoWrite
 description: Design Next.js full-stack application architecture from PRD with test-first specifications
 argument-hint: <prd-file-path>
-required-agents: orchestrator, ui-designer, shadcn-expert, stagehand-expert, system-architect, reddit-api-expert, chatgpt-expert
+required-agents: orchestrator, ui-designer, stagehand-expert, system-architect, builder
 agent-execution-pattern: sequential-then-parallel
-minimum-task-calls: 8
+minimum-task-calls: 7
 ---
 
 # Next.js 15 Full-Stack Application Design Command
@@ -14,25 +14,29 @@ Create a comprehensive Next.js 15 application design with test-first specificati
 ## ⚠️ CRITICAL EXECUTION CONSTRAINTS ⚠️
 
 **NEVER** give the orchestrator agent the entire workflow to execute. The orchestrator agent:
+
 - **Phase 1**: ONLY creates folders and initial MANIFEST.md
 - **Phase 4**: ONLY synthesizes outputs from other agents
 
 **MANDATORY AGENT SEPARATION:**
+
 - Each agent MUST be invoked with a separate Task tool call
 - The orchestrator MUST NOT be asked to spawn sub-agents itself
 - **YOU (Claude Code) are the coordinator, not the orchestrator agent**
 
 **Required Execution Pattern:**
+
 ```bash
 Phase 1: Task(orchestrator) - Setup only
-Phase 2: Task(ui-designer) - Wireframes  
-Phase 3: Task(shadcn-expert) + Task(stagehand-expert) + Task(reddit-api-expert) + Task(chatgpt-expert) - Parallel (4 calls in 1 message)
+Phase 2: Task(ui-designer) - Wireframes
+Phase 3: Task(builder, component design) + Task(stagehand-expert) + Task(builder, API integration) - Parallel (3 calls in 1 message)
 Phase 4: Task(system-architect) - Integration architecture after parallel outputs
 Phase 5: Task(orchestrator) - Synthesis
-Total Task calls: 8 (minimum)
+Total Task calls: 7 (minimum)
 ```
 
 **The orchestrator agent is just another specialist that:**
+
 - Sets up project structure (Phase 1)
 - Synthesizes outputs (Phase 4)
 - Does NOT coordinate other agents - that's YOUR job
@@ -63,7 +67,9 @@ The command analyzes a Product Requirements Document to create a complete Next.j
 
 ## Enhanced Visual Design Integration
 
-The **shadcn-expert** agent now provides comprehensive visual design capabilities:
+Component-system design runs on a `builder` lane, where the **`frontend-web`** skill
+auto-triggers (`/frontend-web` to force-load) and supplies the shadcn/ui knowledge.
+That lane provides comprehensive visual design capabilities:
 
 ### Visual Excellence Focus
 
@@ -77,11 +83,10 @@ The **shadcn-expert** agent now provides comprehensive visual design capabilitie
 **Streamlined Output Approach**: Each agent produces **1 comprehensive file** combining planning and implementation:
 
 - **ui-designer**: `design-specification.md` - Complete UI/UX design (wireframes, components, flows)
-- **shadcn-expert**: `component-implementation.md` - Component selection, design system, exact values
+- **component-design** (`builder` + `frontend-web`): `component-implementation.md` - Component selection, design system, exact values
 - **stagehand-expert**: `test-specifications.md` - E2E test plan and executable test cases
 - **system-architect**: `integration-architecture.md` - Complete integration patterns, API routes, data flow
-- **reddit-api-expert**: `reddit-integration.md` - API plan with embedded TypeScript implementation
-- **chatgpt-expert**: `ai-integration.md` - OpenAI plan with embedded TypeScript implementation
+- **api-integration** (`builder` + `integrations`): `api-integration.md` - Third-party API plan with embedded TypeScript implementation
 
 ### Required Concrete Deliverables (App-Specific)
 
@@ -119,28 +124,32 @@ Every component selection considers:
 ## Anti-Patterns (DO NOT DO THIS)
 
 ### ❌ **WRONG - Single orchestrator doing everything:**
+
 ```bash
-Task(orchestrator, "Do Phase 1, then spawn ui-designer, then spawn shadcn-expert...")
+Task(orchestrator, "Do Phase 1, then spawn ui-designer, then spawn the component-design builder...")
 ```
 
 ### ❌ **WRONG - Orchestrator spawning sub-agents:**
+
 ```bash
 Task(orchestrator, "Initialize project then coordinate ui-designer agent...")
 ```
 
 ### ❌ **WRONG - Sequential Phase 3 execution:**
+
 ```bash
-Task(shadcn-expert, "...")  # Wait for completion
+Task(builder, "component design ...")  # Wait for completion
 Task(stagehand-expert, "...") # Then execute - NOT parallel
 ```
 
 ### ✅ **CORRECT - Separate agent invocations:**
+
 ```bash
 Task(orchestrator, "Initialize project folders and create initial MANIFEST")
 # Wait for completion
-Task(ui-designer, "Create wireframes from PRD") 
+Task(ui-designer, "Create wireframes from PRD")
 # Wait for completion
-Task(shadcn-expert, "...") + Task(stagehand-expert, "...") # Parallel in single message
+Task(builder, "component design ...") + Task(stagehand-expert, "...") # Parallel in single message
 # Wait for both
 Task(orchestrator, "Synthesize all outputs")
 ```
@@ -170,12 +179,14 @@ Following orchestrator-initialized workflow with structured project setup and va
 
 **Executed Simultaneously** after Phase 2 completion:
 
-You **MUST** execute Phase 3A, Phase 3B, Phase 3C, and Phase 3D in parallel using sub-agents.
+You **MUST** execute Phase 3A, Phase 3B, and Phase 3C in parallel using sub-agents.
 
 #### Phase 3A: Component System Design
 
 ```bash
-- shadcn-expert → visual component selection, beautiful composition strategy, design system aesthetics (uses ui-designer output for visual design context)
+- builder → visual component selection, beautiful composition strategy, design system aesthetics
+  (uses ui-designer output for visual design context; the `frontend-web` skill auto-triggers
+   and supplies the shadcn/ui and framework knowledge — `/frontend-web` to force-load)
 ```
 
 #### Phase 3B: Test Specification Design
@@ -184,16 +195,13 @@ You **MUST** execute Phase 3A, Phase 3B, Phase 3C, and Phase 3D in parallel usin
 - stagehand-expert → E2E test specifications (uses ui-designer output)
 ```
 
-#### Phase 3C: Reddit API Integration Design
+#### Phase 3C: Third-Party API Integration Design
 
 ```bash
-- reddit-api-expert → Reddit API integration plan, rate limiting, caching strategy, authentication patterns
-```
-
-#### Phase 3D: AI Integration Design
-
-```bash
-- chatgpt-expert → OpenAI API integration for sentiment analysis, prompt engineering, cost optimization (7-day cache)
+- builder → provider API integration plan, rate limiting, caching strategy, authentication patterns
+  (the `integrations` skill auto-triggers for SMTP2Go, Discord, YouTube Data API and Reddit API —
+   `/integrations` to force-load; for a non-listed provider the `api-protocols` skill covers the
+   contract shape)
 ```
 
 ### Phase 4: System Integration Architecture (Sequential - After Parallel Outputs)
@@ -213,7 +221,7 @@ You **MUST** execute Phase 3A, Phase 3B, Phase 3C, and Phase 3D in parallel usin
   • Caching layer coordination between frontend and backend
   • Error handling and retry patterns across layers
   • Session and request scoping strategies
-  • Synthesizes outputs from shadcn, stagehand, reddit-api, and chatgpt experts
+  • Synthesizes the component-design, stagehand-expert, and api-integration outputs
 ```
 
 ### Phase 5: Orchestrator Synthesis & Validation (Sequential - Requires All Inputs)
@@ -260,16 +268,14 @@ You **MUST** execute Phase 3A, Phase 3B, Phase 3C, and Phase 3D in parallel usin
 
 ```
 .claude/outputs/design/agents/
-├── shadcn-expert/[project-name]-[timestamp]/
+├── component-design/[project-name]-[timestamp]/
 │   └── component-implementation.md   # Component selection, design system, exact values
 ├── stagehand-expert/[project-name]-[timestamp]/
 │   └── test-specifications.md        # E2E test plan and test cases
 ├── system-architect/[project-name]-[timestamp]/
 │   └── integration-architecture.md   # Complete integration patterns connecting all layers
-├── reddit-api-expert/[project-name]-[timestamp]/
-│   └── reddit-integration.md        # API integration plan with implementation code
-└── chatgpt-expert/[project-name]-[timestamp]/
-    └── ai-integration.md             # OpenAI integration plan with implementation code
+└── api-integration/[project-name]-[timestamp]/
+    └── api-integration.md            # Third-party API integration plan with implementation code
 ```
 
 **Phase 4 (Sequential - Final Synthesis)**:
@@ -287,7 +293,7 @@ The command execution pattern:
 
 - **Phase 1**: YOU invoke orchestrator for initialization with project setup and TodoWrite tracking
 - **Phase 2**: YOU invoke ui-designer for sequential UI design (1 file output)
-- **Phase 3**: YOU spawn all five agents in parallel (each produces 1 file output)
+- **Phase 3**: YOU spawn all three Phase-3 agents in parallel (each produces 1 file output)
 - **Phase 5**: YOU invoke orchestrator for final synthesis (1 MANIFEST.md file only)
 - **Agent Coordination**: YOU use **multiple Task tool calls in single message** to spawn agents simultaneously
 - **Progress Tracking**: YOU maintain individual TodoWrite entries for each agent's progress
@@ -300,9 +306,9 @@ The command execution pattern:
 **Parallel Execution Requirements:**
 
 ```bash
-# CORRECT: Five Task tool calls in single message for parallel execution
+# CORRECT: Four Task tool calls in single message for parallel execution
 <invoke name="Task">
-  # shadcn-expert task
+  # component-design task  (builder + frontend-web skill)
 </invoke>
 <invoke name="Task">
   # stagehand-expert task
@@ -311,10 +317,7 @@ The command execution pattern:
   # system-architect task
 </invoke>
 <invoke name="Task">
-  # reddit-api-expert task
-</invoke>
-<invoke name="Task">
-  # chatgpt-expert task
+  # api-integration task   (builder + integrations skill)
 </invoke>
 
 # INCORRECT: Sequential Task calls (not parallel)
@@ -331,8 +334,8 @@ orchestrator → PRD analysis, project setup, folder creation, initial MANIFEST.
 ui-designer → wireframes, component hierarchy, user flows
 
 # Phase 3: Parallel (spawn simultaneously, using ui-designer output)
-# CRITICAL: Use FOUR Task tool calls in SINGLE message for true parallelism
-shadcn-expert + stagehand-expert + reddit-api-expert + chatgpt-expert
+# CRITICAL: Use THREE Task tool calls in SINGLE message for true parallelism
+builder(component design) + stagehand-expert + builder(API integration)
 (simultaneous Task calls)
 
 # Phase 4: Sequential (requires all parallel inputs)
@@ -345,29 +348,34 @@ orchestrator → synthesis, validation, finalize MANIFEST.md
 ## Exact Task Prompts for Each Phase
 
 ### Phase 1 - Orchestrator Initialization
+
 ```
-Task(orchestrator): 
-"Read PRD at [path]. Create project folder structure at .claude/outputs/design/projects/[project-name]/[timestamp]/. 
-Generate initial MANIFEST.md with requirements baseline ONLY. 
+Task(orchestrator):
+"Read PRD at [path]. Create project folder structure at .claude/outputs/design/projects/[project-name]/[timestamp]/.
+Generate initial MANIFEST.md with requirements baseline ONLY.
 DO NOT execute any other phases or spawn any agents."
 ```
 
-### Phase 2 - UI Designer  
+### Phase 2 - UI Designer
+
 ```
 Task(ui-designer):
 "Read PRD at [path]. Create comprehensive UI/UX design specification including wireframes, component hierarchy, and user flows in ONE file.
 Output to .claude/outputs/design/agents/ui-designer/[project-name]-[timestamp]/"
 ```
 
-### Phase 3A - shadcn Expert (Parallel)
+### Phase 3A - Component Design (Parallel)
+
 ```
-Task(shadcn-expert):
+Task(builder):
 "Read PRD at [path] and ui-designer output at [ui-path]. Select shadcn/ui components with exact hex codes.
 Create ONE comprehensive file combining component plan and implementation values with WCAG contrast validation.
-Output to .claude/outputs/design/agents/shadcn-expert/[project-name]-[timestamp]/"
+The `frontend-web` skill auto-triggers for shadcn/ui and framework detail (/frontend-web to force-load).
+Output to .claude/outputs/design/agents/component-design/[project-name]-[timestamp]/"
 ```
 
-### Phase 3B - Stagehand Expert (Parallel)  
+### Phase 3B - Stagehand Expert (Parallel)
+
 ```
 Task(stagehand-expert):
 "Read PRD at [path] and ui-designer output at [ui-path]. Create E2E test specifications.
@@ -375,6 +383,7 @@ Output to .claude/outputs/design/agents/stagehand-expert/[project-name]-[timesta
 ```
 
 ### Phase 3C - System Architect (Parallel)
+
 ```
 Task(system-architect):
 "Read PRD at [path] and ui-designer output at [ui-path]. Design complete integration architecture including:
@@ -387,23 +396,20 @@ Task(system-architect):
 Output to .claude/outputs/design/agents/system-architect/[project-name]-[timestamp]/"
 ```
 
-### Phase 3D - Reddit API Expert (Parallel)
-```
-Task(reddit-api-expert):
-"Read PRD at [path] and architecture notes. Design Reddit API integration with rate limiting, OAuth authentication, and caching strategy.
-Include implementation code within the integration plan markdown file.
-Output to .claude/outputs/design/agents/reddit-api-expert/[project-name]-[timestamp]/"
-```
+### Phase 3D - API Integration (Parallel)
 
-### Phase 3E - ChatGPT Expert (Parallel)  
 ```
-Task(chatgpt-expert):
-"Read PRD at [path] and architecture notes. Design OpenAI API integration for sentiment analysis with 7-day caching strategy.
+Task(builder):
+"Read PRD at [path] and architecture notes. Design the third-party API integration the PRD calls for,
+with rate limiting, OAuth authentication, and a caching strategy.
 Include implementation code within the integration plan markdown file.
-Output to .claude/outputs/design/agents/chatgpt-expert/[project-name]-[timestamp]/"
+The `integrations` skill auto-triggers for SMTP2Go, Discord, YouTube Data API and Reddit API
+(/integrations to force-load); `api-protocols` covers the contract shape for any other provider.
+Output to .claude/outputs/design/agents/api-integration/[project-name]-[timestamp]/"
 ```
 
 ### Phase 4 - Orchestrator Synthesis
+
 ```
 Task(orchestrator):
 "Read all agent outputs from phases 2-3. Create ONLY ONE file: MANIFEST.md as the final registry.
@@ -413,9 +419,10 @@ DO NOT create redundant implementation plans - those exist in agent outputs. DO 
 ## Execution Validation Checklist
 
 Before proceeding, verify:
-- [ ] Are you calling Task tool 7+ times (not just once)?
+
+- [ ] Are you calling Task tool 6+ times (not just once)?
 - [ ] Is orchestrator limited to setup (Phase 1) and synthesis (Phase 4) only?
-- [ ] Are Phase 3 agents (shadcn-expert + stagehand-expert + system-architect + reddit-api-expert + chatgpt-expert) invoked in a SINGLE message with FIVE Task calls?
+- [ ] Are the Phase 3 agents (component-design builder + stagehand-expert + system-architect + api-integration builder) invoked in a SINGLE message with FOUR Task calls?
 - [ ] Does each agent have a focused, specific prompt that matches the templates above?
 - [ ] Are you (Claude Code) coordinating, not delegating coordination to orchestrator?
 - [ ] Did you output your execution plan summary before starting?
@@ -432,11 +439,10 @@ The design process ensures 100% PRD coverage across all agents:
 
 - ✓ **orchestrator**: Initial PRD analysis & MANIFEST creation (initialization)
 - ✓ **ui-designer**: UI requirements & user story mapping (foundation) - 1 file output
-- ✓ **shadcn-expert**: Visual component selection, beautiful design systems & aesthetic integration - 1 file output
+- ✓ **component-design** (`builder` + `frontend-web`): Visual component selection, beautiful design systems & aesthetic integration - 1 file output
 - ✓ **stagehand-expert**: User acceptance criteria & E2E testing - 1 file output
 - ✓ **system-architect**: Integration architecture, API routes, data flow, state management - 1 file output
-- ✓ **reddit-api-expert**: Reddit API integration, rate limiting, OAuth authentication, caching - 1 file output
-- ✓ **chatgpt-expert**: OpenAI API integration, sentiment analysis, prompt engineering (7-day cache) - 1 file output
+- ✓ **api-integration** (`builder` + `integrations`): Third-party API integration, rate limiting, OAuth authentication, caching - 1 file output
 - ✓ **orchestrator**: Cross-agent validation & MANIFEST finalization (synthesis) - 1 file output
 
 ## Next.js 15 Specific Design
@@ -458,9 +464,9 @@ The design is optimized for Next.js 15 App Router with React 19:
 Execution Plan Summary:
 Phase 1: Task(orchestrator) - Setup folders and initial MANIFEST only
 Phase 2: Task(ui-designer) - Create wireframes and user flows
-Phase 3: Task(shadcn-expert) + Task(stagehand-expert) + Task(system-architect) + Task(reddit-api-expert) + Task(chatgpt-expert) - Parallel in single message
+Phase 3: Task(builder, component design) + Task(stagehand-expert) + Task(system-architect) + Task(builder, API integration) - Parallel in single message
 Phase 5: Task(orchestrator) - Synthesize outputs into implementation plan
-Total Task calls: 8
+Total Task calls: 7
 Estimated completion: [time estimate]
 ```
 
@@ -472,11 +478,10 @@ A complete design includes outputs from all phases:
 
 - ✓ **Phase 1**: Project setup & initial MANIFEST (orchestrator initialization)
 - ✓ **Phase 2**: UI wireframes & component hierarchy (ui-designer)
-- ✓ **Phase 3A**: Visual shadcn/ui component selections, beautiful design systems & aesthetic customizations (shadcn-expert)
+- ✓ **Phase 3A**: Visual shadcn/ui component selections, beautiful design systems & aesthetic customizations (`builder` + `frontend-web`)
 - ✓ **Phase 3B**: E2E test specifications covering all user stories (stagehand-expert)
 - ✓ **Phase 3C**: Complete system integration architecture connecting all components (system-architect)
-- ✓ **Phase 3D**: Reddit API integration plan with caching strategy (reddit-api-expert)
-- ✓ **Phase 3E**: OpenAI API integration for sentiment analysis (chatgpt-expert)
+- ✓ **Phase 3D**: Third-party API integration plan with caching strategy (`builder` + `integrations`)
 - ✓ **Phase 5**: Complete MANIFEST linking all outputs (orchestrator synthesis - 1 file)
 
 **Efficiency Gains**: Proper agent coordination enables consistent project structure and UI foundation enables parallel component and testing work

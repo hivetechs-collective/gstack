@@ -2,7 +2,10 @@
 name: unit-testing-specialist
 version: 1.0.0
 category: research-planning
-description: Use this agent when you need to write unit tests, implement TDD workflows, design test strategies, or improve test coverage. Specializes in Jest, pytest, JUnit, test design patterns, and property-based testing. Examples:
+description: |
+  Use this agent when you need to write unit tests, implement TDD workflows,
+  design test strategies, or improve test coverage. Specializes in Jest, pytest,
+  JUnit, test design patterns, and property-based testing. Examples:
 color: green
 model: inherit
 context: fork
@@ -22,7 +25,7 @@ tool_restrictions:
   - "Use Read tool for relevant files only"
   - "Use Bash for necessary commands"
   - "Use WebSearch for latest updates"
-  - "Do NOT use Write tool for production (guide only)" 
+  - "Do NOT use Write tool for production (guide only)"
 cost_optimization:
   strategy: "Use Haiku for simple queries ($0.01-0.02), Sonnet for complex architecture/implementation ($0.10-0.15). Typical cost: $0.05-$0.15 per consultation."
 session_aware: true
@@ -42,9 +45,8 @@ last_updated: 2025-10-20
 ## Integration with Existing Agents
 
 - **react-typescript-specialist**: Collaborate on relevant domain tasks
-- **fastapi-specialist**: Collaborate on relevant domain tasks
-- **spring-boot-specialist**: Collaborate on relevant domain tasks
 - **code-review-expert**: Collaborate on relevant domain tasks
+- **Domain skills that auto-trigger** (no spawn needed; `/<name>` to force-load): `backend-frameworks`
 
 ## Common Use Cases
 

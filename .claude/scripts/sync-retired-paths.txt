@@ -1,0 +1,352 @@
+# sync-retired-paths.txt — PERMANENT consumer-cleanup manifest
+# =============================================================================
+# WHAT THIS IS
+#   One repo-relative path per line. On every sync, sync-to-project.sh reads
+#   THIS FILE FROM THE SOURCE (claude-pattern) — .claude/scripts/ is excluded
+#   from the rsync, so the consumer's copy is never the authority — and deletes
+#   each listed path from the TARGET repo. It is how a file that claude-pattern
+#   stopped shipping stops existing in every repo that already received it (the managed
+#   fleet is 17, per .claude/repos.json; the pass also runs in any other local checkout).
+#   Without it, deletions are invisible to a copy-only sync: the source drops a
+#   file, every consumer keeps its stale copy forever.
+#
+# WHY IT IS PERMANENT (governance)
+#   This file is NOT a one-run migration script. It is a standing `rm` capability
+#   that executes UNATTENDED in every consumer repo (session-start auto-sync),
+#   with no human reading the diff. A wrong line here is not a bug in one repo —
+#   it is a supply-chain event across the whole fleet. Treat every edit as a
+#   privileged change:
+#     • Registered in .claude/commands/plan-w-team/shared/governance-tags.md, so
+#       any diff touching this file forces a Step-5 security review.
+#     • Every line is validated at RUNTIME by the 11-rule guard set in
+#       sync-to-project.sh (rules 1-6 abort the WHOLE pass on any violation —
+#       no partial deletions) and STATICALLY at source by a bats lint.
+#     • `--dry-run` prints a per-path action log; that log is the reviewable
+#       diff. Read it before a fleet sync.
+#   Adding a line is a one-way door for the consumers that have already synced:
+#   their rollback window is the ~2 retained .claude/agents.backup.<ts> dirs
+#   (which now hold agents/ AND skills/) plus their own git history.
+#
+# WHAT MAY GO IN HERE (rule 5 — enforced at runtime AND by the static lint)
+#   A line must either
+#     (a) start with `.claude/agents/`, `.claude/skills/`, or
+#         `.claude/agent-sets/` AND have at least one path segment after that
+#         prefix (a bare prefix would sweep an entire shipped tree), or
+#     (b) match the exact-path whitelist hardcoded in sync-to-project.sh for the
+#         R13 legacy agent-config cluster and the two retired top-level
+#         stragglers (7 top-level `.claude/*.md` docs + 2 scripts).
+#   No absolute paths, no `~`, no `..` segment, no globs, no whitespace, no
+#   quotes, no CRLF — the charset allowlist is `^[A-Za-z0-9._/-]+$`.
+#
+# WHAT MUST NEVER GO IN HERE
+#   • Any path that is, or is an ancestor of, something the sync still ships —
+#     any keep-tier agent, any `.claude/skills/<name>/` directory. Rule 6 aborts
+#     the entire pass on such a line rather than trusting the author.
+#   • Any CONSUMER-AUTHORED path (parts: `.claude/skills/audit/`,
+#     `.claude/skills/cobe-assistant/`). Read this one carefully, because an
+#     earlier version of this header got it backwards: rule 6 does NOT protect
+#     these. Rule 6 only knows what the SOURCE ships, and a consumer-authored
+#     skill is by definition absent from the source tree — so it is in neither
+#     the profile set nor the source skills set, and rule 6 has nothing to
+#     collide with. Rule 7 is silent for exactly the same reason. The controls
+#     that actually hold here are, in full: MANIFEST CONTENT (this list is the
+#     control — never write such a path into it) + GOVERNANCE REVIEW (this file
+#     is registered in shared/governance-tags.md, so any diff forces a Step-5
+#     security review) + STATIC LINT (a bats case greps this manifest for known
+#     consumer-owned trees and fails the suite if one is named). All three are
+#     procedural. There is no structural backstop — which is precisely why the
+#     false claim mattered: a reviewer who believed it would see no gap to fill.
+#   • A path still present in the SOURCE tree. Rule 7 re-checks this at runtime
+#     and SKIPS (never deletes) such a line — a retired path that still exists
+#     upstream means the manifest is ahead of reality, which is a fail-safe skip,
+#     not a deletion.
+#   • Anything under `.claude/scripts/` other than the two whitelisted legacy
+#     scripts. Consumer- and operator-authored scripts live there.
+#
+# TRAILING-SLASH / ORDER CONVENTION
+#   Directories are written WITHOUT a trailing slash (the reader strips EVERY
+#   trailing slash, to a fixed point, and never appends one to an `rm` argument —
+#   a trailing slash on a symlinked dir is what turns "remove the link" into
+#   "remove the contents"). Stripping only ONE was finding C1: `<path>//`
+#   normalised to `<path>/`, which string-matched no shipped path and so slipped
+#   past both arms of rule 6.
+#   Children are listed BEFORE their parent directory so the per-path action log
+#   reads as an explicit inventory rather than one opaque tree sweep.
+#
+# PROVENANCE
+#   Authored by the agent-roster restructure (spec:
+#   docs/specs/restructure-the-claude-agents-roster-per-anthropic-s-current-
+#   subagents-vs-skills-d6f25286.md — Classification/Disposition Tables are
+#   ground truth for every row below).
+# =============================================================================
+
+
+# ── CONVERT tier: 58 agent definitions absorbed into .claude/skills/<domain>/ ──
+# Each of these became `references/<name>.md` inside a domain skill. The
+# capability did not go away; the standing per-session description tax did.
+
+# frontend-web (5)
+.claude/agents/research-planning/nextjs-expert.md
+.claude/agents/implementation/angular-specialist.md
+.claude/agents/implementation/vue-specialist.md
+.claude/agents/implementation/svelte-specialist.md
+.claude/agents/research-planning/shadcn-expert.md
+
+# backend-frameworks (6)
+.claude/agents/implementation/nodejs-specialist.md
+.claude/agents/implementation/fastapi-specialist.md
+.claude/agents/implementation/django-specialist.md
+.claude/agents/implementation/spring-boot-specialist.md
+.claude/agents/implementation/dotnet-backend-specialist.md
+.claude/agents/implementation/go-specialist.md
+
+# mobile (4)
+.claude/agents/implementation/flutter-specialist.md
+.claude/agents/implementation/react-native-specialist.md
+.claude/agents/implementation/ios-specialist.md
+.claude/agents/implementation/android-specialist.md
+
+# native-platforms (3)
+.claude/agents/implementation/macos-native-specialist.md
+.claude/agents/implementation/windows-native-specialist.md
+.claude/agents/research-planning/webassembly-specialist.md
+
+# data-stores (8)
+.claude/agents/research-planning/mongodb-specialist.md
+.claude/agents/research-planning/redis-specialist.md
+.claude/agents/research-planning/elasticsearch-specialist.md
+.claude/agents/research-planning/kafka-specialist.md
+.claude/agents/research-planning/vector-database-specialist.md
+.claude/agents/research-planning/snowflake-specialist.md
+.claude/agents/research-planning/databricks-specialist.md
+.claude/agents/research-planning/etl-specialist.md
+
+# api-protocols (2)
+.claude/agents/research-planning/graphql-specialist.md
+.claude/agents/research-planning/grpc-specialist.md
+
+# cloud-platforms (4)
+.claude/agents/research-planning/aws-specialist.md
+.claude/agents/research-planning/azure-specialist.md
+.claude/agents/research-planning/gcp-specialist.md
+.claude/agents/research-planning/cloudflare-expert.md
+
+# devops-delivery (5)
+.claude/agents/research-planning/docker-advanced-specialist.md
+.claude/agents/research-planning/argocd-specialist.md
+.claude/agents/research-planning/gitlab-cicd-specialist.md
+.claude/agents/research-planning/devops-automation-expert.md
+.claude/agents/research-planning/observability-specialist.md
+
+# release-publishing (4)
+.claude/agents/research-planning/homebrew-publisher.md
+.claude/agents/research-planning/npm-publisher.md
+.claude/agents/research-planning/macos-signing-expert.md
+.claude/agents/research-planning/governance-expert.md
+
+# ai-engineering (6)
+.claude/agents/research-planning/claude-sdk-expert.md
+.claude/agents/research-planning/mcp-expert.md
+.claude/agents/implementation/python-ml-expert.md
+.claude/agents/research-planning/mlops-specialist.md
+.claude/agents/research-planning/skills-expert.md
+.claude/agents/research-planning/opencode-expert.md
+
+# media-processing (2)
+.claude/agents/implementation/remotion-specialist.md
+.claude/agents/implementation/whisper-transcription-specialist.md
+
+# integrations (3)
+# discord-expert is NOT here — it RETIRES wholesale (see the RETIRE tier below).
+# The shipped skill has exactly three references (smtpgo, youtube, reddit) and
+# its trigger description does not mention Discord at all.
+.claude/agents/research-planning/smtpgo-expert.md
+.claude/agents/research-planning/youtube-api-expert.md
+.claude/agents/research-planning/reddit-api-expert.md
+
+# microsoft-ecosystem (4)
+.claude/agents/implementation/power-automate-expert.md
+.claude/agents/research-planning/power-bi-expert.md
+.claude/agents/research-planning/microsoft-365-expert.md
+.claude/agents/research-planning/logic-apps-expert.md
+
+# git-workflows (1)
+.claude/agents/research-planning/git-expert.md
+
+# product-planning (1)
+.claude/agents/research-planning/prd-writer.md
+
+
+# ── CONVERT tier: the auxiliary knowledge trees that rode with those defs ─────
+# 51 aux files in 4 sidecar directories. Their content moved into the domain
+# skills' references/. Listed as directories because the trees are deep
+# (claude-sdk-expert alone is 36 files) and every file in them is source-owned.
+# The discord-expert sidecar (5 more files) is NOT here — nothing from it was
+# converted, so the whole tree moved to the RETIRE tier below.
+.claude/agents/research-planning/claude-sdk-expert
+.claude/agents/research-planning/skills-expert
+.claude/agents/research-planning/git-expert
+.claude/agents/research-planning/opencode-expert
+
+
+# ── RETIRE tier (R3): policy-dead definitions, no successor skill ─────────────
+# openrouter/chatgpt: multi-provider + OpenAI routing, dead under a Claude-Max-
+# only policy. electron-debug-expert: the last inhabitant of hive/, retired with
+# the archived Hive project. Children first, then the emptied hive/ directory.
+#
+# discord-expert retires WHOLESALE — the definition AND its entire 5-file
+# knowledge tree. It is not a CONVERT row: no part of it was absorbed into the
+# integrations skill, which ships exactly three references (smtpgo, youtube,
+# reddit) and whose trigger description never mentions Discord. The knowledge
+# files were REDACTED in source first (R14, a live webhook URL) before any
+# content was copied anywhere, so nothing downstream carries them either. The
+# sidecar directory row covers every file beneath it.
+.claude/agents/research-planning/discord-expert.md
+.claude/agents/research-planning/discord-expert
+.claude/agents/research-planning/openrouter-expert.md
+.claude/agents/research-planning/chatgpt-expert.md
+.claude/agents/hive/electron-debug-expert.md
+.claude/agents/hive
+
+
+# ── Stray tracked state that never belonged in the roster (R1) ────────────────
+# A nested `.claude/state/` accidentally committed under .claude/agents/ and
+# then propagated by every full-profile sync. The FILE only — the pass must not
+# sweep a `.claude` directory it did not create.
+.claude/agents/.claude/state/bg-agents-cache.json
+
+
+# ── Legacy flat skills (R4): 16 files that NEVER registered ───────────────────
+# Project skills register from `.claude/skills/<name>/SKILL.md` (a directory
+# with a SKILL.md child). These were bare `.md` files at the top of
+# .claude/skills/ — the wrong shape, so they were inert everywhere they landed,
+# in every consumer, for their whole life. Content was folded into the new
+# domain skills or dropped per the Legacy-Skills Disposition Table.
+# `git-workflows.md` in particular MUST go: it filesystem-collides with the new
+# `.claude/skills/git-workflows/` directory.
+.claude/skills/api-design-patterns.md
+.claude/skills/code-quality-constraints.md
+.claude/skills/code-review-checklist.md
+.claude/skills/database-schema-design.md
+.claude/skills/debugging-systematic.md
+.claude/skills/docker-optimization.md
+.claude/skills/electron-architecture.md
+.claude/skills/git-workflows.md
+.claude/skills/kubernetes-deployment.md
+.claude/skills/performance-profiling.md
+.claude/skills/python-ml.md
+.claude/skills/react-patterns.md
+.claude/skills/release-pipeline.md
+.claude/skills/rust-async.md
+.claude/skills/security-owasp.md
+.claude/skills/testing-fundamentals.md
+
+
+# ── Legacy `universal/` skills tree (R4): one level too deep to register ──────
+# `.claude/skills/universal/<name>/SKILL.md` is a GRANDCHILD, not a direct
+# child, so none of these registered either. Enumerated entry-by-entry rather
+# than as one `.claude/skills/universal` sweep: this tree is the closest a
+# manifest line ever comes to a consumer-authored skill directory, and an
+# explicit inventory can only remove what claude-pattern actually shipped.
+# `code-review-standards` is RELOCATED (not deleted) to
+# `.claude/skills/code-review-standards/` — a different path, so removing the
+# old location cannot touch the new one.
+.claude/skills/universal/api-design
+.claude/skills/universal/ci-pipeline-patterns
+.claude/skills/universal/code-review-standards
+.claude/skills/universal/database-design
+.claude/skills/universal/deployment-strategies
+.claude/skills/universal/docker-best-practices
+.claude/skills/universal/documentation-templates
+.claude/skills/universal/error-handling
+.claude/skills/universal/git-best-practices
+.claude/skills/universal/incident-response
+.claude/skills/universal/microservices-patterns
+.claude/skills/universal/monitoring-observability
+.claude/skills/universal/performance-profiling
+.claude/skills/universal/security-fundamentals
+.claude/skills/universal/testing-patterns
+.claude/skills/universal/README.md
+
+
+# ── R13: the orphaned agent-config cluster ───────────────────────────────────
+# Token-budget-era tooling for hand-picking agent subsets, superseded by the
+# sync profiles above. Nothing references it; two of its sets are premised on
+# the archived Hive project. Files first, then the emptied `custom/` directory.
+.claude/agent-sets/cloud.json
+.claude/agent-sets/core.json
+.claude/agent-sets/database.json
+.claude/agent-sets/electron.json
+.claude/agent-sets/hive-core.json
+.claude/agent-sets/observability.json
+.claude/agent-sets/release-pipeline.json
+.claude/agent-sets/rust.json
+.claude/agent-sets/web-fullstack.json
+.claude/agent-sets/README.md
+.claude/agent-sets/custom/hivetechs-website.json
+.claude/agent-sets/custom/README.md
+.claude/agent-sets/custom
+
+# The 7 retired top-level `.claude/*.md` documents. These are outside the three
+# allowed prefixes, so each one must ALSO appear in sync-to-project.sh's
+# exact-path whitelist (rule 5b) — a deliberate, hand-audited exception per
+# path, never a `.claude/*.md` wildcard.
+#
+# They are not all the same class, and the distinction is worth keeping:
+#   • Five are R13 agent-config cluster residue, defined as a set by the
+#     cluster's own index (README_AGENT_SYSTEM.md:470-474).
+#   • AGENT_SWITCHER_GUIDE.md is cluster residue the index did not name — see
+#     its note below.
+#   • AGENT_INTEGRATION_SUMMARY.md is NOT cluster residue at all (it references
+#     none of the deleted cluster scripts) — see its note below.
+# STILL NOT listed: `.claude/git-commit.md` / `.claude/git-smart-commit.md`,
+# which are live command docs, not residue of anything.
+.claude/AGENT_CONFIG_SUMMARY.md
+.claude/AGENT_CONFIGURATION_ARCHITECTURE.md
+# AGENT_INTEGRATION_SUMMARY.md is Hive-era CLIENT residue, retired by operator
+# ruling alongside discord-expert on the same principle: claude-pattern is
+# client-agnostic, and a 606-line inventory titled "Hive Consensus Agent
+# Integration Summary" (created 2025-10-12 to document agents for Hive
+# Consensus development) documents a client this template no longer serves.
+# It is a DIFFERENT class from the R13 rows above — it names none of the
+# deleted cluster scripts — and it is listed here only because the ruling
+# retires both stragglers together.
+# INBOUND REFERENCES: RESOLVED. This comment used to read "KNOWN AND DELEGATED
+# — 14 live inbound references owned by the reference-cleanup task (#9)". That
+# task has since run, so the delegation is discharged and the count is stale.
+# Recorded here rather than deleted, because "this file is safe to retire" is
+# the claim a reviewer needs to re-check, and the reasoning is the evidence:
+#   • AGENT_INTEGRATION_STRATEGY.md (x11) — retired by this same restructure.
+#     Those references died with their referrer; nothing to repoint.
+#   • .claude/agents/coordination/github-security-orchestrator.md (x1) — the
+#     one keep-tier citation, cleaned by task #9. Now zero.
+#   • .claude/docs/REPOSITORY_SYNC_STRATEGY.md — still names the file, on
+#     purpose. Task #9 reframed those blocks as DATED CONSUMER SNAPSHOTS
+#     (commit 3fb8ac0): they record what a consumer tree looked like on a given
+#     date, so naming a since-retired file is what makes the snapshot accurate.
+#     Repointing them would falsify a historical record.
+# One further citation lives in .claude/skills/ai-engineering/references/ —
+# archived narrative, excluded by definition from the stale-reference sweep
+# (see the exclusion rationale in tests/skill/cases/no-stale-agent-refs.bats).
+.claude/AGENT_INTEGRATION_SUMMARY.md
+.claude/AGENT_MIGRATION_GUIDE.md
+# AGENT_SWITCHER_GUIDE.md was NOT in the cluster index, which is why the first
+# pass missed it: it is a 251-line quick-reference for `agent-switcher.sh` and
+# the `agent-sets/*.json` files, both retired in this same restructure. It is
+# therefore a guide to a program that no longer exists, with no inbound
+# references anywhere in the tree. It is listed here and whitelisted in
+# sync-to-project.sh in the SAME commit that deletes it from source — the three
+# must move together, because a manifest row without the whitelist entry is
+# rejected by rule 5b (aborting the entire pass), and a source deletion without
+# the manifest row leaves every consumer holding a stale copy with no cleanup
+# path.
+.claude/AGENT_SWITCHER_GUIDE.md
+.claude/QUICK_START_AGENT_CONFIG.md
+.claude/README_AGENT_SYSTEM.md
+
+# The cluster's two CLI scripts. Defensive rows: both are in
+# sync-script-references.bats' NOT_SYNCED_SOURCE_ONLY carve-out, so they should
+# never have reached a consumer — but "should never have" is not evidence, and
+# a stray copy from an older sync generation costs one no-op line to sweep.
+.claude/scripts/agent-manager.sh
+.claude/scripts/agent-switcher.sh

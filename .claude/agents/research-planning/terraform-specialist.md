@@ -69,13 +69,9 @@ session_aware: true
 
 ## Integration with Existing Agents
 
-- **aws-specialist**: Collaborate on relevant domain tasks
-- **azure-specialist**: Collaborate on relevant domain tasks
-- **gcp-specialist**: Collaborate on relevant domain tasks
 - **kubernetes-specialist**: Collaborate on relevant domain tasks
-- **devops-automation-expert**: Collaborate on relevant domain tasks
 - **security-expert**: Collaborate on relevant domain tasks
-- **git-expert**: Collaborate on relevant domain tasks
+- **Domain skills that auto-trigger** (no spawn needed; `/<name>` to force-load): `cloud-platforms`, `devops-delivery`, `git-workflows`
 
 ## Common Use Cases
 

@@ -49,25 +49,31 @@ GRANULARITY=$(route_orchestrator task-breakdown-granularity "$SLUG" \
      Orchestrator decides based on complexity signals + file count.
      Fall-through: AskUserQuestion if router unavailable. -->
 
-## Specialist Agent Assignment (MANDATORY)
+## Agent Assignment (MANDATORY)
 
-Before proceeding to execution, assign each task to the best specialist agent:
+Before proceeding to execution, assign each task a lane.
 
-1. **Read the agent roster**: `Read .claude/commands/plan-w-team/shared/agent-roster.md` — this lists all 85+ specialist agents organized by domain with their `subagent_type` values
-2. **Assign `agent_type`** in each task's metadata matching the roster:
+**The default is `builder`, or `builder-opus` when the task carries
+`difficulty: "hard"`.** Technology knowledge is not a reason to pick a different
+agent — it lives in auto-triggering domain skills that load themselves inside
+whichever session picks up the task.
+
+1. **Read the agent roster**: `Read .claude/commands/plan-w-team/shared/agent-roster.md` — it lists the 33 keep-tier agents with their `subagent_type` values and tags, plus the 16 domain skills and what each triggers on.
+2. **Assign `agent_type`** in each task's metadata, and name the skill you expect to trigger in the description so the lane knows what it is reaching for:
 
    ```
    TaskCreate({
      subject: "Implement WebSocket message handler",
+     description: "…; the backend-frameworks skill auto-triggers (/backend-frameworks to force-load)",
      metadata: {
        ...
-       agent_type: "nodejs-specialist"   // ← from agent-roster.md
+       agent_type: "builder"   // ← lane, not a technology specialist
      }
    })
    ```
 
-3. **Use the most specific match** — prefer `fastapi-specialist` over `builder` for a Python API task, `react-typescript-specialist` over `nodejs-specialist` for React UI work
-4. **Fall back to `builder`** only when no specialist fits the task domain; for `difficulty: hard` tasks use `builder-opus` regardless of specialist fit — the hard-lane rule overrides items 3-4 (see Model-Lane Routing below)
+3. **Name a keep-tier agent instead only when a session boundary is the point** — an isolated reviewer context (`security-expert`, `code-review-expert`, `silent-failure-hunter`), a binding tool restriction (`stagehand-expert`, `ui-designer`, the read-only auditors), a model/effort pin (the mechanical Haiku tier), or a stage-file spawn mandate. `react-typescript-specialist` and `rust-backend-specialist` are the two pinned writer lanes that survive; prefer them over `builder` for React/TS and Rust work.
+4. **`difficulty: hard` overrides item 3** for implementation tasks — use `builder-opus` (see Model-Lane Routing below).
 
 ## Model-Lane Routing (difficulty flag)
 
@@ -180,15 +186,15 @@ Post-merge type duplication is the single most-cited Stage 2 pain point (this ex
 
 ## Task Metadata Fields
 
-| Field          | Required | Values                      | Purpose                                                               |
-| -------------- | -------- | --------------------------- | --------------------------------------------------------------------- |
-| `spec_path`    | Yes      | File path                   | Links task to spec for resumption                                     |
-| `feature_area` | Yes      | String                      | Groups related tasks                                                  |
+| Field          | Required | Values                      | Purpose                                                                                                                                                                  |
+| -------------- | -------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `spec_path`    | Yes      | File path                   | Links task to spec for resumption                                                                                                                                        |
+| `feature_area` | Yes      | String                      | Groups related tasks                                                                                                                                                     |
 | `effort`       | Yes      | `high`, `medium`, `low`     | Steers the builder's implementation approach (prompt-level Effort Awareness table); API reasoning effort is pinned `high` in agent frontmatter (manifest pinning item 3) |
-| `scope`        | Yes      | See scope tags below        | Enables conditional review steps                                      |
-| `completeness` | No       | 1-10                        | How thorough the implementation should be                             |
-| `door_type`    | No       | `one-way`, `two-way`        | Extra review scrutiny for one-way doors                               |
-| `difficulty`   | No       | `routine` (default), `hard` | Model-lane routing — `hard` ⇒ `agent_type: builder-opus` (Brain tier) |
+| `scope`        | Yes      | See scope tags below        | Enables conditional review steps                                                                                                                                         |
+| `completeness` | No       | 1-10                        | How thorough the implementation should be                                                                                                                                |
+| `door_type`    | No       | `one-way`, `two-way`        | Extra review scrutiny for one-way doors                                                                                                                                  |
+| `difficulty`   | No       | `routine` (default), `hard` | Model-lane routing — `hard` ⇒ `agent_type: builder-opus` (Brain tier)                                                                                                    |
 
 ## Effort Levels
 
@@ -215,10 +221,10 @@ Classify each task's change type. These tags control which review steps run in S
 
 When `ui_scope_flag == true` from §0e, decompose each UI feature slice into a **paired task set**:
 
-| Task  | Role                                   | Blocked by | Scope      | Agent                                                                                                       |
-| ----- | -------------------------------------- | ---------- | ---------- | ----------------------------------------------------------------------------------------------------------- |
-| `N.a` | Write Playwright tests (FAILING — red) | (none)     | `TESTS`    | `stagehand-expert` or `unit-testing-specialist`                                                             |
-| `N.b` | Implement UI to make N.a pass (green)  | `N.a`      | `FRONTEND` | `react-typescript-specialist` / `vue-specialist` / `svelte-specialist` / `angular-specialist` per framework |
+| Task  | Role                                   | Blocked by | Scope      | Agent                                                                                                                                                   |
+| ----- | -------------------------------------- | ---------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `N.a` | Write Playwright tests (FAILING — red) | (none)     | `TESTS`    | `stagehand-expert` or `unit-testing-specialist`                                                                                                         |
+| `N.b` | Implement UI to make N.a pass (green)  | `N.a`      | `FRONTEND` | `react-typescript-specialist` for React/TSX; otherwise `builder` — the `frontend-web` skill auto-triggers for Next.js / Vue / Svelte / Angular / shadcn |
 
 **Rules**:
 
@@ -234,10 +240,10 @@ When `ui_scope_flag == true` from §0e, decompose each UI feature slice into a *
 
 The paired-task discipline also applies to **non-UI scopes that add new code**. Any task whose `scope` is in `[BACKEND, INFRASTRUCTURE, SCRIPTS, LIBRARY, API]` AND whose mode is `add` (creates new functions, classes, modules, endpoints — not `refactor`-only, not `docs`-only, not pure `config`) gets the same `N.a` (failing tests) + `N.b` (implementation) decomposition.
 
-| Task  | Role                               | Blocked by | Scope (mirrors parent task) | Agent                                                                                                                                                            |
-| ----- | ---------------------------------- | ---------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `N.a` | Write unit tests (FAILING — red)   | (none)     | `TESTS`                     | `unit-testing-specialist` — or a language-specific test specialist when available (e.g., `python-test-specialist`, `rust-test-specialist`, `go-test-specialist`) |
-| `N.b` | Implement to make N.a pass (green) | `N.a`      | original (BACKEND/INFRA/…)  | language/framework specialist matched per `shared/agent-roster.md` (e.g., `nodejs-specialist`, `rust-backend-specialist`, `fastapi-specialist`)                  |
+| Task  | Role                               | Blocked by | Scope (mirrors parent task) | Agent                                                                                                                                                                                                                                                      |
+| ----- | ---------------------------------- | ---------- | --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `N.a` | Write unit tests (FAILING — red)   | (none)     | `TESTS`                     | `unit-testing-specialist` — it owns test-first work in every language                                                                                                                                                                                      |
+| `N.b` | Implement to make N.a pass (green) | `N.a`      | original (BACKEND/INFRA/…)  | `rust-backend-specialist` for Rust, `react-typescript-specialist` for React/TS; otherwise `builder` (`builder-opus` if `difficulty: hard`) — the `backend-frameworks` skill auto-triggers for Express / FastAPI / Django / Spring Boot / ASP.NET Core / Go |
 
 **Trigger expression** (the same shape used by all other paired-task gates):
 
@@ -377,11 +383,11 @@ For any task touching a **hot-path file** — defined as ANY of:
 - file size **>1000 LOC** (raw `wc -l` on the file), OR
 - **>50 commits in the last 30 days** touching that file (`git log --since='30 days ago' --oneline -- <file> | wc -l`)
 
-Step 2 emits an additional **optional task slot** for `perf-testing-specialist` to author a benchmark. The slot is offered, not enforced: the lead can decline it for low-risk edits, accept it for performance-sensitive changes, or auto-skip when a benchmark already exists for the touched file.
+Step 2 emits an additional **optional task slot** for `performance-testing-specialist` to author a benchmark. The slot is offered, not enforced: the lead can decline it for low-risk edits, accept it for performance-sensitive changes, or auto-skip when a benchmark already exists for the touched file.
 
 | Task  | Role                                            | Blocked by | Scope   | Agent                     | Required? |
 | ----- | ----------------------------------------------- | ---------- | ------- | ------------------------- | --------- |
-| `N.p` | Author or extend a micro-benchmark for the file | (none)     | `TESTS` | `perf-testing-specialist` | optional  |
+| `N.p` | Author or extend a micro-benchmark for the file | (none)     | `TESTS` | `performance-testing-specialist` | optional  |
 
 **Heuristic detection** (Step 2 runs once per touched file):
 

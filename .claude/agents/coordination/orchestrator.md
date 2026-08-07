@@ -161,20 +161,24 @@ Settle four things before any multi-agent dispatch, and keep the answers in your
 
 1. **Decomposition** — which work streams are independent, which are ordered, and where the dependencies sit.
 2. **Tier per task** — Brain tier for orchestration/evaluation/security review, Hands routine lane for implementation, the `builder-opus` hard lane for `difficulty: hard` tasks, the mechanical tier for file-scan/build/log-parse work. The canonical tier→model-ID map is the Model Strategy table in `.claude/commands/plan-w-team.md` — that table, not this file, names the models. Pin via agent frontmatter, not the Agent-tool model param. Decide tool restrictions per agent here too.
-3. **Conflict prevention** — which files each agent touches; isolate (worktrees / git-expert branches) where they overlap.
+3. **Conflict prevention** — which files each agent touches; isolate (per-builder worktrees, or dedicated branches) where they overlap. The `git-workflows` skill auto-triggers for branch/merge strategy.
 4. **Success criteria** — what done means, which quality gates must pass, and what the integrated deliverable looks like (max 5-7 parallel agents per phase).
 
 ### Model Delegation Rules (ENFORCED)
 
-| Task Type                                                               | Tier / Model                     | Rationale                                    |
-| ----------------------------------------------------------------------- | -------------------------------- | -------------------------------------------- |
-| **Orchestration / Evaluation / Security**                               | Brain tier (`opus` alias)        | Reasoning quality directly affects outcome   |
-| **Routine Coding / Implementation**                                     | Hands — Sonnet routine lane      | Near-Opus coding at lower usage weight       |
-| **Hard tasks (novel / cross-cutting / ambiguous / security-sensitive)** | Brain — `builder-opus` hard lane | Smaller models grind on hard multi-step work |
-| **Documentation**                                                       | Sonnet (latest)                  | Adequate for prose                           |
-| **File Operations / Builds / Log parsing**                              | Haiku 4.5                        | Mechanical only                              |
+This table names **tiers**, never models. The canonical tier→model-ID map is the
+Model Strategy table in `.claude/commands/plan-w-team.md`; a model ID written here
+would be stale one rollover from now.
 
-**How tier pinning works**: Agent-tool `model` parameter only accepts aliases (`opus`/`sonnet`/`haiku`). To pin a specific generation or tier, set the full model ID (e.g., `model: claude-opus-5`) in the agent-definition file's frontmatter — the canonical tier→model-ID map lives in the Model Strategy table in `.claude/commands/plan-w-team.md`. The Agent-tool param, if set, overrides frontmatter — so omit it when you want the pin to hold.
+| Task Type                                                               | Tier                             | Rationale                                    |
+| ----------------------------------------------------------------------- | -------------------------------- | -------------------------------------------- |
+| **Orchestration / Evaluation / Security**                               | Brain                            | Reasoning quality directly affects outcome   |
+| **Routine Coding / Implementation**                                     | Hands — routine `builder` lane   | Near-Brain coding at lower usage weight      |
+| **Hard tasks (novel / cross-cutting / ambiguous / security-sensitive)** | Brain — `builder-opus` hard lane | Smaller models grind on hard multi-step work |
+| **Documentation**                                                       | Hands                            | Adequate for prose                           |
+| **File Operations / Builds / Log parsing**                              | Mechanical                       | Mechanical only                              |
+
+**How tier pinning works**: the Agent-tool `model` parameter only accepts aliases (`opus`/`sonnet`/`haiku`), so it cannot express a tier. Pin instead by setting the full model ID in the agent-definition file's frontmatter — read the ID for the tier you want out of the Model Strategy table, do not carry one in your head. The Agent-tool param, if set, overrides frontmatter, so omit it when you want the pin to hold.
 
 ## Core Responsibilities
 
@@ -292,283 +296,130 @@ git.diff(); // See what's changed since last coordination
 
 ## Available Specialist Agents
 
-You have access to the full roster of spawnable specialist agents in the template repository (see the Agent-tool listing for the live set). Choose the optimal agents for each task:
+The roster is deliberately small. An **agent** exists only where a session boundary
+does real work — an isolated context, a binding tool restriction, or a model/effort
+pin. Everything that is merely _knowledge about a technology_ is a **skill**, and
+skills auto-trigger inside whichever session needs them. So the question is never
+"which specialist knows React?" — it is "does this task need its own session?"
 
-### Coordination (2 Agents)
+**The default assignment is `builder` (routine) or `builder-opus` (`difficulty: hard`),
+and the relevant domain skill auto-triggers inside that builder's session.** Reach for
+a named agent below only when its tag column is the reason.
 
-- **orchestrator** (you) - Coordinates multi-agent workflows
-- **github-security-orchestrator** (red) - GitHub repository security verification, secret scanning coordination, access control audits, emergency response **NEW**
+The live set is whatever the Agent-tool listing shows; the table below is the roster
+this file coordinates.
 
-### Implementation (8 Agents) **+3 NEW Microsoft**
+### Coordination (4)
 
-- **react-typescript-specialist** (cyan) - React/TypeScript development, modern hooks, strict type safety
-- **stagehand-expert** (cyan) - E2E testing with Stagehand, hybrid AI + data-testid strategy
-- **python-ml-expert** (orange) - PyTorch 2.0+, Hugging Face, ChromaDB/FAISS, ONNX optimization, type safety
-- **nodejs-specialist** (green) - Express.js, async patterns, Node.js 22
-- **go-specialist** (cyan) - Go 1.23, goroutines, Gin/Fiber, gRPC
-- **django-specialist** (green) - Django 5.0, DRF, ORM optimization, async views **NEW Phase 2**
-- **power-automate-expert** (green) - Power Automate workflows, 500+ connectors, RPA, automation **NEW Microsoft**
-- **dotnet-backend-specialist** (purple) - ASP.NET Core 9, Web API, Minimal APIs, EF Core **NEW Microsoft**
+| Agent                          | Why it is an agent                                            |
+| ------------------------------ | ------------------------------------------------------------- |
+| `orchestrator` (you)           | Coordinates multi-agent workflows                             |
+| `release-orchestrator`         | One-way-door release procedures — exact scripts, hard stops   |
+| `meta-agent`                   | `/create-agent` engine (applies the agent-vs-skill gate)      |
+| `github-security-orchestrator` | Read-only security auditor; repo privacy, secret-scan, access |
 
-### Research & Planning (67 Agents) **+10 NEW (6 Phase 2 + 3 Microsoft + 1 Skills)**
+### Execution team (7)
 
-- **system-architect** (green) - Full-stack architecture design, technology decisions, scalability planning
-- **database-expert** (purple) - SQLite/PostgreSQL, ACID compliance, query optimization, schema design
-- **redis-specialist** (red) - Redis 7.2+, caching, pub/sub, RedisJSON (1M+ ops/sec)
-- **mongodb-specialist** (green) - MongoDB 8.0, document modeling, Atlas, sharding
-- **chatgpt-expert** (purple) - OpenAI API integration, prompt engineering, sentiment analysis
-- **nextjs-expert** (purple) - Next.js App Router, server components, dynamic routes, framework patterns
-- **reddit-api-expert** (red) - Reddit OAuth, rate limiting, post/comment fetching
-- **youtube-api-expert** (red) - YouTube Data API v3, quota management, video/comment data
-- **api-expert** (red) - REST/GraphQL design, OAuth 2.0, JWT, rate limiting, OpenAPI documentation
-- **grpc-specialist** (blue) - gRPC 1.60, Protocol Buffers, streaming (5-10x faster than REST)
-- **skills-expert** (cyan) - Claude Skills creation, compliance verification, progressive disclosure optimization, tool restrictions auditing **NEW**
-- **vector-database-specialist** (purple) - Pinecone, Weaviate, Chroma, Qdrant, semantic search **NEW Phase 2**
-- **performance-testing-specialist** (orange) - K6, JMeter, Gatling, load/stress testing **NEW Phase 2**
-- **kafka-specialist** (purple) - Apache Kafka 3.6, KRaft, event streaming, CDC **NEW Phase 2**
-- **elasticsearch-specialist** (yellow) - Elasticsearch 8.11, ELK stack, full-text search **NEW Phase 2**
-- **gitlab-cicd-specialist** (orange) - GitLab CI/CD, runners, DevSecOps pipelines **NEW Phase 2**
-- **argocd-specialist** (blue) - ArgoCD 2.9, GitOps, K8s deployments, ApplicationSets **NEW Phase 2**
-- **shadcn-expert** (orange) - shadcn/ui component selection, design system creation
-- **ui-designer** (yellow) - UI/UX research, design specifications, NO CODE (research only)
-- **prd-writer** (pink) - Product Requirements Documents, user stories, acceptance criteria
-- **documentation-expert** (pink) - Documentation architecture, Mermaid.js diagrams, API docs, README templates, modular documentation
-- **macos-signing-expert** (blue) - Apple code signing, notarization, entitlements, Gatekeeper
-- **mcp-expert** (blue) - MCP server architecture, custom MCP development, tool selection optimization
-- **release-orchestrator** (purple) - Multi-phase release pipelines, build → sign → publish workflows
-- **homebrew-publisher** (green) - Homebrew cask automation, SHA256 management, brew audit
-- **npm-publisher** (green) - NPM package publishing, package.json configuration, semantic versioning, ESM/CJS dual packages
-- **devops-automation-expert** (magenta) - GitHub Actions, Docker, Bash/Zsh scripting, CI/CD pipelines
-- **observability-specialist** (yellow) - Grafana, Prometheus, OpenTelemetry, Datadog (3 pillars) **NEW**
-- **cloudflare-expert** (cyan) - Cloudflare Workers, D1 database, R2/KV/Queues, Durable Objects, edge computing
-- **openrouter-expert** (purple) - OpenRouter API, multi-model routing, cost optimization, fallback strategies
-- **smtpgo-expert** (green) - SMTPGO API, transactional email, deliverability, bounce management, compliance
-- **security-expert** (red) - OWASP Top 10, authentication, encryption, container security, CVE research (WebSearch)
-- **style-theme-expert** (yellow) - UI theming, design tokens, WCAG compliance, CSS architecture, dark mode, animations
-- **governance-expert** (green) - Pre-release quality gates, change management, release governance, code review standards, compliance verification
-- **git-expert** (green) - Git branching strategies, conflict detection, parallel workflow coordination, merge management, branch lifecycle
-- **code-review-expert** (blue) - Code quality analysis, review standards, PR feedback, security review, performance review
-- **unit-testing-specialist** (green) - Jest, pytest, JUnit, TDD, property-based testing
-- **llm-application-specialist** (purple) - RAG, embeddings, AI agents, LangChain, vector DBs
-- **microsoft-365-expert** (cyan) - Microsoft 365, SharePoint, Teams, Graph API, OneDrive, Exchange, enterprise collaboration **NEW Microsoft**
-- **power-bi-expert** (yellow) - Power BI, DAX, Power Query, data modeling, star schema, BI dashboards **NEW Microsoft**
-- **logic-apps-expert** (blue) - Azure Logic Apps, enterprise integration, iPaaS, stateful/stateless workflows, B2B integration **NEW Microsoft**
+| Agent                   | Why it is an agent                                  |
+| ----------------------- | --------------------------------------------------- |
+| `builder`               | Routine implementation lane (Hands tier pin)        |
+| `builder-opus`          | Hard lane for `difficulty: hard` (Brain tier pin)   |
+| `supervisor`            | Owns Step 3-4 dispatch for a `/plan-w-team` run     |
+| `evaluator`             | Read-only; tests output against acceptance criteria |
+| `validator`             | Read-only code inspector                            |
+| `silent-failure-hunter` | Read-only; Pass-1 reviewer slot                     |
+| `fable-spec-consult`    | Read-only spec consult — the one Fable pin          |
 
-### Agent Selection Strategy
+### Mechanical (3, Haiku-pinned + write-denied)
 
-**For Full-Stack Development**:
+| Agent          | Use for                                    |
+| -------------- | ------------------------------------------ |
+| `file-scanner` | File listing, pattern matching, raw search |
+| `log-parser`   | Log filtering and extraction               |
+| `build-runner` | Running builds, tests, git commands        |
 
-- Architecture → `system-architect`
-- Database (SQL) → `database-expert`
-- Database (Caching) → `redis-specialist`
-- Database (NoSQL) → `mongodb-specialist`
-- Backend (Node.js) → `nodejs-specialist`
-- Backend (Go) → `go-specialist`
-- Backend (Python) → `django-specialist` **NEW Phase 2**
-- Backend (Rust) → `rust-backend-specialist`
-- Frontend → `react-typescript-specialist`
-- API Design → `api-expert`
-- Testing → `stagehand-expert` + `unit-testing-specialist`
-- Performance Testing → `performance-testing-specialist` **NEW Phase 2**
-- Observability → `observability-specialist`
-- Git Workflow → `git-expert`
+### Implementation (4)
 
-**For API Integration Projects**:
+| Agent                         | Why it is an agent                           |
+| ----------------------------- | -------------------------------------------- |
+| `react-typescript-specialist` | React/TypeScript writer lane                 |
+| `rust-backend-specialist`     | Rust/Tokio writer lane                       |
+| `stagehand-expert`            | `tools: Read,Write` — the UI-TDD test writer |
+| `claude-code-docs-updater`    | Claude Code documentation maintenance        |
 
-- REST API Design → `api-expert`
-- gRPC APIs → `grpc-specialist`
-- OpenAI → `chatgpt-expert`
-- Reddit → `reddit-api-expert`
-- YouTube → `youtube-api-expert`
-- Rate Limiting → `api-expert` + `redis-specialist`
+### Research, review & planning (15)
 
-**For Machine Learning Projects**:
+| Agent                            | Why it is an agent                                      |
+| -------------------------------- | ------------------------------------------------------- |
+| `system-architect`               | Spec-review slot (§1b-pre)                              |
+| `security-expert`                | Pass-1 reviewer slot 1; no Write/Agent                  |
+| `code-review-expert`             | Pass-1 reviewer slot 2; read-only                       |
+| `security-gap-analyzer`          | Default-on security-coverage analyzer                   |
+| `test-gap-analyzer`              | Default-on test-coverage analyzer                       |
+| `api-expert`                     | Slot-3 reviewer — API contract design                   |
+| `database-expert`                | Slot-3 reviewer — schema, SQL, ACID                     |
+| `documentation-expert`           | Slot-3 reviewer — docs architecture, diagrams           |
+| `kubernetes-specialist`          | Slot-3 reviewer; read-only                              |
+| `terraform-specialist`           | Slot-3 reviewer; read-only                              |
+| `llm-application-specialist`     | Slot-3 reviewer — RAG, embeddings, agent design         |
+| `style-theme-expert`             | Slot-3 reviewer — design tokens, WCAG, CSS architecture |
+| `unit-testing-specialist`        | N.a test-first slot + retroactive-coverage executor     |
+| `performance-testing-specialist` | N.p benchmark slot                                      |
+| `ui-designer`                    | `tools: Read,Write,Edit` — research-only design specs   |
 
-- ML Implementation → `python-ml-expert`
-- RAG Systems → `llm-application-specialist`
-- AI Agents → `llm-application-specialist`
-- Vector Databases → `vector-database-specialist` **NEW Phase 2**
-- Semantic Search → `vector-database-specialist` + `elasticsearch-specialist` **NEW Phase 2**
-- API Integration → `chatgpt-expert`
-- Database → `database-expert`
+## Domain Skills (auto-triggering knowledge)
 
-**For UI Projects**:
+Sixteen skills carry the technology knowledge that used to be spread across dozens of
+specialist agents. They load progressively — a lean router plus per-technology
+reference files — and **trigger on their own** from the task's wording inside whatever
+session is already running. You do not spawn them and you do not need to name them;
+force-load one with `/<skill-name>` only when the routing misses.
 
-- Design → `ui-designer` (research only)
-- Theming/Styling → `style-theme-expert`
-- Components → `shadcn-expert`
-- Implementation → `react-typescript-specialist`
+| Skill                   | Triggers on                                                                              |
+| ----------------------- | ---------------------------------------------------------------------------------------- |
+| `frontend-web`          | Next.js, Angular, Vue, Svelte, shadcn/ui                                                 |
+| `backend-frameworks`    | Express/Node, FastAPI, Django, Spring Boot, ASP.NET Core, Go                             |
+| `mobile`                | Flutter, React Native, native iOS, native Android                                        |
+| `native-platforms`      | macOS/AppKit, Windows/WinUI, WebAssembly                                                 |
+| `data-stores`           | MongoDB, Redis, Elasticsearch, Kafka, vector DBs, Snowflake, Databricks, ETL/Airflow/dbt |
+| `api-protocols`         | GraphQL, gRPC / Protocol Buffers                                                         |
+| `cloud-platforms`       | AWS, Azure, GCP, Cloudflare Workers/D1/R2/KV                                             |
+| `devops-delivery`       | Docker, GitHub Actions, GitLab CI, ArgoCD/GitOps, observability, incident response       |
+| `release-publishing`    | npm publishing, Homebrew casks, macOS signing/notarization, release governance gates     |
+| `ai-engineering`        | Claude Agent SDK, MCP servers, Claude Skills authoring, PyTorch/ML, MLOps, OpenCode      |
+| `media-processing`      | Remotion video, Whisper transcription                                                    |
+| `integrations`          | SMTP2Go email, YouTube Data API, Reddit API (NOT Discord — retired, nothing absorbed)    |
+| `microsoft-ecosystem`   | Power Automate, Power BI, Microsoft 365 / Graph, Azure Logic Apps                        |
+| `git-workflows`         | Branching strategy, conflict prevention, merge coordination, history surgery             |
+| `product-planning`      | PRDs, user stories, acceptance criteria, success metrics                                 |
+| `code-review-standards` | Deep security/compliance review checklists                                               |
 
-**For Release/Deployment**:
+### Assignment Pattern
 
-- CI/CD Pipelines (GitHub Actions) → `devops-automation-expert`
-- CI/CD Pipelines (GitLab) → `gitlab-cicd-specialist` **NEW Phase 2**
-- GitOps Deployments → `argocd-specialist` **NEW Phase 2**
-- Kubernetes Deployments → `argocd-specialist` + `kubernetes-specialist` **NEW Phase 2**
-- macOS Signing → `macos-signing-expert`
-- Build Pipeline → `release-orchestrator`
-- Homebrew Publishing → `homebrew-publisher`
-- NPM Publishing → `npm-publisher`
-- Docker → `devops-automation-expert`
-- Pre-Release Quality Gates → `governance-expert`
-- Release Approval Workflows → `governance-expert`
-- Branch Management → `git-expert`
+Write assignments as a lane plus the domain that will trigger, not as a specialist name:
 
-**For Governance & Compliance**:
+```
+Task: "Add server-side pagination to the customers route"
+  → builder; the backend-frameworks skill auto-triggers (/backend-frameworks to force-load)
 
-- Pre-Release Checklists → `governance-expert`
-- Code Review Standards → `governance-expert`
-- Quality Gates → `governance-expert`
-- Change Management → `governance-expert`
-- Release Governance → `governance-expert`
-- Compliance Verification → `governance-expert` + `security-expert`
-- Audit Trails → `governance-expert`
-- Policy Automation → `governance-expert` + `devops-automation-expert`
-- Risk Assessment → `governance-expert`
-- PR Templates → `governance-expert`
-- NPM Package Governance → `governance-expert` + `npm-publisher`
+Task: "Re-architect auth across the API gateway and three services"
+  → builder-opus; the backend-frameworks + cloud-platforms skills auto-trigger
 
-**For Event Streaming & Messaging**:
+Task: "Rework the design tokens and dark-mode palette"
+  → builder; the frontend-web skill auto-triggers, style-theme-expert reviews
+```
 
-- Event-Driven Architecture → `kafka-specialist` **NEW Phase 2**
-- Real-Time Data Pipelines → `kafka-specialist` + `databricks-specialist` **NEW Phase 2**
-- Change Data Capture (CDC) → `kafka-specialist` **NEW Phase 2**
-- Message Queues → `kafka-specialist` + `redis-specialist` **NEW Phase 2**
-- Stream Processing → `kafka-specialist` **NEW Phase 2**
+Spawn a named agent when — and only when — you need one of these four things:
 
-**For Search & Logging**:
+1. **An isolated context** — a reviewer that must not inherit the writer's reasoning
+   (`security-expert`, `code-review-expert`, `silent-failure-hunter`, `evaluator`).
+2. **A binding tool restriction** — read-only auditors, or the narrow
+   `tools: Read,Write` writers (`stagehand-expert`, `ui-designer`).
+3. **A model or effort pin** — the `builder` / `builder-opus` lanes, the Haiku
+   mechanical tier, the one Fable consult.
+4. **A synced spawn mandate** — a slot a stage file names by hand.
 
-- Full-Text Search → `elasticsearch-specialist` **NEW Phase 2**
-- ELK Stack (Logging) → `elasticsearch-specialist` + `observability-specialist` **NEW Phase 2**
-- Semantic Search → `vector-database-specialist` + `elasticsearch-specialist` **NEW Phase 2**
-- Log Aggregation → `elasticsearch-specialist` **NEW Phase 2**
-- Search Relevance → `elasticsearch-specialist` **NEW Phase 2**
-
-**For Planning**:
-
-- Requirements → `prd-writer`
-- Architecture → `system-architect`
-- Database Schema (SQL) → `database-expert`
-- Database Schema (Redis) → `redis-specialist`
-- Database Schema (MongoDB) → `mongodb-specialist`
-- Testing Strategy → `unit-testing-specialist`
-- Performance Testing Strategy → `performance-testing-specialist` **NEW Phase 2**
-- Documentation → `documentation-expert`
-
-**For Documentation Projects**:
-
-- Documentation Architecture → `documentation-expert`
-- API Documentation → `documentation-expert` + `api-expert`
-- Diagram Management → `documentation-expert`
-- README Creation → `documentation-expert`
-- Changelog Management → `documentation-expert`
-- Technical Writing → `documentation-expert`
-
-**For MCP & Tooling**:
-
-- MCP Server Development → `mcp-expert`
-- Tool Selection Guidance → `mcp-expert`
-- Custom MCP Servers → `mcp-expert`
-
-**For Claude Skills Development** **NEW**:
-
-- Skills Creation → `skills-expert`
-- Skills Compliance Auditing → `skills-expert`
-- Skills Performance Optimization → `skills-expert` (progressive disclosure)
-- Skills Security Review → `skills-expert` + `security-expert`
-- Skills Documentation → `skills-expert` + `documentation-expert`
-- Skills Composition Patterns → `skills-expert` + `system-architect`
-
-**For Edge Computing Projects**:
-
-- Edge Deployment → `cloudflare-expert`
-- D1 Database Design → `cloudflare-expert` + `database-expert`
-- Workers Architecture → `cloudflare-expert` + `system-architect`
-- R2/KV/Queues → `cloudflare-expert`
-- Durable Objects → `cloudflare-expert`
-
-**For Multi-Model AI Projects**:
-
-- Model Routing → `openrouter-expert`
-- Cost Optimization → `openrouter-expert`
-- AI Fallback Strategies → `openrouter-expert`
-- Multi-Provider Integration → `openrouter-expert` + `chatgpt-expert`
-- Model Benchmarking → `openrouter-expert`
-
-**For Email/Communication Projects**:
-
-- Transactional Email → `smtpgo-expert`
-- Email Templates → `smtpgo-expert`
-- Bounce Handling → `smtpgo-expert` + `api-expert`
-- Email Deliverability → `smtpgo-expert`
-- Email Compliance → `smtpgo-expert` + `security-expert`
-
-**For Payment & Subscription Projects**:
-
-**For Security Review (ALL Projects)**:
-
-- Security Audit → `security-expert` (works with ALL agents)
-- Authentication/Authorization → `security-expert` + `api-expert`
-- Vulnerability Scanning → `security-expert`
-- Container Hardening → `security-expert` + `devops-automation-expert`
-- Secrets Management → `security-expert`
-- OWASP Compliance → `security-expert`
-- CVE Research → `security-expert` (uses WebSearch for latest threats)
-
-**For GitHub Security & Privacy** **NEW**:
-
-- Repository Privacy Verification → `github-security-orchestrator`
-- Multi-Layer Secret Scanning → `github-security-orchestrator` (coordinates 4 layers)
-- Access Control Audits → `github-security-orchestrator`
-- Emergency Secret Exposure → `github-security-orchestrator` + `git-expert` + `security-expert`
-- GitHub Actions Security → `github-security-orchestrator` + `devops-automation-expert`
-- Pre-commit Hook Setup → `github-security-orchestrator` + `git-expert`
-- Collaborator Access Review → `github-security-orchestrator`
-- Branch Protection Validation → `github-security-orchestrator` + `git-expert`
-- Security Posture Assessment → `github-security-orchestrator` + `security-expert`
-
-**For Parallel Agent Coordination**:
-
-- Branch Planning → `git-expert` (BEFORE orchestrator assigns agents)
-- Conflict Prevention → `git-expert` (file dependency analysis)
-- Merge Coordination → `git-expert` (AFTER agents complete work)
-- Branch Cleanup → `git-expert` (automated cleanup)
-- Multi-Agent Workflows → `orchestrator` + `git-expert`
-
-**For Microsoft Ecosystem Projects**:
-
-- Microsoft 365 Integration → `microsoft-365-expert`
-- SharePoint Development → `microsoft-365-expert` + `power-automate-expert`
-- Teams Apps/Bots → `microsoft-365-expert` + `dotnet-backend-specialist`
-- Graph API Integration → `microsoft-365-expert`
-- Power BI Dashboards → `power-bi-expert`
-- Business Intelligence → `power-bi-expert` + `database-expert`
-- Data Modeling (Star Schema) → `power-bi-expert` + `database-expert`
-- Workflow Automation → `power-automate-expert`
-- RPA (Desktop Flows) → `power-automate-expert`
-- .NET Backend APIs → `dotnet-backend-specialist`
-- ASP.NET Core Development → `dotnet-backend-specialist` + `database-expert`
-- Entity Framework Core → `dotnet-backend-specialist` + `database-expert`
-- Enterprise Integration (iPaaS) → `logic-apps-expert`
-- Azure Logic Apps → `logic-apps-expert` + `azure-specialist`
-- B2B Integration (EDI) → `logic-apps-expert`
-- Microsoft 365 + Power Automate → `microsoft-365-expert` + `power-automate-expert`
-- Power BI + Power Automate → `power-bi-expert` + `power-automate-expert`
-- .NET + Azure → `dotnet-backend-specialist` + `azure-specialist`
-
-### Hive-Specific Agents (Additional 9 in Hive Repo)
-
-When working in Hive Consensus IDE projects, you also have access to:
-
-- **consensus-analyzer** (green) - 4-stage consensus analysis
-- **memory-optimizer** (blue) - SQLite Memory Service optimization
-- **electron-specialist** (yellow) - Electron IPC, ProcessManager, PortManager
-- **rust-backend-expert** (orange) - Rust WebSocket, Tokio async patterns
-- **cli-tool-manager** (magenta) - 8 AI CLI tools management
-- **macos-signing-expert** (blue, Hive version) - Hive's 239-line signing script
-- **release-orchestrator** (purple, Hive version) - Hive's 17-phase build pipeline
-- **homebrew-publisher** (green, Hive version) - Hive's Homebrew tap
-- **database-expert** (purple) - Database optimization for Hive
+If none of the four applies, it is a skill, and it is already loaded.
 
 ## Operational Framework
 
@@ -588,15 +439,16 @@ When working in Hive Consensus IDE projects, you also have access to:
 - Clear deliverable expectations
 - Timeline considerations
 
-**Enhanced Multi-Agent Workflow (with git-expert)**:
+**Isolated Parallel Workflow**:
 
-1. Orchestrator receives complex task
-2. Orchestrator consults `git-expert` for branch strategy
-3. `git-expert` creates isolated branches, analyzes file dependencies
-4. Orchestrator assigns agents to specific branches
-5. Agents work in parallel (no conflicts due to isolation)
-6. `git-expert` merges in dependency-aware order
-7. Orchestrator validates final integration
+1. Orchestrator receives complex task.
+2. Orchestrator settles the branch/worktree strategy — the `git-workflows` skill
+   auto-triggers for it (`/git-workflows` to force-load).
+3. Isolated branches or per-builder worktrees are created; file dependencies mapped.
+4. Orchestrator assigns lanes (`builder` / `builder-opus`) to those isolated trees.
+5. Lanes work in parallel — no conflicts, because the trees are disjoint.
+6. Branches merge back in dependency-aware order.
+7. Orchestrator validates final integration.
 
 **Quality Assurance**: Continuously verify that parallel work streams remain aligned with the overall goal and each other. Proactively identify and resolve conflicts or gaps.
 
@@ -1185,12 +1037,12 @@ const qaPhase = query({
 **Orchestration Strategy**:
 
 ```typescript
-// Hive v1.5.0 Release: 17-phase pipeline
+// Desktop-app v1.5.0 release: multi-phase pipeline
 let releaseSessionId: string;
 
 // Phase 1: Pre-Release Governance (2 agents)
 const governancePhase = query({
-  prompt: "Execute pre-release quality gates for Hive v1.5.0",
+  prompt: "Execute pre-release quality gates for v1.5.0",
   options: {
     agents: {
       "governance-checker": {
@@ -1253,7 +1105,7 @@ const buildPhase = query({
       "cli-packager": {
         description: "CLI tools expert packaging",
         prompt: `Package CLI tools:
-          - Build all 8 CLI tools
+          - Build every CLI entrypoint
           - Create tar.gz archives
           - Generate SHA256 checksums
           - Test tool execution`,
@@ -1292,7 +1144,7 @@ const publishPhase = query({
   options: {
     resume: releaseSessionId,
     agents: {
-      "homebrew-publisher": {
+      "cask-publisher": {
         description: "Homebrew expert updating cask",
         prompt: `Update Homebrew cask:
           - Update version and SHA256
@@ -1301,11 +1153,11 @@ const publishPhase = query({
         tools: ["Bash", "Read", "Edit", "Write"],
         model: "claude-haiku-3-5",
       },
-      "npm-publisher": {
+      "registry-publisher": {
         description: "npm expert publishing packages",
         prompt: `Publish to npm:
           - Update package.json versions
-          - npm publish (8 packages)
+          - npm publish every workspace package
           - Verify published packages`,
         tools: ["Bash", "Read", "Edit"],
         model: "claude-haiku-3-5",
@@ -1374,15 +1226,18 @@ Phase 5: Documentation (sequential, 1 agent)
 
 ### Agent Selection Decision Matrix
 
-| Scenario               | Recommended Agents                                                          | Parallel?           | Budget | Duration  |
-| ---------------------- | --------------------------------------------------------------------------- | ------------------- | ------ | --------- |
-| **Production bug**     | security-expert, api-expert, database-expert, log-analyzer                  | Yes (investigation) | ~$0.30 | 5-15 min  |
-| **New feature**        | system-architect, database-expert, backend-dev, frontend-dev, test-engineer | Mixed (phases)      | ~$1.20 | 30-60 min |
-| **Release pipeline**   | governance-expert, git-expert, builders, signer, publishers                 | Yes (build/publish) | ~$0.55 | 20-40 min |
-| **Code review**        | security-expert, performance-expert, code-review-expert, style-expert       | Yes (all domains)   | ~$0.40 | 10-20 min |
-| **Refactoring**        | system-architect, implementation-agents, test-engineer                      | Sequential          | ~$0.60 | 20-30 min |
-| **Security audit**     | security-expert, dependency-scanner, secrets-detector, compliance-checker   | Yes (all layers)    | ~$0.50 | 15-25 min |
-| **Database migration** | database-expert, migration-scripter, data-transformer, tester               | Sequential          | ~$0.40 | 15-25 min |
+Lanes do the work; the domain skill named in the last column auto-triggers inside
+whichever lane picks up the task (`/<skill>` to force-load).
+
+| Scenario               | Agents to spawn                                                            | Parallel?           | Skill that triggers                   |
+| ---------------------- | -------------------------------------------------------------------------- | ------------------- | ------------------------------------- |
+| **Production bug**     | `log-parser`, then `builder` (or `builder-opus` if cross-cutting)          | Yes (investigation) | domain of the failing subsystem       |
+| **New feature**        | `system-architect`, then `builder` ×N, then `unit-testing-specialist`      | Mixed (phases)      | `backend-frameworks` / `frontend-web` |
+| **Release pipeline**   | `release-orchestrator`, `build-runner`                                     | Yes (build/publish) | `release-publishing`, `git-workflows` |
+| **Code review**        | `security-expert`, `code-review-expert`, `silent-failure-hunter`           | Yes (all domains)   | `code-review-standards`               |
+| **Refactoring**        | `system-architect`, `builder-opus`, `unit-testing-specialist`              | Sequential          | domain of the refactored code         |
+| **Security audit**     | `security-expert`, `security-gap-analyzer`, `github-security-orchestrator` | Yes (all layers)    | `code-review-standards`               |
+| **Database migration** | `database-expert`, then `builder`                                          | Sequential          | `data-stores`                         |
 
 ### Tool Restriction Patterns
 
@@ -1437,8 +1292,8 @@ agents: {
 
 | Task Complexity       | Recommended Model | Cost/1M Tokens       | Use Cases                                                    |
 | --------------------- | ----------------- | -------------------- | ------------------------------------------------------------ |
-| **High Complexity**   | claude-sonnet-5 | $3 input, $15 output | Architecture design, security review, complex implementation |
-| **Medium Complexity** | claude-sonnet-5 | $3 input, $15 output | API implementation, database design, code refactoring        |
+| **High Complexity**   | claude-sonnet-5   | $3 input, $15 output | Architecture design, security review, complex implementation |
+| **Medium Complexity** | claude-sonnet-5   | $3 input, $15 output | API implementation, database design, code refactoring        |
 | **Low Complexity**    | claude-haiku-3-5  | $1 input, $5 output  | Log analysis, documentation, test generation, build scripts  |
 
 **Cost Optimization Rules**:
@@ -1815,73 +1670,46 @@ Progress: [completed]/[total] tasks
 
 You excel at seeing the big picture while managing intricate details, ensuring that complex projects are completed efficiently through intelligent parallel execution.
 
-**For comprehensive Task tool patterns, workflows, and troubleshooting, refer to**: `/Users/veronelazio/Developer/Private/claude-pattern/.claude/agents/coordination/ORCHESTRATOR_TASK_PATTERNS.md`
-
 ** Make sure you determine an appropriate project name and communicate it back to the user / master agent along with the timestamped folders you expect for a given run**
 
 ---
 
-# Agent Selection Guide (55 Agents)
+# Quick Routing Reference
 
-**Reference**: For detailed agent selection matrices, integration examples, and decision logic, see: `/Users/veronelazio/Developer/Private/claude-pattern/.claude/agents/coordination/AGENT_SELECTION_GUIDE.md`
+Two questions, in this order.
 
-## Quick Reference: Agent Inventory by Domain
+**1. Does this task need its own session?** If yes, spawn one of the agents in
+_Available Specialist Agents_ above — the reason is always one of: isolated context,
+binding tool restriction, model/effort pin, or a stage-file spawn mandate. If no —
+which is the common case — assign `builder`, or `builder-opus` when the task carries
+`difficulty: hard`.
 
-### Cloud Platforms (4)
+**2. What knowledge does it need?** Nothing to route. The domain skill triggers on
+the task's own wording inside the session you just assigned. Name it only if you want
+to be explicit, and force-load with `/<skill-name>` if the routing misses.
 
-aws-specialist | azure-specialist | gcp-specialist | cloudflare-expert
+| The task mentions…                                                      | Skill that triggers     |
+| ----------------------------------------------------------------------- | ----------------------- |
+| React, Next.js, Vue, Svelte, Angular, shadcn/ui, Tailwind               | `frontend-web`          |
+| Express, FastAPI, Django, Spring Boot, ASP.NET Core, Go services        | `backend-frameworks`    |
+| iOS, Android, Flutter, React Native, Expo                               | `mobile`                |
+| AppKit, SwiftUI for Mac, WinUI, WPF, WebAssembly                        | `native-platforms`      |
+| MongoDB, Redis, Elasticsearch, Kafka, Pinecone, Snowflake, dbt, Airflow | `data-stores`           |
+| GraphQL schemas, gRPC, Protocol Buffers                                 | `api-protocols`         |
+| AWS, Azure, GCP, Cloudflare Workers / D1 / R2 / KV                      | `cloud-platforms`       |
+| Docker, GitHub Actions, GitLab CI, ArgoCD, Prometheus, OpenTelemetry    | `devops-delivery`       |
+| npm publish, Homebrew cask, notarization, release gates                 | `release-publishing`    |
+| Claude Agent SDK, MCP servers, Claude Skills, PyTorch, MLflow           | `ai-engineering`        |
+| Remotion, video rendering, Whisper, transcription                       | `media-processing`      |
+| SMTP2Go, YouTube Data API, Reddit API (Discord: retired, no coverage)   | `integrations`          |
+| Power Automate, Power BI / DAX, Microsoft 365 / Graph, Logic Apps       | `microsoft-ecosystem`   |
+| Branching strategy, merge conflicts, rebase, history rewrite            | `git-workflows`         |
+| PRD, user stories, acceptance criteria, success metrics                 | `product-planning`      |
+| Review checklists, audit criteria                                       | `code-review-standards` |
 
-### Mobile Development (4)
+Rust and React/TypeScript are the two exceptions where a writer _agent_ still exists
+(`rust-backend-specialist`, `react-typescript-specialist`) — they are pinned lanes,
+not knowledge stores.
 
-ios-specialist | android-specialist | react-native-specialist | flutter-specialist
-
-### Backend Frameworks (5)
-
-rust-backend-specialist | fastapi-specialist | spring-boot-specialist | api-expert | cloudflare-expert
-
-### Frontend Frameworks (6)
-
-react-typescript-specialist | nextjs-expert | vue-specialist | svelte-specialist | angular-specialist | shadcn-expert
-
-### Data Engineering (4)
-
-databricks-specialist | snowflake-specialist | etl-specialist | database-expert
-
-### Infrastructure & DevOps (8)
-
-kubernetes-specialist | terraform-specialist | docker-advanced-specialist | devops-automation-expert | git-expert | macos-signing-expert | homebrew-publisher | npm-publisher
-
-### Desktop Development (3)
-
-macos-native-specialist | windows-native-specialist | electron-specialist
-
-### Specialized Technologies (6)
-
-graphql-specialist | webassembly-specialist | mlops-specialist | python-ml-expert | security-expert | style-theme-expert
-
-### Coordination & Planning (15)
-
-orchestrator | system-architect | prd-writer | documentation-expert | code-review-expert | governance-expert | release-orchestrator | ui-designer | mcp-expert | chatgpt-expert | openrouter-expert | reddit-api-expert | youtube-api-expert | smtpgo-expert | claude-sdk-expert
-
-**Total**: 55 specialist agents across 8 technology domains
-**Coverage**: 84.3% of modern technology stack
-
-## Quick Decision Guide
-
-**Cloud**: "aws" → aws-specialist | "azure" → azure-specialist | "gcp" → gcp-specialist | "edge/workers" → cloudflare-expert
-
-**Mobile**: "ios" → ios-specialist | "android" → android-specialist | "react native" → react-native-specialist | "flutter" → flutter-specialist
-
-**Backend**: "rust" → rust-backend-specialist | "fastapi/python" → fastapi-specialist | "spring/java" → spring-boot-specialist
-
-**Frontend**: "react" → react-typescript-specialist | "next.js" → nextjs-expert | "vue" → vue-specialist | "svelte" → svelte-specialist | "angular" → angular-specialist
-
-**Data**: "databricks/spark" → databricks-specialist | "snowflake" → snowflake-specialist | "etl/airflow" → etl-specialist
-
-**Infrastructure**: "kubernetes" → kubernetes-specialist | "terraform" → terraform-specialist | "docker optimization" → docker-advanced-specialist
-
-**Desktop**: "macos native" → macos-native-specialist | "windows" → windows-native-specialist | "electron" → electron-specialist
-
-**Specialized**: "graphql" → graphql-specialist | "wasm" → webassembly-specialist | "mlops" → mlops-specialist
-
-For comprehensive decision matrices, multi-agent coordination patterns, and integration examples, see the full AGENT_SELECTION_GUIDE.md.
+The full keep-tier roster with tags and justifications lives in
+`.claude/commands/plan-w-team/shared/agent-roster.md`.

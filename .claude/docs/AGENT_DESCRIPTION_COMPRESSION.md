@@ -1,5 +1,23 @@
 # Agent Description Compression (2026-05-21)
 
+> **SUPERSEDED by the agent-roster restructure (2026-08-06).** This is a historical
+> record of a token-budget fix, kept for its reasoning, not as a description of the
+> current tree. Every roster number below — the library size, the "91 top-level agent
+> files" — describes the pre-restructure repo. `.claude/agents/` now holds **33**
+> definitions (`find .claude/agents -mindepth 2 -maxdepth 2 -name '*.md' | wc -l`), and
+> the specialist knowledge that made the catalog expensive lives in **16** skill
+> directories under `.claude/skills/`, which load progressively instead of at session
+> start.
+>
+> The compression pass attacked the standing description tax by making each of ~150
+> descriptions smaller. The restructure attacked it by deleting most of them: a skill's
+> trigger description is the only thing that loads until the skill fires. Both were
+> aimed at the same cost; the second one subsumes the first.
+>
+> Current roster: `.claude/commands/plan-w-team/shared/agent-roster.md`.
+> Rationale for the agent-vs-skill split:
+> `docs/specs/restructure-the-claude-agents-roster-per-anthropic-s-current-subagents-vs-skills-d6f25286.md`.
+
 ## Summary
 
 Stripped `<example>...</example>` blocks and `Examples:` preamble from the
@@ -11,7 +29,7 @@ warning threshold and below the 10k headroom target.
 
 ## Why
 
-The original 154-agent library was authored for an `orchestrator` agent that
+The original library — 154 files at the time — was authored for an `orchestrator` that
 predated `/plan-w-team`. Each agent file carried 2-3 multi-paragraph
 `<example>` blocks inside the YAML `description:` block-scalar. These blocks
 served the old orchestrator's natural-language routing — but the agent catalog
@@ -63,15 +81,22 @@ validator routing because:
 no-op (no `<example>` blocks remain). Kept in tree as the reference
 implementation if future agents reintroduce the pattern.
 
-## Future passes
+## Future passes — all three were executed by the 2026-08-06 restructure
 
-Candidates for follow-up (NOT done in this pass):
+Recorded here as candidates in May; closed in August. Disposition:
 
-- Remove agents not referenced in `agent-roster.md`:
-  `claude-code-docs-updater`, `meta-agent`, `mlops-specialist`,
-  `opencode-expert`, `skills-expert` (keep `supervisor` — used by /plan-w-team)
-- Audit which agents are NEVER spawned by /plan-w-team builders (`stagehand-expert`,
-  `whisper-transcription-specialist`, niche-platform specialists)
-- Consider tiering the agent catalog into a small "core" set surfaced by
-  default and a larger "extended" set loaded on demand via MCP / a tool
-  registry.
+- _"Remove agents not referenced in `agent-roster.md`"_ — resolved by re-deriving the
+  roster from first principles rather than by pruning stragglers.
+  `claude-code-docs-updater`, `meta-agent`, and `supervisor` were **kept** (each is
+  mandated by a synced stage file). `mlops-specialist`, `opencode-expert`, and
+  `skills-expert` became references inside the `ai-engineering` skill.
+- _"Audit which agents are NEVER spawned by /plan-w-team builders"_ — done as the
+  KEEP/CONVERT/RETIRE classification. `stagehand-expert` was **kept** (it carries a
+  binding `tools:` restriction and the UI-TDD writer mandate);
+  `whisper-transcription-specialist` became a `media-processing` reference; the
+  niche-platform specialists became `native-platforms`, `mobile`, and
+  `microsoft-ecosystem` references.
+- _"Tier the catalog into a small core surfaced by default and an extended set loaded on
+  demand"_ — this is exactly what shipped, using the platform's own mechanism rather
+  than MCP or a custom registry: the 33-agent keep tier is the always-loaded core, and
+  skills are the on-demand extended set.

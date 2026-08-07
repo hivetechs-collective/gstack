@@ -209,16 +209,17 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
 
 ### Execution
 
-1. **Use task `agent_type` from Step 2**: Each task already has a specialist assigned from the roster. If you need the full list, read `.claude/commands/plan-w-team/shared/agent-roster.md` (85+ specialists with domain and color).
+1. **Use task `agent_type` from Step 2**: Each task already carries its lane. If you need the full list, read `.claude/commands/plan-w-team/shared/agent-roster.md` (the 33 keep-tier agents with tags, plus the 16 domain skills and what each triggers on).
 
-2. Spawn N named builders using Agent tool with worktree isolation and **specialist subagent_type** (from task metadata `agent_type`):
+2. Spawn N named builders using Agent tool with worktree isolation and the **subagent_type from task metadata `agent_type`**. Almost always that is a lane (`builder` / `builder-opus`) — the domain skill loads itself inside the worktree session from the task's own wording, so there is nothing extra to route:
 
    ```
    Agent(
      description: "Implement alert rule engine",
-     subagent_type: "nodejs-specialist",   // ← REQUIRED: match to task domain
+     subagent_type: "builder",   // ← REQUIRED: the lane from task metadata
+     //   (`builder-opus` when Step 2 flagged `difficulty: hard`)
      // Do NOT set `model:` here. The Agent tool's enum accepts only aliases
-     // (opus/sonnet/haiku) and would override the specialist's frontmatter pin.
+     // (opus/sonnet/haiku) and would override the agent's frontmatter pin.
      // Tier selection happens in the agent-definition file: builder.md carries the
      // routine-lane (Sonnet) pin; tasks Step 2 flagged `difficulty: hard` arrive
      // with agent_type "builder-opus" (Brain-tier pin) — dispatch them as-is.

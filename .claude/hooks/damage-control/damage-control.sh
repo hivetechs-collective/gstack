@@ -45,7 +45,8 @@ respond() {
     #   exit 0 → allow; stdout IS parsed for JSON control
     #   exit 2 → BLOCK; STDERR is shown to Claude; stdout is NOT parsed
     #   other  → non-blocking error; the tool call PROCEEDS
-    # (CLAUDE_CODE_CLI_REFERENCE.md:471-477; claude-sdk-expert/docs/hooks.md:126-138)
+    # (CLAUDE_CODE_CLI_REFERENCE.md:471-477;
+    #  .claude/skills/ai-engineering/references/claude-sdk/docs/hooks.md:126-138)
     #
     # Two bugs fixed here:
     #  1. `block` printed its reason to STDOUT and exited 2. The exit code did

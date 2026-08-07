@@ -13,13 +13,14 @@ The list is intentionally narrow. Anything not enumerated here is presumed rever
 
 ## Surface Catalog
 
-| Surface              | Path glob(s)                                                                                                             | Rationale                                                                                                   |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------- |
-| Security allowlist   | `**/secret-allow.txt`, `**/.secret-allow*`, `**/secret-allowlist*`                                                       | Allowlist edits weaken the secret scanner. Wrong addition leaks credentials; needs human review.            |
-| Billing / money      | `**/billing/**`, `**/payments/**`, `**/stripe*`, `**/invoice*`                                                           | Financial side-effects are irreversible without manual reconciliation. Bad merge can cost real money.       |
-| Schema migrations    | `**/migrations/**`, `**/*.sql`, `apps/db/schema/**`, `apps/db/migrations/**`                                             | Forward-only. Bad migrations require either backfill or downtime to revert.                                 |
-| Infra config         | `**/wrangler.toml`, `**/*.tf`, `**/*.tfvars`, `**/cloudformation/**`, `**/terraform/**`, `**/k8s/**`, `**/kubernetes/**` | Cloud resource changes have blast radius beyond the repo. Wrong merge can take production down.             |
-| Secrets / env wiring | `**/.env`, `**/.env.*`, `**/secrets/**`, `**/*.pem`, `**/*.key`, `**/*.p12`, `**/*.jks`                                  | Secret rotation has out-of-band dependencies (keystores, vaults, services). Repo merge is one step of many. |
+| Surface               | Path glob(s)                                                                                                             | Rationale                                                                                                                           |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| Security allowlist    | `**/secret-allow.txt`, `**/.secret-allow*`, `**/secret-allowlist*`                                                       | Allowlist edits weaken the secret scanner. Wrong addition leaks credentials; needs human review.                                    |
+| Billing / money       | `**/billing/**`, `**/payments/**`, `**/stripe*`, `**/invoice*`                                                           | Financial side-effects are irreversible without manual reconciliation. Bad merge can cost real money.                               |
+| Schema migrations     | `**/migrations/**`, `**/*.sql`, `apps/db/schema/**`, `apps/db/migrations/**`                                             | Forward-only. Bad migrations require either backfill or downtime to revert.                                                         |
+| Infra config          | `**/wrangler.toml`, `**/*.tf`, `**/*.tfvars`, `**/cloudformation/**`, `**/terraform/**`, `**/k8s/**`, `**/kubernetes/**` | Cloud resource changes have blast radius beyond the repo. Wrong merge can take production down.                                     |
+| Secrets / env wiring  | `**/.env`, `**/.env.*`, `**/secrets/**`, `**/*.pem`, `**/*.key`, `**/*.p12`, `**/*.jks`                                  | Secret rotation has out-of-band dependencies (keystores, vaults, services). Repo merge is one step of many.                         |
+| Fleet-delete manifest | `.claude/scripts/sync-retired-paths.txt`, `**/sync-retired-paths.txt`                                                    | Each line is a standing `rm` that runs unattended across the managed fleet (17, per `.claude/repos.json`) and every other checkout the sync is pointed at. A wrong line is a fleet-wide deletion, not a one-repo bug. |
 
 The list is matched via standard glob semantics (`**/` recurses, `*` matches any path segment, `?` matches a single char). Path comparison is case-sensitive on Linux/macOS (filesystem behavior aside).
 
@@ -40,7 +41,37 @@ blocks Step 7 completion. The companion secret-handling duty (a new secret-beari
 env var needs an `.env.example` row + provisioning/rotation note, C1) lives in
 [`secret-safety.md §"Secret-Handling Documentation Duty"`](./secret-safety.md).
 
-## How the Supervisor Uses This
+### Fleet-delete manifest — this row is a control, not a convenience (I-2 / C4)
+
+Read this before you consider the **Fleet-delete manifest** row redundant with the
+runtime guards, because it is not, and the reason is specific.
+
+`.claude/scripts/sync-retired-paths.txt` is a list of paths that `sync-to-project.sh`
+**deletes from every consumer repo on every sync**, unattended, at session start,
+with no human reading the diff. Its 11-rule runtime guard set is genuinely strong for
+paths the source ships: rule 6 aborts the whole pass if a line is, or is an ancestor
+of, something still shipped.
+
+But rule 6 only knows the **source** tree. A **consumer-authored** file — for example
+`parts`' own `.claude/skills/audit/` and `.claude/skills/cobe-assistant/` — is by
+definition absent from the source, so it collides with nothing, and rules 6 and 7 are
+both silent. A line naming it would pass every runtime check and delete it fleet-wide.
+The manifest's header previously claimed the ancestor guard covered this; the T8s
+security review (findings I-2 and C4) established that it does not, and the false
+claim has been corrected at the source.
+
+With that claim gone, the control set for consumer-owned paths is exactly three, all
+procedural:
+
+1. **Manifest content** — the list itself is the control; never write such a path in.
+2. **Governance review** — _this row_. It forces a Step-5 security review on any diff
+   that touches the manifest.
+3. **Static lint** — a bats case greps the manifest for known consumer-owned trees and
+   fails the suite when one is named.
+
+There is no structural backstop. Removing or weakening this row does not lose a nice-to-have
+warning; it takes the control set from three to two on the one hazard class with no
+runtime defence at all. Treat this row the way the catalog treats schema migrations.
 
 ```bash
 # Pseudocode (origin-chat supervisor turn, Bash):

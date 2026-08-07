@@ -14,6 +14,50 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.0.0] — 2026-08-07 (1004c0e)
+
+**Agent-roster restructure per Anthropic's subagents-vs-skills taxonomy
+(BREAKING).** `.claude/agents/` shrinks 159 → 33 keep-tier definitions — only
+agents that use an agent-only capability (context isolation, binding
+`disallowedTools`/`tools` restriction, per-lane model+effort pin) stay agents.
+58 knowledge-persona definitions collapse into 15 new progressive-disclosure
+skill directories (+ relocated `code-review-standards` ⇒ 16 under
+`.claude/skills/`), each a lean `SKILL.md` router + `references/` files.
+Retire tier deleted outright (openrouter-expert, chatgpt-expert, hive/ subtree,
+AGENT_MIGRATION_GUIDE/AGENT_INTEGRATION_STRATEGY) plus the operator-directed
+full retirement of discord-expert (definition + entire knowledge tree —
+claude-pattern is client-agnostic; the ci-alert Discord *provider* plumbing
+stays). Spec: `docs/specs/restructure-the-claude-agents-roster-per-anthropic-s-current-subagents-vs-skills-d6f25286.md`.
+
+**Why MAJOR:** stage files and consumer repos lose previously-mandated agents —
+any workflow addressing a converted specialist by `@agent-name` breaks; the
+routing pattern is now `builder`/`builder-opus` + domain skill.
+
+- **Sync retired-path cleanup pass**: permanent 123-row manifest
+  (`.claude/scripts/sync-retired-paths.txt`, read from SOURCE only) with an
+  11-rule two-phase guard set (validate-all-then-delete, charset allowlist,
+  prefix+segment containment, ancestor-collision vs the source-enumerated
+  shipped set, realpath containment, symlink=remove-link-only, git-rm staging,
+  static lint, per-path action log) + consumer WARN epilogue for dangling
+  references (62 retired names). Registered as a one-way-door surface.
+- **Keep-tier repairs (R11)**: 6 strict-YAML frontmatter fixes for previously
+  unspawnable agents (incl. system-architect, rust-backend-specialist);
+  keep-tier promoted to 33 with performance-testing-specialist and
+  github-security-orchestrator.
+- **Security**: discord-webhook secret pattern added to `secret-scan.sh`
+  (fleet-wide blindness — pattern was entirely absent); private-key pattern
+  fixed at 3 grep sites (leading-dash regex never fired anywhere without
+  `--`); the one embedded webhook (ID 1390445582585303100) redacted
+  pre-conversion and **verified rotated/dead by the operator**; T1 redaction
+  across 13 occurrences / 4 files.
+- **Tests**: +6 new suites (keep-list set-equality, skills-shape with doc→disk
+  citation checks, no-stale-agent-refs over the 62-name corpus,
+  agent-frontmatter-valid, sync-consumer-warn, sync-retired-paths-cleanup
+  59-case guard suite); 5 suites rewritten for the new roster; all with
+  anti-vacuity controls.
+- **Docs**: CLAUDE.md rewritten around the 33+16 model (38.8k chars, under the
+  40k limit); `docs/operations/consumer-sync-cleanup.md` new.
+
 ## [1.69.0] — 2026-08-06 (6e0bdaf)
 
 **Goal-run resilience + operator visibility.** Batch of operator-driven fixes

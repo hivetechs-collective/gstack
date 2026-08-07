@@ -4,6 +4,28 @@
 **Agent**: claude-code-docs-updater
 **Purpose**: Comprehensive gap analysis of local Claude Code documentation against current (February 2026) state
 
+> **Dated scan — paths below are pre-restructure (annotated 2026-08-06).** This is a
+> point-in-time inventory, and its value is the file:line evidence, so the tables are
+> left as they were recorded. But the roster they scanned no longer exists: the
+> 2026-08-06 agent-roster restructure cut `.claude/agents/` to 33 definitions and moved
+> specialist knowledge into 16 skill directories.
+>
+> Concretely, for the rows you are most likely to chase:
+>
+> - `.claude/agents/research-planning/claude-sdk-expert.md` (and its `docs/` tree) →
+>   `.claude/skills/ai-engineering/references/claude-sdk-expert.md` + the `claude-sdk/`
+>   reference tree.
+> - `.claude/agents/research-planning/skills-expert/…` →
+>   `.claude/skills/ai-engineering/references/skills-expert.md`.
+> - `.claude/agents/research-planning/aws-specialist.md` →
+>   `.claude/skills/cloud-platforms/references/aws-specialist.md`.
+> - `.claude/agents/research-planning/openrouter-expert.md` and
+>   `.claude/skills/hive/…` → **deleted**. OpenRouter is policy-dead (Claude Max only)
+>   and the `hive/` tree went with the archived repo, so those model-name findings are
+>   closed by removal, not by edit.
+>
+> Re-run the scan against the current tree before treating any count here as open work.
+
 ---
 
 ## Executive Summary
@@ -71,15 +93,15 @@ This analysis identifies **documentation gaps** between the local configuration 
 ```yaml
 # Current (still valid for session-level tracking)
 tools:
-  - TodoWrite     # Session-level task list
+  - TodoWrite # Session-level task list
 
 # Recommended Addition (for multi-session and sub-agents)
 tools:
-  - TaskCreate    # Create persistent tasks
-  - TaskList      # List all tasks
-  - TaskGet       # Get task details
-  - TaskUpdate    # Update task status
-  - Task          # Launch sub-agents
+  - TaskCreate # Create persistent tasks
+  - TaskList # List all tasks
+  - TaskGet # Get task details
+  - TaskUpdate # Update task status
+  - Task # Launch sub-agents
 ```
 
 ---

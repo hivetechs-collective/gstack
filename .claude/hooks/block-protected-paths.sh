@@ -11,7 +11,7 @@
 #   exit 2  → BLOCK. stderr is shown to Claude. stdout is NOT parsed.
 #   other   → non-blocking error; the tool call PROCEEDS.
 # (.claude/docs/CLAUDE_CODE_CLI_REFERENCE.md:471-477;
-#  agents/research-planning/claude-sdk-expert/docs/hooks.md:126-138)
+#  .claude/skills/ai-engineering/references/claude-sdk/docs/hooks.md:126-138)
 #
 # Every block site here previously printed {"decision":"block"} to STDOUT and
 # then `exit 1`. That failed twice over: exit 1 is a non-blocking error so the

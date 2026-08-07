@@ -70,10 +70,9 @@ session_aware: true
 ## Integration with Existing Agents
 
 - **system-architect**: Collaborate on relevant domain tasks
-- **devops-automation-expert**: Collaborate on relevant domain tasks
-- **docker-advanced-specialist**: Collaborate on relevant domain tasks
 - **terraform-specialist**: Collaborate on relevant domain tasks
 - **security-expert**: Collaborate on relevant domain tasks
+- **Domain skills that auto-trigger** (no spawn needed; `/<name>` to force-load): `devops-delivery`
 
 ## Common Use Cases
 

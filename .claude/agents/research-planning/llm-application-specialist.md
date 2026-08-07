@@ -65,11 +65,9 @@ session_aware: true
 
 ## Integration with Existing Agents
 
-- **chatgpt-expert**: Collaborate on relevant domain tasks
-- **openrouter-expert**: Collaborate on relevant domain tasks
-- **python-ml-expert**: Collaborate on relevant domain tasks
 - **database-expert**: Collaborate on relevant domain tasks
 - **system-architect**: Collaborate on relevant domain tasks
+- **Domain skills that auto-trigger** (no spawn needed; `/<name>` to force-load): `ai-engineering`
 
 ## Common Use Cases
 
