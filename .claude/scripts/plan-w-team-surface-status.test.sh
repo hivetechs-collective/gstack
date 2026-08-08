@@ -141,6 +141,115 @@ ESC_FIRST=$(echo "$JSON" | jq -r '.pending_escalations[0]')
 assert_eq "pending_escalations has 1" "1" "$ESC_COUNT"
 assert_eq "escalation is push-ack" "push-ack" "$ESC_FIRST"
 
+echo "U9: resolved site filtered out (escalation + valid escalation_resolved for same call_site)"
+cleanup
+cat > "$SUP_LOG" <<EOF
+{"ts":"2026-05-19T22:00:00Z","event":"escalation","slug":"$TEST_SLUG","call_site":"push-ack","reason":"hard-gate"}
+{"ts":"2026-05-19T22:01:00Z","event":"escalation_resolved","slug":"$TEST_SLUG","call_site":"push-ack","reason":"user_ack"}
+EOF
+JSON=$("$HELPER" "$TEST_SLUG" "ship" 2>/dev/null | extract_json)
+assert_eq "pending_escalations empty after resolve" "0" "$(echo "$JSON" | jq -r '.pending_escalations | length')"
+
+echo "U10: legacy log (escalation rows only, no resolution rows) renders byte-identically vs pre-change golden"
+cleanup
+# Golden captured from the PRE-Fix-4 (task #36) plan-w-team-surface-status.sh
+# against this EXACT fixture, BEFORE the escalation_resolved pairing edit
+# landed (mandatory sequencing per the spec — golden must predate the fix).
+# ts is stripped before comparison since it always reflects wall-clock
+# `date -u` at invocation time; every other field must match byte-for-byte.
+LEGACY_SLUG="legacy-golden-test-fixed"
+LEGACY_LOG="$STATE_DIR/plan-w-team-supervisor-actions-${LEGACY_SLUG}.jsonl"
+cat > "$LEGACY_LOG" <<EOF
+{"ts":"2026-05-19T22:00:00Z","event":"supervisor_start","slug":"$LEGACY_SLUG","supervisor_agent_id":"AGT-1"}
+{"ts":"2026-05-19T22:01:00Z","event":"escalation","slug":"$LEGACY_SLUG","call_site":"push-ack","reason":"hard-gate"}
+{"ts":"2026-05-19T22:02:00Z","event":"escalation","slug":"$LEGACY_SLUG","call_site":"secret-scan-allow","reason":"hard-gate"}
+{"ts":"2026-05-19T22:03:00Z","event":"escalation","slug":"$LEGACY_SLUG","call_site":"scope-unlock-for-drift","reason":"hard-gate"}
+{"ts":"2026-05-19T22:04:00Z","event":"escalation","slug":"$LEGACY_SLUG","call_site":"credential-wall","reason":"hard-gate"}
+{"ts":"2026-05-19T22:05:00Z","event":"escalation","slug":"$LEGACY_SLUG","call_site":"push-ack","reason":"hard-gate"}
+{"ts":"2026-05-19T22:06:00Z","event":"route_delegation","slug":"$LEGACY_SLUG","call_site":"qa-tier-selection","router_choice":"standard","router_confidence":"low"}
+EOF
+GOLDEN_JSON='{"slug":"legacy-golden-test-fixed","stage":"ship","workflow_lock":"missing","ship_readiness_gate":"pending","fleet":{},"pending_escalations":["credential-wall","push-ack","scope-unlock-for-drift","secret-scan-allow"],"low_confidence_routes":1}'
+JSON=$("$HELPER" "$LEGACY_SLUG" "ship" 2>/dev/null | extract_json)
+ACTUAL_NO_TS=$(echo "$JSON" | jq -S -c 'del(.ts)')
+EXPECTED_NO_TS=$(echo "$GOLDEN_JSON" | jq -S -c .)
+assert_eq "legacy log byte-identical to pre-change golden (ts excluded)" "$EXPECTED_NO_TS" "$ACTUAL_NO_TS"
+rm -f "$LEGACY_LOG"
+
+echo "U11: same-second resolve-then-re-escalate re-pends (file order beats ts tie)"
+cleanup
+cat > "$SUP_LOG" <<EOF
+{"ts":"2026-05-19T22:00:00Z","event":"escalation","slug":"$TEST_SLUG","call_site":"push-ack","reason":"hard-gate"}
+{"ts":"2026-05-19T22:00:00Z","event":"escalation_resolved","slug":"$TEST_SLUG","call_site":"push-ack","reason":"user_ack"}
+{"ts":"2026-05-19T22:00:00Z","event":"escalation","slug":"$TEST_SLUG","call_site":"push-ack","reason":"hard-gate"}
+EOF
+JSON=$("$HELPER" "$TEST_SLUG" "ship" 2>/dev/null | extract_json)
+assert_eq "push-ack re-pends after same-second re-escalation" "1" "$(echo "$JSON" | jq -r '.pending_escalations | length')"
+assert_eq "push-ack is the pending site" "push-ack" "$(echo "$JSON" | jq -r '.pending_escalations[0]')"
+
+echo "U12: resolution row for a never-escalated site is ignored (no phantom entries)"
+cleanup
+cat > "$SUP_LOG" <<EOF
+{"ts":"2026-05-19T22:00:00Z","event":"escalation","slug":"$TEST_SLUG","call_site":"push-ack","reason":"hard-gate"}
+{"ts":"2026-05-19T22:01:00Z","event":"escalation_resolved","slug":"$TEST_SLUG","call_site":"secret-scan-allow","reason":"user_ack"}
+EOF
+JSON=$("$HELPER" "$TEST_SLUG" "ship" 2>/dev/null | extract_json)
+assert_eq "pending_escalations has 1 (only push-ack)" "1" "$(echo "$JSON" | jq -r '.pending_escalations | length')"
+assert_eq "escalation is push-ack" "push-ack" "$(echo "$JSON" | jq -r '.pending_escalations[0]')"
+
+echo "U13: one corrupt JSONL line does not blank valid pending sites"
+cleanup
+printf '%s\n' \
+  '{"ts":"2026-05-19T22:00:00Z","event":"escalation","slug":"'"$TEST_SLUG"'","call_site":"push-ack","reason":"hard-gate"}' \
+  '{this is not valid json at all!!' \
+  '{"ts":"2026-05-19T22:02:00Z","event":"escalation","slug":"'"$TEST_SLUG"'","call_site":"secret-scan-allow","reason":"hard-gate"}' \
+  '{"ts":"2026-05-19T22:03:00Z","event":"route_delegation","slug":"'"$TEST_SLUG"'","call_site":"x","router_choice":"a","router_confidence":"low"}' \
+  '{"ts":"2026-05-19T22:04:00Z","event":"route_delegation","slug":"'"$TEST_SLUG"'","call_site":"y","router_choice":"b","router_confidence":"low"}' \
+  > "$SUP_LOG"
+JSON=$("$HELPER" "$TEST_SLUG" "ship" 2>/dev/null | extract_json)
+assert_eq "pending_escalations has 2 despite corrupt line" "2" "$(echo "$JSON" | jq -r '.pending_escalations | length')"
+# G1 (Step-5 fix): low_confidence_routes previously used the whole-file jq -s
+# form, so the SAME corrupt line blanked it to 0 — suppressing the
+# "3 consecutive low-confidence decisions" goal HALT signal (fail-open).
+assert_eq "low_confidence_routes survives the corrupt line" "2" "$(echo "$JSON" | jq -r '.low_confidence_routes')"
+
+echo "U14: hard-gate site with a non-enum resolution reason stays pending"
+cleanup
+cat > "$SUP_LOG" <<EOF
+{"ts":"2026-05-19T22:00:00Z","event":"escalation","slug":"$TEST_SLUG","call_site":"scope-unlock-for-drift","reason":"hard-gate"}
+{"ts":"2026-05-19T22:01:00Z","event":"escalation_resolved","slug":"$TEST_SLUG","call_site":"scope-unlock-for-drift","reason":"operator_said_so"}
+EOF
+JSON=$("$HELPER" "$TEST_SLUG" "ship" 2>/dev/null | extract_json)
+assert_eq "pending_escalations has 1 (non-enum reason ignored)" "1" "$(echo "$JSON" | jq -r '.pending_escalations | length')"
+assert_eq "scope-unlock-for-drift still pending" "scope-unlock-for-drift" "$(echo "$JSON" | jq -r '.pending_escalations[0]')"
+
+echo "U15: JSON-valid escalation row missing call_site does not blank real pending sites"
+# Step-5 fix (evaluator finding, this run): a schema-invalid-but-parseable row
+# (event=escalation, NO call_site) reached the reduce, indexed the object with
+# null, killed the whole jq pipeline, and the || fallback blanked the array —
+# fail-OPEN on a hard-gate signal, strictly worse than the pre-change output.
+# The select now requires (.call_site | type == "string"); the bad row is
+# dropped individually and every real site stays visible.
+cleanup
+cat > "$SUP_LOG" <<EOF
+{"ts":"2026-05-19T22:00:00Z","event":"escalation","slug":"$TEST_SLUG","call_site":"credential-wall","reason":"hard-gate"}
+{"ts":"2026-05-19T22:01:00Z","event":"escalation","slug":"$TEST_SLUG","reason":"schema-invalid: no call_site"}
+{"ts":"2026-05-19T22:02:00Z","event":"escalation","slug":"$TEST_SLUG","call_site":"push-ack","reason":"hard-gate"}
+EOF
+JSON=$("$HELPER" "$TEST_SLUG" "ship" 2>/dev/null | extract_json)
+assert_eq "pending_escalations has 2 despite schema-invalid row" "2" "$(echo "$JSON" | jq -r '.pending_escalations | length')"
+assert_eq "credential-wall survives the bad row" "credential-wall" "$(echo "$JSON" | jq -r '.pending_escalations[0]')"
+assert_eq "push-ack survives the bad row" "push-ack" "$(echo "$JSON" | jq -r '.pending_escalations[1]')"
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
+
+# Expected-PASS-count assertion (test lane E8) — a silently-vanished assertion
+# (e.g. a future edit that drops a case without updating callers) still shows
+# green on FAIL==0 alone; pin the exact count so a shrinkage is caught.
+EXPECTED_PASS=34
+if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
+    echo "✗ expected exactly $EXPECTED_PASS passing assertions, got $PASS"
+    FAIL=$((FAIL + 1))
+fi
+
 [ "$FAIL" -eq 0 ] || exit 1

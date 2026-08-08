@@ -14,6 +14,53 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.1.0] — 2026-08-07 (90037fb)
+
+**Hardening release — the five weaknesses surfaced by 2.0.0 + the cleanscale
+field test.** Operator brief: `.claude/state/pwt-brief-pwt-hardening-2-1.md`;
+spec: `docs/specs/harden-plan-w-team-against-the-five-weaknesses-surfaced-by-the-2-0-0-release-and-b344ebd8.md`.
+
+- **Commits staging `tests/skill/*` no longer die at the 60s hook default** —
+  the pre-commit gate consults the archived `plan-w-team-test-green.sh` verdict
+  instead of re-running the ~13-min suite inline, corroborated by a new
+  `tree_digest` (staged-content blob digest — the suite must have seen exactly
+  what you are committing) plus the `SUITE_EXIT=0` log witness; red, absent,
+  stale, digest-mismatched, or witness-less verdicts still block, and repos
+  without the harness keep today's warn-and-allow. The hook object carries an
+  explicit 120s timeout (bound to `pre-commit-quality.sh` alone).
+- **You can now steer a running bg worker with one command** — `pwt-steer.sh`
+  encodes the field-proven procedure (validate-first, stop, pinned+route-guarded
+  resume from inside the worker's worktree, marker-verified delivery, dual-dir
+  `worker_sid`/`respawn_history` bookkeeping, old-watcher teardown) with 74
+  test assertions; documented in `shared/supervisor-protocol.md §Steering a
+  Running Worker`.
+- **§1.5 criteria injection survives backslashes in AC text** — the echo→jq
+  mangling that twice shipped runs with ZERO feature-specific done-criteria is
+  gone (printf forms, anchored block, loud distinct abort on jq failure instead
+  of the false "no AC entries" message), regression-tested under the verified
+  `bash -O xpg_echo` reproduction vehicle.
+- **Status blocks stop echoing resolved escalations** — new
+  `escalation_resolved` event (closed `user_ack`/`auto_approve_env` reason enum
+  on hard-gate sites) with file-order last-wins pairing and corrupt-line-resilient
+  parsing in `plan-w-team-surface-status.sh`; legacy logs render byte-identically.
+  NOTE: this fixes the EMITTER only — the goal-evaluator still greps historical
+  transcript blocks until the queued W5 fix lands (it must corroborate, never
+  trust, these rows).
+- **Evaluation-worded goals no longer charter builds** — `pwt-goal.sh`
+  classifies intent (conservative leading-verb core; build-override words win)
+  and appends a disposition-only no-build constraint block to evaluation
+  directives; new explicit `--type eval` opts into evaluation done-criteria.
+  Trigger detection untouched — natural-language routing is sacred.
+- Step-5 extras: two fail-open regressions closed same-run (schema-invalid
+  escalation row blanking `pending_escalations`; corrupt line blanking
+  `low_confidence_routes`), claim-ledger isolation test de-flaked (slug-scoped),
+  friction-log triage pass (9 rows, first `{type:"triage"}` marker) recorded at
+  `docs/operations/friction-log-triage-2026-08-07.md`.
+
+**Why MINOR:** additive capabilities and defect fixes; no stage-file contract,
+artifact schema, or consumer-visible surface breaks (the hook change preserves
+gate semantics — red still blocks).
+
 ## [2.0.0] — 2026-08-07 (1004c0e)
 
 **Agent-roster restructure per Anthropic's subagents-vs-skills taxonomy

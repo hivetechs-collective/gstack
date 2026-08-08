@@ -141,36 +141,196 @@ while IFS= read -r file; do
 
 done <<< "$STAGED_FILES"
 
-# /plan-w-team test-skill gate — when ANY plan-w-team source file is staged
-# (skill markdown, helper scripts, shared docs, or the bats harness itself),
-# run `make test-skill`. Exit 1 → block; exit 0 → continue. This is the single
-# canonical test target — see Makefile anti-fragmentation note.
+# /plan-w-team commit gate — VERDICT CONSULT (was: inline `make test-skill`).
+#
+# WHY IT IS A CONSULT. This is a PreToolUse hook. Running the ~9-minute skill suite
+# inside one meant the harness timeout killed it — and `--no-verify` cannot bypass a
+# PreToolUse hook, so every non-lead commit staging `tests/skill/*` was simply
+# blocked. The suite now runs OUT OF BAND via plan-w-team-test-green.sh and this
+# gate consults the verdict it archives.
+#
+# WHY IT IS STILL A GATE. A stored verdict is agent-writable state read by a gate,
+# so "green" on its own proves nothing. Three independent corroborations are
+# required together, and EVERY uncertainty BLOCKS:
+#   - log witness   — the run's log must exist and END with the literal SUITE_EXIT=0
+#                     that run.sh emits, so a truncated or hand-shaped verdict fails;
+#   - tree_digest   — recomputed here from STAGED content, so the suite must have
+#                     seen exactly what is about to be committed;
+#   - age window    — belt to the digest's braces (PWT_TEST_GREEN_MAX_AGE_S).
+# The one allow-without-verdict path is the consumer carve-out below: a checkout
+# with no harness has no suite to have run.
+#
+# The verdict artifact is deliberately consulted with the hook's OWN jq-required
+# read rather than `plan-w-team-test-green.sh --check`: --check corroborates none of
+# the three, and its jq-absent fallback parses `green` out with sed.
+
+# The watched-path set. SYMMETRY-LOCKED against the identical anchored block in
+# .claude/scripts/plan-w-team-test-green.sh — here they are `case` patterns deciding
+# whether to consult, there they are git pathspecs defining what tree_digest covers.
+# If those two sets ever diverge the digest silently corroborates the wrong files.
+# Asserted byte-identical by tests/skill/cases/pre-commit-hook-timeout.bats.
+# `.claude/settings.json` is deliberately absent: config edits are damage-control
+# protected on their own path and must not require a suite run to commit.
+# BEGIN pwt-watched-globs
+PWT_WATCHED_GLOBS='.claude/commands/plan-w-team*
+.claude/scripts/plan-w-team-*
+.claude/scripts/pwt-*
+.claude/hooks/pre-commit-quality*
+.claude/agents/team/*
+.claude/agents/implementation/react-typescript-specialist.md
+.claude/agents/implementation/rust-backend-specialist.md
+.claude/scripts/secret-scan.sh
+.claude/scripts/secret-doc-sync.sh
+tests/skill/*'
+# END pwt-watched-globs
+
+_pwt_is_watched() {
+    local f="$1" g
+    while IFS= read -r g; do
+        [ -n "$g" ] || continue
+        # Unquoted so the value is used as a shell pattern; `*` matches `/` here
+        # exactly as it does in a git pathspec, keeping both readings of the list
+        # in agreement.
+        case "$f" in $g) return 0 ;; esac
+    done <<EOF
+$PWT_WATCHED_GLOBS
+EOF
+    return 1
+}
+
+# Recompute the watched-tree digest the way test-green.sh records it, but sourcing
+# STAGED content for staged files: the gate must corroborate what is about to be
+# committed, not what happens to be sitting in the working tree. Unstaged watched
+# files use their working-tree blob (or HEAD's, if deleted) — the same content the
+# suite saw. Prints an empty string on any failure; the caller fails closed.
+_pwt_staged_tree_digest() {
+    local root="$1" g
+    local globs=()
+    while IFS= read -r g; do
+        [ -n "$g" ] || continue
+        globs+=("$g")
+    done <<EOF
+$PWT_WATCHED_GLOBS
+EOF
+    (
+      set +e
+      cd "$root" 2>/dev/null || exit 0
+      staged_list=$(mktemp -t pwt-gate-staged.XXXXXX) || exit 0
+      git diff --cached --name-only --diff-filter=ACMR > "$staged_list" 2>/dev/null
+      files=$(git ls-files --cached --others --exclude-standard -- "${globs[@]}" 2>/dev/null | LC_ALL=C sort)
+      # Fail closed on an empty watched set — see the matching guard in
+      # plan-w-team-test-green.sh. Both sides would otherwise agree on the digest
+      # of nothing, so a broken enumeration would corroborate itself.
+      if [ -z "$files" ]; then rm -f "$staged_list" 2>/dev/null; exit 0; fi
+      printf '%s\n' "$files" \
+        | while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            h=""
+            if grep -qFx -- "$f" "$staged_list" 2>/dev/null; then
+                h=$(git rev-parse ":$f" 2>/dev/null)
+            fi
+            if [ -z "$h" ]; then
+                if [ -f "$f" ]; then
+                    h=$(git hash-object --path "$f" -- "$f" 2>/dev/null)
+                else
+                    h=$(git rev-parse "HEAD:$f" 2>/dev/null)
+                fi
+            fi
+            [ -n "$h" ] || h="-"
+            printf '%s:%s\n' "$f" "$h"
+          done \
+        | shasum -a 256 2>/dev/null | awk '{print $1}'
+      rm -f "$staged_list" 2>/dev/null
+    )
+}
+
 PLAN_TEAM_STAGED=false
 while IFS= read -r file; do
-    case "$file" in
-        .claude/commands/plan-w-team*|\
-        .claude/scripts/plan-w-team-*|\
-        .claude/scripts/pwt-goal.sh|\
-        .claude/agents/team/*|\
-        .claude/agents/implementation/react-typescript-specialist.md|\
-        .claude/agents/implementation/rust-backend-specialist.md|\
-        .claude/scripts/secret-scan.sh|\
-        .claude/scripts/secret-doc-sync.sh|\
-        tests/skill/*)
-            PLAN_TEAM_STAGED=true; break ;;
-    esac
+    [ -z "$file" ] && continue
+    if _pwt_is_watched "$file"; then
+        PLAN_TEAM_STAGED=true; break
+    fi
 done <<< "$STAGED_FILES"
 
 if [ "$PLAN_TEAM_STAGED" = "true" ]; then
-    if [ -f "Makefile" ] && grep -q '^test-skill:' Makefile; then
-        if ! TEST_SKILL_OUT=$(make test-skill 2>&1); then
-            ERRORS+=("plan-w-team test-skill suite failed (run: make test-skill)")
-            # Surface the last 20 lines of failure to stderr now so the user can act
-            echo "[pre-commit-quality] make test-skill failure (tail):" >&2
-            printf '%s\n' "$TEST_SKILL_OUT" | tail -20 >&2
-        fi
+    TG_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")
+    TG_HAVE_HARNESS=false
+    if [ -f "$TG_ROOT/Makefile" ] \
+       && grep -q '^test-skill:' "$TG_ROOT/Makefile" 2>/dev/null \
+       && [ -f "$TG_ROOT/tests/skill/run.sh" ]; then
+        TG_HAVE_HARNESS=true
+    fi
+
+    if [ "$TG_HAVE_HARNESS" != "true" ]; then
+        # Consumer-repo carve-out: they carry the skill without the source's bats
+        # harness, so there is no suite for a verdict to describe. Unchanged
+        # warn-and-allow behaviour.
+        WARNINGS+=("plan-w-team files staged but this checkout has no skill harness (Makefile test-skill target + tests/skill/run.sh) — verdict consult skipped")
     else
-        WARNINGS+=("plan-w-team files staged but Makefile / test-skill target missing — skipping harness")
+        TG_STATE_DIR="$TG_ROOT/.claude/state"
+        TG_MAX_AGE="${PWT_TEST_GREEN_MAX_AGE_S:-86400}"
+        TG_SLUG=""
+        TG_BLOCK=""
+
+        # Newest verdict in THIS checkout's state dir only. Never the dual-write set:
+        # a sibling worktree's verdict describes a different tree.
+        TG_ART=""
+        for tg_f in "$TG_STATE_DIR/plan-w-team-test-green-"*.json; do
+            [ -f "$tg_f" ] || continue
+            if [ -z "$TG_ART" ] || [ "$tg_f" -nt "$TG_ART" ]; then TG_ART="$tg_f"; fi
+        done
+
+        if ! command -v jq >/dev/null 2>&1; then
+            TG_BLOCK="jq is required to consult the test-green verdict and is not on PATH"
+        elif ! command -v shasum >/dev/null 2>&1; then
+            TG_BLOCK="shasum is required to corroborate the test-green verdict and is not on PATH"
+        elif [ -z "$TG_ART" ]; then
+            TG_BLOCK="no test-green verdict in $TG_STATE_DIR — the skill suite has not been run for this checkout"
+        elif ! jq -e . "$TG_ART" >/dev/null 2>&1; then
+            TG_BLOCK="test-green verdict is not valid JSON: $TG_ART"
+        else
+            TG_SLUG=$(jq -r '.slug // ""' "$TG_ART" 2>/dev/null || echo "")
+            TG_GREEN=$(jq -r '.green // false' "$TG_ART" 2>/dev/null || echo "false")
+            TG_DIGEST=$(jq -r '.tree_digest // ""' "$TG_ART" 2>/dev/null || echo "")
+            TG_LOG=$(jq -r '.log_path // ""' "$TG_ART" 2>/dev/null || echo "")
+
+            TG_MTIME=$(_file_mtime "$TG_ART")
+            TG_AGE=""
+            if [ "$_now_epoch" -gt 0 ] && [ "$TG_MTIME" -gt 0 ] 2>/dev/null; then
+                TG_AGE=$(( _now_epoch - TG_MTIME ))
+            fi
+
+            if [ "$TG_GREEN" != "true" ]; then
+                # The artifact is a named trust boundary, so its free-text field is
+                # stripped of quotes/backslashes/newlines and length-capped before it
+                # reaches the block payload.
+                TG_REASON=$(jq -r '.reason // "?"' "$TG_ART" 2>/dev/null | tr -d '"\\' | tr -d '\n\r' | cut -c1-40)
+                TG_BLOCK="the archived test-green verdict is RED (${TG_REASON:-?})"
+            elif [ -z "$TG_DIGEST" ]; then
+                TG_BLOCK="the verdict carries no tree_digest, so it cannot be tied to the staged content"
+            elif [ -z "$TG_LOG" ] || [ ! -r "$TG_LOG" ]; then
+                TG_BLOCK="the verdict's suite log is missing or unreadable (${TG_LOG:-<unset>}) — a verdict without its log is not a witnessed run"
+            elif [ "$(tail -1 "$TG_LOG" 2>/dev/null | tr -d '\r')" != "SUITE_EXIT=0" ]; then
+                TG_BLOCK="the verdict's suite log does not end with the literal SUITE_EXIT=0 marker — the run was killed, truncated, or never happened"
+            elif [ -z "$TG_AGE" ]; then
+                TG_BLOCK="the verdict's age could not be determined (unreadable mtime or clock)"
+            elif [ "$TG_AGE" -lt 0 ]; then
+                TG_BLOCK="the verdict's mtime is in the future (age ${TG_AGE}s) — refusing to trust a clock-skewed or back-dated verdict"
+            elif [ "$TG_AGE" -gt "$TG_MAX_AGE" ]; then
+                TG_BLOCK="the verdict is stale (${TG_AGE}s old > ${TG_MAX_AGE}s; tune PWT_TEST_GREEN_MAX_AGE_S)"
+            else
+                TG_ACTUAL=$(_pwt_staged_tree_digest "$TG_ROOT")
+                if [ -z "$TG_ACTUAL" ]; then
+                    TG_BLOCK="the staged-content digest could not be computed, so the verdict cannot be corroborated"
+                elif [ "$TG_ACTUAL" != "$TG_DIGEST" ]; then
+                    TG_BLOCK="tree_digest mismatch — the suite ran against different content than what is staged (verdict ${TG_DIGEST%"${TG_DIGEST#??????????}"}…, staged ${TG_ACTUAL%"${TG_ACTUAL#??????????}"}…)"
+                fi
+            fi
+        fi
+
+        if [ -n "$TG_BLOCK" ]; then
+            ERRORS+=("plan-w-team commit gate: $TG_BLOCK — run the suite out of band: .claude/scripts/plan-w-team-test-green.sh --slug ${TG_SLUG:-<slug>}   then re-commit")
+        fi
     fi
 fi
 

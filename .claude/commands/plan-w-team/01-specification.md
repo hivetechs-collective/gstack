@@ -545,17 +545,34 @@ fi
 if [ "${PLAN_W_TEAM_DISABLE_GOAL:-}" = "1" ] || [ ! -f "$GOAL_FILE" ]; then
     echo "[§1.5] /goal disabled or state file missing — skipping criteria derivation"
 else
+    # BEGIN pwt-criteria-injection
     CRITERIA_JSON='[]'
+    JQ_FAILED=0
     while IFS= read -r line; do
-        n=$(echo "$line" | grep -oE 'AC[0-9]+' | head -1 | grep -oE '[0-9]+')
+        n=$(printf '%s\n' "$line" | grep -oE 'AC[0-9]+' | head -1 | grep -oE '[0-9]+')
         [ -z "$n" ] && continue
-        desc=$(echo "$line" | sed -E "s/.*AC${n}:[[:space:]]*//" | head -c 200)
+        desc=$(printf '%s\n' "$line" | sed -E "s/.*AC${n}:[[:space:]]*//" | head -c 200)
         [[ "$desc" == *"[Subject]"* ]] && continue
-        CRITERIA_JSON=$(echo "$CRITERIA_JSON" | jq --arg p "AC${n}:[[:space:]]*PASS" --arg d "$desc" \
+        NEW_CRITERIA_JSON=$(printf '%s\n' "$CRITERIA_JSON" | jq --arg p "AC${n}:[[:space:]]*PASS" --arg d "$desc" \
             '. + [{pattern: $p, description: $d, met: false, met_at: null}]')
+        JQ_RC=$?
+        if [ $JQ_RC -ne 0 ] || [ -z "$NEW_CRITERIA_JSON" ]; then
+            # Loud-failure hardening: a jq error here (e.g. an invalid-UTF-8
+            # byte in AC text) must never silently masquerade as "no AC
+            # entries found" — that false message is why this bug field-
+            # recurred (see docs/specs/harden-plan-w-team-... §Fix 1).
+            JQ_FAILED=1
+            break
+        fi
+        CRITERIA_JSON="$NEW_CRITERIA_JSON"
     done < <(awk '/^## Acceptance Criteria/,/^## [^A]/' "$SPEC" | grep -E '^\s*-?\s*\[?\s*\]?\s*AC[0-9]+:')
 
-    CRITERIA_COUNT=$(echo "$CRITERIA_JSON" | jq 'length')
+    if [ "$JQ_FAILED" = "1" ]; then
+        echo "[§1.5] ABORT: criteria derivation failed (jq error)"
+        CRITERIA_COUNT=0
+    else
+        CRITERIA_COUNT=$(printf '%s\n' "$CRITERIA_JSON" | jq 'length')
+    fi
 
     # ── Canonical row-shape self-check (1.56.0, DEFECT B) ──────────────────
     # This writer must emit ONLY canonical {pattern,description,met,met_at}
@@ -572,7 +589,7 @@ else
     # UNMET, never `grep -E ""`), so a bad row BLOCKS loudly instead of passing
     # silently. This check is the writer-side half: catch it here and fall back
     # to generic anchors, rather than emitting a contract that wedges the run.
-    SHAPE_OK=$(echo "$CRITERIA_JSON" | jq '[.[] | (type == "object")
+    SHAPE_OK=$(printf '%s\n' "$CRITERIA_JSON" | jq '[.[] | (type == "object")
         and has("pattern") and has("description") and has("met") and has("met_at")
         and (.pattern | type == "string") and (.pattern | length > 0)] | all')
     if [ "$CRITERIA_COUNT" -gt 0 ] && [ "$SHAPE_OK" != "true" ]; then
@@ -611,9 +628,14 @@ else
                 "$MAIN_GOAL_FILE" > "$MAIN_GOAL_FILE.tmp" && mv "$MAIN_GOAL_FILE.tmp" "$MAIN_GOAL_FILE"
             echo "[§1.5] dual-wrote criteria to main-checkout goal state (merged by union)"
         fi
-    else
+    elif [ "$JQ_FAILED" != "1" ]; then
+        # Only the TRUE empty-AC case reaches here — a jq failure already
+        # printed the distinct ABORT message above and must never also print
+        # this message (the two outcomes are otherwise indistinguishable on
+        # stdout, which is exactly how the bug field-recurred).
         echo "[§1.5] no AC entries found in spec — goal evaluator uses generic anchors only (T5b behavior)"
     fi
+    # END pwt-criteria-injection
 fi
 ```
 

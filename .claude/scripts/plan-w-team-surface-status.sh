@@ -106,11 +106,53 @@ else
 fi
 
 # Pending escalations + low-confidence routes from supervisor-actions log
+#
+# Fix 4 (task #36, harden-plan-w-team-...): pending_escalations is computed by
+# per-call_site "last row wins in FILE ORDER" pairing of escalation vs
+# escalation_resolved rows — ts is metadata only, never an ordering key (repo
+# timestamps are 1-second granularity; a same-second resolve-then-re-escalate
+# must re-pend). For the four HARD-GATE call_sites, a resolution row counts
+# ONLY when its reason is in the closed enum (user_ack / auto_approve_env);
+# any other reason is IGNORED (the site's prior state, if any, is unchanged) —
+# this makes escalation_resolved spoof-resistant for the sites that matter
+# most. Non-hard-gate sites resolve on any escalation_resolved row.
+#
+# Parse is deliberately per-line resilient: `jq -R 'fromjson? // empty'`
+# drops a single corrupt JSONL line instead of failing `jq -s` for the WHOLE
+# file, which previously blanked pending_escalations to '[]' — a fail-OPEN
+# outcome for what is otherwise a hard-gate signal. Output shape is
+# unchanged (sorted unique array) so legacy logs (escalation rows only, no
+# resolution rows) render byte-identically.
 PENDING_ESC='[]'
 LOW_CONF=0
 if [ -f "$SUP_LOG" ] && command -v jq >/dev/null 2>&1; then
-    PENDING_ESC=$(jq -s '[.[] | select(.event=="escalation") | .call_site] | unique' "$SUP_LOG" 2>/dev/null || echo '[]')
-    LOW_CONF=$(jq -s '[.[] | select(.event=="route_delegation" and .router_confidence=="low")] | length' "$SUP_LOG" 2>/dev/null || echo 0)
+    PENDING_ESC=$(jq -R 'fromjson? // empty' "$SUP_LOG" 2>/dev/null | jq -s '
+        def hard_gate_sites: ["push-ack","secret-scan-allow","scope-unlock-for-drift","credential-wall"];
+        def valid_reason: (. == "user_ack" or . == "auto_approve_env");
+        [ .[] | select((.event=="escalation" or .event=="escalation_resolved")
+                       and (.call_site | type == "string")) ]
+        | reduce .[] as $row ({};
+            if $row.event == "escalation" then
+                .[$row.call_site] = "pending"
+            elif (hard_gate_sites | index($row.call_site)) then
+                if ($row.reason | valid_reason) then
+                    .[$row.call_site] = "resolved"
+                else
+                    .
+                end
+            else
+                .[$row.call_site] = "resolved"
+            end
+          )
+        | [ to_entries[] | select(.value == "pending") | .key ]
+        | unique
+    ' 2>/dev/null) || PENDING_ESC='[]'
+    [ -z "$PENDING_ESC" ] && PENDING_ESC='[]'
+    # Same per-line resilient parse as pending_escalations (Step-5 fix, G1): the
+    # whole-file `jq -s` form blanked this to 0 on one corrupt line — fail-OPEN
+    # for the "3 consecutive low-confidence decisions" goal HALT signal.
+    LOW_CONF=$(jq -R 'fromjson? // empty' "$SUP_LOG" 2>/dev/null | jq -s '[.[] | select(.event=="route_delegation" and .router_confidence=="low")] | length' 2>/dev/null || echo 0)
+    [ -z "$LOW_CONF" ] && LOW_CONF=0
 fi
 
 # Emit the fenced status block — JSON is built via jq so quoting is safe

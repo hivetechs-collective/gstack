@@ -260,6 +260,89 @@ fi
 
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# ─── WATCHED-TREE DIGEST (content anchor for the commit gate) ───────────────
+# The verdict alone only says "a suite run ended green at time T". It says nothing
+# about WHAT was tested, so a gate that trusts it would happily wave through content
+# edited after the run. `tree_digest` closes that: a content hash of every file in
+# the watched set, so the gate can prove the suite saw exactly what is being
+# committed. Content-based and therefore clock-free — the age window is belt, this
+# is the braces.
+#
+# The glob list below is SYMMETRY-LOCKED against the identical anchored block in
+# .claude/hooks/pre-commit-quality.sh (which needs it as `case` patterns to decide
+# whether to consult, while this file needs it as git pathspecs). Drift would mean
+# the digest covers a different file set than the trigger — asserted byte-identical
+# by tests/skill/cases/pre-commit-hook-timeout.bats. If you edit one, edit both.
+# BEGIN pwt-watched-globs
+PWT_WATCHED_GLOBS='.claude/commands/plan-w-team*
+.claude/scripts/plan-w-team-*
+.claude/scripts/pwt-*
+.claude/hooks/pre-commit-quality*
+.claude/agents/team/*
+.claude/agents/implementation/react-typescript-specialist.md
+.claude/agents/implementation/rust-backend-specialist.md
+.claude/scripts/secret-scan.sh
+.claude/scripts/secret-doc-sync.sh
+tests/skill/*'
+# END pwt-watched-globs
+
+# Digest of WORKING-TREE content over the watched set: `«path»:«git blob hash»` per
+# file, sorted (LC_ALL=C so the ordering is locale-independent), piped to shasum.
+# `--others --exclude-standard` includes untracked-but-not-ignored files, so a brand
+# new test file the suite just ran is covered too — without it, `git add`ing that
+# file after the run would change the file LIST and mismatch every time.
+# Prints an empty string on any failure; the caller validates the shape.
+__tg_tree_digest() {
+  local root="$1" g
+  local globs=()
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    globs+=("$g")
+  done <<EOF
+$PWT_WATCHED_GLOBS
+EOF
+  (
+    set +e
+    cd "$root" 2>/dev/null || exit 0
+    files=$(git ls-files --cached --others --exclude-standard -- ${globs[@]:+"${globs[@]}"} 2>/dev/null | LC_ALL=C sort)
+    # An EMPTY watched set must NOT produce a digest. `shasum` of nothing is a
+    # perfectly well-formed hash, and the gate would recompute that same hash from
+    # its own empty enumeration and call it a match — a broken glob list would
+    # corroborate itself. Fail closed instead: no files, no digest.
+    [ -n "$files" ] || exit 0
+    printf '%s\n' "$files" \
+      | while IFS= read -r f; do
+          [ -n "$f" ] || continue
+          h=""
+          if [ -f "$f" ]; then
+            h=$(git hash-object --path "$f" -- "$f" 2>/dev/null)
+          else
+            h=$(git rev-parse "HEAD:$f" 2>/dev/null)
+          fi
+          [ -n "$h" ] || h="-"
+          printf '%s:%s\n' "$f" "$h"
+        done \
+      | shasum -a 256 2>/dev/null | awk '{print $1}'
+  )
+}
+
+# RUN mode only. In --log mode this script never saw the tree the log came from, so
+# it must not assert one — the empty digest makes the gate fail closed instead.
+TREE_DIGEST=""
+if [ -z "$LOG_IN" ]; then
+  TREE_DIGEST="$(__tg_tree_digest "$CUR_ROOT")"
+  # Shape check with builtins only. A `printf ... | grep -q` form can return
+  # non-zero because grep closed the pipe rather than because the value failed to
+  # match, which would intermittently void a perfectly good digest.
+  case "$TREE_DIGEST" in
+    ""|*[!0-9a-f]*) TREE_DIGEST="" ;;
+    *) [ "${#TREE_DIGEST}" -eq 64 ] || TREE_DIGEST="" ;;
+  esac
+  if [ -z "$TREE_DIGEST" ]; then
+    echo "  test-green: tree_digest unavailable (no git/shasum, empty watched set, or not a work tree) — the commit gate will block until a digest-bearing verdict exists" >&2
+  fi
+fi
+
 # ─── ARTIFACT (dual-written, temp+rename) ───────────────────────────────────
 # Same dual-write set as __pwt_emit_goal_state so both evaluator resolution paths
 # (worker worktree, canonical main) find the verdict. temp+rename keeps a concurrent
@@ -276,10 +359,11 @@ write_artifact() {
       --arg slug "$SLUG" \
       --arg reason "$REASON" \
       --arg log_path "$LOG_PATH" \
+      --arg tree_digest "$TREE_DIGEST" \
       --argjson suite_exit "$JSON_EXIT" \
       --argjson green "$GREEN" \
       --argjson duration_s "$DURATION" \
-      '{ts:$ts, slug:$slug, suite_exit:$suite_exit, green:$green, reason:$reason, log_path:$log_path, duration_s:$duration_s}' \
+      '{ts:$ts, slug:$slug, suite_exit:$suite_exit, green:$green, reason:$reason, log_path:$log_path, duration_s:$duration_s, tree_digest:$tree_digest}' \
       > "$tmp" 2>/dev/null || return 0
   else
     # jq-absent fallback: every interpolated value is PROGRAM-CONTROLLED — $TS/$REASON/
@@ -292,8 +376,9 @@ write_artifact() {
       *'"'*|*'\'*|*$'\n'*) safe_log="" ;;
       *) safe_log="$LOG_PATH" ;;
     esac
-    printf '{"ts":"%s","slug":"%s","suite_exit":%s,"green":%s,"reason":"%s","log_path":"%s","duration_s":%s}\n' \
-      "$TS" "$SLUG" "$JSON_EXIT" "$GREEN" "$REASON" "$safe_log" "$DURATION" \
+    # $TREE_DIGEST is 64 lowercase hex or empty — validated above, never user text.
+    printf '{"ts":"%s","slug":"%s","suite_exit":%s,"green":%s,"reason":"%s","log_path":"%s","duration_s":%s,"tree_digest":"%s"}\n' \
+      "$TS" "$SLUG" "$JSON_EXIT" "$GREEN" "$REASON" "$safe_log" "$DURATION" "$TREE_DIGEST" \
       > "$tmp" 2>/dev/null || return 0
   fi
   mv -f "$tmp" "$file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }

@@ -96,7 +96,7 @@ autonomous /plan-w-team run with explicit done criteria and hard-gate exits.
 
 Options:
   -i, --interactive    Prompt for additional DoD criteria beyond defaults
-  -t, --type TYPE      Template variant: feature (default), refactor, bugfix, docs
+  -t, --type TYPE      Template variant: feature (default), refactor, bugfix, docs, eval
       --launch         AUTO-LAUNCH: spawn 'claude --bg' with the derived /goal.
                        User monitors via 'claude agents'. Implies --auto-push.
                        Also spawns a separate bg supervisor session for
@@ -132,6 +132,15 @@ Note: --hours / --turns flags accepted (warning) but no-op — /plan-w-team has
 no wall-clock or turn caps by design. Only goal-success and hard-gate halts
 are valid terminal states.
 
+Note: goal intent is auto-classified from the request wording (a leading
+evaluate/review/audit/assess verb → evaluation; any build verb like
+fix/implement/ship/deploy present anywhere overrides back to build). An
+auto-classified evaluation request gets an appended disposition-only
+constraint (no product-code edits, no deploys — findings dispositioned by
+severity/owner/follow-on) WITHOUT changing done-criteria. Pass --type eval to
+explicitly opt into evaluation-shaped done-criteria; any explicit --type
+ALWAYS overrides auto-classification.
+
 The output is a /goal command. Copy it and paste at the start of a fresh
 Claude Code session, or use --launch to auto-invoke 'claude --bg'.
 EOF
@@ -144,6 +153,7 @@ WORKER_ONLY=0    # spawn only the worker bg session; caller is the supervisor
 SUPERVISOR_GOAL=0  # like --worker-only, plus mirror goal state to origin .claude/state/
 AUTO_PUSH=0      # auto-approve push-ack hard-gate during autonomous run
 TYPE="feature"
+PWT_TYPE_EXPLICIT=0  # 1 iff -t/--type was explicitly passed (Fix 5 — explicit type always wins over auto-classification)
 REQUEST=""
 BRIEF_PATH=""  # --brief <path>: written brief that grounds a deictic request (T2 §2a)
 
@@ -281,7 +291,7 @@ while [ $# -gt 0 ]; do
         --supervisor-goal) SUPERVISOR_GOAL=1; WORKER_ONLY=1; LAUNCH=1; AUTO_PUSH=1; shift ;;
         --auto-push) AUTO_PUSH=1; shift ;;
         --no-auto-push) AUTO_PUSH=0; shift ;;
-        -t|--type) TYPE="$2"; shift 2 ;;
+        -t|--type) TYPE="$2"; PWT_TYPE_EXPLICIT=1; shift 2 ;;
         --brief) BRIEF_PATH="$2"; shift 2 ;;
         --hours|--turns)
             echo "Note: $1 removed by design — /plan-w-team has no wall-clock or turn caps. Ignoring '$1 $2'." >&2
@@ -383,6 +393,76 @@ __pwt_strip_anchors() {
     printf '%s' "$1" | sed -E '/(AC|DONE)[0-9]+/ s/PASS/REDACTED/g'
 }
 REQUEST=$(__pwt_strip_anchors "$REQUEST")
+
+# ─── GOAL-INTENT CLASSIFICATION (Fix 5 / R5, pwt-hardening-2.1) ────────────
+# Trigger DETECTION (whether pwt-goal.sh runs at all) is UNTOUCHED — natural-
+# language routing is sacred (operator brief item 5). This classifier only
+# shapes the CONTENT of the derived directive: `build` (default) vs
+# `evaluation`. It never adds a new guard on when the route hook fires.
+#
+# Evaluation ONLY on an unambiguous LEADING task verb: evaluate, evaluation,
+# review, audit, assess, assessment — matched at the very start of the
+# (whitespace-trimmed, first-line-only) request, optionally preceded by
+# "do a/an/the " plus up to 3 short modifier tokens, so "do a top-to-bottom
+# evaluation of the app..." (the cleanscale field-test wording) still
+# matches. Deliberately EXCLUDED from the verb core: verify, investigate,
+# inspect, analyze — these routinely prelude BUILD work, not a
+# disposition-only review.
+#
+# Build-override: ANY of fix/implement/build/ship/create/add/refactor/
+# deploy/harden/resolve/address/apply/update/merge present ANYWHERE in the
+# request forces `build` even when the leading verb matched — e.g. "review
+# comments and apply them" is a build ask wearing a review verb.
+#
+# Misclassification cost asymmetry (accepted): an eval-worded request
+# misclassified as build is status quo (unconstrained). A build-worded
+# request misclassified as evaluation is bounded — constraint-block APPEND
+# only (see __PWT_INTENT_DIRECTIVE below), DONE_CRITERIA is never touched on
+# the auto path (S8 — a swapped-to-trivial completion condition on a
+# misclassified build request would be a false-SUCCESS engine), and the
+# block itself names the scope-unlock escape hatch.
+__pwt_classify_intent() {
+    local input="${1:-}"
+    local trimmed="${input#"${input%%[![:space:]]*}"}"
+    local first_line
+    first_line=$(printf '%s' "$trimmed" | head -1)
+    local verb_re='(evaluation|evaluate|review|assessment|assess|audit)([^a-zA-Z]|$)'
+    local lead_re="^(do (a|an|the) )?([^ ]+[[:space:]]+){0,3}${verb_re}"
+    local is_eval=0
+    if printf '%s' "$first_line" | grep -qiE "$lead_re"; then
+        is_eval=1
+    fi
+    if [ "$is_eval" = "1" ]; then
+        local override_re='(^|[^a-zA-Z])(fix|implement|build|ship|create|add|refactor|deploy|harden|resolve|address|apply|update|merge)([^a-zA-Z]|$)'
+        if printf '%s' "$input" | grep -qiE "$override_re"; then
+            is_eval=0
+        fi
+    fi
+    if [ "$is_eval" = "1" ]; then
+        printf 'evaluation\n'
+    else
+        printf 'build\n'
+    fi
+}
+
+__PWT_INTENT=$(__pwt_classify_intent "$REQUEST")
+
+# AUTO-classification effect: an APPEND-ONLY disposition-only constraint
+# block, interpolated beside __PWT_BRIEF_DIRECTIVE in __pwt_build_goal_text's
+# heredoc below. Fires ONLY when TYPE was not explicitly passed (explicit
+# --type — including --type eval — ALWAYS wins over auto-classification, per
+# operator brief item 5) AND the classifier called `evaluation`. Never
+# touches DONE_CRITERIA on this path.
+__PWT_INTENT_DIRECTIVE=""
+if [ "$PWT_TYPE_EXPLICIT" != "1" ] && [ "$__PWT_INTENT" = "evaluation" ]; then
+    __PWT_INTENT_DIRECTIVE="
+This request classifies as an EVALUATION goal (disposition-only, auto-detected
+from wording): findings are DISPOSITIONED — severity, owner, and a proposed
+follow-on run — never executed this run. Do NOT edit product code and do NOT
+deploy while resolving this goal. Converting any finding into build work
+requires the scope-unlock-for-drift halt site (surface to the user first)."
+    echo "[intent] classified: evaluation — disposition-only constraint appended" >&2
+fi
 
 # ─── DONE-WHEN CLAUSE PARSER (PWT-T2 §2b) ──────────────────────────────────
 # Extract explicit done-when clauses from the request so they become real
@@ -650,8 +730,8 @@ __pwt_init_manifest() {
 
 # Validate type
 case "$TYPE" in
-    feature|refactor|bugfix|docs) ;;
-    *) echo "Unknown --type: $TYPE (allowed: feature, refactor, bugfix, docs)" >&2; exit 1 ;;
+    feature|refactor|bugfix|docs|eval) ;;
+    *) echo "Unknown --type: $TYPE (allowed: feature, refactor, bugfix, docs, eval)" >&2; exit 1 ;;
 esac
 
 # Type-specific done criteria
@@ -686,6 +766,11 @@ case "$TYPE" in
   - docs cross-reference check passes in Step 7
   - no code changes (docs-only — verify diff scope)
   - CHANGELOG entry added if user-visible'
+        ;;
+    eval)
+        DONE_CRITERIA="${__PWT_RETRO_DONE}"'
+  - an evaluation report artifact is produced covering the requested scope
+  - every finding in the report is dispositioned: severity assigned, owner assigned, and a proposed follow-on run recorded'
         ;;
 esac
 
@@ -755,7 +840,7 @@ __pwt_build_goal_text() {
     local req="$1"
     read -r -d '' GOAL_TEXT <<EOF_GOAL_TEXT || true
 /goal Use /plan-w-team to ${req}.
-Ground in repo docs first (GRD).${__PWT_BRIEF_DIRECTIVE}
+Ground in repo docs first (GRD).${__PWT_BRIEF_DIRECTIVE}${__PWT_INTENT_DIRECTIVE}
 SLUG for ALL run artifacts: ${SLUG_GUESS}
 ${__PWT_SLUG_DIRECTIVE}${__PWT_DONE_ROWS_DIRECTIVE}
 

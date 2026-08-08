@@ -83,7 +83,14 @@ while IFS= read -r path; do
     # Tests for the new script live in the same dir; tests are also candidates
     # for sync but only when explicitly added. For symmetry-check purposes,
     # test files (.test.sh / .test.ts) are excluded above. Real runtime scripts:
-    if ! echo "$ALLOW" | grep -qxF "$name"; then
+    #
+    # Herestring, NOT `echo | grep -q`: under `set -o pipefail`, grep -q exits at
+    # the first match and closes the pipe — if echo then takes a SIGPIPE the
+    # pipeline is non-zero DESPITE the match, and `!` flags a present script as
+    # missing. Intermittent by scheduling (observed 2026-08-07: one green suite
+    # run and one false "worktree-gc.sh missing" on an identical tree). Same
+    # failure class plan-w-team-test-green.sh documents at its digest shape check.
+    if ! grep -qxF -- "$name" <<<"$ALLOW"; then
         MISSING+=("$name")
     fi
 done <<<"$CANDIDATES"
@@ -104,7 +111,8 @@ for name in $REQUIRED_NONPREFIXED; do
     # Only require it if the source script actually exists (don't demand a dep a
     # given checkout legitimately doesn't ship).
     [ -f "$SCRIPTS_DIR/$name" ] || continue
-    if ! echo "$ALLOW" | grep -qxF "$name"; then
+    # Herestring for the same pipefail/SIGPIPE reason as the loop above.
+    if ! grep -qxF -- "$name" <<<"$ALLOW"; then
         MISSING+=("$name (non-prefixed gate dependency — audit C7)")
     fi
 done

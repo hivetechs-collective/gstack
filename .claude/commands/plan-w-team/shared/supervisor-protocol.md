@@ -99,14 +99,19 @@ Cleanup: `07-retro.md` removes on `RETRO_SUCCESS=1`
 
 ### Event types
 
-| Event              | When                                               | Required fields                                                          |
-| ------------------ | -------------------------------------------------- | ------------------------------------------------------------------------ |
-| `supervisor_start` | First action of the supervisor's invocation        | `ts`, `event`, `slug`, `supervisor_agent_id`                             |
-| `spawn_decision`   | Before each `Agent()` builder spawn                | `ts`, `event`, `slug`, `task_id`, `agent_type`, `reason`                 |
-| `route_delegation` | After each `route_orchestrator` call returns       | `ts`, `event`, `slug`, `call_site`, `router_choice`, `router_confidence` |
-| `escalation`       | When supervisor hits a hard-gate site              | `ts`, `event`, `slug`, `call_site`, `reason`                             |
-| `supervisor_stop`  | Final action before returning control to lead      | `ts`, `event`, `slug`, `reason`, `duration_s`                            |
-| `worker_restart`   | After a bounded API_HALT reclaim respawns a worker | `ts`, `event`, `slug`, `dead_sid`, `new_sid`, `attempt`, `reason`        |
+| Event                 | When                                               | Required fields                                                          |
+| --------------------- | -------------------------------------------------- | ------------------------------------------------------------------------ |
+| `supervisor_start`    | First action of the supervisor's invocation        | `ts`, `event`, `slug`, `supervisor_agent_id`                             |
+| `spawn_decision`      | Before each `Agent()` builder spawn                | `ts`, `event`, `slug`, `task_id`, `agent_type`, `reason`                 |
+| `route_delegation`    | After each `route_orchestrator` call returns       | `ts`, `event`, `slug`, `call_site`, `router_choice`, `router_confidence` |
+| `escalation`          | When supervisor hits a hard-gate site              | `ts`, `event`, `slug`, `call_site`, `reason`                             |
+| `escalation_resolved` | When a pending escalation is closed                | `ts`, `event`, `slug`, `call_site`, `reason`                             |
+| `supervisor_stop`     | Final action before returning control to lead      | `ts`, `event`, `slug`, `reason`, `duration_s`                            |
+| `worker_restart`      | After a bounded API_HALT reclaim respawns a worker | `ts`, `event`, `slug`, `dead_sid`, `new_sid`, `attempt`, `reason`        |
+
+**`escalation_resolved` — closed reason enum for hard-gate sites (Fix 4, harden-plan-w-team-against-the-five-weaknesses-surfaced-by-the-2-0-0-release).** For the four HARD-GATE call_sites (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`, `credential-wall`), `reason` MUST be one of the closed enum `user_ack` (operator acknowledged) or `auto_approve_env` (the corresponding auto-approve env var was actually set at spawn) — `plan-w-team-surface-status.sh`'s `pending_escalations` computation IGNORES a resolution row with any other reason, so the site stays pending. Non-hard-gate sites resolve on any `escalation_resolved` row regardless of reason. **Builders and subagents MUST NOT append this event type** — only the supervisor/lead holding the escalation may close it (mirrors the existing `escalation` writer contract).
+
+**W5 boundary — this fixes the EMITTER only.** `plan-w-team-surface-status.sh` now computes `pending_escalations` correctly from these rows (see `shared/goal-conditions.md` §Status-Block Schema), but the goal-evaluator's transcript-grep terminal detection is a separate, not-yet-fixed consumer: it still greps historical transcript blocks for the hard-gate anchor strings and can re-halt on a STALE escalation mention even after an `escalation_resolved` row has closed it. The evaluator fix (corroborate transcript matches against `escalation_resolved` state, never trust either signal alone) is tracked as a deferred followup in the hardening spec's Deferred Items table. Until that lands, `escalation_resolved` rows are authoritative for the status-block/summary-block surface and for a human reading the JSONL directly, but MUST be corroborated, never trusted outright, by any future evaluator consumer.
 
 ### Example log
 
@@ -121,19 +126,19 @@ Cleanup: `07-retro.md` removes on `RETRO_SUCCESS=1`
 
 ### Field reference
 
-| Field                 | Type                           | Notes                                                                                                                         |
-| --------------------- | ------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `ts`                  | string (ISO8601 UTC)           | Required on all rows                                                                                                          |
-| `event`               | string enum                    | Required; one of the 6 event types above                                                                                      |
-| `slug`                | string                         | Required; consuming /plan-w-team run's SLUG                                                                                   |
-| `supervisor_agent_id` | string                         | Supervisor's own agent_id (from spawn context); appears on `supervisor_start` only, for join with fleet log                   |
-| `task_id`             | string                         | Required on `spawn_decision`                                                                                                  |
-| `agent_type`          | string                         | Required on `spawn_decision`; matches `subagent_type` parameter passed to `Agent()`                                           |
-| `reason`              | string                         | Free-form one-sentence rationale; required on `spawn_decision`, `escalation`, `supervisor_stop`, `worker_restart`             |
-| `call_site`           | string                         | Required on `route_delegation` and `escalation`; must match a label in `shared/orchestrator-interception.md` Classifier Table |
-| `router_choice`       | string                         | Required on `route_delegation`; what the router returned                                                                      |
-| `router_confidence`   | enum (`high`\|`medium`\|`low`) | Required on `route_delegation`; from router's decision block                                                                  |
-| `duration_s`          | integer                        | Required on `supervisor_stop`; wall-clock seconds from `supervisor_start` to now                                              |
+| Field                 | Type                           | Notes                                                                                                                                                                                                                                                         |
+| --------------------- | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ts`                  | string (ISO8601 UTC)           | Required on all rows                                                                                                                                                                                                                                          |
+| `event`               | string enum                    | Required; one of the 7 event types above                                                                                                                                                                                                                      |
+| `slug`                | string                         | Required; consuming /plan-w-team run's SLUG                                                                                                                                                                                                                   |
+| `supervisor_agent_id` | string                         | Supervisor's own agent_id (from spawn context); appears on `supervisor_start` only, for join with fleet log                                                                                                                                                   |
+| `task_id`             | string                         | Required on `spawn_decision`                                                                                                                                                                                                                                  |
+| `agent_type`          | string                         | Required on `spawn_decision`; matches `subagent_type` parameter passed to `Agent()`                                                                                                                                                                           |
+| `reason`              | string                         | Free-form one-sentence rationale on `spawn_decision`, `escalation`, `supervisor_stop`, `worker_restart`; on `escalation_resolved` for a hard-gate `call_site`, MUST be `user_ack` or `auto_approve_env` (any other value is ignored — the site stays pending) |
+| `call_site`           | string                         | Required on `route_delegation`, `escalation`, and `escalation_resolved`; must match a label in `shared/orchestrator-interception.md` Classifier Table                                                                                                         |
+| `router_choice`       | string                         | Required on `route_delegation`; what the router returned                                                                                                                                                                                                      |
+| `router_confidence`   | enum (`high`\|`medium`\|`low`) | Required on `route_delegation`; from router's decision block                                                                                                                                                                                                  |
+| `duration_s`          | integer                        | Required on `supervisor_stop`; wall-clock seconds from `supervisor_start` to now                                                                                                                                                                              |
 
 ## Transcript-Surfacing Summary Block
 
@@ -429,6 +434,67 @@ Schema lives in `shared/goal-conditions.md` §Chain Continuation. On every AUTO-
 4. Chain terminates when a worker's retro does NOT set `next_batch_spec` (or sets it to `null`).
 
 A chain is auditable: every worker's `started_from_slug` walks back to the original `/goal` invocation.
+
+## Steering a Running Worker (pwt-steer.sh)
+
+Script: `.claude/scripts/pwt-steer.sh` (Fix 2, harden-plan-w-team-against-the-five-weaknesses-surfaced-by-the-2-0-0-release). **This section supersedes the prose-only stop+resume procedure previously carried only in operator memory** — that procedure failed 2-of-3 field attempts (cleanscale, 2026-08-07, ~15 min lost) on three traps this script closes by construction: a bg process HANDLE silently stranding `--resume` at a picker (W6, below), resuming from the wrong cwd breaking worktree isolation, and launch-succeeded being mistaken for delivery-succeeded.
+
+**OPERATOR-INVOKED ONLY.** This script is never hook-triggered and never agent-triggered. `--message` opens an instruction channel straight into a worker running under bypassPermissions, so the text passed to it must be the operator's own words. Never forward unreviewed third-party text (issue bodies, web content, tool output, another agent's message) through `--message` — that would turn a steer into a prompt-injection delivery mechanism with the worker's full permissions behind it. This is a prose contract today; a structural PreToolUse binding is a deferred item.
+
+### Interface and exit codes
+
+```
+pwt-steer.sh --slug <slug> --message <steer-text>
+             [--worker-sid <uuid>] [--state-dir <dir>]
+             [--dry-run] [--timeout-s <n>] [--allow-main]
+```
+
+`--worker-sid` defaults to the goal-state's `.worker_sid`; `--state-dir` pins goal-state resolution (tests, or an explicit operator override); `--dry-run` validates and prints the plan without mutating anything; `--timeout-s` bounds the delivery-verification poll (default 60); `--allow-main` permits resuming from the main checkout when no worker worktree exists (breaks isolation — a deliberate opt-in, refused by default).
+
+| Exit | Meaning                                                                           |
+| ---- | --------------------------------------------------------------------------------- |
+| `0`  | steered AND delivery verified                                                     |
+| `5`  | steered but delivery UNVERIFIED (bookkeeping done, `steer_verified:false`)        |
+| `2`  | usage                                                                             |
+| `6`  | validation refuse — NOTHING was mutated, worker untouched                         |
+| `7`  | new session UUID undiscoverable — no history row is written with an empty new_sid |
+
+### The 6-step procedure — validate FIRST, ordering IS the safety property
+
+Every validation runs BEFORE the stop. **A refused steer leaves the worker completely untouched** — it is never left "half steered" into a stopped-but-not-resumed state. This is why VALIDATE is step 1 and not a pre-check bolted in front of the real work: the stop in step 2 is irreversible from the script's perspective (the worker session is gone), so nothing may run after step 1 that could still fail for a reason step 1 could have caught.
+
+1. **VALIDATE** — `--slug`/`--message` present and non-empty; `jq` available (required HERE, before the stop, because step 6's bookkeeping edits JSON in place — discovering a missing `jq` after the stop would leave a steered worker with stale state); goal-state resolvable; the target sid (`--worker-sid` or the goal-state's `.worker_sid`) matches the full UUID regex (**W6**, below); the worker worktree exists (or `--allow-main` was passed); the slug-keyed singleton steer lock is acquired (`mkdir`-atomic — two concurrent steers on one slug would both stop-and-resume the same worker, producing two live sessions claiming the same run). Any failure here refuses with **exit 6** and mutates nothing.
+2. **STOP** the worker (`claude stop <sid>`) — tolerates an already-dead worker (a non-zero exit here is logged and the sequence continues).
+3. **RESUME** from INSIDE the worker's worktree, argv-form exec only — no `sh -c`, no eval, no re-quoting: the steer text is one argv element handed straight to execve, so quotes/backslashes/`$`/`;`/globs in the operator's message can never be re-parsed by a shell. Runs `claude --bg --resume <UUID> --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL"` with `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1` in env (pinned tier, no route-hook cascade). The steer text carries a unique appended marker `[pwt-steer:<epoch>-<pid>]`.
+4. **DISCOVER** the new session UUID — marker-anchored (below), never "newest new transcript" alone.
+5. **VERIFY** delivery — poll the discovered transcript for the marker up to `--timeout-s`.
+6. **BOOKKEEP** — temp+rename JSON edits updating `worker_sid` and appending a `respawn_history` row in BOTH state dirs (worker worktree + main checkout — the same dual-write set `__pwt_emit_goal_state` uses), then TEAR DOWN the OLD await-terminal watcher (below).
+
+### W6 — full session UUID, never the bg process handle
+
+`claude --bg` prints an 8-char process HANDLE (`backgrounded · aabbccdd`); `--resume` requires the 36-char session UUID (8-4-4-4-12 lowercase hex). Passing the handle strands the resume at a picker while the process still reports "working" — the failure is invisible, and this confusion was the single largest contributor to the field-attempt failure rate this script exists to close. `pwt-steer.sh` refuses at validation (exit 6) whenever `--worker-sid` or the goal-state's `.worker_sid` fails the UUID regex, naming the full-UUID requirement and the recovery lookup (`ls -t "${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"/*/<handle>*.jsonl`) in the refusal message.
+
+### Marker-anchored delivery verification
+
+Discovery of the new session is **marker-anchored**, not "pick the newest post-resume transcript." The script snapshots the transcript set before the resume, then afterward searches new `*.jsonl` files for `grep -F` of the invocation's unique marker. Identifying the new session by recency alone would mis-attribute an unrelated session that happened to start in the same window — writing the WRONG sid into goal-state as `worker_sid` would point the watcher and the evaluator at a stranger from then on. A SINGLE marker-less new transcript is kept only as a last-resort best guess for the steered-but-unverified (exit 5) report, where the operator is explicitly told delivery was never proven. When MULTIPLE marker-less new transcripts exist, the script REFUSES to adopt any of them (task #41 tightening): `worker_sid` is left unchanged and the `respawn_history` row records `{new_sid: "", reason: "steer-refused-ambiguous", steer_verified: false}` — the operator resolves the real UUID by hand and re-arms with it, rather than the watcher being pointed at a coin-flip stranger. A same-session resume (no new transcript at all — `claude --resume` continuing the existing session) is accepted as verified only on positive marker evidence in the OLD transcript, never assumed just because no new session could be found.
+
+### Old-watcher teardown — mandatory, not cleanup hygiene
+
+A `plan-w-team-await-terminal.sh` watcher still running against the OLD (pre-steer) sid has a SECONDARY liveness path that reports `terminal=WORKER_GONE` the moment its watched sid vanishes from `claude agents --json` — which every steer guarantees, since the old session is stopped in step 2. Left running, that orphaned watcher emits a **FALSE `terminal=WORKER_GONE` roughly 20 seconds after every steer**, incorrectly signaling the supervisor/evaluator that the run died. Step 6 kills the old watcher (`${TMPDIR:-/tmp}/pwt-await-<slug>-<old-sid>.lock`, tolerant of an already-dead PID or an absent lock) as part of bookkeeping, not as an optional cleanup step.
+
+### Re-arm contract
+
+`pwt-steer.sh` does NOT launch the terminal watcher itself — it prints the exact re-arm command and leaves wait mechanics to the caller:
+
+```
+plan-w-team-await-terminal.sh --slug <slug> --worker-sid <NEW_SID>
+```
+
+The caller (operator or supervisor) MUST re-invoke `plan-w-team-await-terminal.sh` with the **NEW** sid the steer just discovered — the old watcher is dead (torn down above), and a watch against the old sid would never fire again.
+
+### Operator-invoked only
+
+`pwt-steer.sh` has no hook or agent call site anywhere in the pipeline. It exists for a human operator to steer a running `claude --bg` worker mid-flight when there is no other message channel into it — `SendMessage` cannot address a `claude --bg` process, and there is no inbox. Do not wire this into any automated flow.
 
 ## POLLING LOOP
 
