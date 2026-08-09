@@ -80,10 +80,11 @@ usage() {
     cat >&2 <<'EOF'
 plan-w-team-claim-abstraction.sh — nascent-shared-abstraction claim lock
 
-  claim   --slug S --symbol NAME [--path P] [--task T] [--builder B]
-  release --slug S --symbol NAME --task T
-  list    --slug S
-  verify  --slug S [--diff-base REF] [--root DIR]
+  claim     --slug S --symbol NAME [--path P] [--task T] [--builder B]
+  release   --slug S --symbol NAME --task T
+  list      --slug S
+  verify    --slug S [--diff-base REF] [--root DIR]
+  normalize --symbol NAME
 
 exit: 0 ok/GRANTED  2 usage/validation  10 CONFLICT  11 verify findings  12 could-not-verify
 EOF
@@ -110,10 +111,14 @@ while [ $# -gt 0 ]; do
 done
 
 case "$SUB" in
-    claim|release|list|verify) : ;;
+    claim|release|list|verify|normalize) : ;;
     -h|--help|"") usage; exit "$EXIT_USAGE" ;;
     *) usage_error "unknown subcommand: $SUB" ;;
 esac
+
+# `normalize` returns early, but NOT here — normalize_key() is defined further
+# down, and calling it before its definition would fail at runtime. The block
+# lives immediately after that definition.
 
 # ── validation chokepoint (shared/shell-safety.md) ──────────────────────────
 # Every value that reaches a filesystem path, an ERE, or a JSON row is
@@ -123,12 +128,17 @@ esac
 # pwt-goal-derived slugs run to ~90 characters (this feature's own is 89). Same
 # documented deviation as plan-w-team-fable-guard.sh:66-73. The charset excludes
 # `/` and `.` outright, so traversal is not expressible rather than filtered.
-[ -n "$SLUG" ] || usage_error "--slug is required"
-[ "${#SLUG}" -le 128 ] || usage_error "--slug exceeds 128 characters"
-case "$SLUG" in
-    *[!a-z0-9-]*) usage_error "--slug may contain only [a-z0-9-]" ;;
-    -*)           usage_error "--slug may not start with '-'" ;;
-esac
+# `normalize` is exempt: it is a pure symbol->key function that names no run,
+# reads no ledger, and builds no path, so requiring a slug would be ceremony
+# that callers would satisfy with a dummy value.
+if [ "$SUB" != "normalize" ]; then
+    [ -n "$SLUG" ] || usage_error "--slug is required"
+    [ "${#SLUG}" -le 128 ] || usage_error "--slug exceeds 128 characters"
+    case "$SLUG" in
+        *[!a-z0-9-]*) usage_error "--slug may contain only [a-z0-9-]" ;;
+        -*)           usage_error "--slug may not start with '-'" ;;
+    esac
+fi
 
 if [ "$SUB" = "claim" ] || [ "$SUB" = "release" ]; then
     # The symbol is interpolated into a definition-matching ERE. An identifier
@@ -214,6 +224,35 @@ normalize_key() {
     esac
     printf '%s' "$_nk"
 }
+
+# ── `normalize` subcommand — the normalizer exposed as a pure function ───────
+# Placed HERE, immediately after normalize_key(), because a call sited with the
+# other subcommand dispatch (above) would run before the definition exists.
+#
+# Why it exists: the Step-5/6 reuse-verdict recheck in
+# plan-w-team-reuse-audit-gate.sh needs the SAME concept key this script uses.
+# Copying normalize_key() would fork the curated NOISE stoplist, the deliberate
+# keep-CRUD-verbs decision, and the directional disambiguator — and two gates
+# that disagree about what "the same concept" means are worse than one gate.
+# Pure: touches no ledger, no repo, no slug.
+if [ "$SUB" = "normalize" ]; then
+    [ -n "$SYMBOL" ] || usage_error "--symbol is required"
+    [ "${#SYMBOL}" -le 128 ] || usage_error "--symbol exceeds 128 characters"
+    # Same charset gate as claim/release: the key is only meaningful for
+    # identifier-shaped input. Refusing anything else stops a caller feeding it
+    # arbitrary prose (e.g. a Reuse Audit cell) and trusting the result.
+    case "$SYMBOL" in
+        [!A-Za-z_]*)     usage_error "--symbol must start with a letter or underscore" ;;
+        *[!A-Za-z0-9_]*) usage_error "--symbol may contain only [A-Za-z0-9_]" ;;
+    esac
+    case "$SYMBOL" in
+        *[A-Za-z0-9]*) : ;;
+        *)             usage_error "--symbol must contain at least one alphanumeric character" ;;
+    esac
+    normalize_key "$SYMBOL"
+    printf '\n'
+    exit 0
+fi
 
 token_count() {
     [ -z "$1" ] && { printf '0'; return; }

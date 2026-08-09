@@ -547,19 +547,31 @@ better" closure: findings captured last time are shown now so they get addressed
 forgotten. Read-only and fail-open — never blocks the run.
 
 ```bash
-FOLLOWUPS_LOG=".claude/state/plan-w-team-recursive-followups.jsonl"
-if [ -f "$FOLLOWUPS_LOG" ] && command -v jq >/dev/null 2>&1; then
-  OPEN=$(jq -rs '[.[] | select(.status=="open")] | length' "$FOLLOWUPS_LOG" 2>/dev/null || echo 0)
+# DELEGATE — do not read the ledger directly here.
+# The ledger is APPEND-ONLY: `close` appends a resolution row carrying
+# `closes_index` and never rewrites the original, so an original keeps
+# its open status forever. Filtering on that status field directly therefore
+# counts closed rows as open — it reported 45 against the tool's 43 on the live ledger
+# — and `shared/state-artifacts.md` explicitly forbids it. The close-aware
+# expression already exists in `plan-w-team-followups.sh` (and, one copy too
+# many, in `plan-w-team-followup-drain.sh`); inlining it here would be a third.
+# The tool fails open (exit 0 with no jq and no ledger), which is exactly what
+# a pre-flight needs.
+FOLLOWUPS_SH=".claude/scripts/plan-w-team-followups.sh"
+if [ -x "$FOLLOWUPS_SH" ] && command -v jq >/dev/null 2>&1; then
+  FU_STATS=$("$FOLLOWUPS_SH" --json stats 2>/dev/null || echo '{}')
+  OPEN=$(printf '%s' "$FU_STATS" | jq -r '.open // 0' 2>/dev/null || echo 0)
   if [ "${OPEN:-0}" -gt 0 ]; then
     echo "🔁 $OPEN open recursive-improvement follow-up(s) from prior retros — consider folding into this run's scope:"
-    jq -rs '[.[] | select(.status=="open")] | .[-5:][] | "   • [\(.slug)] \(.text)"' "$FOLLOWUPS_LOG" 2>/dev/null || true
-    # Surface AGE and the truncation explicitly. The count above was always
-    # shown, but five recent lines out of thirty-four reads like a short list
-    # rather than a backlog with rows from two months ago.
-    OLDEST=$(jq -rs '[.[] | select(.status=="open")] | map(.ts // .timestamp // "") | map(select(. != "")) | sort | first // ""' "$FOLLOWUPS_LOG" 2>/dev/null || echo "")
-    [ "${OPEN:-0}" -gt 5 ] && echo "   … showing 5 of $OPEN — full list: .claude/scripts/plan-w-team-followups.sh list --all"
+    "$FOLLOWUPS_SH" list --limit 5 2>/dev/null | sed 's/^/   /' || true
+    # Surface AGE and the truncation explicitly. The count was always shown, but
+    # five recent lines out of forty-plus reads like a short list rather than a
+    # backlog with rows from two months ago.
+    OLDEST=$(printf '%s' "$FU_STATS" | jq -r '.oldest_open // ""' 2>/dev/null || echo "")
+    [ "${OPEN:-0}" -gt 5 ] && echo "   … showing 5 of $OPEN — full list: $FOLLOWUPS_SH list --all"
     [ -n "$OLDEST" ] && echo "   oldest open: $OLDEST"
-    echo "   (close one with: .claude/scripts/plan-w-team-followups.sh close <index> \"<reason>\" — advisory, not a gate.)"
+    echo "   (queue one with: $FOLLOWUPS_SH add --slug <slug> --text \"<brief>\";"
+    echo "    close one with: $FOLLOWUPS_SH close <index> \"<reason>\" — advisory, not a gate.)"
   fi
 fi
 ```

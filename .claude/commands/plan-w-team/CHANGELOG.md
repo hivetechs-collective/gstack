@@ -14,6 +14,92 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.2.0] — 2026-08-08 (1a77f8d)
+
+**Reuse-verdict re-verification — the reuse-first ladder's last rung.** Resolves
+recursive-followup row 5 (`…-e6b61e7d`, open since 2026-06-08): _"ship-time
+re-verify of the Step-0 80% premise / N.d consolidation queue."_
+
+Until now the Reuse Audit was gated for **presence** at freeze and never
+compared against what shipped. A spec could freeze `REUSE src/util/money.ts`,
+ship a diff containing a fresh `fmtMoney()`, and pass every gate. Its sibling
+spec-time claim — the Grounding Ledger — already had a re-verification rung
+(§5a-ter); this closes the asymmetry.
+
+- **`plan-w-team-reuse-audit-gate.sh` gains `--phase spec|review|ship`.**
+  `spec` (default) is byte-for-byte the old freeze gate. `review`/`ship` detect
+  an **unhonored verdict**: a `REUSE`/`EXTEND` row whose target's concept key
+  collides with a **newly-added definition** in the run diff.
+- **§5c-quinquies (`04-fix-first-review.md`) is the detection rung.** Findings
+  route through the **existing** `consolidate-into-existing` classification so
+  they get FIXED in-run — a new detector feeding an existing classifier, the
+  same shape §5c-quater describes for itself.
+- **§6c-quinquies (`05-ship.md`) is the re-assertion rung** — the same check at
+  ship, covering code written in later Step-5 fix rounds, recorded as
+  `reuse-verdict-recheck: <clean|findings|unverified|skipped>` in the status
+  block. Advisory; never blocks.
+- **`plan-w-team-followups.sh add`** makes §5d outcome 3 executable. That
+  section has always told the lead to "record a follow-up in the ledger" while
+  supplying no command, so the only append path was the retro's once-per-run
+  writer. This is the consolidation queue.
+- **`plan-w-team-claim-abstraction.sh normalize`** exposes the existing
+  `normalize_key()` so both gates share ONE normalizer.
+
+**What it deliberately does not detect.** Never "the diff does not reference the
+target". A `REUSE` verdict frequently means *"this exists, so we are NOT
+building one"* — which leaves no diff trace, so the most virtuous outcome would
+be flagged. And a run's own spec is committed on its own branch citing every
+target verbatim, making a reference rule inert until `docs/specs/**` is excluded
+and mostly noise after. `BUILD-NEW` and qualified verdicts (`REUSE (pattern)`)
+are exempt by construction.
+
+**It never blocks.** An earlier draft blocked when a cited path had vanished.
+Consumer-repo-generated specs are known to carry wrong claude-pattern paths, so
+that would have hard-blocked shipping across every synced consumer on an
+existing data pattern; and a legitimate consolidation-rename produces the same
+signal. "The path is gone" is a provable fact, not a provable defect. Exit
+contract is reused verbatim from `plan-w-team-claim-abstraction.sh`
+(`0` clean / `11` findings / `12` could-not-verify / `2` usage), so `12`
+distinguishes "verified clean" from "did not verify".
+
+Fixed along the way:
+
+- **Open followups row 11** — the section extractor truncated the Reuse Audit
+  body at the first nested `###` sub-heading and at heading-shaped lines inside
+  code fences. Loud under `spec` phase; under `review`/`ship` it would have been
+  **silent under-enforcement**, so fixing it was a precondition, not a bonus.
+- **Pre-flight follow-up counter** read the ledger's `status` field directly,
+  which the registry forbids because the ledger is append-only — it reported 45
+  open against the tool's 43. All three reads now delegate to
+  `plan-w-team-followups.sh --json stats`.
+- **`sync-to-project.sh` retired-paths skill map was always empty** — bare
+  `case` arms inside a `$( … )` closed the substitution early, so every
+  dangling-reference WARN degraded to "no absorbing skill reference for this
+  name". Shipped in 2.0.0; `bash -n` cannot catch it.
+
+Hardening: targets resolve through `git ls-files`, never `[ -f ]`, so traversal
+and absolute paths are unreachable rather than filtered; matching is
+fixed-string; `--slug` is charset-validated (closing a pre-existing read-path
+hole); `--help` no longer truncates below the `--phase` line, which both
+wrappers' capability probe depends on; findings are capped by
+`PWT_REUSE_RECHECK_MAX` (default 3) because a queued row can become an
+autonomous run's goal via `plan-w-team-followup-drain.sh`.
+
+No new kill switch — `PLAN_W_TEAM_DISABLE_REUSE_AUDIT=1` covers all phases.
+No new state artifact, no `.gitignore` entry, no sync-allowlist edit: every
+script touched was already allowlisted, which is the concrete payoff of
+extending rather than adding.
+
+Dogfood: `--phase review` against this run's own spec and diff reports CLEAN
+across 13 resolved targets — zero false positives on a 17-row audit.
+
+> Shipped as **2.2.0**, not 2.1.0. This run and the 2.1.0 hardening run below
+> were concurrent off the same base and both bumped to 2.1.0 from their spawn
+> snapshot. The collision was caught at merge time and resolved the documented
+> way — `plan-w-team-next-version.sh --bump minor` re-derived the number from
+> main's CURRENT `VERSION` (2.1.0 → 2.2.0) rather than the spawn snapshot
+> (2.0.0 → 2.1.0). See `shared/versioning.md §Concurrent runs`.
+
 ## [2.1.0] — 2026-08-07 (90037fb)
 
 **Hardening release — the five weaknesses surfaced by 2.0.0 + the cleanscale

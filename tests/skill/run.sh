@@ -230,7 +230,16 @@ if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ]; then
   TIMEOUT_BIN=""
   if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout"
   elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout"; fi
-  SHELL_TEST_TIMEOUT="${SHELL_TEST_TIMEOUT:-180}"
+  # This cap is a HANG guard, not a performance budget. At 180s it was killing a
+  # test that completes correctly: plan-w-team-worktree-gc.test.sh runs 131 cases,
+  # each doing real `git init` + worktree plumbing in its own sandbox, and takes
+  # ~220-240s on an M-series laptop. Measured at b12ccac (i.e. before the change
+  # that surfaced this), so the miscalibration is not new — it just needs a
+  # machine slow enough, or a suite loaded enough, to bite. A killed-at-cap test
+  # reports as a plain FAIL with no timing hint, which is why this went unnoticed.
+  # 420s keeps a genuine hang bounded while leaving real headroom.
+  # Raise per-invocation with SHELL_TEST_TIMEOUT=<seconds> if a slower box needs it.
+  SHELL_TEST_TIMEOUT="${SHELL_TEST_TIMEOUT:-420}"
 
   # The canonical suite may be invoked from INSIDE a /plan-w-team worker session
   # (e.g. Step 6 ship, or an autonomous run auditing the skill). That ambient

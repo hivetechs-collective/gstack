@@ -799,6 +799,56 @@ All duplication findings from this scan route through the **existing** `consolid
 
 **Honest limit**: this scan covers the diff between the run's base and the builder-merge product only. Code written in later Step-5 fix rounds — retroactive-coverage tasks (`04-fix-first-review.md:604`), §5-0 fix loops, Pass-2 ASK fixes — is not re-scanned; it is unclaimed and unverified by this mechanism.
 
+## 5c-quinquies. Reuse-Verdict Re-Verification (ADVISORY — never blocks)
+
+§5c-quater catches duplication *within* this run (NEW-vs-NEW definitions). This sub-step catches a different betrayal: the spec **froze a REUSE/EXTEND verdict at Step 1** and the run built its own copy anyway. Until this existed, the Reuse Audit was gated for *presence* at freeze and never compared against what shipped — the only spec-time claim with no re-verification rung (the Grounding Ledger already gets one at §5a-ter).
+
+It runs **here**, not at ship, precisely because Step 5 can *fix*: a confirmed unhonored verdict routes through the **existing** `consolidate-into-existing` classification (§5d) — delete the duplicate, restore the import — instead of becoming a backlog row nobody drains.
+
+```bash
+# Capability probe FIRST. A consumer repo can carry this stage file while its
+# synced gate script predates --phase; that script's catch-all would eat the
+# flag and report a misleading "spec file not found". Probing degrades loudly
+# instead. Note `rc=$?`, never `if ! …`: exits 11 and 12 are NOT failures.
+GATE=.claude/scripts/plan-w-team-reuse-audit-gate.sh
+if [ -x "$GATE" ] && "$GATE" --help 2>/dev/null | grep -qF -- '--phase'; then
+  "$GATE" --slug "$SLUG" --phase review \
+    --diff-base "$(git merge-base HEAD origin/main 2>/dev/null || echo '<run-base-sha>')"
+  rc=$?
+  case "$rc" in
+    0)  echo "reuse-verdict-recheck: clean" ;;
+    11) echo "reuse-verdict-recheck: findings — route each via §5d consolidate-into-existing" ;;
+    12) echo "reuse-verdict-recheck: unverified (re-run with an explicit --diff-base)" ;;
+    *)  echo "reuse-verdict-recheck: gate usage error rc=$rc — fix the call" ;;
+  esac
+else
+  echo "⚠ reuse-verdict-recheck skipped: gate predates --phase (sync claude-pattern)"
+fi
+```
+
+**Only exit `0` is a pass.** Exit `12` means the diff half was never scanned — record it as `unverified`, never as clean (the §5c-quater lesson: a gate that cannot tell "verified clean" from "did not verify" is a rubber stamp).
+
+Each finding prints `unhonored-verdict verdict=… target=… added_definition=…`. Grade and route:
+
+| Situation                                                                     | Severity      | Routing                                                                                |
+| ----------------------------------------------------------------------------- | ------------- | -------------------------------------------------------------------------------------- |
+| Frozen `REUSE`/`EXTEND` target re-implemented by a new definition in this diff | INFORMATIONAL | `consolidate-into-existing` (§5d) — import the canonical one, delete the duplicate     |
+| Same, but consolidating is genuinely larger than this run's envelope          | INFORMATIONAL | §5d outcome 3 — **queue it** (command below), then ship the point-fix                  |
+
+Deferring is a real outcome, not a silent one — queue it so the next run's pre-flight surfaces it:
+
+```bash
+.claude/scripts/plan-w-team-followups.sh add --slug "$SLUG" \
+  --source reuse-verdict-recheck \
+  --text "consolidate <target>: the spec froze <REUSE|EXTEND> of it but this run added <definition>. Import the canonical implementation and delete the duplicate. Spec: docs/specs/$SLUG.md"
+```
+
+Write the `--text` as a **self-contained brief**, not a label: `plan-w-team-followup-drain.sh` can feed an open row straight into `pwt-goal.sh --worker-only`, so a queued row may become an autonomous run's goal.
+
+**Exemptions, by construction** — `BUILD-NEW` rows, and any verdict with a parenthetical qualifier (`REUSE (pattern)`). Reuse-of-shape and reuse-by-not-building both leave *no* diff trace; flagging them would punish the most virtuous outcomes and train leads to ignore the queue.
+
+**Honest limits.** Detection is concept-key based, so a re-implementation under a genuinely different name (`formatCurrency` → `fmtMoney`) does not collide and is not caught — same limit `normalize_key()` carries for §5c-quater. And this scan sees the builder-merge product only; code written in later Step-5 fix rounds is covered by the §6c-quinquies re-assertion, not here. Kill switch: `PLAN_W_TEAM_DISABLE_REUSE_AUDIT=1`. Cap: `PWT_REUSE_RECHECK_MAX` (default 3, LOUD when it truncates).
+
 ## 5d. Fix-First Heuristic — Classify Each Finding
 
 | Classification                | Action                                                                                                  | Examples                                                                                                                                                                                                                                                                                                                                                                                |
@@ -914,7 +964,7 @@ three deliberate outcomes below.
 | --- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | **Within original scope** — closing the class fits the run's existing task envelope | Fix the root cause / close the class **now**, under the §5-0 fix-immediately discipline (fix → deploy → retest → verify GREEN → note).                                                                                                                                                             |
 | 2   | **Expands scope** — closing the class is LARGER than the originally scoped task     | Route through the **EXISTING `scope-unlock-for-drift` pause** (user-gated — see `03-execute.md` and `shared/self-regulation.md`). **Never silently balloon scope.** Reuse that pause; do **not** invent a new gate.                                                                                |
-| 3   | **Deferred** — too big / out of scope / needs the user, and not unlocking now       | Record a follow-up in the **`recursive-followups` ledger** (`.claude/state/plan-w-team-recursive-followups.jsonl`, see `shared/state-artifacts.md`) and **ship the point-fix**. The deferral is captured, not forgotten — a prior run's open follow-ups are surfaced at the next run's pre-flight. |
+| 3   | **Deferred** — too big / out of scope / needs the user, and not unlocking now       | Queue it with `.claude/scripts/plan-w-team-followups.sh add --slug "$SLUG" --text "<self-contained brief>"` (durable ledger `.claude/state/plan-w-team-recursive-followups.jsonl`, see `shared/state-artifacts.md`) and **ship the point-fix**. The deferral is captured, not forgotten — a prior run's open follow-ups are surfaced at the next run's pre-flight. Write the text as a brief, not a label: `plan-w-team-followup-drain.sh` can feed an open row straight to `pwt-goal.sh --worker-only`, so it may become an autonomous run's goal. |
 
 Outcomes 2 and 3 deliberately **reuse** the scope-unlock pause and the follow-up ledger
 that already exist — this check is a new _prompt_, not new _machinery_. Whichever outcome

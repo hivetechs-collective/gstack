@@ -22,6 +22,7 @@
 #   plan-w-team-followups.sh list [--all] [--limit N]   open rows (default 20)
 #   plan-w-team-followups.sh stats                      counts + oldest age
 #   plan-w-team-followups.sh show <index>               full row
+#   plan-w-team-followups.sh add --slug S --text T      queue one open row
 #   plan-w-team-followups.sh close <index> "<reason>"   append a resolution row
 #   plan-w-team-followups.sh --json stats               machine-readable
 
@@ -120,6 +121,47 @@ case "$CMD" in
   show)
     IDX="${1:?usage: show <index>}"
     jq -rs --argjson i "$IDX" '.[$i] // "no such index"' "$LEDGER"
+    exit 0
+    ;;
+
+  add)
+    # Append ONE open row. Exists because `04-fix-first-review.md` §5d outcome 3
+    # has always TOLD the lead to "record a follow-up in the recursive-followups
+    # ledger" while supplying no command — so the only append path was
+    # plan-w-team-retro-capture.sh, which is a retro-time, once-per-run writer.
+    # A Step-5 consolidation deferral needs to queue at the moment it is decided.
+    #
+    # Row shape is identical to retro-capture.sh's (ts, slug, source, status,
+    # text) so `list`/`stats`/`close` treat both writers' rows the same, and the
+    # append is built with `jq -cn --arg` — never printf interpolation — because
+    # a malformed row is invisible to the close-aware reader and silently drops
+    # a backlog item rather than merely logging badly.
+    #
+    # NOTE: rows here can become agent instructions. plan-w-team-followup-drain.sh
+    # feeds an open row's `.text` to pwt-goal.sh --worker-only, so `--text`
+    # should be self-contained enough to brief a run, not a bare label.
+    ADD_SLUG=""; ADD_TEXT=""; ADD_SOURCE="followups-add"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --slug)   ADD_SLUG="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --text)   ADD_TEXT="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --source) ADD_SOURCE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        *) echo "followups: unknown add argument: $1" >&2; exit 2 ;;
+      esac
+    done
+    [ -n "$ADD_SLUG" ] || { echo "followups: add requires --slug" >&2; exit 2; }
+    [ -n "$ADD_TEXT" ] || { echo "followups: add requires --text — a row with no text is unactionable" >&2; exit 2; }
+    case "$ADD_SLUG" in
+      *[!a-z0-9-]*) echo "followups: --slug may contain only [a-z0-9-]" >&2; exit 2 ;;
+    esac
+    [ "${#ADD_SLUG}" -le 128 ] || { echo "followups: --slug exceeds 128 characters" >&2; exit 2; }
+    jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+           --arg slug "$ADD_SLUG" \
+           --arg source "$ADD_SOURCE" \
+           --arg text "$ADD_TEXT" \
+      '{ts:$ts, slug:$slug, source:$source, status:"open", text:$text}' >> "$LEDGER" || {
+        echo "followups: could not append to $LEDGER" >&2; exit 1; }
+    echo "queued [$ADD_SLUG] $ADD_TEXT"
     exit 0
     ;;
 

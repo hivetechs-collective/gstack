@@ -71,7 +71,30 @@ case "$BASENAME" in
             echo "BLOCKED: $FILE_PATH is a shell startup file in \$HOME. Editing it changes every future shell on this machine — the one blast radius no repo-scoped guardrail covers. In-repo .zshrc/.profile files are unaffected. If this is deliberate, edit it yourself or set CLAUDE_DISABLED_HOOKS=pre:edit:config-protection" >&2
             exit 2
         fi
-        # Not a direct child of $HOME → fall through to the linter/formatter case.
+
+        # Symlink coverage: ~/.zshrc is frequently a symlink into a dotfiles
+        # repo (stow/chezmoi/hand-rolled — e.g. ~/.dotfiles/zsh/.zshrc). The
+        # live rc file is then reachable under a second name the direct-child
+        # test above never sees: same inode, same blast radius. If any $HOME
+        # rc symlink resolves to the written path, block. One readlink level
+        # only (no realpath on bash 3.2) and only targets whose basename is
+        # itself an rc name reach this branch — both accepted residual risk.
+        # The in-repo carve-out survives: a repo fixture is never the target
+        # of a $HOME rc symlink unless it IS the live rc file.
+        for __cp_rc in .zshrc .zshenv .zprofile .zlogin .zlogout .bashrc .bash_profile .bash_login .bash_logout .profile .inputrc; do
+            [ -L "$__cp_home/$__cp_rc" ] || continue
+            __cp_tgt=$(readlink "$__cp_home/$__cp_rc")
+            __cp_tgt="${__cp_tgt#./}"
+            case "$__cp_tgt" in
+                /*) ;;
+                *) __cp_tgt="$__cp_home/$__cp_tgt" ;;
+            esac
+            if [ "$__cp_tgt" = "$__cp_path" ]; then
+                echo "BLOCKED: $FILE_PATH is the target of the \$HOME/$__cp_rc symlink — editing it edits the live shell startup file for every future shell on this machine. If this is deliberate, edit it yourself or set CLAUDE_DISABLED_HOOKS=pre:edit:config-protection" >&2
+                exit 2
+            fi
+        done
+        # Not the live rc under any name → fall through to the linter/formatter case.
         ;;
 esac
 

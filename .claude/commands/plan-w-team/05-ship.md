@@ -828,6 +828,38 @@ echo "✓ Ship gate 6c-quater: documentation accompanies net-new public surface"
 
 This is the ship-time bookend to the post-ship §7a-bis net-new-surface scan: §6c-quater blocks the _push_ of undocumented surface; §7a-bis/§7f block marking _Step 7 complete_ with an undocumented residual. The A2 default doc-coverage AC is the spec-level companion. The gate is advisory (warn-not-block) only when `PLAN_W_TEAM_NETNEW_DISABLE=1` is set — an incident escape hatch, not a routine bypass.
 
+## 6c-quinquies. Reuse-Verdict Re-Assertion (ADVISORY — never blocks)
+
+Step 0 §0a asks "can we achieve 80% of the value by leveraging what already exists?", and Step 1 writes the answer down as the Reuse Audit's REUSE/EXTEND/BUILD-NEW verdicts. This is where that premise is **re-asserted against what actually shipped**, closing the loop the reuse-first ladder previously left open at review time (`shared/reuse-first.md`).
+
+The detection rung is §5c-quinquies, at Step 5, where a finding can still be *fixed*. This block exists for two things Step 5 cannot give: it covers code written in **later Step-5 fix rounds** (which §5c-quinquies' base..merge diff never saw — the same honest limit §5c-quater records), and it puts a verdict in the ship status block so a supervisor can tell "ran clean" from "never ran".
+
+```bash
+# ADVISORY. Never blocks a ship: exits 11 (findings) and 12 (unverified) are
+# recorded, not fatal. Note `rc=$?` — an `if ! …` here would turn an advisory
+# finding into a blocked ship across every consumer repo.
+GATE=.claude/scripts/plan-w-team-reuse-audit-gate.sh
+REUSE_RECHECK="skipped"
+if [ -x "$GATE" ] && "$GATE" --help 2>/dev/null | grep -qF -- '--phase'; then
+  "$GATE" --slug "$SLUG" --phase ship \
+    --diff-base "$(git merge-base HEAD origin/main 2>/dev/null || echo '<run-base-sha>')"
+  rc=$?
+  case "$rc" in
+    0)  REUSE_RECHECK="clean" ;;
+    11) REUSE_RECHECK="findings" ;;
+    12) REUSE_RECHECK="unverified" ;;
+    *)  REUSE_RECHECK="error-rc-$rc" ;;
+  esac
+else
+  echo "⚠ §6c-quinquies skipped: gate predates --phase (sync claude-pattern)"
+fi
+echo "reuse-verdict-recheck: $REUSE_RECHECK"
+```
+
+Record `reuse-verdict-recheck: <clean|findings|unverified|skipped>` in the End-of-Stage status block. `findings` here means an unhonored verdict survived review or arrived in a fix round — ship, then queue it via `plan-w-team-followups.sh add` (§5d outcome 3) so the next run picks it up. `unverified` is **not** clean: it means the diff half never got scanned.
+
+Why advisory and not enforcing: an earlier design blocked the ship when a cited path had vanished. That collides with a documented reality — consumer-repo-generated specs carry wrong claude-pattern paths — so it would have hard-blocked shipping across every synced consumer on a known data pattern, in repos nobody is watching. A legitimate consolidation that renames the cited file produces the same signal. "The path is gone" is a provable *fact*, not a provable *defect*, and this gate blocks on neither.
+
 ## 6d. Version Bump (if applicable)
 
 | Change Size       | Bump        | Decision                   |
