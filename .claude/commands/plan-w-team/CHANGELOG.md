@@ -14,6 +14,23 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.3.1] — 2026-08-09 (695b487)
+
+**Lane-guard seed gap: bind the origin chat on DIRECT Bash launches.** First
+live use of 2.3.0 (cleanscale) surfaced the gap honestly flagged by its own
+supervisor: a lane launched by a direct Bash tool call — no route hook (no
+`PWT_PARENT_SID`), no bg job (no `CLAUDE_JOB_DIR`) — seeded
+`supervisor_sid=""` AND a launches row with `parent_sid=""`, leaving the
+origin chat UNBOUND: the lane-guard's bound-supervisor deny tier silently did
+not apply to the one session most likely to drift. (Worktree protection,
+artifact-forgery denial, and the PWT-LANE2 actor gate are binding-independent
+and still held.) Fix: `pwt-goal.sh`'s `USER_SID` chain gains a final fallback
+to `CLAUDE_CODE_SESSION_ID`, which Claude Code exports into every Bash tool
+env — so identity binding now holds on every launch path. Precedence is
+unchanged (`CLAUDE_JOB_DIR` → `PWT_PARENT_SID` → new fallback). Regression
+tests in `scenarios/worker-only-seeds-goalstate.bats` cover both the
+direct-launch fallback and route-hook precedence.
+
 ## [2.3.0] — 2026-08-09 (4fe3b1f)
 
 **Lane enforcement — /goal + /plan-w-team becomes binding instead of advisory.**
@@ -61,6 +78,49 @@ goal-state it emits — the identity binding the guards key on. Regression corpu
 exercised), `cases/plan-w-team-lane-context.bats` (8),
 `scenarios/goal-evaluator-actor-gate.bats` (6). Docs:
 `docs/operations/lane-enforcement.md`.
+
+## [2.2.1] — 2026-08-09 (1e86221)
+
+**The janitor's fallback comment now matches the janitor's fallback.** Resolves
+recursive-followup row 9 (`deep-audit-2026-06-08`, open since 2026-06-08):
+_"cleanup-stale-goal-states.sh comment claims its grep+sed terminal_state
+fallback matches goal-evaluator.sh, but the evaluator is jq-only-or-bail."_
+
+Two findings, and the second is why the row was still worth doing:
+
+1. **The quoted defect was already fixed.** The L55-59 text the audit cited was
+   replaced by `fcb90fc3` (2026-06-10) shipping R-D2 of
+   `docs/specs/goalstate-test-leak-hardening.md`. The row was stale-open.
+2. **Its replacement was inaccurate in a new way.** The new comment described a
+   *host-capability* fallback ("so this janitor still works on a host without
+   jq") while `__terminal_state_of` / `__json_str_field` actually fall back on an
+   **empty jq result** — which also fires when jq IS present and the file is
+   unparseable. Verified by execution, not inspection: with jq installed, a
+   corrupt goal file whose text contains `"terminal_state": "SUCCESS"` is
+   grep-classified and **reaped** by pass 1, while `goal-evaluator.sh:441-445`
+   fails its `jq -e .` guard and **skips** the same file. Same file, opposite
+   disposition, undocumented.
+
+- **`plan-w-team-cleanup-stale-goal-states.sh` — comment only, zero executable
+  lines changed** (verified by a filtered diff). It now states the three real
+  trigger conditions, the corrupt-JSON divergence with citations (evaluator
+  `:201-205` no-jq bail, `:441-445` corrupt skip), and why the divergence is
+  acceptable for a best-effort session-start GC rather than a bug to "fix" by
+  going jq-only (which would break jq-less hosts for no safety gain).
+- **The claim is now pinned, not merely restated.** A comment alone is
+  unverifiable — which is exactly how the first bad comment shipped and survived
+  a full spec cycle. Two cases in
+  `plan-w-team-cleanup-stale-goal-states.test.sh` (corrupt-with-quoted-SUCCESS
+  reaped; valid `null` preserved) assert the documented behavior, each guarded by
+  a jq precondition so they cannot pass vacuously on a jq-less host. A negative
+  control (mutate the extractor to jq-only) makes the new case fail — the test is
+  not decorative. Janitor suite 19 → 22 cases.
+- **Unrelated pre-existing red fixed to reach a green gate**:
+  `operator-shell-setup.sh` (added 2026-08-08) was neither cp-allowlisted nor
+  `NOT_SYNCED`, failing the R4 tracked-runtime-script coverage lint on `main`.
+  Dispositioned **source-only** — it resolves `$REPO_ROOT/.claude/shell/` and
+  `$REPO_ROOT/dotfiles/`, neither of which syncs, so a consumer copy would point
+  at paths that do not exist there.
 
 ## [2.2.0] — 2026-08-08 (1a77f8d)
 

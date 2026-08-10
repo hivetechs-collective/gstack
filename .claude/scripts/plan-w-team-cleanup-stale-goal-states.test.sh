@@ -146,6 +146,38 @@ assert_absent "valid SUCCESS removed despite malformed sibling" "$STATE_DIR/plan
 assert_exists "malformed file preserved (no terminal_state)" "$STATE_DIR/plan-w-team-goal-malformed.json"
 teardown_sandbox
 
+# ─── Extractor fallback semantics (pins the L108+ comment block) ─────────────
+# The grep+sed fallback in __terminal_state_of fires on an EMPTY jq result, NOT on
+# jq being absent. These two cases pin the consequences the comment documents, so a
+# future edit that makes the extractor jq-only (or that lets a null read as terminal)
+# fails here instead of silently invalidating the comment. PASS 2 is disabled so the
+# orphan-GC liveness/age gate cannot influence these PASS-1 assertions.
+setup_sandbox
+export PLAN_W_TEAM_DISABLE_ORPHAN_GC=1
+
+# Corrupt JSON that jq CANNOT parse but whose raw text carries a quoted SUCCESS.
+printf '{ "slug": "corrupt-success", "terminal_state": "SUCCESS",,, }\n' \
+    > "$STATE_DIR/plan-w-team-goal-corrupt-success.json"
+# Valid JSON with a legitimately null terminal_state (jq returns empty → fallback
+# runs → grep finds no QUOTED value → still classified non-terminal → preserved).
+write_state_file "null-state" "null"
+
+if ! command -v jq >/dev/null 2>&1; then
+    printf "  \033[33m-\033[0m %s\n" "extractor fallback cases SKIPPED (no jq on host — cannot prove the fallback fired despite jq)"
+elif jq -e . "$STATE_DIR/plan-w-team-goal-corrupt-success.json" >/dev/null 2>&1; then
+    FAIL=$((FAIL+1)); FAIL_NAMES+=("corrupt fixture is actually invalid JSON")
+    printf "  \033[31m✗\033[0m corrupt fixture is actually invalid JSON (jq parsed it — fixture no longer exercises the fallback)\n"
+else
+    PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "precondition: jq rejects the corrupt fixture (fallback path is the only classifier)"
+    bash "$SCRIPT" >/dev/null 2>&1
+    assert_absent "corrupt JSON carrying a quoted SUCCESS is reaped via grep+sed fallback (jq present)" \
+        "$STATE_DIR/plan-w-team-goal-corrupt-success.json"
+    assert_exists "valid null terminal_state preserved (empty jq result must not read as terminal)" \
+        "$STATE_DIR/plan-w-team-goal-null-state.json"
+fi
+unset PLAN_W_TEAM_DISABLE_ORPHAN_GC
+teardown_sandbox
+
 echo
 echo "─────────────────────────────────────────"
 printf "Results: \033[32m%d passed\033[0m, \033[31m%d failed\033[0m\n" "$PASS" "$FAIL"

@@ -1598,6 +1598,15 @@ if [ "$LAUNCH" = "1" ]; then
     USER_SID="${CLAUDE_JOB_DIR:-}"
     USER_SID="${USER_SID##*/}"
     [ -z "$USER_SID" ] && USER_SID="${PWT_PARENT_SID:-}"
+    # PWT-LANE1 seed-gap fix (2.3.1): a lane launched by a DIRECT Bash tool call
+    # (no route hook → no PWT_PARENT_SID; no bg job → no CLAUDE_JOB_DIR) used to
+    # seed supervisor_sid="" AND launches parent_sid="" — leaving the origin
+    # chat UNBOUND, so the lane-guard's bound-supervisor deny tier silently did
+    # not apply to the one session most likely to drift (observed live in
+    # cleanscale, 2026-08-10). Claude Code exports the invoking session's UUID
+    # into Bash tool env as CLAUDE_CODE_SESSION_ID; use it as the last fallback
+    # so identity binding holds on every launch path.
+    [ -z "$USER_SID" ] && USER_SID="${CLAUDE_CODE_SESSION_ID:-}"
     # Record the FULL session id (NO 8-char truncation) as the registry's parent
     # lineage key. child-cleanup's C8 reconciliation matches parent_session_id to
     # the reaping session's id; an 8-char key let two concurrent runs whose

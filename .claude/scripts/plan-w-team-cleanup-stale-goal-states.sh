@@ -71,7 +71,8 @@ done
 
 [ -d "$STATE_DIR" ] || exit 0
 
-# ── shared extractors (jq-preferred, grep+sed fallback for jq-less hosts) ─────
+# ── shared extractors (jq-preferred; grep+sed fallback on ANY empty jq result) ─
+# NOT a jq-absence fallback — see the trigger breakdown at the pass-1 loop below.
 __terminal_state_of() {  # $1=file → terminal_state string ("" for null/absent)
     local file="$1" st=""
     if command -v jq >/dev/null 2>&1; then
@@ -105,11 +106,33 @@ REMOVED=0
 for f in "$STATE_DIR"/plan-w-team-goal-*.json; do
     [ -f "$f" ] || continue
 
-    # Extract terminal_state. Prefer jq when available; fall back to grep+sed for
-    # portability so this janitor still works on a host without jq. (The
-    # goal-evaluator hook is jq-only-or-bail — it does NOT share this grep+sed
-    # fallback; this janitor is intentionally more portable since it runs at every
-    # session start.) Shared as a helper so pass 2 reuses the exact extraction.
+    # Extract terminal_state. jq is PREFERRED, but read the fallback's trigger
+    # carefully: __terminal_state_of falls back to grep+sed whenever the jq result is
+    # EMPTY — not whenever jq is missing. That is three distinct situations:
+    #   1. jq absent            → the portability case the fallback was added for;
+    #   2. jq present, file UNPARSEABLE → jq errors, $st is empty, grep+sed runs anyway;
+    #   3. jq present, terminal_state legitimately null/absent → grep+sed also finds
+    #      nothing (it only matches a QUOTED value), so same answer, no harm.
+    #
+    # Case 2 is the one with teeth, and it is NOT hypothetical: on a jq-equipped host a
+    # CORRUPT goal file whose raw text still contains "terminal_state": "SUCCESS" is
+    # classified by grep+sed and REAPED by pass 1 below. The goal-evaluator hook meeting
+    # that same file does the opposite — its `jq -e .` guard fails, it logs
+    # `WARN: corrupt goal state … skipping` and `continue`s without classifying it
+    # (.claude/hooks/plan-w-team-goal-evaluator.sh:441-445). Same file, opposite
+    # disposition.
+    #
+    # That divergence is deliberate, not an oversight. This is a best-effort
+    # session-start GC: pass 1 only ever deletes on a literal SUCCESS string, and a
+    # corrupt SUCCESS leftover is precisely the dead weight it exists to reap — while
+    # going jq-only here would break jq-less hosts for no safety gain. The evaluator is
+    # jq-only-or-bail in BOTH directions (no jq at all → warn + `exit 0`, same file
+    # :201-205) and does NOT share this fallback.
+    #
+    # Both behaviors above are pinned by the "corrupt JSON carrying a quoted SUCCESS"
+    # and "valid null preserved" cases in plan-w-team-cleanup-stale-goal-states.test.sh;
+    # change the extraction and those fail. Shared as a helper so pass 2 reuses the
+    # exact extraction (__json_str_field has the identical empty-result fallback shape).
     STATE="$(__terminal_state_of "$f")"
 
     if [ "$STATE" = "SUCCESS" ]; then
