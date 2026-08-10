@@ -1798,18 +1798,25 @@ if [ "$LAUNCH" = "1" ]; then
             # heredoc below and deliberately keeps [] — the ORIGIN evaluator
             # must never AND-gate on anchors that only ever appear in the
             # WORKER's transcript.
+            # supervisor_sid (PWT-LANE1, 2026-08-09): the ORIGIN session's full
+            # SID. The lane-guard PreToolUse hook uses it to bind the origin
+            # chat to this lane by identity — the binding that survives
+            # compaction when the prose role contract does not. Empty when the
+            # origin SID is unknowable (fail-open: guard falls back to
+            # pwt-launches.jsonl lineage / the bg-supervisor env flag).
             jq -n \
                 --arg slug "$SLUG_GUESS" \
                 --arg started_at "$SEED_NOW_ISO" \
                 --arg worker_sid "$WORKER_SID" \
+                --arg supervisor_sid "${USER_SID:-}" \
                 --arg skill_version "$SKILL_VERSION" \
                 --arg skill_commit_sha "$SKILL_COMMIT_SHA" \
                 --argjson criteria "$__PWT_DONE_ROWS_JSON" \
-                '{slug:$slug, started_at:$started_at, terminal_state:null, terminal_reason:null, worker_sid:$worker_sid, skill_version:$skill_version, skill_commit_sha:$skill_commit_sha, feature_specific_done_criteria:$criteria}' \
+                '{slug:$slug, started_at:$started_at, terminal_state:null, terminal_reason:null, worker_sid:$worker_sid, supervisor_sid:$supervisor_sid, skill_version:$skill_version, skill_commit_sha:$skill_commit_sha, feature_specific_done_criteria:$criteria}' \
                 > "$file" 2>/dev/null || true
         else
-            printf '{"slug":"%s","started_at":"%s","terminal_state":null,"terminal_reason":null,"worker_sid":"%s","skill_version":"%s","skill_commit_sha":"%s","feature_specific_done_criteria":[]}\n' \
-                "$SLUG_GUESS" "$SEED_NOW_ISO" "$WORKER_SID" "$SKILL_VERSION" "$SKILL_COMMIT_SHA" \
+            printf '{"slug":"%s","started_at":"%s","terminal_state":null,"terminal_reason":null,"worker_sid":"%s","supervisor_sid":"%s","skill_version":"%s","skill_commit_sha":"%s","feature_specific_done_criteria":[]}\n' \
+                "$SLUG_GUESS" "$SEED_NOW_ISO" "$WORKER_SID" "${USER_SID:-}" "$SKILL_VERSION" "$SKILL_COMMIT_SHA" \
                 > "$file" 2>/dev/null || true
         fi
         [ -f "$file" ] && echo "  goal-state seed:    $file  (anti-skip anchor active)" >&2
@@ -1905,6 +1912,7 @@ if [ "$LAUNCH" = "1" ]; then
   "terminal_state": null,
   "terminal_reason": null,
   "worker_sid": "${WORKER_SID}",
+  "supervisor_sid": "${USER_SID}",
   "supervisor_goal_mirror": true,
   "skill_version": "${SKILL_VERSION}",
   "skill_commit_sha": "${SKILL_COMMIT_SHA}",

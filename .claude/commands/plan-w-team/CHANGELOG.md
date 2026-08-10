@@ -14,6 +14,54 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.3.0] — 2026-08-09 (4fe3b1f)
+
+**Lane enforcement — /goal + /plan-w-team becomes binding instead of advisory.**
+Born from the 2026-08-09 cleanscale incident: a /goal-spawned lane was live, the
+supervising session's role contract was dropped by compaction, and nothing at
+the tool layer knew a lane existed — so the supervisor implemented the lane's
+work itself in the main checkout while the worker ran in its worktree. The Stop
+evaluator then accepted a hand-emitted retro-complete block from the
+supervisor's own transcript. Three structural holes, three guards:
+
+- **PWT-LANE1 — PreToolUse lane-guard** (`.claude/hooks/plan-w-team-lane-guard.sh`,
+  wired to Bash/Write/Edit/MultiEdit): while a lane is live (non-terminal
+  goal-state with a well-formed `worker_sid`, fresher than
+  `PWT_GOAL_STALE_HOURS`), the owning worker (SID match) passes untouched; a
+  BOUND supervisor (bg `PLAN_W_TEAM_SUPERVISOR_SESSION=1`, seeded
+  `supervisor_sid`, or `pwt-launches.jsonl` lineage) is DENIED repo mutations —
+  file tools outside `.claude/state/`, git write-subcommands, build/test
+  runners, in-place edits, provable repo-targeted mutators/redirects; ANY
+  non-worker session is denied writes into the lane's worktree and denied
+  forging the evaluator-trusted artifacts (`ship-verdict`, `test-green`; bound
+  sessions also `goal-state` + the release valve). Every deny re-teaches the
+  role — enforcement doubles as post-compaction context restoration. Deny
+  audit: `plan-w-team-lane-guard-audit.jsonl`. Release valve (USER-only,
+  written outside the bound session): `plan-w-team-lane-release-<slug>.json`.
+  Kill switch: `PLAN_W_TEAM_DISABLE_LANE_GUARD=1`.
+- **PWT-LANE2 — actor-aware Stop evaluator** (`plan-w-team-goal-evaluator.sh`):
+  the C3 ship-verdict corroboration now also applies OUTSIDE worker mode —
+  when the goal records a `worker_sid` and the evaluating session is not that
+  worker, SUCCESS anchors in its own transcript are hearsay and require the
+  deterministic PASS ship-verdict. A supervisor hand-emitting the passing
+  string can no longer terminate the goal (it yields instead; the worker keeps
+  running). The worker's own transcript and parent-child propagation are
+  untouched. Kill switch: `PLAN_W_TEAM_DISABLE_ACTOR_GATE=1`.
+- **PWT-LANE3 — lane-context re-binding** (`.claude/hooks/plan-w-team-lane-context.sh`,
+  SessionStart + throttled UserPromptSubmit): re-injects the WORKER/SUPERVISOR
+  role contract from disk — where compaction cannot touch it — at every
+  session start (including post-compaction) and every
+  `PWT_LANE_CONTEXT_INTERVAL_S` (default 30 min) during long sessions.
+  Delivered via `systemMessage` (the field the harness measurably delivers).
+  Kill switch: `PLAN_W_TEAM_DISABLE_LANE_CONTEXT=1`.
+
+`pwt-goal.sh` now seeds `supervisor_sid` (the origin session's UUID) into every
+goal-state it emits — the identity binding the guards key on. Regression corpus:
+`tests/skill/cases/plan-w-team-lane-guard.bats` (28 tests, deny paths
+exercised), `cases/plan-w-team-lane-context.bats` (8),
+`scenarios/goal-evaluator-actor-gate.bats` (6). Docs:
+`docs/operations/lane-enforcement.md`.
+
 ## [2.2.0] — 2026-08-08 (1a77f8d)
 
 **Reuse-verdict re-verification — the reuse-first ladder's last rung.** Resolves

@@ -233,6 +233,28 @@ Supervisor is the default dispatcher for parallel-builder runs — no opt-in env
 
 Exit 2 from the wrapper signals "fall through to Pattern A/B" — `03-execute.md` Pattern C is wrapped in `if .../plan-w-team-supervisor-route.sh "$SLUG"; then ... fi`, so a non-zero exit is the documented fall-through path.
 
+## Lane Enforcement — the Role Contract Is Mechanical (2.3.0, PWT-LANE1-3)
+
+"NEVER edit code in supervisor mode" used to be a sentence in this file;
+sentences don't block tool calls, and a compaction drops them. Since 2.3.0 the
+role is enforced at the tool layer (see
+[`docs/operations/lane-enforcement.md`](../../../../docs/operations/lane-enforcement.md)):
+
+- While your lane is live, the **PreToolUse lane-guard** denies you (the bound
+  supervisor) repo mutations: file edits outside `.claude/state/`, git writes,
+  build/test runs, provable mutator/redirect targets. Your legitimate duties —
+  reading, state briefs, `.claude/scripts/*` helpers, `claude --resume`
+  steering — pass untouched. A deny is not an error to work around: it is the
+  role contract restating itself. Steer the worker; never do its work.
+- The **Stop evaluator's actor gate** ignores SUCCESS anchors emitted in YOUR
+  transcript: completion comes from the worker's own retro or the PASS
+  ship-verdict. Hand-building the outcome cannot end the run.
+- **Lane-context re-binding** re-injects this contract from disk at every
+  SessionStart and every ~30 min — so compaction can no longer strip your role.
+
+A wedged lane escalates to the user; only the USER releases a lane
+(`plan-w-team-lane-release-<slug>.json`, written outside your session).
+
 ## Failure Modes
 
 | Failure                                               | Supervisor behavior                                                                                                                                  |

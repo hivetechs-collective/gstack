@@ -788,6 +788,41 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         fi
     fi
 
+    # PWT-LANE2 — actor-aware SUCCESS (2026-08-09 cleanscale incident). C3
+    # above corroborates only inside a bg WORKER (env-marked). But the
+    # supervisor/origin chat is an interactive session, and detector (1) reads
+    # THIS session's transcript: a supervisor that hand-emitted the
+    # retro-complete status block terminated the goal with zero pipeline stages
+    # run — the evaluator measured whether the goal LOOKED done, never who did
+    # the work. Close it: when the goal records a well-formed worker_sid and
+    # THIS session is not that worker, anchors in this transcript are hearsay —
+    # require the same deterministic PASS ship-verdict Step 6 writes. The
+    # legitimate completion path is untouched: the WORKER's own transcript
+    # carries the real retro-complete (SID match → gate skipped), and
+    # parent-child propagation (4) already surfaces worker terminals to the
+    # supervisor without transcript anchors.
+    # Fail-open: SID-less harness, or a goal with no/malformed worker_sid
+    # (in-session interactive run — a human is watching), keeps today's
+    # behavior. Kill switch: PLAN_W_TEAM_DISABLE_ACTOR_GATE=1.
+    if [ "$TERMINAL" = "SUCCESS" ] && [ "${PLAN_W_TEAM_DISABLE_ACTOR_GATE:-}" != "1" ] \
+       && [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-}" != "1" ] && [ -n "$SELF_SID" ]; then
+        AA_WSID=$(jq -r '.worker_sid // ""' "$GOAL_FILE" 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+        case "$AA_WSID" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
+                if [ "${SELF_SID:0:8}" != "${AA_WSID:0:8}" ]; then
+                    AA_SV_FILE="$(dirname "$GOAL_FILE")/plan-w-team-ship-verdict-${SLUG}.json"
+                    if [ "$(jq -r '.verdict // ""' "$AA_SV_FILE" 2>/dev/null)" != "PASS" ]; then
+                        TERMINAL=""
+                        REASON=""
+                        CRITERIA_BLOCK_REASON="SUCCESS anchors found in THIS session's transcript, but the goal's owning worker is ${AA_WSID:0:8} and this session is ${SELF_SID:0:8} — a supervisor/observer cannot testify that the pipeline ran (PWT-LANE2 actor gate). SUCCESS requires the worker's own retro or the deterministic PASS ship-verdict at plan-w-team-ship-verdict-${SLUG}.json. Do NOT hand-build the outcome; steer the worker to run the pipeline to terminal, or escalate to the user."
+                        echo "[goal-evaluator] SLUG=$SLUG actor-gate: SUCCESS anchors from non-owner session ${SELF_SID:0:8} (worker ${AA_WSID:0:8}) without PASS ship-verdict — withholding SUCCESS (PWT-LANE2)" >&2
+                        dbg "SLUG=$SLUG PWT-LANE2 withheld SUCCESS — non-owner transcript anchors, no PASS ship-verdict"
+                    fi
+                fi
+                ;;
+        esac
+    fi
+
     if [ -z "$TERMINAL" ]; then
         dbg "(1) SUCCESS not matched: needed stage=retro-complete + workflow_lock=done + slug=$SLUG colocated on one decoded line"
     fi
