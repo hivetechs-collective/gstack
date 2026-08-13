@@ -85,6 +85,40 @@ else
   bad "jq missing — the statusline (repo/model/usage bar) cannot render" "run: brew install jq"
 fi
 
+# Model default for your own sessions, and nothing shadowing it. An
+# ANTHROPIC_MODEL export silently outranks settings.json for every session.
+# This script syncs into consumer repos; the installer does not. Point at the
+# clone explicitly so the fix is runnable from wherever the check was run.
+SETUP_FIX="run in your claude-pattern clone: ./.claude/scripts/operator-shell-setup.sh   (then open a new terminal)"
+if [ -n "${ANTHROPIC_MODEL:-}" ]; then
+  # Two different problems with two different fixes: still written in a shell
+  # config (re-run the installer), or merely inherited by this terminal from
+  # before it was removed (just open a new one).
+  MODEL_SRC=""
+  for f in "$HOME/.zshrc" "$HOME/.zshenv" "$HOME/.zprofile" "$HOME/.zlogin" \
+           "$HOME/.bash_profile" "$HOME/.bashrc" "$HOME/.profile"; do
+    if [ -f "$f" ] && grep -Eq '^[[:space:]]*(export[[:space:]]+)?ANTHROPIC_MODEL=' "$f"; then
+      MODEL_SRC="$f"; break
+    fi
+  done
+  if [ -n "$MODEL_SRC" ]; then
+    bad "ANTHROPIC_MODEL=$ANTHROPIC_MODEL is set in $MODEL_SRC — it overrides your saved model everywhere" "$SETUP_FIX"
+  else
+    bad "ANTHROPIC_MODEL=$ANTHROPIC_MODEL is left over in this terminal — it overrides your saved model here" "close this terminal window and open a new one (it is already gone from your shell config)"
+  fi
+elif command -v python3 >/dev/null 2>&1 && [ -f "$HOME/.claude/settings.json" ]; then
+  MODEL=$(python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("model",""))
+except Exception: print("")' "$HOME/.claude/settings.json" 2>/dev/null)
+  if [ -n "$MODEL" ]; then
+    ok "model default: $MODEL (change it any time with /model)"
+  else
+    bad "no model default saved — sessions fall back to whatever the CLI picks" "$SETUP_FIX"
+  fi
+else
+  bad "no ~/.claude/settings.json — model default and permission mode unset" "$SETUP_FIX"
+fi
+
 echo
 echo "Recommended:"
 

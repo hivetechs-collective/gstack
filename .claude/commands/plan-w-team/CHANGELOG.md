@@ -14,6 +14,26 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.3.2] — 2026-08-13 (59de1db)
+
+**Correct a now-false steering-channel claim (CLI 2.1.231 uplift).** The
+`2.1.224 → 2.1.231` version-uplift pass found that cross-session `SendMessage` +
+`ListAgents` (new at 2.1.224) invalidates the absolute claim in
+`shared/supervisor-protocol.md` §"Operator-invoked only" that "`SendMessage`
+cannot address a `claude --bg` process, and there is no inbox." An attended live
+probe (2026-08-13, throwaway `claude --bg` worker mirroring the `pwt-goal.sh`
+spawn shape) **confirmed** the message reaches and is acted on by a live local
+bg worker in ~1 tool round, with no approval gate same-machine/same-account. The
+section is corrected: the operator-only + do-not-automate stance is **preserved**
+(it rests on `pwt-steer.sh`'s stop-and-resume teardown, not on the false
+"no channel" premise), and a note records the real channel plus two caveats
+(the steered worker applies its own judgment — an ill-framed steer is refused as
+prompt-injection; the cross-machine `crossSessionInbound` gate is unverified).
+Adopting a `SendMessage`-based live-steer is a deferred design decision, not part
+of this bump. Docs-only clarification (PATCH). Full analysis:
+`docs/operations/version-uplift-reports/2026-08-13-2.1.231.md`; compatibility
+table + `reference_bg_worker_steering` memory updated in the same pass.
+
 ## [2.3.1] — 2026-08-09 (695b487)
 
 **Lane-guard seed gap: bind the origin chat on DIRECT Bash launches.** First

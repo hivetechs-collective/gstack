@@ -516,7 +516,9 @@ The caller (operator or supervisor) MUST re-invoke `plan-w-team-await-terminal.s
 
 ### Operator-invoked only
 
-`pwt-steer.sh` has no hook or agent call site anywhere in the pipeline. It exists for a human operator to steer a running `claude --bg` worker mid-flight when there is no other message channel into it — `SendMessage` cannot address a `claude --bg` process, and there is no inbox. Do not wire this into any automated flow.
+`pwt-steer.sh` has no hook or agent call site anywhere in the pipeline. It exists for a human operator to steer a running `claude --bg` worker mid-flight, and it stays operator-invoked because it stop-and-resumes the worker — an irreversible teardown with marker-verified delivery and dual-dir bookkeeping, machinery that must not fire from an automated flow. Do not wire it into one.
+
+> **A cross-session message channel DOES now exist (CLI 2.1.224+, probed 2026-08-13).** The earlier claim here that "`SendMessage` cannot address a `claude --bg` process" is obsolete: `SendMessage` can address a live `claude --bg` worker discovered via `ListAgents` (delivers in ~1 tool round, no approval gate same-machine). That is a _separate, lighter_ mechanism than `pwt-steer.sh` (no teardown), but it is **not yet adopted** into this protocol — a steered worker applies its own judgment (an ill-framed steer reads as prompt-injection and is refused), and the cross-machine `crossSessionInbound` approval gate is unverified. Until that design lands, `pwt-steer.sh` remains the steering path. Analysis: [`docs/operations/version-uplift-reports/2026-08-13-2.1.231.md`](../../../../docs/operations/version-uplift-reports/2026-08-13-2.1.231.md).
 
 ## POLLING LOOP
 

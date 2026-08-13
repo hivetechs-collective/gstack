@@ -125,10 +125,119 @@ get_cwd() {
 }
 
 # =============================================================================
+# CONSUMER-LOCAL ADDITIONS — patterns.local.conf sidecar (append-only, data-only)
+# =============================================================================
+# A consumer (a synced repo) may add its OWN block/ask/path guards WITHOUT editing
+# this file — which the sync overwrites wholesale every run (the silent-clobber
+# class that twice wiped cleanscale's mobile-store one-way-door guard). They live
+# in a sidecar `patterns.local.conf` beside this script; the SOURCE (claude-pattern)
+# never ships that filename, so no rsync copy overwrites or deletes it, and a
+# default `*.local.*` exclude + a retired-path guard back it up (see
+# docs/operations/skill-upgrade-propagation.md).
+#
+# GUARANTEES (all tested):
+#   • APPEND-ONLY / can only ESCALATE — the loader only appends to these arrays;
+#     they are evaluated by severity, not origin: DC_LOCAL_BLOCK runs BEFORE the
+#     built-in safe-rm allow and the built-in ask loops (a local block wins over a
+#     built-in allow/ask); it can never de-escalate a built-in block.
+#   • DATA-ONLY — the file is read line-by-line and its values are used ONLY as
+#     quoted grep-ERE / substring data. It is NEVER sourced or eval'd, so a value
+#     containing $(...), backticks, or ; is matched literally, never executed.
+#   • FAIL-OPEN TO THE BUILT-INS, NEVER TO NO GUARD — a missing/unreadable/binary
+#     file is a no-op; the built-ins still enforce. `set -e` is active and the
+#     hook's contract treats a non-2 exit as "tool PROCEEDS", so the loader is
+#     guarded (`[ -r ]` + invoked as `load_local_patterns || true`) to never abort
+#     the hook with a non-2 exit — which would fail open to NO guard.
+# Kill switch: DAMAGE_CONTROL_DISABLE_LOCAL=1. Override path: DAMAGE_CONTROL_LOCAL_FILE.
+DC_LOCAL_FILE="${DAMAGE_CONTROL_LOCAL_FILE:-$SCRIPT_DIR/patterns.local.conf}"
+DC_LOCAL_BLOCK=(); DC_LOCAL_BLOCK_CI=(); DC_LOCAL_ASK=(); DC_LOCAL_ASK_CI=()
+DC_LOCAL_ZERO=(); DC_LOCAL_READONLY=(); DC_LOCAL_NODELETE=()
+
+# Validate a consumer-supplied ERE actually compiles; log + reject if it does not
+# (a malformed regex would make grep -E exit 2, read as "no match" inside the check,
+# and silently never fire — the exact "believes they're guarded but aren't" class
+# this feature exists to close). grep on empty input: valid regex → exit 1, invalid
+# → exit 2, so rc<=1 means it compiles.
+_dc_ere_ok() {  # $1 = pattern, $2 = key label
+    printf '' | grep -qE "$1" 2>/dev/null
+    [ "$?" -le 1 ] && return 0
+    _dc_local_warn "ignored invalid ERE for key '$2': $1"
+    return 1
+}
+
+# Warn about a local-conf problem to BOTH the security log and stderr (log may be
+# unavailable when hooks/utils/ is excluded; stderr is always there). A dropped
+# guard the consumer thinks is active is the exact class this feature closes.
+DC_LOCAL_LOADED=0
+_dc_local_warn() {  # $1 = message
+    printf '⚠ damage-control(patterns.local.conf): %s [%s]\n' "$1" "$DC_LOCAL_FILE" >&2
+    if [ "$LOGGING_ENABLED" = "true" ]; then
+        log_security "damage_control_local" "$TOOL_NAME" "$1" "ignored" "$DC_LOCAL_FILE" 2>/dev/null || true
+    fi
+}
+
+load_local_patterns() {
+    [ "${DAMAGE_CONTROL_DISABLE_LOCAL:-}" = "1" ] && { DC_LOCAL_LOADED=1; return 0; }
+    [ -f "$DC_LOCAL_FILE" ] || { DC_LOCAL_LOADED=1; return 0; }
+    if [ ! -r "$DC_LOCAL_FILE" ]; then
+        # Exists but unreadable — fail open to the built-ins, but SAY SO (an
+        # operational fault the consumer must learn about, not a silent no-op).
+        _dc_local_warn "exists but is unreadable — local guards NOT loaded"
+        DC_LOCAL_LOADED=1; return 0
+    fi
+    local line key val
+    # `|| [ -n "$line" ]` catches a final line with no trailing newline.
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"                            # strip a trailing CR (CRLF files)
+        line="${line#"${line%%[![:space:]]*}"}"         # strip leading whitespace
+        line="${line%"${line##*[![:space:]]}"}"         # strip trailing whitespace
+        case "$line" in ''|'#'*) continue ;; esac
+        case "$line" in
+            *:*) : ;;
+            *) _dc_local_warn "ignored malformed line (expected 'key: value'): $line"; continue ;;
+        esac
+        key="${line%%:*}"
+        val="${line#*:}"
+        val="${val#"${val%%[![:space:]]*}"}"            # strip leading ws on value
+        val="${val%"${val##*[![:space:]]}"}"            # strip trailing ws on value
+        if [ -z "$val" ]; then _dc_local_warn "ignored empty value for key '$key'"; continue; fi
+        case "$key" in
+            block)                _dc_ere_ok "$val" block   && DC_LOCAL_BLOCK+=("$val") ;;
+            blockCI|block_ci)     _dc_ere_ok "$val" blockCI && DC_LOCAL_BLOCK_CI+=("$val") ;;
+            ask)                  _dc_ere_ok "$val" ask     && DC_LOCAL_ASK+=("$val") ;;
+            askCI|ask_ci)         _dc_ere_ok "$val" askCI   && DC_LOCAL_ASK_CI+=("$val") ;;
+            zeroAccess|zero_access) DC_LOCAL_ZERO+=("$val") ;;
+            readOnly|read_only)   DC_LOCAL_READONLY+=("$val") ;;
+            noDelete|no_delete)   DC_LOCAL_NODELETE+=("$val") ;;
+            *) _dc_local_warn "ignored unknown key: $key" ;;
+        esac
+    done < "$DC_LOCAL_FILE"
+    DC_LOCAL_LOADED=1
+    return 0
+}
+
+# =============================================================================
 # BASH COMMAND PROTECTION
 # =============================================================================
 check_bash_command() {
     local cmd="$1"
+
+    # ── CONSUMER-LOCAL BLOCK (patterns.local.conf) ────────────────────────────
+    # Evaluated FIRST — before EVERYTHING, including the final-artifact guard's
+    # `ask` — so a local block is the highest severity and always wins over a
+    # built-in allow/ask (severity, not origin). It can never de-escalate a
+    # built-in block. Data-only: $_lp is a quoted grep-ERE pattern, never eval'd.
+    local _lp
+    for _lp in "${DC_LOCAL_BLOCK[@]}"; do
+        if echo "$cmd" | grep -qE "$_lp"; then
+            respond "block" "Consumer-local block (patterns.local.conf)" "⛔ BLOCKED by a consumer-local guard: $_lp" "$cmd"
+        fi
+    done
+    for _lp in "${DC_LOCAL_BLOCK_CI[@]}"; do
+        if echo "$cmd" | grep -qiE "$_lp"; then
+            respond "block" "Consumer-local block (patterns.local.conf)" "⛔ BLOCKED by a consumer-local guard: $_lp" "$cmd"
+        fi
+    done
 
     # ── FINAL-ARTIFACT GUARD (build-artifact-preservation, 1.28.0) ────────────
     # An rm -rf must NOT be blanket-allowed by the safe_rm_targets short-circuit
@@ -288,6 +397,20 @@ check_bash_command() {
             respond "ask" "Risky SQL requires confirmation" "⚠️ CONFIRM: This SQL requires approval: $pattern" "$cmd"
         fi
     done
+
+    # ── CONSUMER-LOCAL ASK (patterns.local.conf) ──────────────────────────────
+    # Evaluated AFTER the built-in block/ask loops so a local ask can never
+    # downgrade a built-in block; it adds an ask where the built-ins are silent.
+    for _lp in "${DC_LOCAL_ASK[@]}"; do
+        if echo "$cmd" | grep -qE "$_lp"; then
+            respond "ask" "Consumer-local ask (patterns.local.conf)" "⚠️ CONFIRM: consumer-local guard requires approval: $_lp" "$cmd"
+        fi
+    done
+    for _lp in "${DC_LOCAL_ASK_CI[@]}"; do
+        if echo "$cmd" | grep -qiE "$_lp"; then
+            respond "ask" "Consumer-local ask (patterns.local.conf)" "⚠️ CONFIRM: consumer-local guard requires approval: $_lp" "$cmd"
+        fi
+    done
 }
 
 # =============================================================================
@@ -296,6 +419,16 @@ check_bash_command() {
 check_file_path() {
     local path="$1"
     local operation="$2"  # read, write, edit, delete
+
+    # ── CONSUMER-LOCAL zeroAccess (patterns.local.conf) ───────────────────────
+    # Evaluated BEFORE the .example allow short-circuit so a local zero-access
+    # rule can ESCALATE over the built-in .example allowance. Data-only globbing.
+    local _lp
+    for _lp in "${DC_LOCAL_ZERO[@]}"; do
+        if [[ "$path" == *"$_lp"* ]] || [[ "$path" == $_lp ]]; then
+            respond "block" "Consumer-local zero-access (patterns.local.conf)" "⛔ BLOCKED by a consumer-local guard: $path matches $_lp" "$path"
+        fi
+    done
 
     # Allow .example template files (they contain dummy values, not real secrets)
     if [[ "$path" == *.example ]]; then
@@ -359,6 +492,13 @@ check_file_path() {
                 respond "block" "Read-only path" "⛔ BLOCKED: This path is read-only and cannot be modified: $path" "$path"
             fi
         done
+
+        # CONSUMER-LOCAL readOnly additions (patterns.local.conf)
+        for _lp in "${DC_LOCAL_READONLY[@]}"; do
+            if [[ "$path" == *"$_lp"* ]] || [[ "$path" == $_lp ]]; then
+                respond "block" "Consumer-local read-only (patterns.local.conf)" "⛔ BLOCKED by a consumer-local guard: $path is read-only ($_lp)" "$path"
+            fi
+        done
     fi
 
     # No-Delete Paths - Block only deletion
@@ -382,6 +522,13 @@ check_file_path() {
         for pattern in "${no_delete[@]}"; do
             if [[ "$path" == *"$pattern"* ]]; then
                 respond "block" "No-delete path" "⛔ BLOCKED: This critical file cannot be deleted: $path" "$path"
+            fi
+        done
+
+        # CONSUMER-LOCAL noDelete additions (patterns.local.conf)
+        for _lp in "${DC_LOCAL_NODELETE[@]}"; do
+            if [[ "$path" == *"$_lp"* ]] || [[ "$path" == $_lp ]]; then
+                respond "block" "Consumer-local no-delete (patterns.local.conf)" "⛔ BLOCKED by a consumer-local guard: $path cannot be deleted ($_lp)" "$path"
             fi
         done
     fi
@@ -459,6 +606,17 @@ check_secret_content() {
 # =============================================================================
 # MAIN LOGIC
 # =============================================================================
+
+# Load consumer-local additions (patterns.local.conf sidecar) into the DC_LOCAL_*
+# arrays before dispatch. `|| true` is load-bearing: the hook runs `set -e`, and a
+# non-2 exit from here would make the whole hook a "non-blocking error → tool
+# PROCEEDS" (fail-open to NO guard). This guarantees fail-open to the BUILT-INS.
+load_local_patterns || true
+# Partial-load guard: `|| true` is load-bearing (a non-2 exit would fail open to
+# NO guard), but it also means an aborted load could leave DC_LOCAL_* partially
+# populated with no signal. The sentinel is set only when the loader ran to the
+# end; if it didn't, say so (the built-ins still enforce regardless).
+[ "${DC_LOCAL_LOADED:-0}" = "1" ] || printf '⚠ damage-control: patterns.local.conf load did not complete — local guards may be partial\n' >&2
 
 case "$TOOL_NAME" in
     Bash)

@@ -43,6 +43,15 @@ git() {
 # /plan-w-team runs depend on.
 claude() {
   _cp_seed_claude_md
+  # ANTHROPIC_MODEL outranks the model in ~/.claude/settings.json for every
+  # session it reaches, and it is easy to inherit from an old shell config or
+  # a tool that exports it. Drop it here so the saved model actually applies,
+  # and say so once rather than failing silently.
+  if [ -n "${ANTHROPIC_MODEL:-}" ]; then
+    echo "⚠️  Ignoring ANTHROPIC_MODEL=$ANTHROPIC_MODEL — your model comes from"
+    echo "   ~/.claude/settings.json. Change it any time by typing /model."
+    unset ANTHROPIC_MODEL
+  fi
   if command git rev-parse --show-toplevel >/dev/null 2>&1; then
     export CLAUDE_CODE_TASK_LIST_ID="$(basename "$(command git rev-parse --show-toplevel)")"
   fi

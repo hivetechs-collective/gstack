@@ -1,0 +1,55 @@
+# patterns.local.conf — CONSUMER-LOCAL damage-control additions (TEMPLATE)
+# =============================================================================
+# Copy this file to `patterns.local.conf` (drop the `.example`) in this same
+# directory to add repo-local guards to damage-control.sh WITHOUT editing
+# damage-control.sh or patterns.yaml — both of which the claude-pattern sync
+# OVERWRITES on every run. `patterns.local.conf` is a SIDECAR the source never
+# ships, so no sync overwrites or deletes it (and a default `*.local.*` exclude +
+# a retired-path guard back that up). See
+# docs/operations/skill-upgrade-propagation.md.
+#
+# GRAMMAR — one `key: value` per line. Blank lines and `#` comments are ignored.
+# This is NOT YAML (deliberately named `.conf`, not `.yaml`, so you don't mirror
+# patterns.yaml's nested shape). Recognized keys:
+#
+#   block:      <ERE>   a Bash-command regex to BLOCK   (grep -E, case-sensitive)
+#   blockCI:    <ERE>   a Bash-command regex to BLOCK   (case-insensitive)
+#   ask:        <ERE>   a Bash-command regex to ASK before running
+#   askCI:      <ERE>   a Bash-command regex to ASK     (case-insensitive)
+#   zeroAccess: <glob>  a file-path fragment/glob to BLOCK for read/write/delete
+#   readOnly:   <glob>  a file-path fragment/glob to block for write/edit/delete
+#   noDelete:   <glob>  a file-path fragment/glob to block for delete only
+#
+# SEMANTICS:
+#   • Additions can only ESCALATE. A local `block:` is evaluated BEFORE the
+#     built-in safe-rm allow and the built-in ask loops, so it wins over a
+#     built-in allow/ask. A local rule can never weaken a built-in guard.
+#   • Values are matched as DATA — never sourced or eval'd. `$(...)`, backticks,
+#     and `;` are matched literally, not executed.
+#   • Fail-open to the BUILT-INS: if this file is missing/unreadable/garbage, the
+#     built-in guards still enforce.
+#   • A malformed line, unknown key, invalid regex, unreadable file, or CRLF is
+#     reported to stderr AND to ~/.claude/logs/security.jsonl (never silently
+#     dropped) — check there if a rule seems inert.
+#
+# CAUTIONS:
+#   • These are regexes fed to `grep -E`. A catastrophic-backtracking pattern can
+#     hang the hook; keep patterns simple.
+#   • A broad rule like `block: .*` denies EVERY command (self-DoS). The failure
+#     direction is over-block, never under-block — but test your rules.
+#
+# Kill switch: DAMAGE_CONTROL_DISABLE_LOCAL=1   Override path: DAMAGE_CONTROL_LOCAL_FILE
+#
+# -----------------------------------------------------------------------------
+# WORKED EXAMPLE — the "MOBILE STORE ONE-WAY DOORS" guard (the real cleanscale/
+# cleanrev block that the sync twice wiped, now expressible as a sidecar):
+# -----------------------------------------------------------------------------
+# block:   eas submit
+# block:   eas build.*--auto-submit
+# block:   --auto-submit
+# block:   asc-submit-build\.mjs
+# block:   androidpublisher
+# block:   fastlane (deliver|supply)
+# ask:     eas build
+
+# (Delete the examples below or replace with your own before use.)
