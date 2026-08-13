@@ -14,7 +14,7 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
-## [2.3.2] — 2026-08-13 (59de1db)
+## [2.3.2] — 2026-08-13 (6fef168)
 
 **Correct a now-false steering-channel claim (CLI 2.1.231 uplift).** The
 `2.1.224 → 2.1.231` version-uplift pass found that cross-session `SendMessage` +
