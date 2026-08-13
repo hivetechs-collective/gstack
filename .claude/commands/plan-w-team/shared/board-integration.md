@@ -38,12 +38,25 @@ Every feature managed by `/plan-w-team` gets a **GitHub Issue** on the project b
 Draft items are lightweight but invisible to GitHub's core features. Issues unlock:
 
 - **PR auto-linking** — `Closes #42` in a PR description creates a bidirectional link
-- **Auto-close on merge** — merged PR closes the Issue, board workflow moves to Done
 - **Comment timeline** — each pipeline stage adds a comment, creating a full audit trail
 - **Cross-reference** — commits mentioning `#42` appear on the Issue automatically
 - **Searchable** — Issues appear in repo search, filters, and GitHub's global search
 - **Assignable** — can assign team members as the team grows
 - **Labelable** — can add labels for additional categorization
+
+### Closing the Issue on ship
+
+GitHub can auto-close an Issue **only** when a merged PR carries a `Closes #N`
+keyword. The canonical `/plan-w-team` workflow is **commit-to-main /
+admin-squash-merge** (`shared/no-github-actions.md`) — there is usually **no such
+PR**, so native auto-close-on-merge never fires and the tracking Issue would stay
+**open forever** (2026-08-13: 16 stale Issues on `veronelazio/claude-pattern` had
+to be closed by hand). So **Step 6 (Ship) closes the Issue directly** via
+`board.sh close` once the ship lands — it does not rely on a `Closes #N` PR. When
+a run genuinely opens a PR, `Closes #N` still works and the direct close is an
+idempotent no-op (`board.sh close` skips an already-closed Issue). Either way,
+**closing the Issue moves its board card to Done** through the "Issue closed →
+Status: Done" workflow. See `05-ship.md` §"Board Update (Auto)".
 
 ## Full Pipeline Flow
 
@@ -116,18 +129,19 @@ Draft items are lightweight but invisible to GitHub's core features. Issues unlo
 ┌─────────────────────────────────────────────────────┐
 │ Step 6: Ship                                        │
 │                                                     │
-│   gh pr create --body "... Closes #42 ..."          │
+│   (PR path) gh pr create "... Closes #42 ..."       │
 │                                                     │
 │   board.sh move "<feature>" "Done"                  │
 │   board.sh comment "<feature>" "## Shipped          │
-│   PR: https://github.com/.../pull/55                │
+│   PR: <url or 'committed directly to main'>         │
 │   Tests: 340+ passing, ★★★                          │
 │   Commits: 5 bisectable"                            │
+│   board.sh close "<feature>" completed \            │
+│     "Shipped in <sha>"    ← direct close on ship    │
 │                                                     │
-│   → PR linked to Issue (bidirectional)              │
-│   → When PR merges: Issue auto-closes               │
+│   → Issue closed directly by Step 6 (no PR needed)  │
 │   → Board workflow: closed → Done (automatic)       │
-│   → Card shows PR status inline                     │
+│   → Closes #N PR (if any) is an idempotent no-op    │
 └──────────────────────┬──────────────────────────────┘
                        ▼
 ┌─────────────────────────────────────────────────────┐
@@ -160,16 +174,16 @@ Draft items are lightweight but invisible to GitHub's core features. Issues unlo
 
 Each `/plan-w-team` stage file has a **Board Integration** / **Board Update** / **Board Comment** section, cited below by exact section heading (stable across edits — line numbers drift). These sections contain the exact `board.sh` commands and comment templates that run automatically during that stage.
 
-| Stage              | File                     | Section                  | Board Operations                                                                   |
-| ------------------ | ------------------------ | ------------------------ | ---------------------------------------------------------------------------------- |
-| Step 1: Spec       | `01-specification.md`    | Board Integration (Auto) | `add` → create Issue with body; `move` → Todo; store `<!-- Board: #42 -->` in spec |
-| Step 2: Tasks      | `02-task-breakdown.md`   | Board Integration (Auto) | `comment` → task checklist, strategy, effort estimate, files touched               |
-| Steps 3-4: Execute | `03-execute.md`          | Board Update (Auto)      | `move` → In Progress; `comment` → strategy, branch, task count, start time         |
-| Step 5: Review     | `04-fix-first-review.md` | Board Update (Auto)      | `move` → Review; `comment` → Pass 1/2 findings, auto-fix count, evaluator verdict  |
-| Step 6: Ship       | `05-ship.md`             | Board Update (Auto)      | `move` → Done; `comment` → PR link, tests, coverage, commits, version              |
-| Step 6: Ship       | `05-ship.md`             | Link PR to Board Issue   | `gh pr create` with `Closes #N` in body for auto-close chain                       |
-| Step 7: Post-Ship  | `06-post-ship.md`        | Board Comment (Auto)     | `comment` → docs updated, cross-doc consistency, deferred items                    |
-| Step 8: Retro      | `07-retro.md`            | Board Comment (Auto)     | `comment` → commits, lines, sessions, self-assessment, lessons                     |
+| Stage              | File                     | Section                  | Board Operations                                                                                                                                                   |
+| ------------------ | ------------------------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Step 1: Spec       | `01-specification.md`    | Board Integration (Auto) | `add` → create Issue with body; `move` → Todo; store `<!-- Board: #42 -->` in spec                                                                                 |
+| Step 2: Tasks      | `02-task-breakdown.md`   | Board Integration (Auto) | `comment` → task checklist, strategy, effort estimate, files touched                                                                                               |
+| Steps 3-4: Execute | `03-execute.md`          | Board Update (Auto)      | `move` → In Progress; `comment` → strategy, branch, task count, start time                                                                                         |
+| Step 5: Review     | `04-fix-first-review.md` | Board Update (Auto)      | `move` → Review; `comment` → Pass 1/2 findings, auto-fix count, evaluator verdict                                                                                  |
+| Step 6: Ship       | `05-ship.md`             | Board Update (Auto)      | `move` → Done; `comment` → PR link, tests, coverage, commits, version; `close` → close the tracking Issue with the ship SHA (commit-to-main has no `Closes #N` PR) |
+| Step 6: Ship       | `05-ship.md`             | Link PR to Board Issue   | `gh pr create` with `Closes #N` in body for auto-close chain (PR path only)                                                                                        |
+| Step 7: Post-Ship  | `06-post-ship.md`        | Board Comment (Auto)     | `comment` → docs updated, cross-doc consistency, deferred items                                                                                                    |
+| Step 8: Retro      | `07-retro.md`            | Board Comment (Auto)     | `comment` → commits, lines, sessions, self-assessment, lessons                                                                                                     |
 
 ### Supporting Files
 
@@ -181,15 +195,15 @@ Each `/plan-w-team` stage file has a **Board Integration** / **Board Update** / 
 
 ## Board Commands Reference
 
-| Command            | Purpose                       | Used By                |
-| ------------------ | ----------------------------- | ---------------------- |
-| `board.sh add`     | Create Issue + add to board   | Step 1 (Spec)          |
-| `board.sh move`    | Change status column          | Steps 1, 3, 5, 6       |
-| `board.sh comment` | Add timeline comment          | Steps 2, 3, 5, 6, 7, 8 |
-| `board.sh close`   | Close issue                   | Manual only            |
-| `board.sh view`    | Show full issue with comments | Any time               |
-| `board.sh list`    | List cards with filters       | Any time               |
-| `board.sh search`  | Find cards by keyword         | Any time               |
+| Command            | Purpose                                          | Used By                |
+| ------------------ | ------------------------------------------------ | ---------------------- |
+| `board.sh add`     | Create Issue + add to board                      | Step 1 (Spec)          |
+| `board.sh move`    | Change status column                             | Steps 1, 3, 5, 6       |
+| `board.sh comment` | Add timeline comment                             | Steps 2, 3, 5, 6, 7, 8 |
+| `board.sh close`   | Close issue (idempotent; optional close comment) | Step 6 (Ship) + manual |
+| `board.sh view`    | Show full issue with comments                    | Any time               |
+| `board.sh list`    | List cards with filters                          | Any time               |
+| `board.sh search`  | Find cards by keyword                            | Any time               |
 
 ## Issue Number Propagation
 
@@ -219,8 +233,12 @@ When the board is cloned from an org template, workflow enabled-state is inherit
 | Auto-add sub-issues | Add to project    | Child issues of project items auto-enroll    |
 | Auto-archive items  | Archive           | Completed items archive after a grace period |
 
-Combined with `Closes #42` in PR descriptions, this creates a fully automatic chain:
-**PR merged → Issue closed → Board card → Done**
+The **"Issue closed → Status: Done"** workflow is the one Step 6 relies on: it
+closes the Issue directly (`board.sh close`, see §"Closing the Issue on ship") and
+the workflow moves the card to Done — no PR required. On the PR path, `Closes #42`
+adds a second, redundant route to the same end state:
+**PR merged → Issue closed → Board card → Done**. Either way the terminal is a
+closed Issue on a Done card.
 
 **From-scratch fallback:** If no org template is discoverable, the board is created with GitHub's 6 default workflows but **none enabled**. Workflows must be enabled manually in the GitHub UI (Project Settings → Workflows) because there is no GraphQL mutation to enable them programmatically.
 

@@ -239,7 +239,7 @@ Use `/fork` before trying a risky decomposition strategy. Fork the session, try 
 
 ## Board Integration (Auto)
 
-After writing the spec, create a GitHub Issue on the project board. Issues (not drafts) enable full PR linking, comment history, and auto-close on merge. Fire-and-forget — failures must NOT block the workflow.
+After writing the spec, create a GitHub Issue on the project board. Issues (not drafts) enable full PR linking and comment history, and Step 6 closes the Issue directly on ship (see `shared/board-integration.md` §"Closing the Issue on ship" — commit-to-main has no `Closes #N` PR to auto-close it). Fire-and-forget — failures must NOT block the workflow.
 
 ```bash
 # Create Issue with spec summary in body — capture the issue number for later stages

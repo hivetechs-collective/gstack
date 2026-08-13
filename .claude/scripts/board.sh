@@ -262,9 +262,10 @@ do_close() {
   load_board_config || return 1
   local identifier="${1:-}"
   local reason="${2:-completed}"
+  local comment="${3:-}"   # optional close comment (e.g. the ship reference)
 
   if [[ -z "$identifier" ]]; then
-    err "Usage: board.sh close <issue-number-or-title> [completed|not_planned]"
+    err "Usage: board.sh close <issue-number-or-title> [completed|not_planned] [close-comment]"
     return 1
   fi
 
@@ -277,7 +278,26 @@ do_close() {
     return 1
   }
 
-  gh issue close "$issue_number" --repo "$repo" --reason "$reason" 2>&1 || {
+  # Idempotency: an already-closed Issue is a no-op — do NOT re-close and do NOT
+  # append a duplicate close comment. This lets a re-run of Step 6 ship (or any
+  # repeated close) be safe. The state probe is best-effort: if it cannot be
+  # determined (gh missing/unauthenticated, network error), $state is empty and
+  # we fall through to the close attempt, which soft-fails below (fail-open).
+  local state
+  state=$(gh issue view "$issue_number" --repo "$repo" --json state --jq '.state' 2>/dev/null || echo "")
+  if [[ "$state" == "CLOSED" ]]; then
+    info "Issue #$issue_number already closed — no-op"
+    return 0
+  fi
+
+  # Reuse the single `gh issue close` path; attach the close comment (ship
+  # reference) when provided so the Issue timeline records why it closed.
+  local close_args=(issue close "$issue_number" --repo "$repo" --reason "$reason")
+  if [[ -n "$comment" ]]; then
+    close_args+=(--comment "$comment")
+  fi
+
+  gh "${close_args[@]}" 2>&1 || {
     warn "Failed to close issue #$issue_number"
     return 0
   }

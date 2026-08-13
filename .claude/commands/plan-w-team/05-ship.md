@@ -152,7 +152,7 @@ Step 8 retro reads this file to score the hygiene dimension.
 
 ## Board Update (Auto)
 
-After successful ship (tests pass, committed, pushed), move the feature card to Done and add a ship summary. Fire-and-forget — failures must NOT block the ship.
+After successful ship (tests pass, committed, **merged to main**), move the feature card to Done, add a ship summary, **and close the tracking Issue**. Fire-and-forget — failures must NOT block the ship. Run this block AFTER the merge lands (§6g push / §6g-ter self-merge) so `git rev-parse HEAD` names the ship commit.
 
 ```bash
 scripts/board.sh move "<feature-name>" "Done" || true
@@ -165,6 +165,21 @@ scripts/board.sh comment "<feature-name>" "## Shipped
 **Commits:** <count> bisectable commits
 **Version:** <version if bumped>
 **Shipped:** $(date -u +%Y-%m-%dT%H:%M:%SZ)" || true
+
+# Close the tracking Issue on ship. The canonical workflow here is
+# commit-to-main / admin-squash-merge — there is NO `Closes #N` PR, so GitHub's
+# native auto-close-on-merge never fires and the Issue would otherwise stay open
+# forever (2026-08-13: 16 stale Issues had to be closed by hand). REUSE
+# board.sh's `close` verb — do NOT re-implement the raw close path. Fail-open
+# (`|| true`, exactly like the move/comment calls above) so a missing Issue,
+# disabled board, absent/unauthenticated gh, or a failed close never blocks the
+# ship; idempotent (board.sh close no-ops on an already-closed Issue). The close
+# comment records the ship reference (merge/ship commit SHA) on the Issue timeline.
+SHIP_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "")
+scripts/board.sh close "<feature-name>" completed "## Auto-closed on ship
+
+Shipped in \`${SHIP_SHA:-main}\` (commit-to-main / admin-squash-merge — no \`Closes #N\` PR to auto-close this Issue).
+Closed by /plan-w-team Step 6." || true
 ```
 
 ## 6a. Review Readiness Check
@@ -832,7 +847,7 @@ This is the ship-time bookend to the post-ship §7a-bis net-new-surface scan: §
 
 Step 0 §0a asks "can we achieve 80% of the value by leveraging what already exists?", and Step 1 writes the answer down as the Reuse Audit's REUSE/EXTEND/BUILD-NEW verdicts. This is where that premise is **re-asserted against what actually shipped**, closing the loop the reuse-first ladder previously left open at review time (`shared/reuse-first.md`).
 
-The detection rung is §5c-quinquies, at Step 5, where a finding can still be *fixed*. This block exists for two things Step 5 cannot give: it covers code written in **later Step-5 fix rounds** (which §5c-quinquies' base..merge diff never saw — the same honest limit §5c-quater records), and it puts a verdict in the ship status block so a supervisor can tell "ran clean" from "never ran".
+The detection rung is §5c-quinquies, at Step 5, where a finding can still be _fixed_. This block exists for two things Step 5 cannot give: it covers code written in **later Step-5 fix rounds** (which §5c-quinquies' base..merge diff never saw — the same honest limit §5c-quater records), and it puts a verdict in the ship status block so a supervisor can tell "ran clean" from "never ran".
 
 ```bash
 # ADVISORY. Never blocks a ship: exits 11 (findings) and 12 (unverified) are
@@ -858,7 +873,7 @@ echo "reuse-verdict-recheck: $REUSE_RECHECK"
 
 Record `reuse-verdict-recheck: <clean|findings|unverified|skipped>` in the End-of-Stage status block. `findings` here means an unhonored verdict survived review or arrived in a fix round — ship, then queue it via `plan-w-team-followups.sh add` (§5d outcome 3) so the next run picks it up. `unverified` is **not** clean: it means the diff half never got scanned.
 
-Why advisory and not enforcing: an earlier design blocked the ship when a cited path had vanished. That collides with a documented reality — consumer-repo-generated specs carry wrong claude-pattern paths — so it would have hard-blocked shipping across every synced consumer on a known data pattern, in repos nobody is watching. A legitimate consolidation that renames the cited file produces the same signal. "The path is gone" is a provable *fact*, not a provable *defect*, and this gate blocks on neither.
+Why advisory and not enforcing: an earlier design blocked the ship when a cited path had vanished. That collides with a documented reality — consumer-repo-generated specs carry wrong claude-pattern paths — so it would have hard-blocked shipping across every synced consumer on a known data pattern, in repos nobody is watching. A legitimate consolidation that renames the cited file produces the same signal. "The path is gone" is a provable _fact_, not a provable _defect_, and this gate blocks on neither.
 
 ## 6d. Version Bump (if applicable)
 

@@ -14,6 +14,23 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.4.0] — 2026-08-13 (b65d03e)
+
+**Your tracking Issue now closes itself when a feature ships.** `/plan-w-team`
+opens a GitHub Issue per feature and, until now, only moved its board card to
+"Done" at ship — it never closed the Issue. GitHub's native auto-close only fires
+when a merged PR carries a `Closes #N` keyword, but the canonical workflow here is
+commit-to-main / admin-squash-merge with no such PR, so every tracking Issue
+stayed open forever (2026-08-13: 16 stale Issues had to be closed by hand). Step 6
+(Ship) now closes the run's Issue directly the moment the ship lands, and stamps
+the ship commit SHA onto the Issue timeline so you can see exactly what closed it.
+It reuses `board.sh`'s existing `close` verb, is fail-open (a missing Issue,
+disabled board, absent `gh`, or a failed close never blocks the ship), and is
+idempotent (re-running against an already-closed Issue is a quiet no-op, and a
+`Closes #N` PR — when a run does open one — is honored with no double-close).
+`board.sh close` gains an optional close-comment argument and an already-closed
+short-circuit; `shared/board-integration.md` documents the direct-close model.
+
 ## [2.3.2] — 2026-08-13 (6fef168)
 
 **Correct a now-false steering-channel claim (CLI 2.1.231 uplift).** The
