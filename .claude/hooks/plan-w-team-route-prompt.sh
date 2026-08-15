@@ -632,8 +632,12 @@ SESSION_ID=$(printf '%s\n' "$PWT_GOAL_OUT" \
 # (verified line 2890 of session JSONL) but the assistant missed it visually,
 # called pwt-goal.sh --worker-only, and produced a double-spawn.
 #
-# Flag is per-session (PARENT_SID) + auto-expires after 60s. Cleared by
-# the worker's first turn (best-effort) or by /plan-w-team retro.
+# Flag is per-session (PARENT_SID). Tier A of the guard treats it as fresh
+# within PWT_DOUBLE_SPAWN_WINDOW_MIN (default 3 min) via mtime; Tier B
+# (PWT-DS1-LIVE) reads the recorded worker_sid from THIS flag beyond that
+# window to check whether the worker is still live (the plan-mode-delay case),
+# so the flag is deliberately NOT auto-deleted — it is aged out by mtime and
+# swept by /plan-w-team retro.
 PARENT_SID_SHORT="${PARENT_SID_FROM_HOOK:0:8}"
 if [ -n "$PARENT_SID_SHORT" ]; then
     FLAG_DIR="$PROJECT_ROOT/.claude/state"

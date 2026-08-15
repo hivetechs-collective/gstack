@@ -140,28 +140,17 @@ PLACEHOLDER_MARKERS=(
   '<YOUR_'
 )
 
-# Returns 0 if the line should be suppressed as a placeholder.
+# HISTORY (B3, 1.33.0; dead-code removal 2026-08-14 row-12 re-audit): a
+# whole-line `is_placeholder_line()` used to live here. The pre-B3 design
+# suppressed an ENTIRE line when any marker appeared ANYWHERE on it, so a real
+# secret on a line that merely also contained `EXAMPLE_`/`SAMPLE_`/`REDACTED`
+# (e.g. in a trailing comment) was silently dropped in BOTH enforcing gates.
+# B3 replaced it with the token-adjacency check below and kept the old function
+# behind a comment claiming it was "retained as a cheap pre-filter for the
+# diff-mode fast path" — but it was never called from anywhere, so that claim
+# was false and the function was dead weight in a security-critical scanner.
+# It is removed; `is_placeholder_token()` is the single suppression decision.
 #
-# NOTE (B3, 1.33.0): this whole-line check is RETAINED only as a cheap pre-filter
-# for the diff-mode fast path (a line with NO marker anywhere cannot be a
-# placeholder, so we can skip the per-token work). It is NOT authoritative for
-# suppression — the authoritative, token-adjacency-aware decision is
-# is_placeholder_token() below. The old design suppressed an ENTIRE line if any
-# marker appeared ANYWHERE on it, so a real secret on a line that merely also
-# contained `EXAMPLE_`/`SAMPLE_`/`REDACTED` (e.g. in a trailing comment) was
-# silently dropped in both enforcing gates. See shared/secret-safety.md and the
-# adversarial-audit brief gap B3.
-is_placeholder_line() {
-  local line="$1"
-  local marker
-  for marker in "${PLACEHOLDER_MARKERS[@]}"; do
-    case "$line" in
-      *"$marker"*) return 0 ;;
-    esac
-  done
-  return 1
-}
-
 # Returns 0 if the MATCHED TOKEN (not merely the line) is a placeholder. B3 fix:
 # require a placeholder marker to be ADJACENT TO or CONTAINED WITHIN the matched
 # token, rather than appearing anywhere on the line. "Adjacent" = the marker's

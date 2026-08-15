@@ -519,6 +519,44 @@ if [ -x "$TEST_GREEN" ]; then
 fi
 ```
 
+### No-regression gate (§6b-regress — ENFORCING, PWT-REGRESS 2.5.0)
+
+`run_tests()` above blocks a suite that is red _as a whole_, but it has no memory
+of the pre-change state, so it can't tell "you broke a previously-green test" from
+"this repo already had a red on its base", and it never notices a _deleted_
+passing test (the suite still exits 0 with fewer tests). This gate closes both by
+diffing the current suite against the run-start baseline captured on the base tree
+(Step 3). It blocks **only on positive evidence** a test green at baseline is now
+red or gone — pre-existing failures do not block, and an un-runnable/unparseable
+suite is indeterminate and never blocks (fail-open, matching `test-green`).
+
+Per the chosen enforcement (**hard-block + escalate**), a real regression both
+refuses the ship (`exit 1`) AND emits the evaluator-recognized hard-gate block so
+an autonomous `/goal` run HALTS to the user (`USER_ESCALATION_HALT`) instead of
+looping. This automates the manual "stash → run on clean main → attribute blame"
+carve-out that was prose-only in `04-fix-first-review.md §5-0`.
+
+```bash
+REG="$(git rev-parse --show-toplevel)/.claude/scripts/plan-w-team-regression-gate.sh"
+if [ -x "$REG" ]; then
+  "$REG" verify --slug "$SLUG"
+  case "$?" in
+    0) echo "✓ Ship gate 6b-regress: no regression vs run-start baseline" ;;
+    3) echo "→ Ship gate 6b-regress: no baseline / no suite — skipping (fail-open)" ;;
+    10)
+      echo "✗ Ship gate 6b-regress: REGRESSION — a test green at run-start is now red or removed."
+      echo "  Fix it now (§5-0 fix-immediately). Intentional test removal → add the waiver:"
+      echo "    .claude/state/plan-w-team-regression-waiver-$SLUG"
+      echo "  then re-run /plan-w-team --ship-only. Kill switch: PLAN_W_TEAM_DISABLE_REGRESSION_GATE=1."
+      # Deterministic hard-gate escalation block (slug + site colocated on ONE line
+      # → the goal-evaluator returns USER_ESCALATION_HALT for site 'regression-halt').
+      printf '{"slug":"%s","stage":"ship","pending_escalations":["regression-halt"]}\n' "$SLUG"
+      exit 1 ;;
+    *) echo "→ Ship gate 6b-regress: unexpected verify rc — surfacing, not blocking" ;;
+  esac
+fi
+```
+
 If the browse binary is available and any task has `scope: "FRONTEND"`, read `shared/browser-qa.md` for browser smoke test instructions. **Browser smoke tests are also gates** — a non-zero exit code from the browse binary blocks the ship.
 
 ### Fix-Immediately at the ship gate (ENFORCING — per §5-0)
@@ -800,6 +838,11 @@ fi
 # only as trustworthy as the detection feeding it). Fail CLOSED — this closes
 # the GIGO hole where a clean LLM-authored count passes a real bug through.
 SCAN_SCRIPT="$(git rev-parse --show-toplevel 2>/dev/null)/.claude/scripts/access-control-content-scan.sh"
+# Tracks whether the backstop actually corroborated the LLM-authored count. Any
+# path that leaves this 1 means the gate is passing on the LLM count ALONE — the
+# exact GIGO condition the backstop exists to remove — so the final line must not
+# claim a corroborated clean. (row-12 re-audit, 2026-08-14)
+AC_SCAN_UNCORROBORATED=0
 if [ -x "$SCAN_SCRIPT" ]; then
   "$SCAN_SCRIPT" --slug "$SLUG" --quiet
   SCAN_RC=$?
@@ -813,12 +856,29 @@ if [ -x "$SCAN_SCRIPT" ]; then
     echo "  assertQaScoped), then re-run §5h so the count reflects reality. Fail-closed."
     exit 1
   elif [ "$SCAN_RC" -eq 2 ]; then
+    AC_SCAN_UNCORROBORATED=1
     echo "⚠ Ship gate 6c-ter: access-control scanner could not produce a diff to corroborate"
-    echo "  the clean count — manually confirm no access-control change shipped unreviewed."
+    echo "  the clean count — no base ref resolved (no --base, and neither origin/HEAD nor"
+    echo "  origin/main is a valid merge-base) and no working-tree changes to fall back on."
+    echo "  The LLM-authored count is passing UNCORROBORATED. Confirm no access-control"
+    echo "  change shipped unreviewed, or re-run the scanner with an explicit --base."
   fi
+else
+  # A missing/non-executable scanner used to make this whole backstop vanish in
+  # silence — the round-2 audit's C7 part-2 concern (a consumer whose sync dropped
+  # the cp line fails open with zero warning). The sync allowlist now pins the
+  # script, but this branch makes the degradation VISIBLE rather than trusting that.
+  AC_SCAN_UNCORROBORATED=1
+  echo "⚠ Ship gate 6c-ter: deterministic scanner not found or not executable at"
+  echo "  $SCAN_SCRIPT — the detection backstop is ABSENT and the LLM-authored count is"
+  echo "  passing UNCORROBORATED. Restore the script (sync-to-project.sh allowlist)."
 fi
 
-echo "✓ Ship gate 6c-ter: no unresolved high-severity access-control findings"
+if [ "$AC_SCAN_UNCORROBORATED" -eq 1 ]; then
+  echo "✓ Ship gate 6c-ter: no unresolved high-severity access-control findings (count UNCORROBORATED — see warning above)"
+else
+  echo "✓ Ship gate 6c-ter: no unresolved high-severity access-control findings (corroborated by the deterministic scanner)"
+fi
 ```
 
 **No ship-side override.** Every other gate has a `user`-acked escape hatch; this one deliberately does not. A confirmed live access-control exploit cannot be allow-listed at ship time. The only way past is to change the verdict at review (Step 5): fix the finding, or demonstrate it is not exploitable (e.g. the surface is provably QA-scoped via `assertQaScoped`), which downgrades its severity and removes it from `access_control_high_unresolved`. This keeps the override where the evidence is — in the review, not the push.
@@ -923,16 +983,56 @@ if [ "$SKILL_SELF_SHIP" = "yes" ]; then
     --bump "$(printf '%s' "$VERSION_DECISION" | tr '[:upper:]' '[:lower:]')" --write)
   echo "  rebumped skill VERSION → $NEXT_VERSION (from current main, not spawn snapshot)"
 else
-  echo "  consumer feature ship → synced skill VERSION left untouched"
+  # ── Consumer feature ship: bind the ship to the PROJECT's own version (PWT-PVER, 2.5.0) ──
+  # The synced skill VERSION stays untouched; instead we ENFORCE that this ship
+  # advanced the consumer project's version artifact vs the run-start baseline
+  # (captured preflight, Step 3). Auto-bump if the run forgot, tie the bump into
+  # the ship commit, and stamp provenance. Fail-open: if no version artifact is
+  # detectable, surface and proceed — never block a ship on a versioning technicality.
+  PVS="$(git rev-parse --show-toplevel)/.claude/scripts/plan-w-team-project-version.sh"
+  PVBASE=".claude/state/plan-w-team-project-version-baseline-$SLUG.json"
+  BASE_VER=$(grep -o '"baseline_version":"[^"]*"' "$PVBASE" 2>/dev/null | head -1 | cut -d'"' -f4)
+  if [ -x "$PVS" ] && "$PVS" detect >/dev/null 2>&1; then
+    if [ -n "$BASE_VER" ]; then
+      "$PVS" verify --baseline "$BASE_VER" >/dev/null 2>&1; VR=$?
+    else
+      VR=20  # no baseline recorded → treat as "not yet bumped" and auto-bump
+    fi
+    case "$VR" in
+      0) echo "  ✓ project version already advanced past baseline ${BASE_VER:-<none>}" ;;
+      20|21)
+        KIND=$(printf '%s' "${VERSION_DECISION:-PATCH}" | tr '[:upper:]' '[:lower:]')
+        case "$KIND" in patch|minor|major) : ;; *) KIND=patch ;; esac
+        if BUMP_OUT=$("$PVS" bump --kind "$KIND" --write); then
+          NEWV=$(printf '%s' "$BUMP_OUT" | grep '^next=' | cut -d= -f2)
+          echo "  ✓ auto-bumped project version ${BASE_VER:-?} → $NEWV ($KIND)"
+          echo "    → include the bumped artifact + CHANGELOG (headed with $NEWV) in the ship commit (§6f)"
+        else
+          echo "  ⚠ project version auto-bump failed — bump it by hand per §6e before pushing (not force-blocking)"
+        fi ;;
+    esac
+    # Provenance: record project_version ↔ this ship (mirrors skill_version at §6-0a-bis).
+    PROJ_VER=$("$PVS" detect 2>/dev/null | grep '^current=' | cut -d= -f2)
+    [ -n "$PROJ_VER" ] && printf '{"slug":"%s","project_version":"%s","recorded_at":"%s","spawn_path":"consumer-ship"}\n' \
+      "$SLUG" "$PROJ_VER" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      > ".claude/state/plan-w-team-project-version-$SLUG.json"
+  else
+    echo "  → no project version artifact detectable — version gate no-op (fail-open)"
+  fi
 fi
 ```
 
 In the `skip` case (any ship whose diff does NOT touch the skill — i.e. every
-consumer-repo feature ship), bump the PROJECT's own version artifact instead,
-following the project's existing conventions (`package.json` / `Cargo.toml` /
-`pyproject.toml` / `VERSION`), and head the CHANGELOG entry with THAT version.
-The synced skill `VERSION` must NEVER be bumped by a consumer feature ship — it
-tracks the skill release, not the project.
+consumer-repo feature ship), the block above now **mechanizes** the project's own
+version bump via `plan-w-team-project-version.sh` (detect → verify-vs-baseline →
+auto-bump if not advanced), following the project's existing conventions
+(`package.json` / `Cargo.toml` / `pyproject.toml` / `pubspec.yaml` / `VERSION`).
+This replaced the prior prose-only reminder that relied on the assistant to
+remember. Head the CHANGELOG entry with THAT version (§6e), and the version↔commit
+binding is closed in §6f (the bumped artifact ships in the final commit + a
+`Project-Version:` trailer). The synced skill `VERSION` must NEVER be bumped by a
+consumer feature ship — it tracks the skill release, not the project. Escape
+hatch: no artifact detectable → fail-open (surface, don't block).
 
 On the self-ship path, head the new `CHANGELOG.md` entry with `$NEXT_VERSION`
 and insert it newest-first.
@@ -959,9 +1059,18 @@ If the working tree has multiple logical changes, split into ordered commits:
 2. Models/services
 3. Controllers/views
 4. Tests
-5. VERSION + CHANGELOG + docs
+5. VERSION + CHANGELOG + docs (skill self-ship) **or** the project version artifact + CHANGELOG (consumer ship)
 
 Each commit must compile and pass tests independently.
+
+**Version↔commit binding (PWT-PVER, 2.5.0).** The version bump from §6d must land in
+this ship — not a follow-up. For a consumer ship, the auto-bumped artifact
+(`package.json` / `Cargo.toml` / `VERSION` / …) and its CHANGELOG entry go in the
+final commit group, and the commit message carries a `Project-Version: <version>`
+trailer so `git log` ties every commit range back to the version it shipped (this
+is the "commits tied to the latest logged version" contract). The recorded
+provenance (`.claude/state/plan-w-team-project-version-<slug>.json`) captures the
+same `project_version` for the completion summary.
 
 ### Use `-o` for path-scoped commits (avoid grabbing staged drift)
 
@@ -1351,6 +1460,46 @@ fi
 ```
 
 The helper enforces every safety invariant itself (containment to `.claude/worktrees/`, uncommitted check, in-use check, idempotency) and returns `skipped:true` with a `safe-skip:*` reason rather than failing when a guard trips — so wiring it unconditionally on the PASS path is safe. Repo-wide accumulated-debt sweeps are the weekly launchd GC, not this per-merge step. Full contract: `docs/operations/worktree-lifecycle.md`. Kill switch: `PWT_WORKTREE_ON_MERGE_DISABLE=1`.
+
+## 6h-bis. Same-Machine Propagation Sync (PWT-SHIPSYNC 2.5.0 — skill self-ship only)
+
+Closes the "commit → push → **sync**" contract in the pipeline. The commit + push
+(§6f/§6g) already distribute a **consumer** feature ship via its own origin — there
+is nothing to propagate, so this step no-ops for consumer ships. It fires only for a
+**skill/source self-ship from the claude-pattern source repo**: once the skill change
+is merged to main, propagate it to the local fleet so consumers don't wait for their
+next session-start auto-sync. **Same-machine only** by design (the chosen scope) — it
+never SSHes to another machine; cross-machine consumers keep auto-syncing on their own
+session start. Fire-and-forget: a sync failure is logged, never `exit 1` (the ship
+already succeeded). Opt-out: `PLAN_W_TEAM_DISABLE_SHIP_SYNC=1`.
+
+```bash
+if [ "${PLAN_W_TEAM_DISABLE_SHIP_SYNC:-0}" != "1" ]; then
+  ROOT=$(git rev-parse --show-toplevel)
+  SHIP_BASE=$(git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || echo HEAD)
+  SELF_SHIP=$(git diff --name-only "$SHIP_BASE" HEAD -- .claude/commands/plan-w-team/ .claude/scripts/ .claude/hooks/ | grep -q . && echo yes || echo skip)
+  SYNC_ALL="$ROOT/.claude/scripts/sync-all-projects.sh"
+  # Source repo = it OWNS the fleet sync script AND a fleet registry (consumers have neither).
+  IS_SOURCE=skip
+  { [ -x "$SYNC_ALL" ] && { [ -f "$HOME/.config/claude-pattern/repos.json" ] || [ -f "$ROOT/.claude/repos.json" ]; }; } && IS_SOURCE=yes
+  if [ "$SELF_SHIP" = "yes" ] && [ "$IS_SOURCE" = "yes" ]; then
+    echo "→ §6h-bis: skill self-ship on source repo → propagating to local fleet (same-machine)…"
+    # --no-commit = files-only (same risk profile as session-start auto-sync). We do
+    # NOT bundle-commit consumers here: that risks the dirty-tree bundling footgun and
+    # leaves them [ahead] unpushed (memories feedback_sync_auto_commit_bundling,
+    # project_sync_all_commit_no_push). Consumers commit on their own next session.
+    if "$SYNC_ALL" "$(dirname "$ROOT")" --no-commit >/tmp/pwt-shipsync-$SLUG.log 2>&1; then
+      echo "  ✓ fleet propagation sync complete (log: /tmp/pwt-shipsync-$SLUG.log)"
+      printf '{"slug":"%s","synced_at":"%s","scope":"same-machine-fleet"}\n' \
+        "$SLUG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > ".claude/state/plan-w-team-sync-confirm-$SLUG.json"
+    else
+      echo "  ⚠ fleet propagation sync reported errors — see /tmp/pwt-shipsync-$SLUG.log (not blocking; consumers auto-sync at session start)"
+    fi
+  else
+    echo "→ §6h-bis: no propagation needed (consumer ship distributed via origin, or not the source repo)"
+  fi
+fi
+```
 
 ## End-of-Stage Status Block (PWT-T5)
 

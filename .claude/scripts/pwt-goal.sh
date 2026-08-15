@@ -1051,6 +1051,132 @@ GUARD
             # supervisor on the prior worker instead.
             echo "worker_sid=$EXISTING_WORKER"
             exit 3
+        elif [ "${PWT_DOUBLE_SPAWN_LIVENESS_DISABLE:-0}" != "1" ]; then
+            # ─── Tier B: LIVENESS EXTENSION (PWT-DS1-LIVE, 2026-08-14) ──────────
+            # Tier A (mtime) only covers a manual launch that lands within
+            # DS_WINDOW_MIN minutes of the route-hook spawn. But when the origin
+            # assistant enters PLAN MODE, the gap between the route-hook spawn
+            # ("Use /plan-w-team to …" → hook fires immediately) and the manual
+            # `pwt-goal.sh --launch` after plan approval is NOT bounded by
+            # wall-clock — plan mode routinely runs 15-20+ minutes. The flag's
+            # mtime ages past the window, Tier A finds nothing, and the manual
+            # launch spawns a SECOND worker off the same base. Field incident
+            # 2026-08-14: two rival v3.20.0 optimizers with incompatible
+            # R240-R245 clobbering the same skill files.
+            #
+            # A wall-clock window is the WRONG invariant here (and it violates
+            # the user's "no wall-clock/turn caps on /plan-w-team" principle).
+            # The correct question is LIVENESS: is the worker the route hook
+            # already spawned STILL ALIVE? If so, this launch duplicates it no
+            # matter how much wall-clock elapsed. We answer it with the same
+            # `claude agents --json` view PWG trusts (via the retry wrapper).
+            #
+            # Fail-safe posture — this tier only ADDS refusals on POSITIVE
+            # confirmation that a recorded worker is still listed. A missing
+            # tool, an unparseable listing, or an empty-after-retries listing
+            # (the documented `claude agents --json` flakiness,
+            # reference_claude_agents_json_flaky) is INDETERMINATE → proceed +
+            # loud stderr marker, NEVER a new false-positive refusal. A valid,
+            # non-empty listing that lacks every recorded worker means they are
+            # all gone → this is a legitimate later run → proceed silently.
+            #
+            # Kill switch: PWT_DOUBLE_SPAWN_LIVENESS_DISABLE=1 reverts to pure
+            # Tier A. Force bypass (PLAN_W_TEAM_FORCE_SPAWN=1) already skips this
+            # whole block via $_PWT_BYPASS.
+            ALL_FLAGS=$(find "$GUARD_DIR" -maxdepth 1 -name 'plan-w-team-hook-spawn-*.flag' 2>/dev/null)
+            if [ -n "$ALL_FLAGS" ] && command -v jq >/dev/null 2>&1; then
+                # Collect the recorded worker sid of every lingering hook-spawn
+                # flag (heredoc, not a pipe — we need LIVE_SIDS after the loop;
+                # read -r reads whole lines so paths with spaces are safe).
+                LIVE_SIDS=""
+                while IFS= read -r _flag; do
+                    [ -n "$_flag" ] || continue
+                    _wsid=$(grep '^worker_sid=' "$_flag" 2>/dev/null | head -1 | cut -d= -f2)
+                    [ -n "$_wsid" ] && LIVE_SIDS="$LIVE_SIDS $_wsid"
+                done <<EOF
+$ALL_FLAGS
+EOF
+                if [ -n "$LIVE_SIDS" ]; then
+                    # Resolve the claude binary (PATH-stripped-safe), mirroring PWG.
+                    DS_CLAUDE_BIN=""
+                    for _loc in \
+                        "$GUARD_PROJECT_ROOT/.claude/scripts/locate-claude.sh" \
+                        "$(dirname "$0")/locate-claude.sh"; do
+                        if [ -x "$_loc" ]; then
+                            DS_CLAUDE_BIN=$("$_loc" 2>/dev/null) && [ -n "$DS_CLAUDE_BIN" ] && break
+                            DS_CLAUDE_BIN=""
+                        fi
+                    done
+                    [ -z "$DS_CLAUDE_BIN" ] && command -v claude >/dev/null 2>&1 && DS_CLAUDE_BIN="claude"
+
+                    DS_AGENTS_RAW=""
+                    if [ -n "$DS_CLAUDE_BIN" ]; then
+                        # Prefer the retry wrapper (absorbs the empty-but-exit-0
+                        # flakiness — the same view statusline/PWG/cleanup trust).
+                        DS_EXT="$GUARD_PROJECT_ROOT/.claude/scripts/claude-agents-extended.sh"
+                        [ -x "$DS_EXT" ] || DS_EXT="$(dirname "$0")/claude-agents-extended.sh"
+                        if [ -x "$DS_EXT" ]; then
+                            DS_AGENTS_RAW=$(CLAUDE_AGENTS_RETRY="${CLAUDE_AGENTS_RETRY:-3}" "$DS_EXT" --json 2>/dev/null)
+                            [ $? -ne 0 ] && DS_AGENTS_RAW=""
+                        fi
+                        if [ -z "$DS_AGENTS_RAW" ] || ! printf '%s' "$DS_AGENTS_RAW" | jq empty >/dev/null 2>&1; then
+                            _ds_try=0
+                            while [ "$_ds_try" -lt "${CLAUDE_AGENTS_RETRY:-3}" ]; do
+                                _ds_try=$((_ds_try + 1))
+                                DS_AGENTS_RAW=$("$DS_CLAUDE_BIN" agents --json 2>/dev/null || echo "")
+                                printf '%s' "$DS_AGENTS_RAW" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 && break
+                                sleep 1
+                            done
+                        fi
+                    fi
+
+                    # Authoritative iff a valid, NON-EMPTY array. Empty / invalid /
+                    # no-tool → indeterminate → proceed + warn (no false positive).
+                    if printf '%s' "$DS_AGENTS_RAW" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+                        DS_LIVE_HIT=$(
+                            printf '%s' "$DS_AGENTS_RAW" | jq -r \
+                                --arg root "$GUARD_PROJECT_ROOT" \
+                                --arg sids "$LIVE_SIDS" '
+                                ($sids | split(" ") | map(select(length > 0) | .[0:8])) as $want
+                                | [ .[]
+                                    | select((.kind // "") == "background")
+                                    | select(((.cwd // "") == "") or ((.cwd // "") | startswith($root)))
+                                    | ((.sessionId // "")[0:8]) as $s
+                                    | select($want | index($s))
+                                    | $s ]
+                                | .[0] // empty
+                            ' 2>/dev/null
+                        )
+                        if [ -n "$DS_LIVE_HIT" ]; then
+                            cat >&2 <<LIVEGUARD
+✗ Double-spawn refused: a route-hook worker (${DS_LIVE_HIT}...) recorded by an
+  earlier hook-spawn flag is STILL LIVE in this project — this manual launch
+  would duplicate it.
+
+  Tier A (mtime) did not fire because the flag has aged past ${DS_WINDOW_MIN} min
+  — the classic PLAN-MODE gap: the route hook spawned the worker when you typed
+  "Use /plan-w-team to …", plan mode then ran long, and the same-turn manual
+  launch landed well outside the wall-clock window. The worker is still running,
+  so the launch is a duplicate regardless of elapsed time (field incident
+  2026-08-14: two rival optimizers off the same base, incompatible R240-R245).
+
+  Act as SUPERVISOR on the existing worker instead. If you have CONFIRMED it is
+  dead/stopped, set PLAN_W_TEAM_FORCE_SPAWN=1 and retry. To disable this
+  liveness check entirely (revert to pure mtime): PWT_DOUBLE_SPAWN_LIVENESS_DISABLE=1.
+LIVEGUARD
+                            echo "worker_sid=$DS_LIVE_HIT"
+                            exit 3
+                        fi
+                        # Valid, non-empty listing but none of the recorded
+                        # workers are in it → all prior route-hook workers are
+                        # gone → legitimate later run → proceed silently.
+                    else
+                        # Indeterminate listing → proceed, but leave a loud marker
+                        # so a silent race window is at least visible.
+                        echo "⚠ PWT-DS1 liveness: agents listing unavailable/empty after retries — proceeding with NO stale-worker liveness confirmation (duplicate risk if a plan-mode worker is still live). Kill switch: PWT_DOUBLE_SPAWN_LIVENESS_DISABLE=1" >&2
+                    fi
+                fi
+            fi
         fi
     fi
 fi

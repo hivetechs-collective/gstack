@@ -36,17 +36,28 @@ run_out() { printf '%s' "$1" | bash "$DC" 2>/dev/null; }
 # stdout is only parsed on exit 0). Capture stderr for block assertions.
 run_err() { printf '%s' "$1" | bash "$DC" 2>&1 >/dev/null; }
 
+# Payloads that interpolate a variable are built HERE, not inline inside the
+# `$(run "…")` substitution. bash 3.2 — the project's stated compat target and
+# macOS's /bin/bash — parses nested escaped double quotes inside a double-quoted
+# command substitution differently from bash 4+/5, which silently mangled the JSON
+# so damage-control saw no secret and returned 0. That made T1/T3 a permanent
+# false-RED under /bin/bash (5 passed / 2 failed) while both were green under a
+# homebrew bash 5.x on PATH — i.e. `make test-skill` was red on mac-mini for a
+# non-code reason, and green locally only by PATH accident. The DEFENSE was never
+# broken: invoking damage-control.sh directly with the same payload blocks (exit 2)
+# under both interpreters. Row-12 re-audit, 2026-08-14.
+T1_PAYLOAD="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"/tmp/a.ts\",\"content\":\"const k='$AWS'\"}}"
+T3_PAYLOAD="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/a.ts\",\"new_string\":\"tok=$GH\"}}"
+
 # T1 — live AWS key in Write content.
-assert "T1 Write live AWS key blocks" "2" \
-  "$(run "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"/tmp/a.ts\",\"content\":\"const k='$AWS'\"}}")"
+assert "T1 Write live AWS key blocks" "2" "$(run "$T1_PAYLOAD")"
 
 # T2 — embedded placeholder marker → allowed.
 assert "T2 Write placeholder allows" "0" \
   "$(run '{"tool_name":"Write","tool_input":{"file_path":"/tmp/a.ts","content":"const k=\"AKIAEXAMPLE0000000Z\""}}')"
 
 # T3 — Edit new_string carries a GitHub token.
-assert "T3 Edit live GH token blocks" "2" \
-  "$(run "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"/tmp/a.ts\",\"new_string\":\"tok=$GH\"}}")"
+assert "T3 Edit live GH token blocks" "2" "$(run "$T3_PAYLOAD")"
 
 # T4 — clean content.
 assert "T4 Write clean content allows" "0" \

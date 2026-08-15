@@ -281,7 +281,12 @@ evidence):
 The pre-existing guards (PWT-DS1 flag-file, PWT-DS2 env signal, the
 classifier itself) do not catch this failure mode:
 
-- **PWT-DS1** is 60s scoped — long-running workers age past it.
+- **PWT-DS1 Tier A** is mtime-scoped (default 3 min) — long-running workers age
+  past it. (Tier B liveness, added 2026-08-14, extends DS1's reach for the
+  _manual-relaunch-after-plan-mode_ case, but it keys on the hook-spawn flag's
+  recorded `worker_sid`; a _deliberate second NL trigger_ for a different feature
+  writes no such duplicate intent, so PWG remains the right guard for THIS
+  situational case.)
 - **PWT-DS2** only fires inside worker processes, not in the origin chat.
 - **Classifier** is textual; this ambiguity is situational, not textual.
 
@@ -309,11 +314,11 @@ still backs up double-spawn at the process level.
 
 **Relationship to other guards**:
 
-| Guard   | Layer               | Catches                                        |
-| ------- | ------------------- | ---------------------------------------------- |
-| PWT-DS1 | process / flag      | Origin-chat double-spawn within 60s window     |
-| PWT-DS2 | env / worker        | Worker re-invoking pwt-goal.sh on its own goal |
-| PWG     | state / agents-list | Deliberate-restart while worker still running  |
+| Guard   | Layer               | Catches                                                                                       |
+| ------- | ------------------- | --------------------------------------------------------------------------------------------- |
+| PWT-DS1 | process / flag      | Same-turn double-spawn: Tier A within the mtime window, Tier B while the flagged worker lives |
+| PWT-DS2 | env / worker        | Worker re-invoking pwt-goal.sh on its own goal                                                |
+| PWG     | state / agents-list | Deliberate-restart while worker still running                                                 |
 
 PWG, PWT-DS1, and PWT-DS2 are complementary — each closes a different
 failure mode in the spawn topology. Together they make spawn behavior

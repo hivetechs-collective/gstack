@@ -56,20 +56,50 @@ fi
 DOCS_WAIVE=".claude/state/plan-w-team-docs-waived-${SLUG}.txt"
 
 # Did the diff touch a CHANGELOG or any doc (.md/.rst/.adoc)?
+#
+# `docs/specs/**` is EXCLUDED (row-12 re-audit). The rest of the contract is
+# unambiguous that a spec does not discharge the documentation duty —
+# `plan-w-team-netnew-surface.sh` excludes `docs/specs/` from the docs it will
+# accept as a reference, `01-specification.md` says "docs/specs/ does NOT satisfy
+# it", and `02-task-breakdown.md`'s N.d rule says the same. This gate accepted it
+# anyway, so a net-new script documented ONLY in `docs/specs/<slug>.md` passed the
+# ship gate while the subscanner reported it UNDOCUMENTED. Since every run writes a
+# spec at that path, the exclusion matters. Reproduced and regression-tested.
+#
+# NOTE (design limitation, deliberately NOT changed here): a CHANGELOG touch alone
+# still satisfies this gate, and /plan-w-team touches CHANGELOG.md on essentially
+# every run — so in this pipeline the gate rarely binds. That is what AC3 and the
+# brief specify ("neither a CHANGELOG entry nor a doc target was touched"), so
+# tightening it to key off the subscanner residual is a SPEC change with fleet-wide
+# blast radius, not a bug fix. Queued as a follow-up rather than slipped in here.
 CHANGED=$(git diff --name-only "$RANGE" 2>/dev/null || true)
-DOC_TOUCHED=$(printf '%s\n' "$CHANGED" | grep -Ei '(^|/)CHANGELOG|\.(md|rst|adoc)$' || true)
+DOC_TOUCHED=$(printf '%s\n' "$CHANGED" \
+  | grep -Ev '^docs/specs/' \
+  | grep -Ei '(^|/)CHANGELOG|\.(md|rst|adoc)$' || true)
 
 # Does net-new public surface remain UNDOCUMENTED (after waivers)?
-NETNEW_RESIDUAL=0
 NETNEW="$SCRIPT_DIR/plan-w-team-netnew-surface.sh"
-if [ -x "$NETNEW" ]; then
-  "$NETNEW" --range "$RANGE" --slug "$SLUG" --quiet || NETNEW_RESIDUAL=$?
+if [ ! -x "$NETNEW" ]; then
+  # Without the subscanner this gate tests NOTHING. Reporting success here is the
+  # C7-part-2 silent-degradation shape (a consumer whose sync dropped the file);
+  # a gate that cannot run must not claim a pass. Fail closed and say why.
+  echo "✗ doc-ship-gate: subscanner missing or not executable at $NETNEW —" >&2
+  echo "  cannot verify that net-new surface is documented. Restore it (sync-to-project.sh" >&2
+  echo "  allowlist), or set PLAN_W_TEAM_NETNEW_DISABLE=1 with a recorded reason." >&2
+  exit 1
 fi
 
+NETNEW_RESIDUAL=0
+"$NETNEW" --range "$RANGE" --slug "$SLUG" --quiet || NETNEW_RESIDUAL=$?
+
+# rc 2 = the subscanner could not resolve a range (fail-toward-review), rc 1 =
+# residual UNDOCUMENTED items. Both mean "cannot prove the surface is documented".
 if [ "$NETNEW_RESIDUAL" -ne 0 ] && [ -z "$DOC_TOUCHED" ] && [ ! -f "$DOCS_WAIVE" ]; then
   echo "✗ doc-ship-gate: the diff adds public surface but no CHANGELOG/doc was touched" >&2
-  echo "  and no docs-waived note exists. Document the new surface, add a CHANGELOG entry," >&2
-  echo "  or record a waiver in $DOCS_WAIVE. (audit gap A3)" >&2
+  echo "  and no docs-waived note exists (subscanner rc=$NETNEW_RESIDUAL). Offending items:" >&2
+  "$NETNEW" --range "$RANGE" --slug "$SLUG" 2>&1 | sed 's/^/    /' >&2 || true
+  echo "  Document each under docs/operations/ (a docs/specs/ entry does NOT satisfy this)," >&2
+  echo "  add a CHANGELOG entry, or record a waiver in $DOCS_WAIVE. (audit gap A3)" >&2
   exit 1
 fi
 echo "✓ doc-ship-gate: documentation present (or no new public surface / waived)"

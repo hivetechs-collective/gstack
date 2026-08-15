@@ -75,6 +75,17 @@ command -v git >/dev/null 2>&1 || { echo "git required" >&2; exit 2; }
 git rev-parse --git-dir >/dev/null 2>&1 || { echo "not a git repo" >&2; exit 2; }
 
 # Resolve the diff range.
+#
+# BASE_UNRESOLVED marks "we never found a real base to diff against". The old
+# fallback was BASE="HEAD", i.e. the range HEAD..HEAD, which is always EMPTY and
+# therefore always reports "clean — all net-new surface is documented" — a
+# fail-OPEN indistinguishable from a genuinely clean run. It fires on the
+# pipeline's DEFAULT path (no --range/--base) in any repo whose default branch is
+# not `main` and which has no remote: a consumer checkout on `master`, a detached
+# CI checkout, a fresh clone before the first fetch. Reported by the row-12
+# re-audit fan-out and reproduced: default path → "clean" rc=0, while the same
+# commit with an explicit range flags the undocumented script.
+BASE_UNRESOLVED=0
 if [ -z "$RANGE" ]; then
   if [ -z "$BASE" ]; then
     DEFBR="${BASE_BRANCH:-main}"
@@ -84,9 +95,15 @@ if [ -z "$RANGE" ]; then
       BASE="$DEFBR"
     else
       BASE="HEAD"
+      BASE_UNRESOLVED=1
     fi
   fi
   RANGE="${BASE}..HEAD"
+fi
+
+if [ "$BASE_UNRESOLVED" = "1" ]; then
+  $QUIET || echo "[netnew-surface] could not resolve a base ref (no --range/--base, no origin/${DEFBR:-main}, no ${DEFBR:-main}) — REVIEW REQUIRED, cannot prove the surface is documented." >&2
+  exit 2
 fi
 
 # Default waiver file from slug.
@@ -250,11 +267,33 @@ done <<EOF
 $DIFF
 EOF
 
+# True when the token ALREADY existed in the tree at the range's base — i.e. it is
+# not net-new surface at all, it was merely re-mentioned in an added line.
+#
+# WHY (row-12 re-audit, 2026-08-14): token extraction reads ADDED lines only, so any
+# pre-existing flag/env-var/symbol that reappears in an added line — a comment that
+# names an existing option, a moved or reindented line, a refactor, a doc-string —
+# was classified as brand-new and, finding no doc that "introduces" it, reported
+# UNDOCUMENTED. That is not cosmetic: §6c-quater is an ENFORCING ship gate on this
+# output, so a phantom item BLOCKS a legitimate ship. Found by this very run — adding
+# a comment mentioning the pre-existing `--diff-file` option to
+# access-control-content-scan.sh produced "UNDOCUMENTED flag --diff-file". A gate
+# that fails on correct work teaches operators to reach for PLAN_W_TEAM_NETNEW_DISABLE
+# or a `*` waiver, which is how an enforcing gate quietly becomes decorative.
+RANGE_BASE="${RANGE%%..*}"
+pre_exists() {
+  local t="$1"
+  [ -n "$RANGE_BASE" ] || return 1
+  [ "$RANGE_BASE" = "HEAD" ] && return 1   # base==HEAD ⇒ empty range; never suppress
+  git grep -qF -e "$t" "$RANGE_BASE" -- . >/dev/null 2>&1
+}
+
 scan_tokens() {  # kind tokens
   local kind="$1" tokens="$2" t
   tokens=$(printf '%s\n' "$tokens" | sed '/^$/d' | sort -u)
   while IFS= read -r t; do
     [ -z "$t" ] && continue
+    pre_exists "$t" && continue
     if is_waived "$t"; then emit "WAIVED" "$kind" "$t"; continue; fi
     if doc_refs "$t" "$ALL_DOCS"; then
       emit "DOCUMENTED" "$kind" "$t"

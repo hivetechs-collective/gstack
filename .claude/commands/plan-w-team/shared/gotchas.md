@@ -46,10 +46,20 @@ anyway (the failure that produced commit `c9cfcd5`). Worse, a worker's own goal 
 **Why**: visual markers are a first line of defense only; correctness must be deterministic.
 
 **Do instead**: rely on the process-level backstops. **PWT-DS1** writes a flag file
-(`.claude/state/plan-w-team-hook-spawn-<parent_sid_short>.flag`); `pwt-goal.sh --worker-only`
-refuses to spawn (exit 3) if a fresh flag from the same parent exists. **PWT-DS2** propagates
-`PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1` into the worker env so a nested call exits 4. Escape hatch
-for legitimate nesting: `PLAN_W_TEAM_FORCE_SPAWN=1`.
+(`.claude/state/plan-w-team-hook-spawn-<parent_sid_short>.flag`); `pwt-goal.sh` (`--worker-only`
+and `--launch`) refuses to spawn (exit 3) if a fresh flag exists (Tier A, mtime window) **or** the
+flag's recorded worker is still live in `claude agents --json` (Tier B liveness, added 2026-08-14).
+**PWT-DS2** propagates `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1` into the worker env so a nested call
+exits 4. Escape hatch for legitimate nesting: `PLAN_W_TEAM_FORCE_SPAWN=1`.
+
+**Sub-gotcha — the plan-mode gap (why Tier B exists)**: Tier A's mtime window is wall-clock. When
+the route hook spawns on "Use /plan-w-team to …" and the origin assistant then enters **plan mode**,
+plan mode routinely runs 15–20+ min; the flag ages out of the window, and a manual `pwt-goal.sh`
+launch _after plan approval_ sails past Tier A and spawns a **second rival worker off the same base**
+(field incident 2026-08-14: two divergent `v3.20.0` optimizers, incompatible `R240–R245`). The lesson
+generalizes: **never make a same-turn duplicate guard purely wall-clock-scoped when the "turn" can
+contain an unbounded pause** (plan mode, a long tool call, an approval wait). Key it on the prior
+worker's _liveness_, not on elapsed time. Kill switch: `PWT_DOUBLE_SPAWN_LIVENESS_DISABLE=1`.
 
 **Source**: `.claude/commands/plan-w-team.md` §Step 3a — Double-spawn guard (PWT-DS1 + PWT-DS2);
 `shared/state-artifacts.md` (flag registration).

@@ -28,6 +28,11 @@ This file:
   ```gitignore
   .claude/state/plan-w-team-untracked-baseline-*.txt
   .claude/state/plan-w-team-retro-*.json
+  # 2.5.0 — consumer version + no-regression baselines/provenance (run-local)
+  .claude/state/plan-w-team-project-version-*.json
+  .claude/state/plan-w-team-test-baseline-*.json
+  .claude/state/plan-w-team-regression-waiver-*
+  .claude/state/plan-w-team-sync-confirm-*.json
   ```
 - Survives compaction because it's on disk, not in agent memory
 - Is keyed by slug so parallel `/plan-w-team` runs on different features don't collide

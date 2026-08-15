@@ -127,7 +127,7 @@ PENDING_ESC='[]'
 LOW_CONF=0
 if [ -f "$SUP_LOG" ] && command -v jq >/dev/null 2>&1; then
     PENDING_ESC=$(jq -R 'fromjson? // empty' "$SUP_LOG" 2>/dev/null | jq -s '
-        def hard_gate_sites: ["push-ack","secret-scan-allow","scope-unlock-for-drift","credential-wall"];
+        def hard_gate_sites: ["push-ack","secret-scan-allow","scope-unlock-for-drift","credential-wall","regression-halt"];
         def valid_reason: (. == "user_ack" or . == "auto_approve_env");
         [ .[] | select((.event=="escalation" or .event=="escalation_resolved")
                        and (.call_site | type == "string")) ]

@@ -120,6 +120,31 @@ scripts/board.sh comment "<feature-name>" "## Execution Started
   ```
   If fast-forward fails (local has diverged), stop and ask the user to resolve before spawning builders. This prevents the stale-base bug where worktrees fork from an old commit.
 - Record the base commit SHA: `BASE_SHA=$(git rev-parse HEAD)`. All worktrees must branch from this exact commit. Log it in the team context so post-merge can verify ancestry.
+- **Capture run-start baselines (provenance + no-regression, 2.5.0)**: On the pristine base tree — before any builder edits — snapshot two things so Step 6 can enforce them mechanically instead of trusting the assistant to remember: (a) the consumer project's current version, so §6d can confirm the ship advanced it; (b) the test-suite state, so §6b blocks a _new_ regression without punishing a pre-existing failure. Both are keyed by SLUG, fail-open, and no-op in repos lacking the respective artifact. This is why the capture must run here (base tree = correct "before"), not at ship.
+  ```bash
+  REPO_ROOT=$(git rev-parse --show-toplevel)
+  PVS="$REPO_ROOT/.claude/scripts/plan-w-team-project-version.sh"
+  REG="$REPO_ROOT/.claude/scripts/plan-w-team-regression-gate.sh"
+
+  # (a) Project-version baseline — record current version + artifact path (skip if none).
+  if [ -x "$PVS" ]; then
+    PV_OUT=$("$PVS" detect 2>/dev/null || true)
+    PV_CUR=$(printf '%s\n' "$PV_OUT" | grep '^current=' | cut -d= -f2)
+    PV_PATH=$(printf '%s\n' "$PV_OUT" | grep '^path=' | cut -d= -f2)
+    if [ -n "$PV_CUR" ]; then
+      printf '{"slug":"%s","captured_at":"%s","path":"%s","baseline_version":"%s"}\n' \
+        "$SLUG" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$PV_PATH" "$PV_CUR" \
+        > ".claude/state/plan-w-team-project-version-baseline-$SLUG.json"
+      echo "✓ version baseline: $PV_CUR ($PV_PATH)"
+    else
+      echo "→ no project version artifact detected — §6d version gate will no-op"
+    fi
+  fi
+
+  # (b) No-regression baseline — run the suite on the base tree (fail-open; rc 3 = no suite).
+  #     PLAN_W_TEAM_DISABLE_REGRESSION_GATE=1 skips this and the §6b verify.
+  [ -x "$REG" ] && "$REG" baseline --slug "$SLUG" || true
+  ```
 - **Verify worktree.baseRef and reach the spec** (Claude Code 2.1.133+ guard): Claude Code's `worktree.baseRef` default flipped to `"fresh"` in v2.1.133. With `fresh`, builder worktrees branch from `origin/<default>` and CANNOT see the lead's local-only spec commit (Step 1) or task metadata commit (Step 2). Without this check, builders spawn into a tree missing the spec they're supposed to implement.
 
   ```bash

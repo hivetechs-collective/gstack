@@ -86,6 +86,49 @@ RC=$( cd "$D"; "$SS" --range HEAD~1..HEAD --quiet 2>/dev/null; echo $? )
 assert "T7 no new surface → exit 0" "0" "$RC"
 rm -rf "$D"
 
+# T8 — a PRE-EXISTING flag merely re-mentioned in an added line is NOT net-new.
+# Regression for the row-12 re-audit finding: token extraction reads added lines
+# only, so re-naming an existing option in a new comment was reported UNDOCUMENTED
+# and, via the ENFORCING §6c-quater gate, blocked a legitimate ship.
+D=$(newrepo)
+( cd "$D"; printf '#!/bin/bash\n# usage: tool.sh --diff-file <path>\ncase "$1" in --diff-file) :;; esac\n' > .claude/scripts/tool.sh
+  echo "tool.sh runbook --diff-file" > docs/operations/tool.md
+  git add -A; git commit -qm base )
+( cd "$D"; printf '# note: --diff-file must be readable\n' >> .claude/scripts/tool.sh; git add -A; git commit -qm mention )
+OUT=$( cd "$D"; "$SS" --range HEAD~1..HEAD 2>/dev/null ); RC=$?
+assert "T8 re-mentioned pre-existing flag → exit 0" "0" "$RC"
+case "$OUT" in *"UNDOCUMENTED flag"*) F=1 ;; *) F=0 ;; esac
+assert "T8 no phantom UNDOCUMENTED flag" "0" "$F"
+rm -rf "$D"
+
+# T9 — a genuinely NEW flag is still caught (positive control for T8's suppression).
+D=$(newrepo)
+( cd "$D"; printf '#!/bin/bash\n' > .claude/scripts/tool2.sh
+  echo "tool2.sh runbook" > docs/operations/tool2.md
+  git add -A; git commit -qm base )
+( cd "$D"; printf 'case "$1" in --brand-new-option) :;; esac\n' >> .claude/scripts/tool2.sh; git add -A; git commit -qm addflag )
+OUT=$( cd "$D"; "$SS" --range HEAD~1..HEAD 2>/dev/null ); RC=$?
+assert "T9 genuinely new flag exit 1" "1" "$RC"
+case "$OUT" in *"--brand-new-option"*) F=1 ;; *) F=0 ;; esac
+assert "T9 reports --brand-new-option" "1" "$F"
+rm -rf "$D"
+
+# T10 — an UNRESOLVABLE base must fail toward review (exit 2), not report "clean".
+# The old BASE="HEAD" fallback produced the always-empty range HEAD..HEAD, so the
+# pipeline's DEFAULT path (no --range/--base) reported "clean — all net-new surface
+# is documented" in any repo whose default branch is not `main` and which has no
+# remote: a consumer on `master`, a detached CI checkout, a fresh clone.
+D=$(newrepo)
+( cd "$D"; git branch -m master >/dev/null 2>&1
+  printf '#!/bin/bash\n' > .claude/scripts/brand-new.sh
+  git add -A; git commit -qm add )
+RC=$( cd "$D"; "$SS" --quiet >/dev/null 2>&1; echo $? )
+assert "T10 unresolvable base → review-required (2)" "2" "$RC"
+# Positive control: the same commit with a real range still flags the file.
+RC=$( cd "$D"; "$SS" --range HEAD~1..HEAD --quiet >/dev/null 2>&1; echo $? )
+assert "T10 control: real range still flags (1)" "1" "$RC"
+rm -rf "$D"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

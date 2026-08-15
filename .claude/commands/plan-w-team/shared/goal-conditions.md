@@ -28,7 +28,7 @@ The derived `/goal` command embeds:
 
 - Instruction to use `/plan-w-team` to accomplish the request
 - Definition-of-done anchors (transcript markers Anthropic's Haiku evaluator looks for to decide SUCCESS)
-- Hard-gate escalation triggers (push-ack, secret-scan-allow, scope-unlock-for-drift, low-confidence streak)
+- Hard-gate escalation triggers (push-ack, secret-scan-allow, scope-unlock-for-drift, credential-wall, regression-halt, low-confidence streak)
 - **No wall-clock or turn caps by design** — the only stopping points are goal-success and hard-gate halts
 
 Template variants for different work types (`--type feature` is default):
@@ -115,9 +115,21 @@ retro §8d checks for the Step-7 artifact `plan-w-team-postship-$SLUG.json` **be
 - **`--ship-only` / `--retro` flows** that legitimately never run Step 7 are exempt (no
   public-surface diff to document); the score is `n/a` without a finding.
 
-This is the artifact-exists precondition the brief (gap A5) requires: previously nothing
-verified the post-ship artifact existed before SUCCESS, so a run could reach `retro-complete`
-with zero docs and no failing signal.
+This addresses the brief's gap A5 — previously nothing looked for the post-ship artifact
+at all, so a run reached `retro-complete` with zero docs and no signal whatsoever.
+
+> **Enforcement status (verified 2026-08-14, row-12 re-audit) — it is a SIGNAL, not a
+> gate.** Read literally, "precondition" overstates what the code does. `07-retro.md`
+> sets `RETRO_SUCCESS=1` unconditionally at the top of the stage (:41), long before the
+> §8d artifact check (:184); a missing artifact scores doc-hygiene `n/a` and prints the
+> note, but nothing withholds the `retro-complete` anchor, and `post-ship-complete` is
+> not among the evaluator's SUCCESS anchors (`stage=retro-complete` + `workflow_lock=done`
+>
+> - feature ACs). So a run that skips Step 7 is now _visible_ — a real improvement over
+>   the pre-1.33.0 silence — but it is not _blocked_. Making it blocking needs the run to
+>   distinguish "full lifecycle that added public surface" from the legitimately-exempt
+>   `--ship-only` / `--retro` / docs-only flows before refusing, which is a new blocking
+>   gate on the SUCCESS path and is queued as its own scoped run.
 
 ## The Condition (copy-paste template)
 
@@ -133,10 +145,10 @@ When `/plan-w-team` opens `/goal`, it uses this condition verbatim (with `<SLUG>
     the authoritative success anchor.
 
 (2) USER_ESCALATION_HALT: The transcript contains a `status` or `summary`
-    block with a non-empty `pending_escalations` array referencing any of
-    `push-ack`, `secret-scan-allow`, or `scope-unlock-for-drift`. This is
-    a hard-gate awaiting user response — pipeline cannot proceed
-    autonomously past these sites.
+    block with a non-empty `pending_escalations` array referencing any hard-gate
+    label (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`,
+    `credential-wall`, `regression-halt`). This is a hard-gate awaiting user
+    response — pipeline cannot proceed autonomously past these sites.
 
 (3) LOW_CONFIDENCE_STREAK: The transcript contains 3 consecutive supervisor
     `summary` blocks where `goal_progress` mentions "low-confidence" OR
@@ -281,13 +293,15 @@ The evaluator (`.claude/hooks/plan-w-team-goal-evaluator.sh`) handles this by re
 
 This propagation is automatic — no code changes needed in stage files. As long as spawns are registered via `plan-w-team-register-spawn.sh` (already wired into `pwt-goal.sh --launch` and `plan-w-team-route-prompt.sh` per the self-cleanup work), the parent goal terminates cleanly when its workers do.
 
-The 3 hard-gate labels referenced in `USER_ESCALATION_HALT` are:
+The hard-gate labels referenced in `USER_ESCALATION_HALT` are:
 
 - `push-ack` (Step 6 — irreversible push)
 - `secret-scan-allow` (Step 6 — security allowlist modification)
 - `scope-unlock-for-drift` (Step 2/3 — mid-flight scope expansion)
+- `credential-wall` (Step 6 — a non-interactive credential/token wall hit during deploy/ship)
+- `regression-halt` (Step 6 §6b-regress — a test green at run-start is now red/removed; **PWT-REGRESS 2.5.0**)
 
-These are defined in `shared/orchestrator-interception.md` Classifier Table as the 3 `user`-verdict sites.
+The first three are defined in `shared/orchestrator-interception.md` Classifier Table as the original `user`-verdict sites; `credential-wall` and `regression-halt` are later additive gates. All are matched by the same `pending_escalations` + slug-colocation logic in `plan-w-team-goal-evaluator.sh`.
 
 ## Status-Block Schema
 
@@ -450,7 +464,7 @@ The goal state file optionally carries a `next_batch_spec` object. When set on r
 
 Chained spawns are subject to the same deterministic guards as any other `pwt-goal.sh --worker-only` call:
 
-- **PWT-DS1** (process-level flag file): if `.claude/state/plan-w-team-hook-spawn-<sid>.flag` is fresh (within `PWT_DOUBLE_SPAWN_WINDOW_MIN`, default 3 minutes), the spawn refuses with exit 3 (`PWT_DS1_DUPLICATE`). The supervisor SURFACES instead.
+- **PWT-DS1** (process-level flag file): the spawn refuses with exit 3 (`PWT_DS1_DUPLICATE`) if a `.claude/state/plan-w-team-hook-spawn-<sid>.flag` is fresh within `PWT_DOUBLE_SPAWN_WINDOW_MIN` (default 3 minutes) — Tier A — **or** its recorded worker is still live in `claude agents --json` — Tier B (PWT-DS1-LIVE, closes the plan-mode gap where the flag aged out but the worker is still running). The supervisor SURFACES instead. Kill switch `PWT_DOUBLE_SPAWN_LIVENESS_DISABLE=1` (Tier B only); `PLAN_W_TEAM_FORCE_SPAWN=1` bypasses both.
 - **PWT-DS2** (env-cascade): the chained worker inherits `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1`, so any `Use /plan-w-team to …` text in the worker's own goal cannot re-trigger the routing classifier. Subsequent `pwt-goal.sh` calls inside the worker exit 4 (`PWT_DS2_CASCADE`).
 - **PWT-WF1** (workflow guard): every bg session `pwt-goal.sh` spawns (worker + supervisor) carries `CLAUDE_CODE_DISABLE_WORKFLOWS=1` in `LAUNCH_ENV`. Dynamic Workflows (the `Workflow` tool) auto-run in headless/bg mode and can otherwise trigger a nested workflow fan-out that bypasses gated dispatch and the RAM-budget gate. **The durable guard is the env var `CLAUDE_CODE_DISABLE_WORKFLOWS`, which is keyword-independent — NOT prose-token avoidance.** This matters because the dynamic-workflow trigger keyword was renamed `workflow` → `ultracode` in 2.1.160; an earlier framing that relied on avoiding the literal token "workflow" in prose would be both stale (the trigger is now `ultracode`) and fragile (any future rename re-breaks it). The env var stays correct across keyword renames. Concretely, `/effort ultracode` must stay **excluded from bg/autonomous paths** (it would breach this guard); `xhigh` remains the effort ceiling for headless `/goal` runs. The guard makes headless `/goal` runs deterministically Agent()-tool-only. Env-var name verified in the CLI 2.1.156 binary string table. **Interactive sessions are NOT guarded** — there an operator may legitimately author a workflow / use `/effort ultracode` (e.g. this very evaluation run).
 

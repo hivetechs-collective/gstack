@@ -86,6 +86,27 @@ Regression coverage: `.claude/scripts/plan-w-team-next-version.test.sh`
 an explicit control proving the old spawn-snapshot bump would have collided at
 1.37.0). bash 3.2 compatible.
 
+## Consumer-project version enforcement (PWT-PVER, 2.5.0)
+
+The consumer half of the split used to be **prose-only** — §6d told the assistant to
+"bump the project's own version artifact" but nothing detected, wrote, or verified it,
+so a run could ship without a bump. It is now mechanized end-to-end:
+
+- **Detect / bump / verify** helper: `.claude/scripts/plan-w-team-project-version.sh`
+  finds the project's canonical version artifact (`package.json` → `Cargo.toml` →
+  `pyproject.toml` → `pubspec.yaml` → `VERSION`/`version.txt`), bumps it by semver with a
+  **surgical** in-place edit (only the version declaration — a coincidental dependency
+  pinned to the same string is never touched), and compares current-vs-baseline.
+- **Baseline**: `03-execute.md` preflight records the project version on the pristine
+  base tree → `plan-w-team-project-version-baseline-<slug>.json`.
+- **Gate**: §6d `verify`s the ship advanced the version; if not, it **auto-bumps** by the
+  §6d change-size decision, heads the CHANGELOG with it, and folds it into the ship commit
+  with a `Project-Version:` trailer (the version↔commit binding). Fail-open: no artifact
+  detectable → surface, don't block.
+- Coverage: `.claude/scripts/plan-w-team-project-version.test.sh` (npm/cargo/pyproject/
+  pubspec/plain, surgical-replace preservation, verify advanced/unchanged/backwards,
+  prerelease, no-artifact). bash 3.2 compatible.
+
 ## Where the Version Surfaces
 
 | Surface                                                                          | Field(s)                                                         |

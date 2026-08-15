@@ -187,6 +187,18 @@ if [ ! -f "$POSTSHIP" ]; then
   # note the skip in the friction log rather than silently passing.
   echo "§8d doc-hygiene: n/a (docs-skipped — no post-ship artifact at $POSTSHIP)"
   DOC_HYGIENE_SCORE="null"
+elif ! jq -e '.netnew_surface | has("undocumented")' "$POSTSHIP" >/dev/null 2>&1; then
+  # UNREADABLE ≠ CLEAN (row-12 re-audit, 2026-08-14). Every read below ends in
+  # `|| echo 0`, so a corrupt artifact, an empty `{}`, or one carrying `scan_rc: 1`
+  # with no `undocumented` key all yielded UNDOC=0 and scored a PERFECT 5/5. That is
+  # the same laundering shape as the §7f check, and it lands on the LAST line of
+  # defense: §8d is what prints "N items shipped UNDOCUMENTED — investigate why §7f
+  # did not block". With both failing open on the same malformed input, a run that
+  # shipped undocumented surface scores clean twice and nothing ever says otherwise.
+  echo "⚠ §8d doc-hygiene: post-ship artifact at $POSTSHIP is unreadable or lacks"
+  echo "  .netnew_surface.undocumented — scoring n/a, NOT clean. Regenerate it (§7e)"
+  echo "  or investigate why Step 7 wrote a malformed artifact."
+  DOC_HYGIENE_SCORE="null"
 else
   # Read the artifact the post-ship stage wrote (the real consumer the registry promises).
   UNDOC=$(jq -r '.netnew_surface.undocumented | length' "$POSTSHIP" 2>/dev/null || echo 0)

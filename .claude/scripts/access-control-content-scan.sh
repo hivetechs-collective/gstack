@@ -28,8 +28,14 @@
 #   0  scanned cleanly — no suspects in the added hunks
 #   3  suspect(s) found — review required (deny-by-default); written to the
 #      suspects file and echoed (unless --quiet)
-#   2  could not produce a diff (e.g. unreadable --diff-file) — FAIL TOWARD
-#      review-required; the caller must treat this as "cannot prove clean"
+#   2  could not produce a diff to scan — FAIL TOWARD review-required; the
+#      caller must treat this as "cannot prove clean". Two causes:
+#        (a) an unreadable --diff-file;
+#        (b) no base ref could be resolved (no --base, and neither origin/HEAD
+#            nor origin/main is a valid merge-base) AND the working tree is
+#            clean, so there is no range to scan at all. This is the normal
+#            shape at ship time in a repo without the expected remote — it must
+#            NOT be reported as "clean" (see get_diff below).
 set -uo pipefail
 
 SLUG=""
@@ -69,8 +75,20 @@ get_diff() {
   if [ -n "$base" ]; then
     git diff --unified=0 "$base"...HEAD 2>/dev/null && return 0
   fi
-  # Last resort: working tree vs HEAD (covers an un-committed in-progress diff).
-  git diff --unified=0 HEAD 2>/dev/null
+  # No base ref resolved. Working-tree-vs-HEAD is the last resort — it covers an
+  # un-committed in-progress diff (the Step-5 mid-review case). But an EMPTY
+  # result here does NOT mean "clean": it means no range was ever found to scan
+  # (no remote, an unusual default branch, a detached CI checkout) and the tree
+  # happens to be fully committed — which is the NORMAL state at ship time, where
+  # §6c-ter calls us. Returning 0 there is a fail-OPEN: the caller reads "no
+  # access-control signals" from a scan that examined nothing, which is exactly
+  # the GIGO hole this scanner exists to close. Fail toward review-required
+  # instead, per docs/specs/pwt-design-principles-audit.md ("Fail-OPEN to 'no
+  # candidates' is WRONG → fail toward 'review required'").
+  local fallback
+  fallback="$(git diff --unified=0 HEAD 2>/dev/null)"
+  [ -z "$fallback" ] && return 2
+  printf '%s\n' "$fallback"
 }
 
 DIFF="$(get_diff)" || {
@@ -82,20 +100,68 @@ DIFF="$(get_diff)" || {
 # ── CS-1..CS-4 token shapes (from shared/owasp-top10-mapping.md) ──────────────
 # CS-1 privilege-bearing field WRITE. `role` is intentionally omitted (too noisy
 # vs ARIA/type usage); the high-signal sensitive fields are kept.
-CS1='(platformRole|tenantId|orgId|isQaUser|ownerId|isAdmin|permissions|passwordHash|balance|[A-Za-z_]+Cents)[[:space:]]*[:=]'
+# Field list carries BOTH conventions for the unambiguous PRIVILEGE fields: the
+# camelCase names TS/Drizzle codebases use and their snake_case equivalents
+# (Python/Rails/raw-SQL surfaces). `is_admin` is the same privilege field as
+# `isAdmin` — missing it was a convention gap, not a deliberate scope choice
+# (row-12 re-audit). The optional `"']` before the operator catches bracket-notation
+# writes (`user["isAdmin"] = …`), the same assignment through different syntax.
+#
+# DELIBERATELY NOT ADDED: snake_case IDENTIFIER fields (`tenant_id`, `owner_id`,
+# `org_id`). Their camelCase twins are here for historical reasons, but `X_id = $2`
+# is overwhelmingly a WHERE *predicate* — i.e. correctly tenant-scoped code — not a
+# privilege write. Adding them fired CS-1 on ordinary well-scoped SQL, and a gate
+# that flags correct code on every run is a gate operators learn to override. The
+# write-vs-predicate ambiguity in the existing camelCase identifier entries is a
+# known limitation recorded in the row-12 re-audit report, not fixed here.
+CS1='(platformRole|tenantId|orgId|isQaUser|ownerId|isAdmin|permissions|passwordHash|balance|[A-Za-z_]+Cents|is_admin|is_qa_user|password_hash|platform_role)["'"'"']?]?[[:space:]]*[:=]'
 # CS-2 request-body spread into an ORM update/insert.
 CS2='\.\.\.[[:space:]]*(req\.body|body|input|payload)|Object\.assign\(|\.set\(\{[[:space:]]*\.\.\.|\.values\(\{[[:space:]]*\.\.\.'
 # CS-3 service / bypass / QA / admin-token-gated handler.
-CS3='QA_SIM_TOKEN|_BYPASS_|[xX]-[A-Za-z-]*bypass|service[_-]?token'
+# `SERVICE_TOKEN` is the canonical env-var spelling, but the pattern only had the
+# lowercase form while its siblings here are uppercase literals — so the most common
+# real spelling was the one shape this signal missed (row-12 re-audit).
+CS3='QA_SIM_TOKEN|_BYPASS_|[xX]-[A-Za-z-]*bypass|service[_-]?token|SERVICE[_-]?TOKEN'
 # CS-4 where/query-by-id (BOLA) — flagged only when the SAME line lacks a
 # tenant/owner predicate (the missing-predicate is the actual signal).
 # `where[(:]` covers both the call form `where(eq(t.id` AND Drizzle's relational
 # object-property form `where: eq(t.id` / `where: (eq(t.id` (round-2 audit §3.5
 # soft edge — the regex previously missed the `where:` form).
-CS4='where[(:][[:space:]]*[(]?eq\([A-Za-z0-9_]+\.id|findById|WHERE[[:space:]]+[A-Za-z0-9_.]*id[[:space:]]*='
+# Arms, in order: Drizzle call/relational `where(eq(t.id` and `where: eq(t.id`;
+# Prisma/TypeORM object form `where: { id …}` (row-12 re-audit — Prisma is a dominant
+# TS ORM and a BOLA floor that cannot see it has a hole where it matters most);
+# find/getById helpers; and raw SQL `WHERE … id =` in EITHER case. Every arm is still
+# suppressed by a same-line tenant/owner predicate via $TENANT below, so the
+# tenant-scoped forms of all of these stay clean.
+CS4='where[(:][[:space:]]*[(]?eq\([A-Za-z0-9_]+\.id|where[[:space:]]*:[[:space:]]*\{[^}]*\bid\b|(find|get)ById|[Ww][Hh][Ee][Rr][Ee][[:space:]]+[A-Za-z0-9_.]*id[[:space:]]*='
 TENANT='tenant|org|owner|userId|user_id|accountId|account_id'
 
 record() { printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$SUSPECTS_FILE"; }
+
+# ── Non-code skip (row-12 re-audit, 2026-08-14) ───────────────────────────────
+# CS-1..CS-4 describe violations in EXECUTABLE code. The patterns necessarily also
+# match the places that DEFINE and DOCUMENT them — this script's own regexes, its
+# test fixtures, the CS catalog in shared/owasp-top10-mapping.md, the §5b
+# descriptions in 04-fix-first-review.md, the CHANGELOG, and audit reports. Before
+# this skip, any run that touched the scanner or its docs flagged itself: the
+# re-audit that FIXED the scanner produced 32 suspects, every one of them a pattern
+# definition, a test fixture, or prose about a pattern — and §6c-ter then failed the
+# ship CLOSED (scan_rc=3 with an honest count of 0).
+#
+# This is the same self-reference problem secret-scan.sh solved by excluding its own
+# source and its auto-generated catalog block, and the same shape as the netnew-surface
+# phantom fixed alongside it: a gate that fires on correct work teaches operators to
+# bypass it. Markdown is prose and .claude/state/** is run bookkeeping; neither is a
+# shipped endpoint. A genuine violation lives in a code file, which is still scanned.
+should_skip_file() {
+  case "$1" in
+    *.md|*.mdx|*.rst|*.adoc)                          return 0 ;;  # documentation
+    .claude/state/*|*/.claude/state/*)                return 0 ;;  # run bookkeeping
+    *access-control-content-scan.sh)                  return 0 ;;  # own source
+    *access-control-content-scan.bats)                return 0 ;;  # own fixtures
+    *) return 1 ;;
+  esac
+}
 
 cur_file=""
 while IFS= read -r line; do
@@ -108,6 +174,7 @@ while IFS= read -r line; do
       # Skip the file-header '+++' (already handled) and empty additions.
       content="${line#+}"
       [ -z "$content" ] && continue
+      should_skip_file "$cur_file" && continue
       if printf '%s' "$content" | grep -qE "$CS1"; then record "CS-1" "$cur_file" "$(printf '%s' "$content" | sed 's/^[[:space:]]*//' | cut -c1-160)"; fi
       if printf '%s' "$content" | grep -qE "$CS2"; then record "CS-2" "$cur_file" "$(printf '%s' "$content" | sed 's/^[[:space:]]*//' | cut -c1-160)"; fi
       if printf '%s' "$content" | grep -qE "$CS3"; then record "CS-3" "$cur_file" "$(printf '%s' "$content" | sed 's/^[[:space:]]*//' | cut -c1-160)"; fi

@@ -65,6 +65,29 @@ RC=$( cd "$D"; PLAN_W_TEAM_NETNEW_DISABLE=1 "$GATE" --slug run --range HEAD~1..H
 assert "T5 kill switch allows" "0" "$RC"
 rm -rf "$D"
 
+# T6 — a docs/specs/ touch does NOT discharge the documentation duty (row-12
+# re-audit). netnew excludes docs/specs from the docs it will accept, and
+# 01-specification.md says specs do not satisfy it; this gate accepted them anyway,
+# so a net-new script documented ONLY in the run's own spec passed the ship gate.
+D=$(newrepo)
+( cd "$D"; mkdir -p docs/specs
+  printf 'export const widget=1\n' > src/foo.ts
+  echo "spec mentioning widget and src/foo.ts" > docs/specs/my-feature.md
+  git add -A; git commit -qm add )
+RC=$( cd "$D"; "$GATE" --slug run --range HEAD~1..HEAD >/dev/null 2>&1; echo $? )
+assert "T6 docs/specs alone does NOT satisfy" "1" "$RC"
+rm -rf "$D"
+
+# T7 — a missing/non-executable subscanner must fail CLOSED. Without it the gate
+# tests nothing, and reporting a pass is the C7-part-2 silent-degradation shape.
+D=$(newrepo)
+( cd "$D"; printf 'export const widget=1\n' > src/foo.ts; git add -A; git commit -qm add )
+FAKE="$D/fakebin"; mkdir -p "$FAKE"
+cp "$GATE" "$FAKE/plan-w-team-doc-ship-gate.sh"    # sibling subscanner deliberately absent
+RC=$( cd "$D"; "$FAKE/plan-w-team-doc-ship-gate.sh" --slug run --range HEAD~1..HEAD >/dev/null 2>&1; echo $? )
+assert "T7 missing subscanner fails closed" "1" "$RC"
+rm -rf "$D"
+
 echo
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

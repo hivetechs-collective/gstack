@@ -46,3 +46,7 @@ tests/skill/scenarios/
 **/.claude/state/worktree-deps-hash-agent-*.json
 **/.claude/state/bg-agents-cache.json
 **/.claude/state/bg-agents-cache.json.tmp
+
+# Subdirectory test corpora (gitignore `*` does not cross `/`)
+.claude/scripts/**/*.test.sh
+.claude/hooks/**/*.test.sh

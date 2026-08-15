@@ -1,6 +1,6 @@
 # Secret Safety — Defense-in-Depth Model for /plan-w-team
 
-Shared reference for the three secret-leak prevention layers and the authoritative pattern catalog. Loaded by `05-ship.md` at the 6a-ter gate and by `pre-commit-quality.sh` indirectly (through the shared scanner).
+Shared reference for the four secret-leak prevention layers and the authoritative pattern catalog. Loaded by `05-ship.md` at the 6a-ter gate and by `pre-commit-quality.sh` indirectly (through the shared scanner).
 
 This file is the contract. If you change a pattern, a placeholder rule, or a defense layer, you edit it here and nowhere else.
 
@@ -16,37 +16,43 @@ This file is the contract. If you change a pattern, a placeholder rule, or a def
 │  Modes: --staged | --paths FILE... | --diff RANGE | --json | --help        │
 │  Exit:  0 clean · 1 live-shape secret found · 2 bad args / internal error   │
 └─────────────────────────────────────────────────────────────────────────────┘
-              ▲                       ▲                       ▲
-              │ --staged              │ --diff                │ --paths
-              │                       │                       │
-    ┌─────────┴─────────┐   ┌─────────┴──────────┐  ┌─────────┴──────────┐
-    │  Layer 1          │   │  Layer 2           │  │  Layer 3           │
-    │  PRE-COMMIT       │   │  SHIP GATE         │  │  SYNC FILTER       │
-    │  pre-commit-      │   │  05-ship.md        │  │  sync-to-          │
-    │  quality.sh       │   │  §6a-ter           │  │  project.sh        │
-    │                   │   │                    │  │  SECRET_GUARD_     │
-    │  Blocks commit    │   │  Blocks ship + PR  │  │  FILTERS (rsync    │
-    │  with exit 2      │   │  with exit 1       │  │  filename-only     │
-    │                   │   │                    │  │  include/exclude)  │
-    │  Runs:            │   │  Runs:             │  │                    │
-    │  • --staged       │   │  • --staged        │  │  Runs at sync      │
-    │                   │   │  • --diff          │  │  time — prevents   │
-    │                   │   │    origin/<base>.. │  │  template-         │
-    │                   │   │    HEAD            │  │  distribution from │
-    │                   │   │                    │  │  leaking secrets   │
-    │                   │   │                    │  │  across projects.  │
-    └───────────────────┘   └────────────────────┘  └────────────────────┘
+      ▲                  ▲                       ▲                       ▲
+      │ --paths          │ --staged              │ --diff                │ --paths
+      │                  │                       │                       │
+┌─────┴──────────┐ ┌─────┴─────────┐   ┌─────────┴──────────┐  ┌─────────┴──────────┐
+│  Layer 0       │ │  Layer 1      │   │  Layer 2           │  │  Layer 3           │
+│  WRITE-TIME    │ │  PRE-COMMIT   │   │  SHIP GATE         │  │  SYNC FILTER       │
+│  damage-       │ │  pre-commit-  │   │  05-ship.md        │  │  sync-to-          │
+│  control.sh    │ │  quality.sh   │   │  §6a-ter           │  │  project.sh        │
+│  (PreToolUse)  │ │               │   │                    │  │  SECRET_GUARD_     │
+│                │ │  Blocks commit│   │  Blocks ship + PR  │  │  FILTERS (rsync    │
+│  BLOCKS the    │ │  with exit 2  │   │  with exit 1       │  │  filename-only     │
+│  Write/Edit    │ │               │   │                    │  │  include/exclude)  │
+│  before it     │ │  Runs:        │   │  Runs:             │  │                    │
+│  reaches disk  │ │  • --staged   │   │  • --staged        │  │  Runs at sync      │
+│                │ │               │   │  • --diff          │  │  time — prevents   │
+│  check_secret_ │ │               │   │    origin/<base>.. │  │  template-         │
+│  content()     │ │               │   │    HEAD            │  │  distribution from │
+│                │ │               │   │                    │  │  leaking secrets   │
+└────────────────┘ └───────────────┘   └────────────────────┘  └────────────────────┘
 ```
 
-### Why three layers
+### Why four layers
 
 Each layer catches leaks the others cannot:
 
-- **Pre-commit** catches secrets before they touch git object storage. Cheap, local, per-developer.
+- **Write-time (Layer 0, B1 / 1.33.0)** is the earliest possible interception: the
+  `damage-control.sh` PreToolUse hook extracts the content of a `Write` (`content`) or
+  `Edit` (`new_string`) call, runs it through the shared scanner, and **blocks the tool
+  call outright** — the secret never reaches the working tree, let alone the index. Kill
+  switch: `DAMAGE_CONTROL_DISABLE_SECRET_CONTENT=1`. Before 1.33.0 this layer was
+  *advertised* (in `03-execute.md` and a `secretDetection:` block in `patterns.yaml`)
+  but not implemented — the config had drifted from the scanner and enforced nothing.
+- **Pre-commit** catches secrets before they touch git object storage. Cheap, local, per-developer. It also catches anything written while Layer 0 was disabled or bypassed.
 - **Ship gate** catches secrets that slipped through pre-commit (hook disabled, repo cloned without hooks, amend bypass) by scanning both staged content AND the full branch diff. This is where history-rewrite decisions happen.
 - **Sync filter** is rsync-level filtering for the claude-pattern distribution itself. It prevents one project's `.env.local` from being copied into another project during a sync — a structurally different failure mode that pattern-matching cannot solve, because the receiving repo has no commit history to scan yet.
 
-Defense in depth means no layer is load-bearing alone. The sync filter exists even though scanners exist; the scanner exists even though filters exist.
+Defense in depth means no layer is load-bearing alone. The sync filter exists even though scanners exist; the scanner exists even though filters exist; and Layer 0 blocking a write does not excuse the three layers behind it, because a worker can disable a hook but cannot disable the ship gate.
 
 ## Vendor / SSO Console Access — Hard Guardrail (REQ-5, SAFETY)
 
@@ -176,12 +182,37 @@ RETRIEVE_  OPTIONAL_  EXAMPLE_    SAMPLE_     REDACTED
 xxxxxxxx   XXXXXXXX   <your-      <YOUR_
 ```
 
-Rules:
+Rules (**token-adjacency semantics — B3, 1.33.0**; implemented by
+`is_placeholder_token()` in `secret-scan.sh`):
 
-1. **Case-sensitive substring match on the full line** — the marker and the pattern shape must coexist on the same line.
-2. **Prefix markers are anchored by intent, not by regex** — the scanner looks for `YOUR_` anywhere on the line, not `^YOUR_`. This catches both `SECRET=YOUR_KEY_HERE` and `# key goes here: YOUR_KEY_HERE`.
-3. **The marker must NOT overlap with the match**. Current implementation checks the line, not the tokens specifically, which means `YOUR_sk_live_...` would be suppressed. This is a known low-risk false negative — the attacker path requires prepending a marker to their own credential, which is an absurd self-own.
-4. **Comments do not suppress matches.** A live `sk_live_...` inside a Python comment is still a leak because git diff sees it regardless of syntax. If you must keep a revoked key as a test fixture, use the allow-file override (see `05-ship.md §6a-ter`), not a comment.
+1. **The marker must be adjacent to, or contained within, the MATCHED TOKEN** — not
+   merely present somewhere on the line. "Contained" means the token itself embeds the
+   marker (e.g. a provider prefix followed directly by `EXAMPLE_` and filler).
+   "Adjacent" means the marker's nearest occurrence is separated from the token by at
+   most `SECRET_SCAN_PLACEHOLDER_GAP` (default **3**) separator characters, so
+   `KEY="YOUR_<token>"` still suppresses.
+2. **Case-sensitive substring match** — markers are matched literally, and the marker
+   and the token must coexist on the same line.
+3. **Prefix markers are anchored by intent, not by regex** — the scanner looks for
+   `YOUR_` near the token, not `^YOUR_`. This catches both `SECRET=YOUR_KEY_HERE` and
+   `# key goes here: YOUR_KEY_HERE`.
+4. **A distant marker does NOT suppress.** A real secret on a line whose only marker
+   sits in a trailing comment (`API_KEY=<live-token>  # not the EXAMPLE_ one`) IS
+   reported. This is the B3 fix: the pre-1.33.0 whole-line heuristic suppressed that
+   entire line in **both** enforcing gates — the silent-drop failure the adversarial
+   audit recorded as gap B3.
+5. **Marker overlap with the token is treated as a placeholder** — a marker prepended
+   directly onto a live token still suppresses it (rule 1's "contained" arm). This is a
+   known, accepted false negative: the attacker path requires prepending a placeholder
+   marker to your own live credential, which is a self-own.
+6. **Comments do not suppress matches.** A live payment-provider secret key inside a Python comment is still a leak because git diff sees it regardless of syntax. If you must keep a revoked key as a test fixture, use the allow-file override (see `05-ship.md §6a-ter`), not a comment.
+
+> **Writing about secrets in this repo**: because the B1 write-time scan (below) and
+> the ship-gate `--diff` scan both read CONTENT, prose that spells out a literal
+> credential shape is itself blocked at write time. Describe shapes structurally, or
+> assemble them at runtime via concatenation in test fixtures — never paste a literal
+> that matches a catalog pattern. (Verified the hard way during the 2026-08-14
+> re-audit: an illustrative literal in this very section tripped the block.)
 
 ## How to Add a New Pattern
 
@@ -296,7 +327,10 @@ If the offending commit is already pushed to a protected branch (production, mai
 Document these here rather than hiding them behind "TODO" comments in the scanner.
 
 - **Entropy-only secrets are out of scope**. If the provider's credential has no distinguishing prefix (raw 32-char base64), the scanner cannot catch it without producing unacceptable false-positive rates. Accept this limitation or use a service-specific detector.
-- **The placeholder heuristic is lexical, not semantic.** A line like `secret = retrieve_from_vault()` is correctly suppressed (contains `RETRIEVE_`) but so is the typo `RETRIEVE_sk_live_...`. This is the known false negative from §Placeholder Heuristic rule 3.
+- **The placeholder heuristic is lexical, not semantic.** It is now scoped to the
+  matched token (§Placeholder Heuristic rule 1), so a distant marker no longer
+  suppresses a real secret. The residual false negative is rule 5's overlap arm: a
+  marker prepended directly onto a live token still suppresses it.
 - **Binary files are skipped.** The scanner skips files that fail `grep -Iq ''` (binary sniff) or exceed `--max-filesize` (default 1 MB). A secret hidden inside a JPEG EXIF field is not caught.
 - **Scanner invocation is the responsibility of the integration point.** `pre-commit-quality.sh` invokes the scanner; if the hook is disabled or skipped, Layer 1 is disabled. The ship gate (Layer 2) is the safety net — do not assume a hook bypass is innocent.
 
@@ -345,16 +379,32 @@ hooks/scripts; the infra-runbook requirement is its config-surface analog).
 
 ### Enforcement
 
-`06-post-ship.md §7f` refuses to mark Step 7 complete when the §1c credential signal
-fired but no secret-handling deliverable is present in the diff (C1), or when an
-infra-glob surface changed without a runbook/config-reference touch (C2). The signal
-is recorded in the spec at §1c and re-checked at post-ship; the duty is auditable in
-the post-ship artifact (`secret_handling_doc`, `netnew_surface.infra_runbook`). Full
-operator-facing writeup: [`docs/operations/pwt-doc-secret-handling.md §"Secret-handling documentation duty (C1/C2)"`](../../../docs/operations/pwt-doc-secret-handling.md).
+`06-post-ship.md §7f` lists both duties as refusal conditions: Step 7 must not be
+marked complete when the §1c credential signal fired but no secret-handling
+deliverable is present (C1), or when an infra-glob surface changed without a
+runbook/config-reference touch (C2). The signal is recorded in the spec at §1c and
+re-checked at post-ship; the duty is auditable in the post-ship artifact
+(`secret_handling_doc`, `netnew_surface.infra_runbook`).
+
+> **Enforcement status (verified 2026-08-14, row-12 re-audit) — read this before
+> relying on C1/C2 as a gate.** §7f's deterministic check implements the **A1/A6 arm
+> only** (`netnew_surface.undocumented`). The **C1 and C2 arms are prose**: bullets
+> instructing the lead not to complete Step 7, with no code that refuses. They cannot
+> be gated as currently modelled, because `"n/a"` in both artifact fields is ambiguous
+> — it means *both* "no credential/infra signal fired, correctly not applicable" *and*
+> "signal fired but the deliverable is missing". Making them enforcing requires
+> deterministic signal fields (both are derivable from the diff: a new secret-bearing
+> env var by name shape, an infra-glob touch by changed path) plus a new enforcing
+> gate — a change with fleet-wide blast radius, so it is queued as its own scoped run
+> rather than folded into an audit. Until then, treat C1/C2 as a documented duty the
+> lead is responsible for, not a backstop that will catch you.
+
+Full operator-facing writeup: [`docs/operations/pwt-doc-secret-handling.md §"Secret-handling documentation duty (C1/C2)"`](../../../docs/operations/pwt-doc-secret-handling.md).
 
 ## References
 
 - `.claude/scripts/secret-scan.sh` — scanner implementation and pattern catalog source
+- `.claude/hooks/damage-control/damage-control.sh` — Layer 0 wiring (`check_secret_content`)
 - `.claude/hooks/pre-commit-quality.sh` — Layer 1 wiring
 - `.claude/commands/plan-w-team/05-ship.md §6a-ter` — Layer 2 gate + allow-file format
 - `.claude/scripts/sync-to-project.sh` `SECRET_GUARD_FILTERS` — Layer 3 rsync filters

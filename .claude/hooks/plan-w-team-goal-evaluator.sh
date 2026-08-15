@@ -845,7 +845,11 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         # "pending_escalations":["credential-wall"], so the run halts for the
         # operator to provision the missing secret. Additive — the original three
         # hard-gate sites are unchanged.
-        for SITE in push-ack secret-scan-allow scope-unlock-for-drift credential-wall; do
+        # regression-halt (2.5.0): the §6b no-regression gate emits
+        # "pending_escalations":["regression-halt"] when a test green at run-start
+        # is now red/removed. Per the chosen enforcement (hard-block + escalate),
+        # an autonomous run HALTS to the user rather than shipping the regression.
+        for SITE in push-ack secret-scan-allow scope-unlock-for-drift credential-wall regression-halt; do
             # grep -B/-A scope: any pending_escalations line referencing $SITE
             # must have $SLUG within 10 lines (status block size).
             # Space-tolerant (2026-05-25): pretty-printed blocks render

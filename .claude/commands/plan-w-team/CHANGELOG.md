@@ -14,6 +14,213 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.5.0] — 2026-08-14 (6894602)
+
+**Three things you always remind the agent to do — bump the version, don't regress, and
+commit→push→sync — are now enforced by the pipeline itself instead of relying on the
+assistant to remember.** All three are fail-safe (escape-hatched, no-op where inapplicable)
+because they run in every consumer's ship.
+
+- `feat` **Consumer version ↔ commit binding (PWT-PVER).** A new
+  `plan-w-team-project-version.sh` detects the project's own version artifact
+  (`package.json` / `Cargo.toml` / `pyproject.toml` / `pubspec.yaml` / `VERSION`), bumps it
+  by semver with a **surgical** in-place edit (a dependency pinned to the same string is
+  never touched), and verifies a ship advanced it. Step 3 preflight captures the version
+  baseline on the base tree; §6d now **auto-bumps** the consumer version if the run forgot,
+  heads the CHANGELOG with it, folds it into the ship commit, and stamps a
+  `Project-Version:` trailer + provenance artifact — replacing the prior prose-only reminder.
+  Fail-open: no artifact detectable → surface, don't block. (29-case test, bash 3.2.)
+- `feat` **No-regression gate (PWT-REGRESS).** A new `plan-w-team-regression-gate.sh`
+  captures the test-suite state on the base tree at execute-start, then at §6b-regress
+  re-runs and **hard-blocks + escalates** (`USER_ESCALATION_HALT` via the new
+  `regression-halt` hard-gate site) on positive evidence a test green at run-start is now
+  red **or a passing test was removed** — the two regressions the coarse whole-suite gate
+  can't see. Pre-existing failures don't block; an un-runnable/unparseable suite is
+  indeterminate and never blocks (fail-open). Automates the manual
+  "stash → run on clean main → attribute blame" carve-out. Waiver file for intentional test
+  removal; `PLAN_W_TEAM_DISABLE_REGRESSION_GATE=1` kill switch. (13-case test, bash 3.2.)
+- `feat` **Same-machine propagation sync at ship (PWT-SHIPSYNC).** §6h-bis closes the
+  "commit → push → **sync**" contract: on a skill self-ship from the source repo it
+  propagates the merged change to the local fleet (files-only, `--no-commit`), fire-and-forget,
+  `PLAN_W_TEAM_DISABLE_SHIP_SYNC=1` opt-out. Consumer ships need no sync (origin distributes
+  them); cross-machine consumers keep their own session-start auto-sync (same-machine scope
+  by design).
+- `feat` `regression-halt` added to the goal-evaluator hard-gate site loop and
+  `plan-w-team-surface-status.sh` `hard_gate_sites`, so an autonomous `/goal` run halts to
+  the user on a detected regression instead of looping.
+- `docs` New state artifacts registered (`plan-w-team-project-version-baseline-*`,
+  `plan-w-team-project-version-*`, `plan-w-team-test-baseline-*`,
+  `plan-w-team-regression-waiver-*`, `plan-w-team-sync-confirm-*`) + gitignore patterns
+  (source `.gitignore` + consumer guidance in `untracked-hygiene.md`); `versioning.md`,
+  `goal-conditions.md` (hard-gate list), and §6d/§6f/§6b prose updated.
+
+## [2.4.4] — 2026-08-14 (210e866)
+
+**PWT-DS1 double-spawn guard was wall-clock-scoped and missed the plan-mode gap.** Field
+incident 2026-08-14: the user typed "Use /plan-w-team to …", the route hook spawned a worker
+immediately, the origin assistant then spent ~15–20 min in **plan mode**, and the manual
+`pwt-goal.sh` launch after plan approval sailed past the guard — producing **two rival
+`v3.20.0` optimizers off the same base with incompatible `R240–R245`**. Root cause: PWT-DS1's
+only mechanism was the mtime freshness window (`PWT_DOUBLE_SPAWN_WINDOW_MIN`, default 3 min),
+and the gap it must cover — route-hook spawn → same-turn manual launch — is **not bounded by
+wall-clock** when the turn contains a long plan-mode pause. A wall-clock cap on the *protection*
+also directly violated the "no wall-clock/turn caps on `/plan-w-team`" principle.
+
+- `fix` **PWT-DS1 gains a liveness tier (PWT-DS1-LIVE), `pwt-goal.sh`.** The guard is now two
+  tiers: **Tier A** (unchanged) refuses on a flag fresh within the mtime window — offline-safe,
+  no tooling. **Tier B** (new) fires *beyond* the window: it reads the recorded `worker_sid`
+  from any lingering hook-spawn flag and refuses iff that worker is **still live** in
+  `claude agents --json` (via the `claude-agents-extended.sh` retry wrapper — the same view PWG
+  trusts). Protection now expires when the prior worker actually dies, not on a clock, so the
+  plan-mode delay no longer opens a duplicate window.
+- Fail-safe posture: Tier B only *adds* refusals on **positive** liveness confirmation. A
+  missing tool / unparseable / empty-after-retries listing (the documented `claude agents --json`
+  flakiness) is INDETERMINATE → proceed + loud stderr marker — never a new false-positive
+  refusal. A valid, non-empty listing lacking every recorded worker → all prior workers gone →
+  legitimate later run → proceed silently. Covers both `--worker-only` and `--launch`.
+- Escape hatches: `PWT_DOUBLE_SPAWN_LIVENESS_DISABLE=1` reverts to pure Tier A;
+  `PLAN_W_TEAM_FORCE_SPAWN=1` bypasses both tiers (unchanged).
+- `test` `pwt-goal-double-spawn-guard.test.sh` +5 ACs (AC8–AC12): stale-flag+live-worker →
+  refuse (the incident); stale-flag+worker-gone → spawn; liveness kill switch; force bypass
+  beyond window; `--worker-only` liveness refusal. Now 30/30, bash-3.2 clean. The fake `claude`
+  learned the `agents` subcommand so liveness queries don't inflate the spawn counter.
+- `docs` PWT-DS1 Tier A/Tier B split propagated to `plan-w-team.md` (§Step 3a + mermaid),
+  `shared/gotchas.md` (G2 + a new "plan-mode gap" sub-gotcha), `shared/state-artifacts.md`,
+  `shared/supervisor-protocol.md`, `shared/goal-conditions.md`, and
+  `shared/orchestrator-interception.md` (guard matrix + the stale "DS1 is 60s scoped" note).
+
+## [2.4.3] — 2026-08-14 (fb22821)
+
+**The retro's doc-hygiene reader scored a perfect 5/5 on unreadable input.** Found by
+re-auditing the A4–A6 cluster adversarially: that cluster's auditor completed but never
+returned findings across four requests, and since each of the other three clusters had
+yielded a HIGH defect in territory already called clean, the lead re-examined it by
+applying the specific fail-open shapes the others had found.
+
+- `fix` **§8d `doc_hygiene` fails open (`07-retro.md`).** Every read in the block ends
+  in `|| echo 0`, so corrupt JSON, an empty `{}`, and an artifact carrying `scan_rc: 1`
+  with no `undocumented` key all produced `UNDOC=0` → score **5/5** (positive control: a
+  well-formed artifact with two undocumented items correctly scored 1). Same laundering
+  shape as the §7f check — and it lands on the LAST line of defense, since §8d is what
+  prints "N net-new surface item(s) shipped UNDOCUMENTED — investigate why §7f did not
+  block". With §7f and §8d failing open on the same malformed artifact, a run that
+  shipped undocumented surface scored clean twice and nothing contradicted it.
+  Unreadable is now scored `n/a`, never clean.
+- `docs` A4(a) reclassified VERIFIED → PARTIAL in the audit report. The 1.33.0 phantom
+  reader IS genuinely gone — that part of the 1.33.0 claim holds — but the real reader
+  it was replaced with trusts its input.
+- The same pass **corroborated** the rest of the cluster: `04-fix-first-review.md:249-295`
+  maps every non-zero symmetry-check exit (1, 2, 3 environment-failure, 4, and a
+  catch-all) to `exit 1` fail-closed — the most disciplined exit handling in the audited
+  surface — and A6 survived a targeted evasion (an unrelated `docs/operations` page
+  merely containing the new script's stem did NOT satisfy the requirement).
+
+## [2.4.2] — 2026-08-14 (e407767)
+
+**The documentation gates were weaker than 2.4.1 reported.** The row-12 re-audit's
+four-agent fan-out returned after 2.4.1 shipped, carrying five reproducible defects
+the lead's solo pass had missed. Each was re-verified independently before being
+accepted, and one auditor recommendation was tested and **rejected**. 2.4.1's verdict
+table is corrected in the audit report: A1 and A3 were not VERIFIED, C2 is REFUTED
+rather than PARTIAL, and AC13 hid a permanently-red test.
+
+- `fix` **`plan-w-team-netnew-surface.sh` reported "clean" without scanning anything
+  (HIGH).** When no base ref resolved it fell back to `BASE=HEAD`, i.e. the always-empty
+  range `HEAD..HEAD`, and reported "all net-new surface is documented". This fires on the
+  pipeline's DEFAULT path (no `--range`/`--base`) in any repo whose default branch is not
+  `main` and which has no remote — a consumer on `master`, a detached CI checkout, a
+  fresh clone. Now exits 2 (review-required). Same fail-open class as the
+  access-control scanner fix in 2.4.1, in the doc half of the surface.
+- `fix` **`docs/specs/*.md` satisfied the documentation ship gate (HIGH).**
+  `plan-w-team-netnew-surface.sh` deliberately excludes `docs/specs/` from the docs it
+  will accept, `01-specification.md` says specs do not discharge the duty, and
+  `02-task-breakdown.md`'s `N.d` rule agrees — but the gate accepted them, so a net-new
+  script documented only in the run's own spec passed while the subscanner reported it
+  UNDOCUMENTED. Every run writes a spec at that path, so the exclusion matters.
+- `fix` **a missing subscanner made the doc ship gate pass silently (HIGH).** The
+  `[ -x ]` guard left the residual at 0, so a consumer whose sync dropped the file got a
+  green gate that tested nothing — the C7-part-2 silent-degradation shape. Now fails
+  closed with the restore instruction.
+- `fix` **`damage-control-secret-content.test.sh` was permanently RED under `/bin/bash`
+  3.2**, the project's stated compat target: T1/T3 interpolate a variable inside nested
+  escaped quotes within `$( )`, which bash 3.2 parses differently, mangling the JSON so
+  the hook saw no secret. `make test-skill` was therefore red on mac-mini for a non-code
+  reason and green locally only by PATH accident. Payloads hoisted out of the
+  substitution; 7/7 under both 3.2 and 5.x. The defense itself was never broken.
+- `fix` **consumer `.gitignore` missed the subdirectory test corpus.** `sync-to-project.sh`
+  wrote `.claude/hooks/*.test.sh`, and gitignore `*` does not cross `/`, so
+  `.claude/hooks/damage-control/damage-control-secret-content.test.sh` rsynced into every
+  consumer untracked-and-not-ignored — precisely the "could not detach HEAD" intake abort
+  the self-heal block exists to prevent. Adds `**/*.test.sh` forms plus an idempotent
+  top-up for consumers that already ran the marker-guarded block.
+- `docs` A3's remaining weakness is recorded, not silently patched: a CHANGELOG touch
+  still satisfies the gate, and /plan-w-team touches CHANGELOG on every run, so it rarely
+  binds. That is what AC3 and the brief specify, so tightening it is a spec change with
+  fleet-wide blast radius — queued with the other four findings rather than slipped in.
+- Tests: doc-ship-gate 5 → 7, netnew-surface 14 → 16, damage-control-secret-content
+  green under both interpreters.
+
+## [2.4.1] — 2026-08-14 (4dfac64)
+
+**The access-control detection floor no longer reports "clean" without having
+scanned anything.** `access-control-content-scan.sh` is the deterministic floor
+beneath the §6c-ter ship gate — the gate that exists because
+`access_control_high_unresolved` is authored by an LLM and cannot be trusted. Its
+diff resolution fell back to `git diff HEAD` when no base ref resolved; on a
+fully-committed tree that succeeds with empty output, so the scanner reported
+`exit 0 — clean` for a HEAD full of live CS-1..CS-3 signals. Ship time is exactly
+when trees are committed, so this fired at §6c-ter in any repo where `origin/HEAD`
+and `origin/main` do not resolve (consumer checkouts without the expected remote, a
+non-`main` default branch, a detached CI checkout) — the precise fail-OPEN
+`pwt-design-principles-audit.md` forbids. An unresolvable base with no working-tree
+changes now returns `2` (review-required); the dirty-tree fallback is preserved for
+the Step-5 mid-review case.
+
+- `fix` **§6c-ter honesty**: an `rc=2` result, or a missing/non-executable scanner
+  (the round-2 C7 part-2 silent-degradation path), no longer falls through to an
+  unqualified "no findings" line — both now mark the count `UNCORROBORATED` and say
+  so. Blocking behaviour is deliberately unchanged: making `rc=2` fatal would wedge
+  ships in every consumer without the expected remote.
+- `fix` **CS-1..CS-4 convention gaps**: six realistic shapes the floor missed, each
+  the same violation written differently — bracket-notation and snake_case privilege
+  writes (CS-1), uppercase `SERVICE_TOKEN` (CS-3, the canonical spelling was the one
+  the pattern lacked), and Prisma/TypeORM `where: { id }`, `getById`, and lowercase
+  raw SQL (CS-4, where a BOLA floor blind to Prisma has a hole where BOLA lives).
+  Nine negative cases confirm tenant-scoped and benign forms stay clean.
+- `docs` **`shared/secret-safety.md` reconciled with the code it governs.** The file
+  declares itself the single contract for placeholder rules and defense layers, and
+  had drifted on both: its Placeholder Heuristic still described pre-B3 whole-line
+  suppression (the scanner has used token adjacency since 1.33.0), and its
+  defense-in-depth model listed three layers, omitting B1's write-time PreToolUse
+  scan — the earliest interception in the system. Now token-adjacency semantics and
+  a four-layer model with `damage-control.sh` as Layer 0.
+- `fix` **the scanner no longer flags itself.** CS-1..CS-4 necessarily match the files
+  that DEFINE and DOCUMENT them, so any run touching the scanner or its docs flagged
+  itself and failed §6c-ter closed (`scan_rc=3` with an honest count of 0). This audit
+  hit it live: 32 suspects, every one a pattern definition, a test fixture, or prose
+  about a pattern. Fixed with a documented non-code skip (`*.md`/`*.rst`/`*.adoc`,
+  `.claude/state/**`, the scanner's own source and fixtures) — the same self-reference
+  fix `secret-scan.sh` already carries for its pattern catalog.
+- `fix` **`plan-w-team-netnew-surface.sh`** no longer reports a PRE-EXISTING token as
+  net-new. Extraction reads added lines only, so re-mentioning an existing flag/env-var
+  /symbol in a comment or a moved line was classified brand-new and, via the ENFORCING
+  §6c-quater gate, blocked a legitimate ship. Tokens present at the range base are now
+  skipped. Found by this run against its own branch (`--diff-file`).
+- `fix` **dead code removed**: `secret-scan.sh`'s `is_placeholder_line()` had zero
+  call sites while carrying a comment claiming it served as a diff-mode pre-filter.
+- `docs` **enforcement claims corrected.** Three gates were documented as enforcing but
+  are prose-only: A5's `post-ship-complete` "precondition" (`07-retro.md` sets
+  `RETRO_SUCCESS=1` before the check, and the anchor is never withheld) and §7f's C1/C2
+  refusal conditions (only the A1/A6 arm is implemented in code). `goal-conditions.md`,
+  `shared/secret-safety.md` and the ops page now carry explicit enforcement-status
+  notes; making them enforcing needs new blocking gates and is queued.
+- Tests: `access-control-content-scan.bats` 9 → 23 cases (BDD-named);
+  `plan-w-team-netnew-surface.test.sh` 10 → 14 assertions.
+- Audit report: [`docs/operations/pwt-doc-secret-handling-reaudit-2026-08-14.md`](../../../docs/operations/pwt-doc-secret-handling-reaudit-2026-08-14.md)
+  — closes recursive-followup row `[12]`, and records what "24 gaps" actually means
+  (24 raw findings consolidated into the 12 numbered gaps A1–A6/B1–B4/C1–C2; the 24
+  are enumerated nowhere).
+
 ## [2.4.0] — 2026-08-13 (b65d03e)
 
 **Your tracking Issue now closes itself when a feature ships.** `/plan-w-team`

@@ -559,8 +559,8 @@ This is the executable machinery behind the "Broken access control (content sign
 
 - **CS-1 privilege-bearing field write** — an assignment to `role`, `platformRole`, `tenantId`/`orgId`, `isQaUser`, `ownerId`, `isAdmin`, `permissions`, `passwordHash`, `balance`, `*Cents` (or any field the spec's §Threat Model declared privilege-bearing).
 - **CS-2 request-body spread into an ORM update/insert** — `.set({ ...body })`, `.values({ ...input })`, `...req.body`, `Object.assign(row, input)`.
-- **CS-3 service / bypass / QA / admin-token-gated handler** — a handler reachable via `QA_SIM_TOKEN`, a `*_BYPASS_*` env var, or a service-token / `x-*-bypass` header check that performs a mutation.
-- **CS-4 where/query-by-id without a tenant/owner predicate** — `where(eq(table.id, …))` / `findById` / `WHERE id = $1` with no sibling tenant/owner predicate.
+- **CS-3 service / bypass / QA / admin-token-gated handler** — a handler reachable via `QA_SIM_TOKEN`, a `*_BYPASS_*` env var, or a service-token / `SERVICE_TOKEN` / `x-*-bypass` header check that performs a mutation.
+- **CS-4 where/query-by-id without a tenant/owner predicate** — `where(eq(table.id, …))` (Drizzle), `where: { id }` (Prisma/TypeORM), `findById` / `getById`, or `WHERE id = $1` in either case — with no sibling tenant/owner predicate.
 
 **Run the deterministic scanner as the detection FLOOR** (audit P9c — detection must not be LLM-only; a deterministic gate is only as good as the detection feeding it):
 
