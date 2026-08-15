@@ -14,6 +14,79 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.7.0] — 2026-08-15 (1c14d06)
+
+**Bug D — first-class prune for orphaned `blocked` worker zombies.** Completes the
+parts-incident lifecycle work: 2.6.0 fixed zombie *birth* (a completed run now flips
+terminal and its worker exits) and stopped existing zombies from *blocking* spawns; this
+is the janitor for the ones already accumulated (the field report counted 23).
+
+- `feat` **`plan-w-team-zombie-prune.sh`** — the session-level sibling of
+  `plan-w-team-worktree-gc.sh`. Sweeps `blocked` background sessions and stops the orphans
+  via `claude stop <sid>` (the same mechanism `plan-w-team-child-cleanup.sh` uses).
+  **Dry-run by default** (`--execute` to actually stop); `--cwd PATH` scopes to a project,
+  `--min-age-min N` tunes the freshness gate, `--json` for machine output. A session is
+  reaped ONLY when EVERY gate passes (any uncertainty → KEEP): (1) `state == blocked`
+  (busy/idle are alive; `done` self-clears), (2) in scope (cwd under root), (3) a KNOWN
+  PWT worker — its sid is in this project's `pwt-launches.jsonl` or a spawned-children
+  registry, so a non-PWT blocked session is NEVER touched, (4) NO live goal-state owns it
+  (an active run is protected even if momentarily blocked; a run with a *terminal*
+  goal-state that never exited IS reaped), (5) aged past the freshness gate (default 30m).
+  Validated live on a real months-old orphan (`700f796a`, a June deep-audit worker with no
+  live goal-state). Ships to consumers via `sync-to-project.sh`.
+- `test` `plan-w-team-zombie-prune.test.sh` (15 ACs) covers every gate plus dry-run-stops-
+  nothing / `--execute`-stops-exactly-the-prune-set. Test seams:
+  `PWT_ZOMBIE_PRUNE_AGENTS_JSON` (inject listing), `PWT_ZOMBIE_PRUNE_TEST_MODE` +
+  `PWT_ZOMBIE_STOP_LOG` (record stops instead of issuing them).
+- `note` The prune is operator-invoked (or timer/retro-invoked at the operator's option),
+  not auto-executed on a hot path — consistent with the dry-run-default posture of the
+  worktree GC. The residual "time-box a block that can't confirm terminal and exit" is
+  already covered by 2.6.0's Bug B fix (terminal now flips on the restart path).
+
+## [2.6.0] — 2026-08-15 (9ba9898)
+
+**Worker spawn/restart LIFECYCLE hardening (parts field incident, 2026-08-15).** A parts
+autonomous run built its feature correctly and gold-safe but could not reach terminal and
+could not be recovered without operator intervention — four chained defects in the worker
+spawn/restart/liveness lifecycle (never in the pipeline core). This release fixes three of
+them at the source in `pwt-goal.sh`; all are escape-hatched and fail-safe.
+
+- `fix` **Dead-owner seed auto-reclaim (Bug B — the killer).** On a mid-run restart the
+  goal-state seed was orphaned: `__pwt_seed_guard_ok` stood down because a live seed
+  existed, keeping the DEAD worker's `worker_sid`, so the goal-evaluator watched a ghost
+  and a fully-completed run churned "busy" forever (0/17 criteria, no terminal flip). The
+  guard now distinguishes a **live** foreign owner (stand down — concurrent-dup protection
+  preserved) from a **provably dead** one (`__pwt_owner_liveness` → `claude agents --json`
+  state ∈ busy|idle). A dead owner triggers a **surgical** `__pwt_reclaim_goal_state`:
+  `worker_sid` is rewritten in place, `feature_specific_done_criteria` and `started_at` are
+  PRESERVED, and `reclaimed_from`/`reclaimed_at` are stamped for audit. **Positive-death-only**:
+  an alive owner or an indeterminate/flaky agents-listing → stand down (never clobber a
+  possibly-live run). Applies to both the worker/main seed and the `--supervisor-goal`
+  origin mirror. Kill switch: `PWT_DISABLE_SEED_RECLAIM=1`. No manual `PLAN_W_TEAM_FORCE_SEED=1`
+  is required for the common "worker died, restart same goal" case anymore.
+- `fix` **PWT-DS1 liveness is evidence-based, not presence-based (Bug C).** The double-spawn
+  guard's Tier-B liveness jq filtered only `kind`+`cwd`, so a `blocked` (stuck at a Stop
+  hook) or `done` zombie counted as a live worker and refused legit spawns as "duplicates"
+  (the parts run accreted 23 blocked zombies). The filter now requires `.state` ∈ busy|idle;
+  a `blocked`/`done`/`null` session no longer blocks a new spawn.
+- `fix` **bg worker never hangs on the first-run MCP prompt (Bug A).** A fresh `claude --bg`
+  worker froze indefinitely on the one-time "N new MCP servers found" interactive TUI (a
+  background session cannot press a key). New `__pwt_predecide_project_mcp` pre-resolves the
+  project's MCP trust (enable-all) in `~/.claude.json` before spawn — the field-validated fix
+  that PRESERVES worker MCP capability — writing only when genuinely undecided, atomically,
+  never overriding an explicit user decision, and never touching real config from a temp
+  checkout. Plus a structural, version-independent backstop: the worker spawn now feeds
+  `</dev/null` so ANY stray first-run TUI resolves to its default instead of hanging. Kill
+  switch: `PWT_DISABLE_MCP_PREDECIDE=1`.
+- `test` New `pwt-goal-seed-reclaim.test.sh` (26 ACs, via `--reclaim-check` CLI mode),
+  `pwt-goal-mcp-predecide.test.sh` (9 ACs, via `--predecide-mcp`), and 2 new Bug-C ACs in
+  `pwt-goal-double-spawn-guard.test.sh` (blocked/done zombies do not block spawns). Test
+  seams added: `PWT_AGENTS_JSON_OVERRIDE`, `PWT_CLAUDE_JSON_OVERRIDE`.
+- `note` **Bug D (blocked-zombie accumulation) is only partially addressed.** Bug B fixes the
+  zombie-birth root cause (a completed run now flips terminal and its worker exits) and Bug C
+  stops existing zombies from blocking spawns, but a first-class prune for already-accumulated
+  `blocked` sessions with no live goal-state is deferred to a follow-up.
+
 ## [2.5.0] — 2026-08-14 (6894602)
 
 **Three things you always remind the agent to do — bump the version, don't regress, and

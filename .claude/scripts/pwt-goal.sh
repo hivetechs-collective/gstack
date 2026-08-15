@@ -87,6 +87,238 @@ if [ "${1:-}" = "--seed-guard-check" ]; then
     fi
 fi
 
+# ─── PWT-DEADOWNER SEED RECLAIM (Bug B, 2026-08-15) ─────────────────────────
+# __pwt_seed_guard_ok refuses to clobber a LIVE seed (terminal_state null) owned
+# by a different worker. That is correct for a genuinely concurrent duplicate
+# run, but WRONG when the recorded owner is DEAD — the classic mid-run restart:
+# worker A froze / was stopped, worker B was re-spawned for the same slug, but
+# the seed still names A. The guard stood down, the goal-evaluator kept watching
+# the ghost A, and a fully-completed run churned "busy" forever and never flipped
+# terminal (parts field incident 2026-08-15). The fix is to distinguish "live
+# foreign owner" (stand down — preserve concurrent-dup protection) from "dead
+# foreign owner" (auto-reclaim), on POSITIVE confirmation of death only.
+#
+# __pwt_goal_owner FILE                → echoes the seed's worker_sid (or "")
+# __pwt_owner_liveness SID [ROOT]      → echoes alive | dead | unknown
+#     alive   = a VALID, non-empty `claude agents --json` lists SID (8-char
+#               prefix) as a background session in state busy|idle.
+#     dead    = a VALID, non-empty listing does NOT contain SID as an alive
+#               background session → owner is provably gone / blocked / done.
+#     unknown = listing empty / invalid / tool absent (documented agents-json
+#               flakiness, reference_claude_agents_json_flaky) → INDETERMINATE.
+#               Callers MUST fail safe here and NOT reclaim (never clobber a
+#               possibly-live foreign run on a flaky read).
+# __pwt_reclaim_goal_state FILE NEWSID OLDSID
+#     Surgically rewrites ONLY worker_sid (+ audit fields), PRESERVING
+#     started_at, supervisor_sid, and feature_specific_done_criteria. Atomic
+#     (temp + rename). Kill switch: PWT_DISABLE_SEED_RECLAIM=1 reverts to
+#     unconditional stand-down.
+__pwt_goal_owner() {  # $1=file → worker_sid or ""
+    [ -f "$1" ] || { echo ""; return 0; }
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json,sys
+try: print(json.load(open(sys.argv[1])).get("worker_sid") or "")
+except Exception: print("")' "$1" 2>/dev/null
+    else
+        grep -o '"worker_sid"[[:space:]]*:[[:space:]]*"[^"]*"' "$1" 2>/dev/null \
+            | sed 's/.*:[[:space:]]*"//;s/"$//' | head -1
+    fi
+}
+
+__pwt_owner_liveness() {  # $1=owner_sid  $2=project_root (optional cwd scope)
+    local sid="${1:-}" root="${2:-}" want raw bin ext _loc hit _t
+    [ -n "$sid" ] || { echo "unknown"; return 0; }
+    command -v jq >/dev/null 2>&1 || { echo "unknown"; return 0; }
+    want="${sid:0:8}"
+    # Test seam (mirrors PWT_CLAUDE_JSON_OVERRIDE / PWT_PROJECT_ROOT_OVERRIDE):
+    # a fixture file supplies the agents listing directly, bypassing all binary
+    # resolution so the reclaim decision is hermetically testable.
+    if [ -n "${PWT_AGENTS_JSON_OVERRIDE:-}" ]; then
+        raw=$(cat "$PWT_AGENTS_JSON_OVERRIDE" 2>/dev/null || echo "")
+        printf '%s' "$raw" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 \
+            || { echo "unknown"; return 0; }
+        hit=$(printf '%s' "$raw" | jq -r --arg want "$want" --arg root "$root" '
+            [ .[]
+              | select((.kind // "") == "background")
+              # NO cwd scoping here (deliberate, unlike PWT-DS1): we probe a
+              # SPECIFIC owner sid. A live owner in a sibling worktree whose cwd
+              # does not start with $root must NOT be missed — a false "dead"
+              # would clobber a live run. A cross-project sid-prefix collision
+              # only yields a false "alive" → stand down → the SAFE direction.
+              | select(((.state // "") == "busy") or ((.state // "") == "idle"))
+              | ((.sessionId // "")[0:8])
+              | select(. == $want) ] | length' 2>/dev/null)
+        if [ "${hit:-0}" -gt 0 ] 2>/dev/null; then echo "alive"; else echo "dead"; fi
+        return 0
+    fi
+    # Resolve the claude binary (PATH-stripped-safe), mirroring PWG / PWT-DS1.
+    bin=""
+    for _loc in \
+        "$root/.claude/scripts/locate-claude.sh" \
+        "$(dirname "$0")/locate-claude.sh"; do
+        if [ -x "$_loc" ]; then
+            bin=$("$_loc" 2>/dev/null) && [ -n "$bin" ] && break
+            bin=""
+        fi
+    done
+    [ -z "$bin" ] && command -v claude >/dev/null 2>&1 && bin="claude"
+    [ -n "$bin" ] || { echo "unknown"; return 0; }
+    # Prefer the retry wrapper (absorbs empty-but-exit-0 flakiness); fall back to
+    # a bounded raw retry loop.
+    raw=""
+    ext="$root/.claude/scripts/claude-agents-extended.sh"
+    [ -x "$ext" ] || ext="$(dirname "$0")/claude-agents-extended.sh"
+    if [ -x "$ext" ]; then
+        raw=$(CLAUDE_AGENTS_RETRY="${CLAUDE_AGENTS_RETRY:-3}" "$ext" --json 2>/dev/null) || raw=""
+    fi
+    if [ -z "$raw" ] || ! printf '%s' "$raw" | jq empty >/dev/null 2>&1; then
+        _t=0
+        while [ "$_t" -lt "${CLAUDE_AGENTS_RETRY:-3}" ]; do
+            _t=$((_t + 1))
+            raw=$("$bin" agents --json 2>/dev/null || echo "")
+            printf '%s' "$raw" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 && break
+            sleep 1
+        done
+    fi
+    # Authoritative iff a valid, NON-EMPTY array. Otherwise indeterminate.
+    printf '%s' "$raw" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1 \
+        || { echo "unknown"; return 0; }
+    hit=$(printf '%s' "$raw" | jq -r --arg want "$want" --arg root "$root" '
+        [ .[]
+          | select((.kind // "") == "background")
+          | select(($root == "") or ((.cwd // "") == "") or ((.cwd // "") | startswith($root)))
+          | select(((.state // "") == "busy") or ((.state // "") == "idle"))
+          | ((.sessionId // "")[0:8])
+          | select(. == $want) ] | length' 2>/dev/null)
+    if [ "${hit:-0}" -gt 0 ] 2>/dev/null; then echo "alive"; else echo "dead"; fi
+}
+
+__pwt_reclaim_goal_state() {  # $1=file $2=new_sid $3=old_sid
+    local file="$1" new="$2" old="${3:-}" at tmp
+    [ -f "$file" ] || return 0
+    at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    tmp="${file}.reclaim.$$"
+    if command -v jq >/dev/null 2>&1; then
+        if jq --arg sid "$new" --arg old "$old" --arg at "$at" \
+            '.reclaimed_from = $old | .worker_sid = $sid | .reclaimed_at = $at' \
+            "$file" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+            mv "$tmp" "$file" 2>/dev/null || rm -f "$tmp"
+        else
+            rm -f "$tmp"
+        fi
+    else
+        # No jq: fall back to a targeted worker_sid substitution (preserves the
+        # rest of the file byte-for-byte, incl. feature_specific_done_criteria).
+        if sed "s/\"worker_sid\"[[:space:]]*:[[:space:]]*\"[^\"]*\"/\"worker_sid\": \"${new}\"/" \
+            "$file" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+            mv "$tmp" "$file" 2>/dev/null || rm -f "$tmp"
+        else
+            rm -f "$tmp"
+        fi
+    fi
+    echo "  goal-state seed:    RECLAIMED $file — dead owner ${old:-?} → live ${new} (criteria preserved; Bug B auto-reclaim)" >&2
+}
+
+# ─── PWT-MCP PROJECT-TRUST PRE-DECIDE (Bug A, 2026-08-15) ────────────────────
+# A fresh `claude --bg` worker freezes on the one-time "N new MCP servers found"
+# interactive TUI when the project's MCP trust is undecided — a background
+# session cannot press a key, so it hangs at startup forever (parts field
+# incident). This pre-resolves the decision (enable-all) in ~/.claude.json BEFORE
+# spawn, which is the field-validated fix that also PRESERVES worker MCP
+# capability (memory, playwright browser-QA, etc.) — unlike stripping servers.
+#
+# Safety invariants:
+#   - ONLY writes when the project is genuinely UNDECIDED: enableAllProjectMcpServers
+#     is not already true AND both the enabled/disabled per-server lists are empty.
+#     An explicit user decision (either list non-empty, or the flag already set) is
+#     never overridden.
+#   - Atomic (temp in the config's own dir + rename) and jq-preserving — every other
+#     key survives byte-safe; a concurrent CLI rewrite can at worst re-hide our key
+#     (→ current behavior, no regression) but never corrupts the file.
+#   - NEVER touches a real ~/.claude.json from a throwaway checkout: temp-dir roots
+#     (/tmp, /private/tmp, /var/folders, /private/var/folders) are skipped so test
+#     sandboxes can't pollute production config.
+#   - Test hook: PWT_CLAUDE_JSON_OVERRIDE points the write at a sandbox file.
+#   - Kill switch: PWT_DISABLE_MCP_PREDECIDE=1.
+__pwt_predecide_project_mcp() {  # $1=project_root
+    local root="${1:-}" cfg tmp cur en_len dis_len
+    [ "${PWT_DISABLE_MCP_PREDECIDE:-0}" = "1" ] && return 0
+    [ -n "$root" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    cfg="${PWT_CLAUDE_JSON_OVERRIDE:-$HOME/.claude.json}"
+    [ -f "$cfg" ] || return 0
+    # Never mutate real config for a temp/sandbox checkout (unless an explicit
+    # override redirects the write to a sandbox file — the test path).
+    if [ -z "${PWT_CLAUDE_JSON_OVERRIDE:-}" ]; then
+        case "$root" in
+            /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) return 0 ;;
+        esac
+    fi
+    # Only act when genuinely undecided.
+    cur=$(jq -r --arg r "$root" '(.projects[$r].enableAllProjectMcpServers // false)' "$cfg" 2>/dev/null) || return 0
+    [ "$cur" = "true" ] && return 0
+    en_len=$(jq -r --arg r "$root" '(.projects[$r].enabledMcpjsonServers // [] | length)' "$cfg" 2>/dev/null) || en_len=0
+    dis_len=$(jq -r --arg r "$root" '(.projects[$r].disabledMcpjsonServers // [] | length)' "$cfg" 2>/dev/null) || dis_len=0
+    if [ "${en_len:-0}" -gt 0 ] 2>/dev/null || [ "${dis_len:-0}" -gt 0 ] 2>/dev/null; then
+        return 0   # explicit per-server decision exists — respect it
+    fi
+    tmp="${cfg}.pwtmcp.$$"
+    if jq --arg r "$root" '.projects[$r].enableAllProjectMcpServers = true' "$cfg" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+        mv "$tmp" "$cfg" 2>/dev/null || rm -f "$tmp"
+        echo "  project MCP:         pre-decided enable-all for $root (Bug A anti-hang; PWT_DISABLE_MCP_PREDECIDE=1 to opt out)" >&2
+    else
+        rm -f "$tmp"
+    fi
+    return 0
+}
+
+# CLI mode for the Bug B dead-owner reclaim decision (testable in isolation).
+# Runs the EXACT guard→owner→liveness→reclaim logic the seed-emit path uses.
+#   Exit 0 + "PERMIT"             → guard permits (no live foreign seed).
+#   Exit 0 + "RECLAIM"            → live foreign seed but owner provably DEAD → reclaimed.
+#   Exit 3 + "STANDDOWN <reason>" → stood down (alive | unknown | disabled).
+if [ "${1:-}" = "--reclaim-check" ]; then
+    shift
+    RC_GOAL=""; RC_SID=""; RC_ROOT=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --goal-file)  RC_GOAL="${2:-}"; shift 2 || break ;;
+            --worker-sid) RC_SID="${2:-}"; shift 2 || break ;;
+            --root)       RC_ROOT="${2:-}"; shift 2 || break ;;
+            *) shift ;;
+        esac
+    done
+    [ -n "$RC_GOAL" ] || { echo "reclaim-check: --goal-file required" >&2; exit 2; }
+    if __pwt_seed_guard_ok "$RC_GOAL" "$RC_SID"; then
+        echo "PERMIT"; exit 0
+    fi
+    RC_OWNER=$(__pwt_goal_owner "$RC_GOAL")
+    if [ "${PWT_DISABLE_SEED_RECLAIM:-0}" = "1" ]; then
+        echo "STANDDOWN disabled (owner=${RC_OWNER:-?})" >&2; exit 3
+    fi
+    RC_LIVE=$(__pwt_owner_liveness "$RC_OWNER" "$RC_ROOT")
+    if [ "$RC_LIVE" = "dead" ]; then
+        __pwt_reclaim_goal_state "$RC_GOAL" "$RC_SID" "$RC_OWNER"
+        echo "RECLAIM"; exit 0
+    fi
+    echo "STANDDOWN ${RC_LIVE} (owner=${RC_OWNER:-?})" >&2; exit 3
+fi
+
+# CLI mode for the Bug A MCP pre-decide (testable in isolation). Point the write
+# at a sandbox file with PWT_CLAUDE_JSON_OVERRIDE. Always exits 0 (fail-open).
+if [ "${1:-}" = "--predecide-mcp" ]; then
+    shift
+    PDM_ROOT=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --root) PDM_ROOT="${2:-}"; shift 2 || break ;;
+            *) shift ;;
+        esac
+    done
+    __pwt_predecide_project_mcp "$PDM_ROOT"
+    exit 0
+fi
+
 usage() {
     cat <<EOF
 Usage: $0 [options] <request>
@@ -1141,6 +1373,14 @@ EOF
                                 | [ .[]
                                     | select((.kind // "") == "background")
                                     | select(((.cwd // "") == "") or ((.cwd // "") | startswith($root)))
+                                    # Bug C (2026-08-15): only a genuinely-alive
+                                    # session (state busy|idle) counts as a live
+                                    # duplicate. A `blocked` (stuck at a Stop hook)
+                                    # or `done` zombie is NOT a running worker — the
+                                    # parts run accreted 23 blocked zombies that
+                                    # false-positived this guard and refused legit
+                                    # spawns. `.state` ∈ {null,blocked,done,busy,idle}.
+                                    | select(((.state // "") == "busy") or ((.state // "") == "idle"))
                                     | ((.sessionId // "")[0:8]) as $s
                                     | select($want | index($s))
                                     | $s ]
@@ -1772,15 +2012,27 @@ if [ "$LAUNCH" = "1" ]; then
         WT_FLAG="--worktree ${WT_NAME:0:60}"
     fi
 
+    # Bug A (2026-08-15): pre-decide the project's MCP-server trust so a fresh bg
+    # worker never freezes on the one-time "N new MCP servers found" interactive
+    # TUI (a --bg session has no one to press a key → infinite startup hang, parts
+    # field incident). Kill switch: PWT_DISABLE_MCP_PREDECIDE=1.
+    __pwt_predecide_project_mcp "$PROJECT_ROOT"
+
     # LAUNCH_ENV always contains PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1; the bare
     # `claude --bg` branch is unreachable but kept as a safety net.
     # Use $CLAUDE_BIN (resolved via locate-claude.sh) to avoid PATH-dependent
     # "env: claude: No such file or directory" failures.
+    #
+    # `< /dev/null`: structural, version-independent backstop for Bug A. A bg
+    # worker must be incapable of blocking on ANY first-run interactive prompt.
+    # Feeding EOF on stdin means a stray TUI resolves to its default / rejects
+    # instead of hanging the session forever. The MCP pre-decide above is the
+    # capability-preserving primary fix; this is defense-in-depth.
     if [ -n "$LAUNCH_ENV" ]; then
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
         LAUNCH_RC=$?
     else
-        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1
+        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
         LAUNCH_RC=$?
     fi
 
@@ -1920,7 +2172,20 @@ if [ "$LAUNCH" = "1" ]; then
         # PWT-WT2 live-clobber guard (Run-State Router Item 4): never overwrite a
         # LIVE run's goal-state (terminal_state null) owned by a different worker.
         if ! __pwt_seed_guard_ok "$file" "$WORKER_SID"; then
-            echo "  goal-state seed:    SKIPPED $file — live run owned by another worker (stand-down; PLAN_W_TEAM_FORCE_SEED=1 to override)" >&2
+            # Bug B (2026-08-15): the guard refused a LIVE seed owned by a foreign
+            # sid. If that owner is PROVABLY DEAD (restart orphaned the seed),
+            # auto-reclaim instead of standing down — else a completed run can
+            # never flip terminal. Positive-death-only: an alive owner (genuine
+            # concurrent-dup) or an indeterminate agents-listing → stand down.
+            local _seed_owner _seed_live
+            _seed_owner=$(__pwt_goal_owner "$file")
+            _seed_live="unknown"
+            [ "${PWT_DISABLE_SEED_RECLAIM:-0}" = "1" ] || _seed_live=$(__pwt_owner_liveness "$_seed_owner" "$MAIN_REPO_ROOT")
+            if [ "$_seed_live" = "dead" ]; then
+                __pwt_reclaim_goal_state "$file" "$WORKER_SID" "$_seed_owner"
+                return 0
+            fi
+            echo "  goal-state seed:    SKIPPED $file — live run owned by another worker (owner=${_seed_owner:-?} liveness=${_seed_live}; stand-down; PLAN_W_TEAM_FORCE_SEED=1 to override)" >&2
             return 0
         fi
         if command -v jq >/dev/null 2>&1; then
@@ -2032,8 +2297,18 @@ if [ "$LAUNCH" = "1" ]; then
                 # LIVE origin goal-state unconditionally (reset started_at, force
                 # terminal_state back to null, steal worker_sid) — the exact race
                 # __pwt_seed_guard_ok exists to stop. Guard this path too.
+                ORIGIN_SEED_OWNER=$(__pwt_goal_owner "$ORIGIN_GOAL_FILE")
+                ORIGIN_SEED_LIVE="unknown"
                 if ! __pwt_seed_guard_ok "$ORIGIN_GOAL_FILE" "$WORKER_SID"; then
-                    echo "  origin goal-state:  SKIPPED $ORIGIN_GOAL_FILE — live run owned by another worker (stand-down; PLAN_W_TEAM_FORCE_SEED=1 to override)" >&2
+                    # Bug B (2026-08-15): auto-reclaim a DEAD owner's orphaned origin
+                    # mirror (positive-death-only) rather than standing down, so the
+                    # origin goal-evaluator tracks the LIVE worker, not the ghost.
+                    [ "${PWT_DISABLE_SEED_RECLAIM:-0}" = "1" ] || ORIGIN_SEED_LIVE=$(__pwt_owner_liveness "$ORIGIN_SEED_OWNER" "$ORIGIN_ROOT")
+                    if [ "$ORIGIN_SEED_LIVE" = "dead" ]; then
+                        __pwt_reclaim_goal_state "$ORIGIN_GOAL_FILE" "$WORKER_SID" "$ORIGIN_SEED_OWNER"
+                    else
+                        echo "  origin goal-state:  SKIPPED $ORIGIN_GOAL_FILE — live run owned by another worker (owner=${ORIGIN_SEED_OWNER:-?} liveness=${ORIGIN_SEED_LIVE}; stand-down; PLAN_W_TEAM_FORCE_SEED=1 to override)" >&2
+                    fi
                 else
                 # Write a minimal goal state file the origin's evaluator can read.
                 # feature_specific_done_criteria is left empty — origin sees the
