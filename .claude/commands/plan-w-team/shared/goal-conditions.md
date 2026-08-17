@@ -407,6 +407,8 @@ The goal state file optionally carries a `feature_specific_done_criteria` array 
 
 This is mechanical — no LLM judgment needed. The AC contract in the spec IS the source of truth, and Step 5 review / Step 6 ship already emit `AC<N>: PASS` verification lines that match the derived patterns.
 
+> **Bug B fix (2026-08-16, skill 2.8.0).** The evaluator matches each AC pattern against the **whole transcript file** (raw `grep -E`), not just the recent tail-500 window it uses for anchor detection. The criteria AND-check runs only at the terminal anchor (Step 6 ship-verdict-PASS / Step 8 retro-complete), and by then the Step 5/6 `AC<N>: PASS` lines have scrolled far out of a 500-line window — so they went unmatched and SUCCESS was blocked forever on genuinely-shipped runs (parts field incident: 0/38, 1/23 met). Two safety nets accompany it: the block is now **instrumented** (stderr logs `N/M ACs matched … unmatched: […]` instead of spinning silently), and a **bounded backstop** flips SUCCESS when retro-complete + a deterministic PASS ship-verdict are both present and some ACs remain unmatchable past a settle window (default 300s) — the ship-verdict is the unforgeable floor. Kill switches: `PLAN_W_TEAM_DISABLE_BUGB_BACKSTOP=1`, tune with `PWT_BUGB_BACKSTOP_SETTLE_S`.
+
 ### Evaluator semantics (AND-check)
 
 When the generic SUCCESS anchors appear (`stage="retro-complete"` + `workflow_lock="done"` + slug match), the hook iterates the criteria array:

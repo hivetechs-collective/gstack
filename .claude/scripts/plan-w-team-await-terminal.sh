@@ -236,8 +236,10 @@ fi
 # (parts run-3 orphan pair; cleanscale apple-continuation pair) — each supervisor
 # turn that re-issues the await spawns another poller, and orphans poll forever.
 # Atomic mkdir claim keyed on slug+worker-sid; a stale lock (dead holder PID) is
-# reclaimed. bash 3.2 safe. A duplicate exits 0 with a distinct message (no
-# `terminal=` line) so callers cannot misread it as a terminal verdict.
+# reclaimed. bash 3.2 safe. A duplicate exits 4 (NOT 0) with a distinct message
+# (no `terminal=` line) — exit 0 is contractually "terminal reached" and exit 3
+# is "re-launch"; 4 is a dedicated "another watcher owns this wait, no-op" code so
+# callers never misread a duplicate as a terminal verdict or a re-arm.
 LOCK_KEY="${SLUG:-noslug}-${WORKER_SID:-nosid}"
 LOCK_DIR="${TMPDIR:-/tmp}/pwt-await-${LOCK_KEY}.lock"
 __pwt_await_claim() {

@@ -14,6 +14,42 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.8.0] — 2026-08-16 (f84a514)
+
+**Bug B — the goal-evaluator never flipped `terminal_state` on genuine retro-completes
+(parts field incident, 2026-08-16).** Three back-to-back `--worker-only` builds all finished
+their work correctly (retro-complete emitted, version tag cut, ship gate `allowed:true`) yet
+`plan-w-team-goal-<slug>.json` kept `terminal_state: null`, so `await-terminal.sh` heartbeat
+forever and the supervisor had to hand-write `terminal_state:"SUCCESS"`. Root cause: the
+feature-specific criteria AND-check (`AC<N>: PASS` attestations) matched only the tail-500
+transcript window, but that check runs only at the terminal anchor (Step 6 ship-verdict-PASS
+/ Step 8 retro-complete) — by which point the Step 5/6 `AC:PASS` lines had scrolled out of the
+window. So `met` stayed false (0/38, 1/23) and the AND never fired.
+
+- `fix` **Full-transcript AC matching.** Each AC pattern is now matched against the WHOLE
+  transcript file (raw `grep -E` — AC lines are plain text, so no decode needed), not just
+  the recent window used for anchor detection. This directly fixes the reported cases: a
+  legitimately-emitted `AC<N>: PASS` line anywhere in the run now marks its criterion met.
+- `fix` **Instrumented block.** When generic anchors are present but criteria stay unmet, the
+  evaluator logs `N/M ACs matched … unmatched: [descriptions]` to stderr instead of spinning
+  silently — the operator can now see WHY a finished-looking run is being held.
+- `feat` **Bounded backstop.** If retro-complete AND a deterministic PASS ship-verdict are both
+  present but some ACs remain unmatchable past a settle window (default 300s), the evaluator
+  flips SUCCESS rather than heartbeat forever — the ship-verdict (written by Step 6 only after
+  every §6 ENFORCING gate passes) is the unforgeable floor. Gated hard (both anchors + settle +
+  a per-run stamp in the goal-state) and kill-switchable: `PLAN_W_TEAM_DISABLE_BUGB_BACKSTOP=1`,
+  `PWT_BUGB_BACKSTOP_SETTLE_S`. Adds a `bugb_backstop_first_seen` goal-state field (additive).
+- `test` `plan-w-team-goal-evaluator-bugb-window.test.sh` (8 ACs): out-of-window AC now matched;
+  unmatched block is instrumented; backstop arms-then-fires; gated on ship-verdict; kill switch.
+  All existing goal-evaluator + await-terminal tests remain green.
+- `docs` **Bug C was already fixed.** `await-terminal.sh` already reserves `exit 0` for terminal,
+  `exit 3` for heartbeat re-arm, `exit 4` for a duplicate watcher — all distinct (the field
+  report's "exit 0 heartbeat" did not match current source). Only a **stale comment** claiming
+  "a duplicate exits 0" was corrected. **Bug D** (duplicate-watcher `exit 4`) is left as-is: the
+  singleton `exit 4` is the intentional guard that killed real orphan-watcher pairs (1.54.0);
+  making it "adopt" would reintroduce double-polling. It is a no-op the supervisor protocol
+  already treats as such, not a watcher defect.
+
 ## [2.7.0] — 2026-08-15 (1c14d06)
 
 **Bug D — first-class prune for orphaned `blocked` worker zombies.** Completes the

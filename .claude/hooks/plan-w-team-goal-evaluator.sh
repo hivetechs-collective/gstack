@@ -702,6 +702,8 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
             dbg "(1/T5c) criteria array unparseable → fail-closed BLOCK"
         elif [ "$CRITERIA_LEN" -gt 0 ]; then
             UNMET_DESCRIPTIONS=""
+            MET_COUNT=0
+            UNMET_COUNT=0
             NEW_CRITERIA=$(jq -c '.feature_specific_done_criteria' "$GOAL_FILE")
             for i in $(seq 0 $((CRITERIA_LEN - 1))); do
                 # Shape gate FIRST — everything below assumes a canonical object.
@@ -716,7 +718,7 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
                 fi
                 PATTERN=$(echo "$NEW_CRITERIA" | jq -r ".[$i].pattern")
                 ALREADY_MET=$(echo "$NEW_CRITERIA" | jq -r ".[$i].met")
-                if [ "$ALREADY_MET" = "true" ]; then continue; fi
+                if [ "$ALREADY_MET" = "true" ]; then MET_COUNT=$((MET_COUNT + 1)); continue; fi
                 DESC=$(echo "$NEW_CRITERIA" | jq -r ".[$i].description")
                 # An empty pattern would make `grep -E ""` match EVERY line —
                 # self-satisfying. Treat as malformed, never as met.
@@ -734,11 +736,32 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
                         continue
                     fi
                 fi
-                if echo "$RECENT" | grep -E "$PATTERN" >/dev/null 2>&1; then
+                # Bug B (2026-08-16): match AC attestations against the FULL
+                # transcript, not just the tail-500 RECENT window. `AC<N>: PASS`
+                # lines are emitted at Step 5/6 (per the AC Verification Line
+                # Contract), but this criteria loop only runs at the TERMINAL anchor
+                # (Step 6 ship-verdict-PASS / Step 8 retro-complete) — by then those
+                # lines have scrolled far out of the 500-line window, so `met` stayed
+                # false and the AND-gate blocked SUCCESS forever (parts field
+                # incident: 0/38 and 1/23 met on genuinely-shipped runs). AC patterns
+                # are plain text (`AC<N>:[[:space:]]*PASS` — no quotes/escapes), so a
+                # raw grep of the whole transcript file finds every attestation
+                # cheaply; this loop only runs at terminal-anchor time (rare), so the
+                # full-file scan is bounded. RECENT stays as the decoded-form fallback.
+                CRIT_HIT=0
+                if [ -n "$TRANSCRIPT_PATH" ] && [ -f "$TRANSCRIPT_PATH" ] \
+                     && grep -Eq "$PATTERN" "$TRANSCRIPT_PATH" 2>/dev/null; then
+                    CRIT_HIT=1
+                elif echo "$RECENT" | grep -E "$PATTERN" >/dev/null 2>&1; then
+                    CRIT_HIT=1
+                fi
+                if [ "$CRIT_HIT" = "1" ]; then
+                    MET_COUNT=$((MET_COUNT + 1))
                     NEW_CRITERIA=$(echo "$NEW_CRITERIA" \
                         | jq --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
                              ".[$i].met = true | .[$i].met_at = \$ts")
                 else
+                    UNMET_COUNT=$((UNMET_COUNT + 1))
                     UNMET_DESCRIPTIONS="${UNMET_DESCRIPTIONS}${UNMET_DESCRIPTIONS:+; }${DESC}"
                 fi
             done
@@ -746,10 +769,57 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
             jq --argjson c "$NEW_CRITERIA" '.feature_specific_done_criteria = $c' "$GOAL_FILE" \
                 > "$GOAL_FILE.tmp" && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
             if [ -n "$UNMET_DESCRIPTIONS" ]; then
-                TERMINAL=""
-                REASON=""
-                # Will be picked up by the BLOCK_REASON branch below
-                CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but feature-specific criteria unmet: ${UNMET_DESCRIPTIONS}. Continue pipeline until each criterion appears in transcript (typically as 'AC<N>: PASS' lines emitted by Step 5 review and Step 6 ship)."
+                # (Bug B instrumentation, 2026-08-16) — make the block DIAGNOSABLE,
+                # not silent. Previously a genuinely-finished run whose AC lines the
+                # parser could not match blocked with no visible signal; the operator
+                # had to read `claude logs` to discover why. Log the ratio + the
+                # unmatched descriptions to stderr on every blocked evaluation.
+                echo "[goal-evaluator] SLUG=$SLUG terminal anchors present but ${MET_COUNT}/${CRITERIA_LEN} ACs matched — ${UNMET_COUNT} unmatched: ${UNMET_DESCRIPTIONS}" >&2
+                dbg "(1/T5c) terminal anchors present, ${MET_COUNT}/${CRITERIA_LEN} met, unmatched=[${UNMET_DESCRIPTIONS}]"
+
+                # (Bug B bounded backstop, 2026-08-16) — a run that emitted
+                # retro-complete AND has a DETERMINISTIC PASS ship-verdict has
+                # DEFINITIVELY shipped (the ship-verdict is written by Step 6 only
+                # after every §6 ENFORCING gate passes — the unforgeable floor). If
+                # some AC patterns STILL cannot be matched anywhere in the full
+                # transcript after a bounded settle window, flip SUCCESS rather than
+                # heartbeat forever — the failure mode this whole file exists to
+                # prevent. Covers the residual cases the full-file grep above cannot
+                # (an attestation that only ever appeared in a subagent transcript, a
+                # worker that shipped without emitting every AC line). Gated hard:
+                # BOTH anchors + a settle delay + a kill switch. The settle stamp is
+                # recorded in the goal-state so the delay survives across Stop-hook
+                # firings. Kill switch: PLAN_W_TEAM_DISABLE_BUGB_BACKSTOP=1.
+                BUGB_SETTLE_S="${PWT_BUGB_BACKSTOP_SETTLE_S:-300}"
+                BACKSTOP_FIRED=0
+                if [ "$MARKER_MATCH" = "1" ] && [ "$SHIP_VERDICT_PASS" = "1" ] \
+                     && [ "${PLAN_W_TEAM_DISABLE_BUGB_BACKSTOP:-0}" != "1" ]; then
+                    NOW_EPOCH=$(date +%s 2>/dev/null || echo 0)
+                    FIRST_SEEN=$(jq -r '.bugb_backstop_first_seen // ""' "$GOAL_FILE" 2>/dev/null)
+                    if ! printf '%s' "${FIRST_SEEN:-}" | grep -qE '^[0-9]+$'; then
+                        # First blocked evaluation with both anchors present — stamp and wait.
+                        jq --arg t "$NOW_EPOCH" '.bugb_backstop_first_seen = ($t|tonumber)' "$GOAL_FILE" \
+                            > "$GOAL_FILE.tmp" 2>/dev/null && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
+                        dbg "(1/BugB-backstop) armed settle timer at $NOW_EPOCH (settle=${BUGB_SETTLE_S}s)"
+                    elif [ "$((NOW_EPOCH - FIRST_SEEN))" -ge "$BUGB_SETTLE_S" ] 2>/dev/null; then
+                        BACKSTOP_FIRED=1
+                        TERMINAL="SUCCESS"
+                        REASON="Bug-B backstop: retro-complete + deterministic PASS ship-verdict present for slug=$SLUG; ${MET_COUNT}/${CRITERIA_LEN} ACs matched but $((NOW_EPOCH - FIRST_SEEN))s elapsed with the rest unmatchable in-transcript — the ship-verdict is the unforgeable floor, so resolving SUCCESS instead of heartbeating forever (unmatched: ${UNMET_DESCRIPTIONS})"
+                        echo "[goal-evaluator] SLUG=$SLUG Bug-B backstop FIRED — SUCCESS via retro-complete + PASS ship-verdict after ${BUGB_SETTLE_S}s settle (${MET_COUNT}/${CRITERIA_LEN} ACs matched)" >&2
+                        dbg "(1/BugB-backstop) FIRED → SUCCESS"
+                    fi
+                fi
+
+                # Unmet criteria BLOCK SUCCESS unless the bounded backstop fired
+                # this evaluation. (TERMINAL was pre-set SUCCESS at the anchor
+                # branch above, so it must be explicitly cleared when we block —
+                # the BACKSTOP_FIRED flag is the only thing that keeps it.)
+                if [ "$BACKSTOP_FIRED" != "1" ]; then
+                    TERMINAL=""
+                    REASON=""
+                    # Will be picked up by the BLOCK_REASON branch below
+                    CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but feature-specific criteria unmet (${MET_COUNT}/${CRITERIA_LEN} matched): ${UNMET_DESCRIPTIONS}. Continue pipeline until each criterion appears in transcript (typically as 'AC<N>: PASS' lines emitted by Step 5 review and Step 6 ship)."
+                fi
             fi
         else
             # PWT-ANTIPARK (AC2) — empty/missing AC contract ≠ done while backlog remains.
