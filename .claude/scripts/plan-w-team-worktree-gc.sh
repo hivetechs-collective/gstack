@@ -628,6 +628,48 @@ __pwt_dirty_ignore_filter() {
 }
 
 # ─── classification ───────────────────────────────────────────────────────
+# ─── SAFE-PRUNE-SHIPPED marker validation (Part B, disk-hygiene as-it-goes) ──
+# A worktree carrying a `.pwt-shipped` marker (written at ship, Part A) whose
+# `.tag` resolves to a commit REACHABLE FROM THE DEFAULT BRANCH is post-ship: its
+# output is provably on the default branch, so its uncommitted content is stale
+# generated artifacts, not work — reclaimable even though `git branch --merged` (a
+# squash-merge defeats it) and `gh` (a local-ship repo has no PR) both miss it.
+# Returns 0 ONLY on that positive proof; a forged/stale marker (tag absent, or tag
+# not on the default branch) → 1, falling through to today's uncommitted veto.
+# Reads globals MAIN_CHECKOUT + DEFAULT_BRANCH (both set before classify_one /
+# remove_one run). Kill switch: PWT_WORKTREE_GC_DISABLE_SHIPPED=1.
+shipped_marker_valid() {
+    local wt="$1" marker tag tagcommit
+    [ "${PWT_WORKTREE_GC_DISABLE_SHIPPED:-0}" = "1" ] && return 1
+    marker="$wt/.pwt-shipped"
+    [ -f "$marker" ] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    local sha shacommit
+    # Trust the marker if EITHER its version tag OR its ship sha resolves to a
+    # commit reachable from the default branch (local OR origin) — the proof the
+    # shipped output actually landed. A tag/sha that exists but sits off the
+    # default branch, or does not resolve at all, is NOT trusted (guards a
+    # forged/stale marker). The sha is the universal proof (every ship advances
+    # the default branch); the tag covers repos that cut one.
+    sha="$(jq -r '.sha // ""' "$marker" 2>/dev/null)"
+    if [ -n "$sha" ]; then
+        shacommit="$(git -C "$MAIN_CHECKOUT" rev-parse -q --verify "${sha}^{commit}" 2>/dev/null)"
+        if [ -n "$shacommit" ]; then
+            git -C "$MAIN_CHECKOUT" merge-base --is-ancestor "$shacommit" "$DEFAULT_BRANCH" 2>/dev/null && return 0
+            git -C "$MAIN_CHECKOUT" merge-base --is-ancestor "$shacommit" "origin/$DEFAULT_BRANCH" 2>/dev/null && return 0
+        fi
+    fi
+    tag="$(jq -r '.tag // ""' "$marker" 2>/dev/null)"
+    if [ -n "$tag" ]; then
+        tagcommit="$(git -C "$MAIN_CHECKOUT" rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)"
+        if [ -n "$tagcommit" ]; then
+            git -C "$MAIN_CHECKOUT" merge-base --is-ancestor "$tagcommit" "$DEFAULT_BRANCH" 2>/dev/null && return 0
+            git -C "$MAIN_CHECKOUT" merge-base --is-ancestor "$tagcommit" "origin/$DEFAULT_BRANCH" 2>/dev/null && return 0
+        fi
+    fi
+    return 1
+}
+
 classify_one() {
     # Sets globals: CLASS, BRANCH, REASON, LAST_COMMIT_AGE_DAYS, UNCOMMITTED, MERGED, OPEN_PR, IN_USE, ACTIVE_RUN, OUTSIDE, ORIGIN_GONE, MERGED_BY, ORIGIN_REACHABLE, ORPHAN_DIR
     local wt_path="$1"
@@ -635,7 +677,7 @@ classify_one() {
     MERGED=0; OPEN_PR=0; IN_USE=0; ACTIVE_RUN=0; OUTSIDE=0; MERGED_BY=""; ORIGIN_GONE=0
     LOCKED=0; STALE_LOCK=0; IN_USE_SOURCE=""; ORIGIN_REACHABLE=0; ORPHAN_DIR=0
     UNCOMMITTED_TRACKED=0; LOCK_REASON=""; LOCK_PID=""; LOCK_PID_ALIVE=0
-    LOCK_UNVERIFIABLE=0; AGE_MINUTES=""; NEWBORN=0
+    LOCK_UNVERIFIABLE=0; AGE_MINUTES=""; NEWBORN=0; SHIPPED_OK=0
 
     if ! is_under_worktrees_dir "$wt_path"; then
         CLASS="REFUSED-OUTSIDE-CLAUDE-WORKTREES"
@@ -729,6 +771,13 @@ classify_one() {
             | grep -v '^??' | grep -v '^!!' | grep -v '^[[:space:]]*$' || true)"
         [ -n "$tracked_lines" ] && UNCOMMITTED_TRACKED=1
     fi
+
+    # Shipped-marker check (Part B, disk-hygiene as-it-goes) — computed here so
+    # VETO 2 (uncommitted) can honor it below and the post-veto classifier can
+    # assign SAFE-PRUNE-SHIPPED. Positive proof only (tag resolves on the default
+    # branch); in-use (VETO 1) / unverifiable-lock (VETO 3) / newborn (VETO 4)
+    # remain absolute and are checked independently.
+    if shipped_marker_valid "$wt_path"; then SHIPPED_OK=1; fi
 
     # Last commit age — used for SAFE-PRUNE-IDLE and stale-lock detection.
     local last_commit_epoch now_epoch
@@ -883,12 +932,16 @@ classify_one() {
     # dirty-ignore set. This is the arm that saves a /plan-w-team tooling lane
     # whose entire diff lives under `.claude/` — the shape of the measured
     # incident, where UNCOMMITTED read 0 with five hand-edited hook files present.
-    if [ "$UNCOMMITTED_TRACKED" = "1" ]; then
+    # A valid `.pwt-shipped` marker (Part B) makes the uncommitted content stale
+    # post-ship generated artifacts, not work — its output is provably on the
+    # default branch — so it does NOT veto. (VETO 1 in-use above already returned;
+    # this only relaxes the uncommitted veto, never the liveness one.)
+    if [ "$UNCOMMITTED_TRACKED" = "1" ] && [ "$SHIPPED_OK" != "1" ]; then
         CLASS="UNSAFE-KEEP"
         REASON="uncommitted tracked-file changes (absolute veto — ignore-set does not apply)"
         return 0
     fi
-    if [ "$UNCOMMITTED" = "1" ]; then
+    if [ "$UNCOMMITTED" = "1" ] && [ "$SHIPPED_OK" != "1" ]; then
         CLASS="UNSAFE-KEEP"; REASON="uncommitted changes"; return 0
     fi
 
@@ -939,6 +992,19 @@ classify_one() {
     if [ "${LIVE_QUERY_FAILED:-0}" = "1" ]; then
         CLASS="UNSAFE-KEEP"
         REASON="live-session probe unavailable — fail-closed (cannot confirm no live owner)"
+        return 0
+    fi
+
+    # ── SAFE-PRUNE-SHIPPED (Part B) — a `.pwt-shipped` marker whose tag resolves
+    # on the default branch is the merge-path-independent proof of ship. It wins
+    # over MERGED-detection precisely because it closes MERGED's blind spots
+    # (squash-merge defeats `git branch --merged`; a local-ship repo has no gh PR).
+    # It is reached only AFTER the in-use / uncommitted-vetoed / lock / newborn /
+    # fail-closed-liveness guards above, so those keeps are never weakened.
+    if [ "$SHIPPED_OK" = "1" ]; then
+        CLASS="SAFE-PRUNE-SHIPPED"
+        REASON="shipped marker + tag on default branch (post-ship; reclaimable despite uncommitted)"
+        [ "$STALE_LOCK" = "1" ] && REASON="$REASON; stale lock ignored"
         return 0
     fi
 
@@ -1111,7 +1177,13 @@ remove_one() {
     fi
     # AC6 preserve-then-reap: back up any REAL uncommitted delta BEFORE the
     # destructive --force. Fail-safe — a failed backup SKIPS removal (echo "0 0").
-    if ! preserve_then_reap "$wt_path"; then
+    # EXCEPTION (Part B): a valid `.pwt-shipped` worktree's content is provably on
+    # the default branch via its ship tag, so backing up its (stale, post-ship)
+    # uncommitted artifacts would just move the ~600 MB bloat into a backup patch —
+    # defeating the reclaim. Skip the backup; the tag is the durable copy.
+    if shipped_marker_valid "$wt_path"; then
+        : # post-ship — tag on default branch is the durable copy; no backup needed
+    elif ! preserve_then_reap "$wt_path"; then
         echo "0 0"
         return 0
     fi
@@ -1210,9 +1282,10 @@ for wt_path in "${WT_PATHS[@]:-}"; do
     # Decide action
     ACTION="keep"
     case "$CLASS" in
-        SAFE-PRUNE-MERGED|SAFE-PRUNE-IDLE|SAFE-PRUNE-PUSHED)
-            # SAFE-PRUNE-PUSHED (AC1) is reaped like the other SAFE-PRUNE-* classes —
-            # NOT orphan-gated, because the work is preserved on origin.
+        SAFE-PRUNE-MERGED|SAFE-PRUNE-IDLE|SAFE-PRUNE-PUSHED|SAFE-PRUNE-SHIPPED)
+            # SAFE-PRUNE-PUSHED (AC1) and SAFE-PRUNE-SHIPPED (Part B) are reaped like
+            # the other SAFE-PRUNE-* classes — NOT orphan-gated, because the work is
+            # preserved on origin / provably on the default branch via the ship tag.
             if [ "$MODE_EXECUTE" = "1" ]; then ACTION="remove"; else ACTION="dry-remove"; fi
             ;;
         ORPHAN-ASK)

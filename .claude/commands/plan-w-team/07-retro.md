@@ -1049,6 +1049,44 @@ if [ -x .claude/scripts/plan-w-team-worktree-gc.sh ]; then
   echo "✓ worktree GC (subagents-of-this-run): $WT_REMOVED removed"
 fi
 
+# 1b. Full-repo GC sweep (Part D3, disk-hygiene as-it-goes 2.9.0): now that the GC
+#     recognizes SHIPPED worktrees (Part B — a `.pwt-shipped` marker whose sha/tag
+#     resolves on the default branch), reclaim PRIOR runs' shipped/merged/idle
+#     worktrees here too, keeping accumulation near-zero between the weekly launchd
+#     sweeps rather than waiting for one. THIS run's own worktree is protected by
+#     the in-use veto until it exits; a later retro / the weekly GC reclaims it via
+#     its marker. Every veto (in-use, uncommitted-without-marker, lock, newborn)
+#     stays intact. Kill switch: PWT_RETRO_DISABLE_FULL_GC=1.
+if [ "${PWT_RETRO_DISABLE_FULL_GC:-0}" != "1" ] && [ -x .claude/scripts/plan-w-team-worktree-gc.sh ]; then
+  FULL_GC_JSON=$(PWT_WORKTREE_GC_IGNORE_LOCKS=1 .claude/scripts/plan-w-team-worktree-gc.sh \
+      --execute --json 2>/dev/null || echo '{}')
+  FULL_GC_REMOVED=$(printf '%s' "$FULL_GC_JSON" | jq -r '.totals.removed // 0' 2>/dev/null || echo 0)
+  echo "✓ worktree GC (full repo, incl. SAFE-PRUNE-SHIPPED): $FULL_GC_REMOVED removed"
+fi
+
+# 1c. bg-session job-scratch sweep (Part D2): ~/.claude/jobs/<sid>/tmp/ holds a
+#     completed bg session's scratch (one run's tmp/dd was 6.6 GB; 85 dirs / 10.4 GB
+#     had accumulated by 2026-08-18). Remove tmp/ for job dirs older than the grace
+#     window whose sid is NOT a live session — cross-checked against
+#     `claude agents --json`, the exact guard the manual 2026-08-18 sweep used, so a
+#     live session's scratch is never touched. Fail-open; only the disposable tmp/
+#     subtree is removed (never the job dir's transcript/meta).
+#     Kill switch: PWT_RETRO_DISABLE_JOB_SCRATCH_SWEEP=1.
+if [ "${PWT_RETRO_DISABLE_JOB_SCRATCH_SWEEP:-0}" != "1" ] && [ -d "$HOME/.claude/jobs" ] && command -v jq >/dev/null 2>&1; then
+  JS_LIVE=" $(claude agents --json 2>/dev/null | jq -r '.[]?|(.sessionId // "")[0:8]' 2>/dev/null | tr '\n' ' ') "
+  JS_FREED=0
+  while IFS= read -r jdir; do
+    [ -n "$jdir" ] || continue
+    sid8=$(basename "$jdir")
+    case "$JS_LIVE" in *" $sid8 "*) continue ;; esac   # never touch a live session's scratch
+    [ -d "$jdir/tmp" ] || continue
+    rm -rf "$jdir/tmp" 2>/dev/null && JS_FREED=$((JS_FREED + 1))
+  done <<EOF
+$(find "$HOME/.claude/jobs" -maxdepth 1 -mindepth 1 -type d -mmin "+${PWT_RETRO_JOB_SCRATCH_MIN_MIN:-60}" 2>/dev/null)
+EOF
+  echo "✓ job-scratch sweep: cleared tmp/ in $JS_FREED completed job dir(s)"
+fi
+
 # 2. Orphan companion processes (pane-display.py spinners + pwt-watch.sh watchers).
 if [ -x .claude/scripts/plan-w-team-companion-gc.sh ]; then
   COMP_GC_JSON=$(.claude/scripts/plan-w-team-companion-gc.sh --execute --json 2>/dev/null || echo '{}')
@@ -1061,7 +1099,9 @@ RETRO_STATE=".claude/state/plan-w-team-retro-${SLUG}.json"
 if [ -f "$RETRO_STATE" ] && command -v jq >/dev/null 2>&1; then
   TMP=$(mktemp "${RETRO_STATE}.tmp.XXXXXX")
   jq --argjson wt "${WT_GC_JSON:-{}}" --argjson comp "${COMP_GC_JSON:-{}}" \
-    '.quality_signals.worktree_gc = $wt | .quality_signals.companion_gc = $comp' \
+     --argjson fullgc "${FULL_GC_JSON:-{}}" --argjson jsfreed "${JS_FREED:-0}" \
+    '.quality_signals.worktree_gc = $wt | .quality_signals.companion_gc = $comp
+     | .quality_signals.full_repo_gc = $fullgc | .quality_signals.job_scratch_freed = $jsfreed' \
     "$RETRO_STATE" > "$TMP" 2>/dev/null && mv "$TMP" "$RETRO_STATE" || rm -f "$TMP"
 fi
 ```

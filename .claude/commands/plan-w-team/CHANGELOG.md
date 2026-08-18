@@ -14,6 +14,43 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.9.0] — 2026-08-18 (7bf9a6e)
+
+**Disk hygiene — reclaim worktrees "as it ships" (spec:
+`docs/specs/plan-w-team-disk-hygiene-as-it-goes.md`).** A nearly-full 494 GB disk
+(2026-08-18, 20 GB free) traced overwhelmingly to `/plan-w-team` residue: **parts alone held
+25 leftover worktrees (~15 GB)** from runs that had already shipped, plus 10.4 GB of
+`~/.claude/jobs/*/tmp` scratch. Root cause: "shipped" was INVISIBLE to the cleanup machinery —
+a squash-merge defeats `git branch --merged`, a local admin-squash-merge repo has no gh PR to
+consult, and the post-ship worktree's uncommitted generated artifacts then pinned it
+`UNSAFE-KEEP` forever. One enabling primitive + three consumers close it; all fail-open,
+kill-switchable, back-compat.
+
+- `feat` **Part A — `.pwt-shipped` marker (`plan-w-team-worktree-mark-shipped.sh`).** Written
+  into a run's worktree at the §6g confirmed-ship point (push+merge succeeded), recording the
+  ship sha (+ any version tag) — the merge-path-INDEPENDENT proof the output landed. No-op for
+  a lead-direct run (no worktree). Kill switch: `PWT_DISABLE_SHIPPED_MARKER=1`.
+- `feat` **Part B — GC `SAFE-PRUNE-SHIPPED` class (`plan-w-team-worktree-gc.sh`).** A worktree
+  whose marker's sha OR tag resolves on the default branch is reclaimable **even with
+  uncommitted content** — closing MERGED's squash-merge / no-gh blind spots. The in-use veto
+  stays absolute; a forged/off-branch/nonexistent marker falls through to today's uncommitted
+  veto; the reap skips the wasteful pre-reap backup (the tag is the durable copy). Kill switch:
+  `PWT_WORKTREE_GC_DISABLE_SHIPPED=1`.
+- `feat` **Part C — §6h force-remove post-ship (`plan-w-team-worktree-on-merge.sh`).** Invariant 2
+  (uncommitted → safe-skip) is RELAXED to a force-remove when a valid `.pwt-shipped` marker is
+  present; invariant 3 (in-use) unchanged. Kill switch: `PWT_WORKTREE_ON_MERGE_NO_SHIPPED_FORCE=1`.
+- `feat` **Part D — retro reaping (`07-retro.md` §8j-septies + `plan-w-team-zombie-prune.sh`).**
+  D1: a `blocked` session whose cwd is inside `.claude/worktrees/` is now recognized as a PWT
+  worker even when its launch-registry row rotated out (the `0a11736b` gap). D2: a job-scratch
+  sweep clears `~/.claude/jobs/<sid>/tmp/` for completed (non-live) sessions past a grace window.
+  D3: a full-repo GC `--execute` pass (now shipped-aware) reclaims prior runs' worktrees each
+  retro. Kill switches: `PWT_RETRO_DISABLE_FULL_GC=1`, `PWT_RETRO_DISABLE_JOB_SCRATCH_SWEEP=1`.
+- `test` `plan-w-team-worktree-gc-shipped.test.sh` (15 ACs: marker write; SAFE-PRUNE-SHIPPED via
+  tag AND sha; forged/off-branch/nonexistent rejected; in-use veto absolute; kill switches;
+  `--execute` removes without a backup; on-merge force-remove) + a D1 case in
+  `plan-w-team-zombie-prune.test.sh`. Existing GC (131), on-merge (26), zombie-prune (16) suites
+  remain green.
+
 ## [2.8.0] — 2026-08-16 (f84a514)
 
 **Bug B — the goal-evaluator never flipped `terminal_state` on genuine retro-completes

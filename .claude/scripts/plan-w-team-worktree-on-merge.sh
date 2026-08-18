@@ -96,6 +96,46 @@ __resync_primary_checkout() {
     RESYNC_PRIMARY_HEAD="$(git -C "$mc" symbolic-ref --quiet --short HEAD 2>/dev/null || echo DETACHED)"
 }
 
+# ─── Part C: shipped-worktree force-remove (disk-hygiene as-it-goes) ─────────
+# A valid `.pwt-shipped` marker (Part A, written at ship) whose tag resolves on
+# the default branch is the merge-path-independent proof the worktree's output
+# landed — so its uncommitted content is stale post-ship generated artifacts, not
+# work, and invariant 2 (uncommitted → safe-skip) is RELAXED to a force-remove.
+# Positive proof only (mirrors plan-w-team-worktree-gc.sh:shipped_marker_valid);
+# invariant 3 (in-use) stays absolute below. Reads global MAIN_CHECKOUT (set by the
+# main flow before invariant 2). Kill switch: PWT_WORKTREE_ON_MERGE_NO_SHIPPED_FORCE=1.
+__wt_on_merge_shipped_ok() {
+    local wt="$1" marker tag tagcommit sha shacommit def
+    [ "${PWT_WORKTREE_ON_MERGE_NO_SHIPPED_FORCE:-0}" = "1" ] && return 1
+    marker="$wt/.pwt-shipped"
+    [ -f "$marker" ] || return 1
+    command -v jq >/dev/null 2>&1 || return 1
+    def="${PWT_WORKTREE_GC_DEFAULT_BRANCH:-}"
+    [ -n "$def" ] || def=$(git -C "$MAIN_CHECKOUT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
+    [ -n "$def" ] || def=main
+    # Trust the marker if EITHER its ship sha OR its version tag resolves on the
+    # default branch (local OR origin) — the universal proof (sha) plus the
+    # tag-cutting-repo bonus. A forged/stale marker (neither resolves on default)
+    # falls through to today's uncommitted safe-skip.
+    sha="$(jq -r '.sha // ""' "$marker" 2>/dev/null)"
+    if [ -n "$sha" ]; then
+        shacommit="$(git -C "$MAIN_CHECKOUT" rev-parse -q --verify "${sha}^{commit}" 2>/dev/null)"
+        if [ -n "$shacommit" ]; then
+            git -C "$MAIN_CHECKOUT" merge-base --is-ancestor "$shacommit" "$def" 2>/dev/null && return 0
+            git -C "$MAIN_CHECKOUT" merge-base --is-ancestor "$shacommit" "origin/$def" 2>/dev/null && return 0
+        fi
+    fi
+    tag="$(jq -r '.tag // ""' "$marker" 2>/dev/null)"
+    if [ -n "$tag" ]; then
+        tagcommit="$(git -C "$MAIN_CHECKOUT" rev-parse -q --verify "refs/tags/${tag}^{commit}" 2>/dev/null)"
+        if [ -n "$tagcommit" ]; then
+            git -C "$MAIN_CHECKOUT" merge-base --is-ancestor "$tagcommit" "$def" 2>/dev/null && return 0
+            git -C "$MAIN_CHECKOUT" merge-base --is-ancestor "$tagcommit" "origin/$def" 2>/dev/null && return 0
+        fi
+    fi
+    return 1
+}
+
 # Sourceable guard: when this file is sourced (unit tests), define the helpers
 # above and return before the arg-required main flow — so a test can call
 # __resync_primary_checkout directly. When executed, fall through to the flow.
@@ -170,9 +210,9 @@ if [ ! -d "$WORKTREE_PATH" ]; then
     exit 0
 fi
 
-# ─── invariant 2: uncommitted changes ─────────────────────────────────────
+# ─── invariant 2: uncommitted changes (RELAXED for shipped — Part C) ───────
 porcelain="$(git -C "$WORKTREE_PATH" status --porcelain 2>/dev/null || echo "")"
-if [ -n "$porcelain" ]; then
+if [ -n "$porcelain" ] && ! __wt_on_merge_shipped_ok "$WORKTREE_PATH"; then
     result_json 0 0 1 "safe-skip: uncommitted changes in worktree (invariant 2)"
     exit 0
 fi

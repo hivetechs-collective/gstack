@@ -1446,7 +1446,7 @@ This step fires ONLY on a clean merge. **Skip cleanup (preserve the worktree)** 
 - Step 5 review returned FAIL.
 - A hard-gate halt is active (`push-ack`, `secret-scan-allow`, `scope-unlock-for-drift`).
 - 3-consecutive low-confidence escalation fired.
-- The worktree has uncommitted changes, or a live `claude` session still has it as cwd (the helper re-asserts both invariants and safe-skips).
+- The worktree has uncommitted changes with NO valid `.pwt-shipped` marker, or a live `claude` session still has it as cwd (the helper re-asserts both invariants and safe-skips). **Exception (2.9.0):** a worktree carrying a valid `.pwt-shipped` marker (PWT-SHIPMARK above — its ship sha/tag resolves on the default branch) is FORCE-removed despite uncommitted content, because that content is stale post-ship generated artifacts, not work. The in-use veto stays absolute. Kill switch: `PWT_WORKTREE_ON_MERGE_NO_SHIPPED_FORCE=1`.
 - The PR was opened but NOT yet merged (the common `DO NOT MERGE` flow) — cleanup waits until the actual merge.
 
 ```bash
@@ -1509,6 +1509,30 @@ fi
 # push (and, for reversible runs, self-merge) succeeded → SHIP_PUSH_CONFIRMED=1.
 # Single source of truth with the §6g EXIT-trap re-assertion (PWT-TERM3).
 __pwt_write_ship_verdict
+```
+
+**Shipped-worktree marker (PWT-SHIPMARK, disk-hygiene as-it-goes, 2.9.0).** A
+`--worker-only` worker ships INSIDE its own worktree and cannot remove it (it is
+running there), and the observe-only origin-supervisor does not run §6h — so the
+worktree lingers until a GC reclaims it, which the GC previously refused because
+post-ship generated artifacts read as uncommitted work (parts held 25 such
+worktrees, 15 GB). Write a `.pwt-shipped` marker into the worker's worktree at
+this confirmed-ship point (push+merge succeeded) so `plan-w-team-worktree-gc.sh`
+(`SAFE-PRUNE-SHIPPED`) can reclaim it later — verified against the ship sha (or
+version tag) resolving on the default branch, so a forged/stale marker never
+authorizes a reap. Fail-open (never blocks the ship); no-op for a lead-direct run
+in the main checkout (no worktree to mark). Kill switch: `PWT_DISABLE_SHIPPED_MARKER=1`.
+
+```bash
+if [ "$SHIP_PUSH_CONFIRMED" = "1" ] && [ -x .claude/scripts/plan-w-team-worktree-mark-shipped.sh ]; then
+  __DEF=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@')
+  [ -n "$__DEF" ] || __DEF="${BASE_BRANCH:-main}"
+  git fetch --quiet origin "$__DEF" 2>/dev/null || true
+  __SHIP_SHA=$(git rev-parse "origin/$__DEF" 2>/dev/null || git rev-parse HEAD 2>/dev/null || echo "")
+  __SHIP_TAG=$(git tag --points-at "origin/$__DEF" 2>/dev/null | head -1)
+  .claude/scripts/plan-w-team-worktree-mark-shipped.sh \
+      --sha "$__SHIP_SHA" --tag "${__SHIP_TAG:-}" --slug "$SLUG" 2>/dev/null || true
+fi
 ```
 
 At the end of this stage, emit a status block for the `/goal` evaluator. This is a one-line invocation; the helper handles all field population (workflow lock, supervisor log, fleet log, escalations).

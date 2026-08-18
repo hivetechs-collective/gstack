@@ -15,8 +15,12 @@
 #   1. state == "blocked"  (busy/idle are alive; `done` self-clears).
 #   2. In scope: the session's cwd is under --cwd/root (or cwd is empty).
 #   3. It is a KNOWN /plan-w-team worker — its sid appears in this project's
-#      pwt-launches.jsonl or a plan-w-team-spawned-children-*.jsonl. A random
-#      non-PWT blocked bg session is NEVER touched.
+#      pwt-launches.jsonl or a plan-w-team-spawned-children-*.jsonl, OR its cwd is
+#      inside a `.claude/worktrees/` dir (worktree residency ⇒ PWT lineage; Part D1
+#      of the disk-hygiene upgrade — closes the gap where a blocked worker sitting
+#      in its own run worktree was KEPT because its launch-registry row had rotated
+#      out, e.g. session 0a11736b, 2026-08-18). A random non-PWT blocked bg session
+#      (not registered, cwd not a worktree) is NEVER touched.
 #   4. It has NO LIVE goal-state — no plan-w-team-goal-*.json (root state OR any
 #      worktree state dir) owned by this sid with terminal_state == null. An
 #      active run is thus protected even if momentarily blocked.
@@ -165,7 +169,7 @@ ROWS=$(printf '%s' "$AGENTS_RAW" | jq -r \
     # scope gate: cwd empty or under root
     | select(($cwd == "") or ($cwd | startswith($root)))
     | (if $st != "blocked" then "KEEP\t\($s)\tstate=\($st) (not blocked)"
-       elif (($reg | contains(" \($s) ")) | not) then "KEEP\t\($s)\tnot a PWT worker (absent from registries)"
+       elif ((($reg | contains(" \($s) ")) or ($cwd | test("/\\.claude/worktrees/"))) | not) then "KEEP\t\($s)\tnot a PWT worker (absent from registries, cwd not a worktree)"
        elif ($live | contains(" \($s) ")) then "KEEP\t\($s)\tlive goal-state (active run)"
        elif ($started == 0) then "KEEP\t\($s)\tunknown age (no startedAt)"
        elif (($now - $started) < $minage) then "KEEP\t\($s)\ttoo fresh (< age gate)"
