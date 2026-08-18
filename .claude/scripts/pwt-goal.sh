@@ -145,7 +145,16 @@ __pwt_owner_liveness() {  # $1=owner_sid  $2=project_root (optional cwd scope)
               # does not start with $root must NOT be missed — a false "dead"
               # would clobber a live run. A cross-project sid-prefix collision
               # only yields a false "alive" → stand down → the SAFE direction.
-              | select(((.state // "") == "busy") or ((.state // "") == "idle"))
+              #
+              # EXCLUSION predicate (F3, 2026-08-18): alive = present AND state
+              # NOT in {blocked, done}. The earlier inclusion form
+              # (state == busy|idle) tested values `.state` NEVER takes — busy/idle
+              # live in the SEPARATE `.status` field (schema verified on CLI
+              # 2.1.233 AND 2.1.235: bg rows carry state ∈ working|blocked|done) —
+              # so a LIVE working owner read as "dead" and the reclaim could steal
+              # a live lane seed. Exclusion is drift-proof: an unknown/new state
+              # value reads alive → stand down → the safe direction.
+              | select(((.state // "") == "blocked") or ((.state // "") == "done") | not)
               | ((.sessionId // "")[0:8])
               | select(. == $want) ] | length' 2>/dev/null)
         if [ "${hit:-0}" -gt 0 ] 2>/dev/null; then echo "alive"; else echo "dead"; fi
@@ -186,8 +195,12 @@ __pwt_owner_liveness() {  # $1=owner_sid  $2=project_root (optional cwd scope)
     hit=$(printf '%s' "$raw" | jq -r --arg want "$want" --arg root "$root" '
         [ .[]
           | select((.kind // "") == "background")
-          | select(($root == "") or ((.cwd // "") == "") or ((.cwd // "") | startswith($root)))
-          | select(((.state // "") == "busy") or ((.state // "") == "idle"))
+          # NO cwd scoping (matches the fixture-seam copy above — a live owner in
+          # a sibling-worktree cwd must not read "dead"), and the EXCLUSION
+          # predicate (F3): alive = present AND state NOT in {blocked, done}.
+          # busy/idle are `.status` values, never `.state` — the old inclusion
+          # form was structurally inert (see the seam copy for the full note).
+          | select(((.state // "") == "blocked") or ((.state // "") == "done") | not)
           | ((.sessionId // "")[0:8])
           | select(. == $want) ] | length' 2>/dev/null)
     if [ "${hit:-0}" -gt 0 ] 2>/dev/null; then echo "alive"; else echo "dead"; fi
@@ -1255,10 +1268,73 @@ fi
 if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; } && [ "$_PWT_BYPASS" != "1" ]; then
     GUARD_PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-${PWT_PROJECT_ROOT_OVERRIDE:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
     GUARD_DIR="$GUARD_PROJECT_ROOT/.claude/state"
+
+    # ── F3 audit trail (2026-08-18 cleanscale incident): every PWT-DS1 verdict —
+    # refuse AND proceed — is appended to a state-file audit line so the next
+    # double-spawn incident is diagnosable from disk instead of guessed at.
+    # (The incident's Tier B verdict was unrecoverable: spawn stdout was
+    # tail-truncated and nothing persisted the decision.) Fail-open.
+    __ds1_audit() {  # $1=decision $2=tier $3=worker_sid $4=reason
+        printf '{"ts":"%s","decision":"%s","tier":"%s","worker_sid":"%s","reason":"%s","caller_pid":%d}\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "${3:-}" "$4" "$$" \
+            >> "$GUARD_DIR/plan-w-team-ds1-audit.jsonl" 2>/dev/null || true
+    }
+
+    # ── F3 goal-state fallback: CLI-independent liveness evidence. A recorded
+    # worker sid that OWNS a goal-state with terminal_state null and a fresh
+    # mtime (< PWT_DS1_GOALSTATE_FRESH_HOURS, default 6) is running a live lane
+    # — refusal-grade proof even when `claude agents --json` is unavailable or
+    # its schema has drifted (the structural failure that made Tier B inert in
+    # the 2026-08-18 incident). Scans the main state dir AND worktree state dirs.
+    __ds1_goalstate_live_hit() {  # $1=guard_dir $2="sid8 sid8 ..." → first live sid8 or ""
+        local gdir="$1" sids="$2" fresh_h="${PWT_DS1_GOALSTATE_FRESH_HOURS:-6}" gf own ts now mt _sid
+        command -v jq >/dev/null 2>&1 || { echo ""; return 0; }
+        now=$(date +%s 2>/dev/null || echo 0)
+        for gf in "$gdir"/plan-w-team-goal-*.json \
+                  "$(dirname "$gdir" 2>/dev/null)/worktrees"/*/.claude/state/plan-w-team-goal-*.json; do
+            [ -f "$gf" ] || continue
+            ts=$(jq -r '.terminal_state // "null"' "$gf" 2>/dev/null)
+            [ "$ts" = "null" ] || continue
+            own=$(jq -r '.worker_sid // ""' "$gf" 2>/dev/null); own="${own:0:8}"
+            [ -n "$own" ] || continue
+            mt=$(stat -f %m "$gf" 2>/dev/null || stat -c %Y "$gf" 2>/dev/null || echo 0)
+            [ $(( now - mt )) -le $(( fresh_h * 3600 )) ] 2>/dev/null || continue
+            for _sid in $sids; do
+                [ "${_sid:0:8}" = "$own" ] && { echo "$own"; return 0; }
+            done
+        done
+        echo ""
+    }
+
     if [ -d "$GUARD_DIR" ]; then
         # Find any hook-spawn flag fresh within the double-spawn window.
         DS_WINDOW_MIN="${PWT_DOUBLE_SPAWN_WINDOW_MIN:-3}"
         FRESH_FLAG=$(find "$GUARD_DIR" -maxdepth 1 -name 'plan-w-team-hook-spawn-*.flag' -mmin "-${DS_WINDOW_MIN}" 2>/dev/null | head -1)
+
+        # ── F2 (2026-08-18): SAME-ORIGIN wide window. The cleanscale incident's
+        # manual spawn landed 4m03s after the hook flag — outside the 3-min
+        # window — because the skill's OWN mandated pre-spawn work (disk
+        # preflight + briefing write + a lane-guard denial forcing a goal-text
+        # rewrite) legitimately takes longer. When the flag was written for
+        # THIS caller's session (flag filename carries the parent sid8, and the
+        # flag body records parent_sid), a later same-origin spawn is a
+        # near-certain duplicate → apply a much wider window (default 30 min).
+        # Cross-session flags keep the short window (false-positive control).
+        if [ -z "$FRESH_FLAG" ]; then
+            DS_CALLER_SID="${CLAUDE_JOB_DIR:-}"; DS_CALLER_SID="${DS_CALLER_SID##*/}"
+            [ -z "$DS_CALLER_SID" ] && DS_CALLER_SID="${PWT_PARENT_SID:-}"
+            [ -z "$DS_CALLER_SID" ] && DS_CALLER_SID="${CLAUDE_CODE_SESSION_ID:-}"
+            if [ -n "$DS_CALLER_SID" ]; then
+                DS_SAMEORIGIN_WINDOW_MIN="${PWT_DOUBLE_SPAWN_SAMEORIGIN_WINDOW_MIN:-30}"
+                SAME_ORIGIN_FLAG="$GUARD_DIR/plan-w-team-hook-spawn-${DS_CALLER_SID:0:8}.flag"
+                if [ -f "$SAME_ORIGIN_FLAG" ] \
+                   && [ -n "$(find "$SAME_ORIGIN_FLAG" -mmin "-${DS_SAMEORIGIN_WINDOW_MIN}" 2>/dev/null)" ]; then
+                    FRESH_FLAG="$SAME_ORIGIN_FLAG"
+                    __ds1_audit "refuse" "tierA-same-origin" "$(grep '^worker_sid=' "$SAME_ORIGIN_FLAG" 2>/dev/null | head -1 | cut -d= -f2)" "same-origin flag within ${DS_SAMEORIGIN_WINDOW_MIN}m wide window"
+                fi
+            fi
+        fi
+
         if [ -n "$FRESH_FLAG" ]; then
             EXISTING_WORKER=$(grep '^worker_sid=' "$FRESH_FLAG" 2>/dev/null | head -1 | cut -d= -f2)
             EXISTING_AT=$(grep '^spawned_iso=' "$FRESH_FLAG" 2>/dev/null | head -1 | cut -d= -f2)
@@ -1279,6 +1355,7 @@ if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; } && [ "$_PWT_BYPASS" != "
   If you've confirmed the prior worker is dead or you want to spawn
   another deliberately, set PLAN_W_TEAM_FORCE_SPAWN=1 and retry.
 GUARD
+            __ds1_audit "refuse" "tierA" "$EXISTING_WORKER" "hook-spawn flag fresh (window or same-origin wide window)"
             # Still emit the existing worker SID so the caller can act as
             # supervisor on the prior worker instead.
             echo "worker_sid=$EXISTING_WORKER"
@@ -1373,20 +1450,36 @@ EOF
                                 | [ .[]
                                     | select((.kind // "") == "background")
                                     | select(((.cwd // "") == "") or ((.cwd // "") | startswith($root)))
-                                    # Bug C (2026-08-15): only a genuinely-alive
-                                    # session (state busy|idle) counts as a live
-                                    # duplicate. A `blocked` (stuck at a Stop hook)
-                                    # or `done` zombie is NOT a running worker — the
-                                    # parts run accreted 23 blocked zombies that
-                                    # false-positived this guard and refused legit
-                                    # spawns. `.state` ∈ {null,blocked,done,busy,idle}.
-                                    | select(((.state // "") == "busy") or ((.state // "") == "idle"))
+                                    # Bug C (2026-08-15) intent: a `blocked` (stuck
+                                    # at a Stop hook) or `done` zombie is NOT a
+                                    # running worker (parts accreted 23 that
+                                    # false-positived this guard). F3 (2026-08-18)
+                                    # CORRECTED the predicate: the original
+                                    # inclusion form (state == busy|idle) tested
+                                    # values `.state` NEVER takes — busy/idle live
+                                    # in the SEPARATE `.status` field; bg rows carry
+                                    # state ∈ working|blocked|done (verified on CLI
+                                    # 2.1.233 AND 2.1.235). That made Tier B
+                                    # STRUCTURALLY INERT (matched nothing → never
+                                    # refused → the cleanscale 2026-08-18 L3
+                                    # fail-open). EXCLUSION is drift-proof: alive =
+                                    # present AND state NOT in {blocked, done}.
+                                    | select(((.state // "") == "blocked") or ((.state // "") == "done") | not)
                                     | ((.sessionId // "")[0:8]) as $s
                                     | select($want | index($s))
                                     | $s ]
                                 | .[0] // empty
                             ' 2>/dev/null
                         )
+                        # F3 fallback (CLI-independent): even when the listing shows
+                        # no live hit, a recorded worker that OWNS a live goal-state
+                        # (worker_sid match + terminal_state null + fresh mtime) is
+                        # positive-enough evidence of a live run → refuse. Covers a
+                        # listing that drops/renames fields entirely.
+                        if [ -z "$DS_LIVE_HIT" ]; then
+                            DS_LIVE_HIT=$(__ds1_goalstate_live_hit "$GUARD_DIR" "$LIVE_SIDS")
+                            [ -n "$DS_LIVE_HIT" ] && __ds1_audit "refuse" "tierB-goalstate-fallback" "$DS_LIVE_HIT" "live goal-state owned by recorded worker"
+                        fi
                         if [ -n "$DS_LIVE_HIT" ]; then
                             cat >&2 <<LIVEGUARD
 ✗ Double-spawn refused: a route-hook worker (${DS_LIVE_HIT}...) recorded by an
@@ -1404,16 +1497,30 @@ EOF
   dead/stopped, set PLAN_W_TEAM_FORCE_SPAWN=1 and retry. To disable this
   liveness check entirely (revert to pure mtime): PWT_DOUBLE_SPAWN_LIVENESS_DISABLE=1.
 LIVEGUARD
+                            __ds1_audit "refuse" "tierB-live" "$DS_LIVE_HIT" "recorded worker still live in agents listing (or live goal-state fallback)"
                             echo "worker_sid=$DS_LIVE_HIT"
                             exit 3
                         fi
                         # Valid, non-empty listing but none of the recorded
-                        # workers are in it → all prior route-hook workers are
-                        # gone → legitimate later run → proceed silently.
+                        # workers are in it (and no live goal-state) → all prior
+                        # route-hook workers are gone → legitimate later run.
+                        __ds1_audit "proceed" "tierB-clear" "" "listing valid; no recorded worker live; no live goal-state"
                     else
-                        # Indeterminate listing → proceed, but leave a loud marker
+                        # Indeterminate listing → try the CLI-independent
+                        # goal-state fallback before giving up (F3): a recorded
+                        # worker owning a live goal-state is refusal-grade
+                        # evidence even with no listing at all.
+                        DS_LIVE_HIT=$(__ds1_goalstate_live_hit "$GUARD_DIR" "$LIVE_SIDS")
+                        if [ -n "$DS_LIVE_HIT" ]; then
+                            echo "✗ Double-spawn refused: agents listing unavailable, but recorded route-hook worker ${DS_LIVE_HIT}... owns a LIVE goal-state (terminal_state null, fresh) — this manual launch would duplicate it. PLAN_W_TEAM_FORCE_SPAWN=1 to override." >&2
+                            __ds1_audit "refuse" "tierB-goalstate-fallback-indeterminate" "$DS_LIVE_HIT" "listing indeterminate; live goal-state owned by recorded worker"
+                            echo "worker_sid=$DS_LIVE_HIT"
+                            exit 3
+                        fi
+                        # Truly indeterminate → proceed, but leave a loud marker
                         # so a silent race window is at least visible.
                         echo "⚠ PWT-DS1 liveness: agents listing unavailable/empty after retries — proceeding with NO stale-worker liveness confirmation (duplicate risk if a plan-mode worker is still live). Kill switch: PWT_DOUBLE_SPAWN_LIVENESS_DISABLE=1" >&2
+                        __ds1_audit "proceed" "tierB-indeterminate" "" "listing indeterminate; no live goal-state for recorded workers"
                     fi
                 fi
             fi

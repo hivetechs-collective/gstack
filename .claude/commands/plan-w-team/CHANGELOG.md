@@ -14,6 +14,54 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.10.0] — 2026-08-18 (7e20b16)
+
+**Double-spawn defense rebuilt after the cleanscale trifecta (3rd recurrence; rootcause:
+`docs/specs/pwt-double-spawn-rootcause-2026-08-18.md`).** Two workers spawned 4m03s apart for
+the same task because ALL THREE defense layers failed at once: the hook's systemMessage was
+silently dropped (L1), the manual spawn landed just outside Tier A's 3-min window after
+legitimate mandated pre-spawn work (L2), and Tier B failed open (L3). Fixes F1–F4+F6; F5
+remainder queued in the follow-ups ledger.
+
+- `fix` **F3 (the sharpest finding — Tier B was STRUCTURALLY INERT since 2.6.0).** The Bug C
+  liveness filter tested `state ∈ busy|idle` — values `.state` NEVER takes (busy/idle live in
+  the separate `.status` field; bg rows carry `state ∈ working|blocked|done`, verified on CLI
+  2.1.233 AND 2.1.235). It matched nothing → Tier B could never positively confirm → never
+  refused (the cleanscale L3 fail-open), and worse, `__pwt_owner_liveness` read a LIVE working
+  owner as "dead" — the 2.6.0 seed auto-reclaim could have stolen a live lane's goal-state. All
+  three predicates flipped to EXCLUSION (alive = present AND state ∉ {blocked, done}) — correct
+  on every observed schema generation and drift-proof (an unknown new state value reads alive →
+  the safe direction at every call site). Also fixed a latent copy-divergence: the real
+  owner-liveness path still carried cwd scoping the fixture-seam copy had dropped.
+- `feat` **F2 — same-origin wide window (Tier A).** When the hook-spawn flag's filename sid8
+  matches the CALLER's own session id, a `PWT_DOUBLE_SPAWN_SAMEORIGIN_WINDOW_MIN` (default 30
+  min) window applies instead of the 3-min default — the incident's 4m03s gap was legitimate
+  skill-mandated work (disk preflight + briefing + lane-guard denial). Cross-session flags keep
+  the short window.
+- `feat` **F3 — goal-state fallback + audit trail.** Tier B now also refuses on CLI-independent
+  evidence: a recorded worker owning a live (`terminal_state: null`, fresh) goal-state — covers
+  an unavailable listing or another schema drift. EVERY Tier A/B verdict (refuse AND proceed) is
+  appended to `.claude/state/plan-w-team-ds1-audit.jsonl` so the next incident is diagnosable
+  from disk (the incident's Tier B verdict was unrecoverable).
+- `feat` **F1 — manifest Step 3a is a DISK READ, not marker attention.** Before ANY
+  `pwt-goal.sh` call the lead MUST read `.claude/state/plan-w-team-hook-spawn-<self-sid8>.flag`
+  and treat it as authoritative when fresh (~30 min) or its worker owns a live goal-state —
+  systemMessage delivery is proven droppable, so marker absence proves nothing.
+- `feat` **F4 — flag hygiene.** `plan-w-team-zombie-prune.sh` reaps hook-spawn flags whose
+  worker is provably finished (terminal goal-state, or absent from a valid listing + older than
+  `PWT_FLAG_REAP_HOURS`, default 24). Live/indeterminate → KEEP (reaping a live flag would
+  disarm the guard). Kill switch: `PWT_ZOMBIE_PRUNE_NO_FLAG_REAP=1`.
+- `docs` **F6 — hook nondeterminism documented** in the route-hook header: firing is not
+  inferable from context in EITHER direction (message drops; mid-turn triggers bypass
+  UserPromptSubmit) — the flag file is the only authoritative record. Rootcause DIRECTION doc
+  promoted to `docs/specs/`. F5 remainder (stop+resume lane continuity via pwt-steer /
+  evaluator DEAD-propagation; lane-guard BUILDER_RE quoted-goal exemption) queued in the
+  follow-ups ledger under `pwt-double-spawn-guard`.
+- `test` Double-spawn suite grows 34→44 ACs: the incident case itself (live worker with REAL
+  `state:"working"` → Tier B refuses — failed open pre-F3), same-origin wide window,
+  cross-origin control, goal-state fallback, audit-trail assertions; zombie-prune 16→20 (flag
+  hygiene). All 18 pwt-goal suites green.
+
 ## [2.9.0] — 2026-08-18 (7bf9a6e)
 
 **Disk hygiene — reclaim worktrees "as it ships" (spec:

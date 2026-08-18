@@ -19,6 +19,20 @@
 # Claude Code chat) still spawns the worker+supervisor pair as before. Only
 # the hook path changed.
 #
+# ⚠ DELIVERY NONDETERMINISM (F6, 2026-08-18 cleanscale incident): this hook's
+# firing is NOT observable from the origin session's context alone — in BOTH
+# directions. (1) The systemMessage it emits can be silently dropped by the
+# harness (observed: a trigger turn whose context contained no hook message at
+# all, same failure class as the documented additionalContext drop). (2) The
+# hook can silently NOT fire for a trigger that arrives MID-TURN (queued and
+# delivered alongside a tool result — evidently bypassing UserPromptSubmit),
+# then fire normally on a later fresh prompt. Consequence: nothing downstream
+# may infer "the hook did/didn't spawn" from context. The authoritative record
+# is the hook-spawn FLAG FILE this hook writes to disk
+# (.claude/state/plan-w-team-hook-spawn-<parent_sid8>.flag) — manifest Step 3a
+# (F1) reads it before any manual spawn, and pwt-goal.sh's PWT-DS1 guard
+# enforces it process-level (same-origin wide window + liveness + audit).
+#
 # LIMITATION: UserPromptSubmit hooks do NOT fire on mid-work interrupt
 # prompts — interrupts bypass this hook and must be routed manually (after
 # a double-spawn check).

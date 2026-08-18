@@ -196,6 +196,56 @@ $ROWS
 EOF
 fi
 
+# ── F4 flag hygiene (2026-08-18): stale hook-spawn flags linger forever (9 had
+# accumulated June→Aug in cleanscale) because nothing deletes them, which makes
+# PWT-DS1 Tier B's collect-all-flags loop scan dead history. Reap a flag when its
+# recorded worker is provably FINISHED: (a) the worker owns a goal-state whose
+# terminal_state is non-null, OR (b) the worker is absent from a valid live
+# listing AND the flag is older than PWT_FLAG_REAP_HOURS (default 24h). A flag
+# whose worker is live, or whose evidence is indeterminate, is KEPT — reaping a
+# live flag would disarm the double-spawn guard (the fail-closed direction here
+# is KEEP). Execute-gated like the session stops; dry-run only reports.
+# Kill switch: PWT_ZOMBIE_PRUNE_NO_FLAG_REAP=1.
+FLAG_CAND=0; FLAG_REAPED=0
+if [ "${PWT_ZOMBIE_PRUNE_NO_FLAG_REAP:-0}" != "1" ]; then
+    LIVE_LISTING_SIDS=""
+    if printf '%s' "$AGENTS_RAW" | jq -e 'type == "array" and length > 0' >/dev/null 2>&1; then
+        LIVE_LISTING_SIDS=" $(printf '%s' "$AGENTS_RAW" | jq -r '.[]?|(.sessionId // "")[0:8]' 2>/dev/null | tr '\n' ' ') "
+    fi
+    _flag_reap_h="${PWT_FLAG_REAP_HOURS:-24}"
+    _now_s=$(date +%s 2>/dev/null || echo 0)
+    for _flag in "$STATE_DIR"/plan-w-team-hook-spawn-*.flag; do
+        [ -f "$_flag" ] || continue
+        _fw=$(grep '^worker_sid=' "$_flag" 2>/dev/null | head -1 | cut -d= -f2); _fw="${_fw:0:8}"
+        [ -n "$_fw" ] || continue
+        _reap=0
+        # (a) worker's goal-state is terminal → finished
+        for _gf in "$STATE_DIR"/plan-w-team-goal-*.json; do
+            [ -f "$_gf" ] || continue
+            _gown=$(jq -r '.worker_sid // ""' "$_gf" 2>/dev/null); _gown="${_gown:0:8}"
+            [ "$_gown" = "$_fw" ] || continue
+            _gts=$(jq -r '.terminal_state // "null"' "$_gf" 2>/dev/null)
+            [ "$_gts" != "null" ] && { _reap=1; break; }
+        done
+        # (b) worker absent from a VALID listing AND flag older than the reap window
+        if [ "$_reap" = "0" ] && [ -n "$LIVE_LISTING_SIDS" ]; then
+            case "$LIVE_LISTING_SIDS" in
+                *" $_fw "*) : ;;   # live → keep
+                *)
+                    _fm=$(stat -f %m "$_flag" 2>/dev/null || stat -c %Y "$_flag" 2>/dev/null || echo 0)
+                    [ $(( _now_s - _fm )) -gt $(( _flag_reap_h * 3600 )) ] 2>/dev/null && _reap=1
+                    ;;
+            esac
+        fi
+        if [ "$_reap" = "1" ]; then
+            FLAG_CAND=$((FLAG_CAND + 1))
+            if [ "$EXECUTE" = "1" ]; then
+                rm -f "$_flag" 2>/dev/null && FLAG_REAPED=$((FLAG_REAPED + 1))
+            fi
+        fi
+    done
+fi
+
 # Execute stops on the PRUNE set.
 STOPPED_SIDS=""
 if [ "$EXECUTE" = "1" ] && [ -n "$PRUNE_SIDS" ]; then
@@ -219,7 +269,9 @@ if [ "$JSON_OUT" = "1" ]; then
         --argjson stopped "$STOP_OK" \
         --argjson failed "$STOP_FAIL" \
         --argjson candidates "$CAND_ARR" \
-        '{root:$root, min_age_min:$minage, executed:($executed==1), summary:{keep:$keep, prune:$prune, stopped:$stopped, failed:$failed}, candidates:$candidates}'
+        --argjson flagcand "${FLAG_CAND:-0}" \
+        --argjson flagreaped "${FLAG_REAPED:-0}" \
+        '{root:$root, min_age_min:$minage, executed:($executed==1), summary:{keep:$keep, prune:$prune, stopped:$stopped, failed:$failed, stale_flags:$flagcand, flags_reaped:$flagreaped}, candidates:$candidates}'
     exit 0
 fi
 
