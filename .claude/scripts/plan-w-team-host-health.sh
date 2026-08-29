@@ -42,6 +42,13 @@
 #   PWT_HOST_HEALTH_STUB_UPTIME  file used in place of `uptime`
 #   PWT_HOST_HEALTH_STUB_PS      file used in place of `ps`
 #   PWT_HOST_HEALTH_STUB_NCPU    integer used in place of the ncpu probe
+#   PWT_HOST_HEALTH_STUB_CWD     TSV (pid<TAB>cwd) used in place of the lsof cwd probe (O4)
+#
+# O4 orphan rule (BRIEF §4.6): a lane process (ppid==1) counts as an orphan ONLY when it is aged
+# past PWT_HOST_ORPHAN_MIN_AGE_S (default 300) AND its cwd is NOT inside a live lane worktree
+# (cwd via `lsof -a -p <pid> -d cwd -Fn`; if cwd cannot be read, fall back to today's argv rule —
+# never widen). Kill switches: PWT_HOST_ORPHAN_MIN_AGE_S=0 (no floor),
+# PWT_DISABLE_HOST_ORPHAN_CWD_EXCLUDE=1 (no cwd exclusion).
 #
 # bash 3.2 (mac-mini /bin/bash): no `declare -A`, no `${v,,}`, no mapfile.
 
@@ -50,6 +57,7 @@ set -u
 LOAD_FACTOR="${PWT_HOST_LOAD_FACTOR:-1.5}"
 CPU_PCT="${PWT_HOST_CPU_PCT:-150}"
 ORPHAN_MAX="${PWT_HOST_ORPHAN_MAX:-5}"
+ORPHAN_MIN_AGE="${PWT_HOST_ORPHAN_MIN_AGE_S:-300}"   # O4: floor before a re-parented lane proc is an orphan
 
 REPO_ROOT=""
 WORKTREES=""
@@ -96,6 +104,27 @@ LANE_PATHS="${REPO_ROOT}${REPO_ROOT:+
 # missing input; it is NOT correct for an input we have and cannot pass.
 LANE_PATHS=$(printf '%s' "$LANE_PATHS" | sed -e 's/[[:space:]]*$//')
 export PWT_HH_LANE_PATHS="$LANE_PATHS"
+
+# ── O4 cwd probe (stub PWT_HOST_HEALTH_STUB_CWD, else lsof) ──────────────────
+__hh_proc_cwd() {   # $1=pid → cwd or empty
+  if [ -n "${PWT_HOST_HEALTH_STUB_CWD:-}" ]; then
+    awk -F'\t' -v p="$1" '$1==p{print $2; exit}' "$PWT_HOST_HEALTH_STUB_CWD" 2>/dev/null
+    return 0
+  fi
+  command -v lsof >/dev/null 2>&1 || { echo ""; return 0; }
+  lsof -a -p "$1" -d cwd -Fn 2>/dev/null | awk '/^n/{print substr($0,2); exit}'
+}
+__hh_cwd_in_lane() {   # $1=cwd → 0 if under any lane path
+  local c="$1" lp
+  [ -n "$c" ] || return 1
+  while IFS= read -r lp; do
+    [ -n "$lp" ] || continue
+    case "$c" in "$lp"|"$lp"/*) return 0 ;; esac
+  done <<EOF
+$PWT_HH_LANE_PATHS
+EOF
+  return 1
+}
 
 # ── ncpu ────────────────────────────────────────────────────────────────────
 NCPU=""
@@ -148,29 +177,45 @@ PS_RAW=""
 if [ -n "${PWT_HOST_HEALTH_STUB_PS:-}" ]; then
   [ -r "$PWT_HOST_HEALTH_STUB_PS" ] && PS_RAW=$(cat "$PWT_HOST_HEALTH_STUB_PS" 2>/dev/null || echo "")
 elif command -v ps >/dev/null 2>&1; then
-  PS_RAW=$(ps -A -o pid=,ppid=,pcpu=,args= 2>/dev/null || echo "")
+  # O4: request etime for the orphan age floor. `etime` ([[dd-]hh:]mm:ss) is the PORTABLE spelling
+  # — macOS BSD ps has no `etimes` (Linux-only) and an unknown keyword fails the WHOLE ps call.
+  PS_RAW=$(ps -A -o pid=,ppid=,pcpu=,etime=,args= 2>/dev/null || echo "")
 fi
 
-# Normalize to TSV: pid \t ppid \t pcpu \t isLane \t command
+# Normalize to TSV: pid \t ppid \t pcpu \t isLane \t command \t age_seconds
 # A row whose first field is not numeric is a header or noise — dropped, so a
 # stub fixture may carry a human-readable header without special-casing.
+# Dual-parse (O4 parity): when $4 is an etime shape it is the age column (post-change / real ps);
+# an old 4-column stub (pid ppid pcpu args) has the first arg token there → age = -1 (unknown →
+# counted, exactly as before O4). Columns 1-5 are UNCHANGED so MAX_NONLANE stays byte-identical.
 PS_TSV=""
 if [ -n "$PS_RAW" ]; then
   PS_TSV=$(printf '%s\n' "$PS_RAW" | awk '
+    function etime_to_sec(e,   parts, np, d, h, m, s) {
+      if (e !~ /^([0-9]+-)?([0-9]+:)?[0-9]+:[0-9]+$/) return -1
+      d = 0
+      if (e ~ /-/) { np = index(e, "-"); d = substr(e, 1, np-1) + 0; e = substr(e, np+1) }
+      np = split(e, parts, ":")
+      if (np == 3) { h = parts[1] + 0; m = parts[2] + 0; s = parts[3] + 0 }
+      else         { h = 0;            m = parts[1] + 0; s = parts[2] + 0 }
+      return ((d * 24 + h) * 60 + m) * 60 + s
+    }
     BEGIN { n = split(ENVIRON["PWT_HH_LANE_PATHS"], L, "\n") }
     {
       pid = $1; ppid = $2; pcpu = $3
       if (pid !~ /^[0-9]+$/) next
       if (ppid !~ /^[0-9]+$/) next
       if (pcpu !~ /^[0-9]+(\.[0-9]+)?$/) next
+      age = -1; argstart = 4
+      if ($4 ~ /^([0-9]+-)?([0-9]+:)?[0-9]+:[0-9]+$/) { age = etime_to_sec($4); argstart = 5 }
       cmd = ""
-      for (i = 4; i <= NF; i++) cmd = cmd (i > 4 ? " " : "") $i
+      for (i = argstart; i <= NF; i++) cmd = cmd (i > argstart ? " " : "") $i
       isLane = 0
       for (j = 1; j <= n; j++) {
         if (L[j] != "" && index(cmd, L[j]) > 0) { isLane = 1; break }
       }
       gsub(/\t/, " ", cmd)
-      printf "%s\t%s\t%s\t%s\t%s\n", pid, ppid, pcpu, isLane, cmd
+      printf "%s\t%s\t%s\t%s\t%s\t%s\n", pid, ppid, pcpu, isLane, cmd, age
     }' 2>/dev/null || echo "")
 fi
 
@@ -179,9 +224,22 @@ MAX_NONLANE=$(printf '%s\n' "$PS_TSV" | awk -F'\t' '
   END { printf "%.1f", m + 0 }' 2>/dev/null || echo "0.0")
 [ -n "$MAX_NONLANE" ] || MAX_NONLANE="0.0"
 
-ORPHANS=$(printf '%s\n' "$PS_TSV" | awk -F'\t' '
-  $4 == 1 && $2 + 0 == 1 { c++ }
-  END { print c + 0 }' 2>/dev/null || echo 0)
+# O4 orphan detection: a re-parented lane process (ppid==1) counts ONLY when aged past the floor
+# (age -1 = unknown → counted, pre-O4 behaviour) AND its cwd is not inside a live lane worktree.
+ORPHAN_CANDS=$(printf '%s\n' "$PS_TSV" | awk -F'\t' -v minage="$ORPHAN_MIN_AGE" '
+  $4 == 1 && $2 + 0 == 1 && ($6 + 0 == -1 || $6 + 0 >= minage + 0) { print $1 }' 2>/dev/null || echo "")
+ORPHANS=0
+_cwd_exclude=1
+if [ "${PWT_DISABLE_HOST_ORPHAN_CWD_EXCLUDE:-0}" = "1" ]; then _cwd_exclude=0; fi
+if [ -z "${PWT_HOST_HEALTH_STUB_CWD:-}" ] && ! command -v lsof >/dev/null 2>&1; then _cwd_exclude=0; fi
+for _p in $ORPHAN_CANDS; do
+  case "$_p" in ''|*[!0-9]*) continue ;; esac
+  if [ "$_cwd_exclude" = "1" ]; then
+    _cwd=$(__hh_proc_cwd "$_p")
+    if [ -n "$_cwd" ] && __hh_cwd_in_lane "$_cwd"; then continue; fi   # lane-worktree cwd → not an orphan
+  fi
+  ORPHANS=$((ORPHANS + 1))
+done
 case "$ORPHANS" in ''|*[!0-9]*) ORPHANS=0 ;; esac
 
 # ── Verdicts (awk does the float math — bash 3.2 has none) ──────────────────

@@ -21,13 +21,16 @@
 # Stage-event stream: <MAIN>/.claude/state/plan-w-team-stage-events-<slug>.jsonl
 #
 # Schema (plan-w-team-manifest/v1):
-#   { schema, slug, run_sid, worktree_path, strategy, current_stage,
+#   { schema, slug, run_sid, worktree_path, base_sha, strategy, current_stage,
 #     stage_updated_at, builder_count, tasks:[{id,status,owner_builder_sid,worktree}],
 #     started_at, updated_at, terminal_state, terminal_reason }
+#   base_sha: the commit the run's worktree branched from, recorded at spawn. The landing gate
+#   (plan-w-team-land.sh) uses it to distinguish a genuine landing from an UNDIVERGED branch
+#   (no commit beyond base) — a git-only predicate cannot tell those apart post-fast-forward.
 #
 # Subcommands:
 #   init  --slug S --run-sid R [--worktree W] [--strategy ST] [--stage STG]
-#   set   --slug S [--stage STG] [--strategy ST] [--worktree W] [--builders N]
+#   set   --slug S [--stage STG] [--strategy ST] [--worktree W] [--builders N] [--base-sha SHA]
 #                  [--terminal T] [--terminal-reason R] [--run-sid R]
 #                  [--justification J] [--difficulty-mix M]   # 1.54.0 strategy-choice audit
 #   task  --slug S --id T --status pending|running|done|failed [--owner SID] [--worktree W]
@@ -103,7 +106,7 @@ SUB="${1:-}"
 [ -n "$SUB" ] && shift || true
 
 SLUG=""; RUN_SID=""; WORKTREE=""; STRATEGY=""; STAGE=""; BUILDERS=""
-JUSTIFICATION=""; DIFFICULTY_MIX=""
+JUSTIFICATION=""; DIFFICULTY_MIX=""; BASE_SHA=""
 TERMINAL=""; TERMINAL_REASON=""; TASK_ID=""; TASK_STATUS=""; TASK_OWNER=""
 
 while [ $# -gt 0 ]; do
@@ -114,6 +117,7 @@ while [ $# -gt 0 ]; do
         --strategy)        STRATEGY="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --justification)   JUSTIFICATION="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --difficulty-mix)  DIFFICULTY_MIX="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --base-sha)        BASE_SHA="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --stage)           STAGE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --builders)        BUILDERS="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --terminal)        TERMINAL="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
@@ -221,7 +225,7 @@ PY
 __build_patch() {
     SLUG="$SLUG" RUN_SID="$RUN_SID" WORKTREE="$WORKTREE" STRATEGY="$STRATEGY" \
     STAGE="$STAGE" BUILDERS="$BUILDERS" TERMINAL="$TERMINAL" TREASON="$TERMINAL_REASON" \
-    JUSTIFICATION="$JUSTIFICATION" DIFFICULTY_MIX="$DIFFICULTY_MIX" \
+    JUSTIFICATION="$JUSTIFICATION" DIFFICULTY_MIX="$DIFFICULTY_MIX" BASE_SHA="$BASE_SHA" \
     python3 - <<'PY'
 import json, os
 p = {}
@@ -238,6 +242,7 @@ put("worktree_path", "WORKTREE")
 put("strategy", "STRATEGY")
 put("strategy_justification", "JUSTIFICATION")
 put("task_difficulty_mix", "DIFFICULTY_MIX")
+put("base_sha", "BASE_SHA")
 put("current_stage", "STAGE")
 put("builder_count", "BUILDERS", "int")
 put("terminal_state", "TERMINAL")

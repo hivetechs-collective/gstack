@@ -19,6 +19,20 @@
 #
 # POSIX sh — no bashisms. Safe to source or invoke from any shell.
 
+# ─── Step 0: explicit override / spawn-test isolation (Governor Contract §3) ─
+# PWT_CLAUDE_BIN pins the binary (a stub in tests) regardless of PATH — deterministic isolation.
+# PWT_CLAUDE_BIN_STRICT=1 WITHOUT a declared PWT_CLAUDE_BIN refuses the install-path fall-through
+# below, so a spawn test that forgot its stub fails LOUDLY instead of resolving and launching a
+# REAL `claude --bg` session (AC6: the suite leaves no new background session in the registry).
+if [ -n "${PWT_CLAUDE_BIN:-}" ]; then
+    printf '%s\n' "$PWT_CLAUDE_BIN"
+    exit 0
+fi
+if [ "${PWT_CLAUDE_BIN_STRICT:-0}" = "1" ]; then
+    echo "locate-claude.sh: PWT_CLAUDE_BIN_STRICT=1 and no PWT_CLAUDE_BIN declared — refusing to resolve a real claude binary (spawn-test isolation)." >&2
+    exit 1
+fi
+
 # ─── Step 1: prefer command -v (caller has a working PATH or test stub) ─────
 if command -v claude >/dev/null 2>&1; then
     p=$(command -v claude)

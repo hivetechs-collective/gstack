@@ -239,13 +239,48 @@ __mask_shell_text() {
 # tool call to the whole host. That is precisely the per-call spawn cost this
 # release exists to remove; paying it here to fix a classifier would be an
 # unusually literal own goal.
+# D11 (2026-08-29): heredoc BODIES are not shell structure — a `>`/`<`/`;` in a heredoc payload
+# (e.g. a markdown `> Method note:` line inside a `<<'EOF' … EOF` brief) is prose, but
+# __redirect_targets read the `>` as a redirect whose target (`Method`) resolved under the repo →
+# a deny naming a token the operator never typed as a path. Blank heredoc bodies (the lines between
+# a `<<[-]?["']?WORD` opener and the WORD terminator) BEFORE any classifier. The opener line — with
+# any REAL redirect (`cat > repo/x <<EOF`) — and the terminator are preserved, so a real in-repo
+# redirect on the opener line still DENIES. Residual (documented, drift-not-adversary threat model):
+# a `<<WORD` inside a quoted string on a line with unbalanced quotes before it is skipped by the
+# quote-parity guard; a crafted fake opener remains a theoretical over-blank the file-tool wall backstops.
+__strip_heredocs() {
+    printf '%s' "$1" | awk '
+    {
+      line = $0
+      if (inhd) {
+        t = line; sub(/^\t+/, "", t)
+        if (t == term) { inhd = 0; print line; next }
+        print "_"          # body line → neutralized
+        next
+      }
+      if (match(line, /<<[-]?[ \t]*["'"'"']?[A-Za-z_][A-Za-z0-9_]*/)) {
+        before = substr(line, 1, RSTART - 1)
+        nq = gsub(/["'"'"']/, "&", before)       # quote count before the << (parity guard)
+        if (nq % 2 == 0) {
+          w = substr(line, RSTART, RLENGTH)
+          sub(/^<<[-]?[ \t]*["'"'"']?/, "", w)   # strip << [-] [quote] → WORD
+          term = w; inhd = 1
+        }
+      }
+      print line
+    }' 2>/dev/null
+}
+
 CMD_SCAN=""
 CMD_SCAN_READY=0
 __ensure_cmd_scan() {
     [ "$CMD_SCAN_READY" = "1" ] && return 0
     CMD_SCAN="$CMD"
     if [ "$HYGIENE" = "1" ] && [ -n "$CMD" ]; then
-        MASKED=$(__mask_shell_text "$CMD")
+        # D11: strip heredoc bodies first, THEN mask quotes/substitutions.
+        HDSTRIP=$(__strip_heredocs "$CMD")
+        [ -n "$HDSTRIP" ] || HDSTRIP="$CMD"
+        MASKED=$(__mask_shell_text "$HDSTRIP")
         # Fail CLOSED to the unmasked text: if awk is missing or errors, we keep
         # today's (over-strict) behavior rather than silently classifying nothing.
         [ -n "$MASKED" ] && CMD_SCAN="$MASKED"
@@ -259,8 +294,24 @@ __ensure_cmd_scan() {
 # worktree mounted elsewhere. Failure to enumerate only makes us stricter.
 ALL_WORKTREES=""
 if [ "$HYGIENE" = "1" ]; then
-    ALL_WORKTREES=$(git -C "$MAIN_ROOT" worktree list --porcelain 2>/dev/null \
+    # D10 (2026-08-29): `git worktree list` lists the MAIN checkout FIRST. Including it here
+    # made __under_any_worktree short-circuit every in-repo Bash target to DENY *before* the
+    # STATE_DIR allowance (:__bash_target_denied), so a bound supervisor could `cat > … .claude/state/…`
+    # NOWHERE via Bash even though the file-tool path (Write) allows it — and the deny message's own
+    # advice ("write a brief under .claude/state/ (allowed)") was false for Bash. The set is for a
+    # worktree "mounted elsewhere"; the main checkout is covered by the MAIN_ROOT prefix test. Drop it.
+    # Canonicalize each (cd+pwd) so a /private symlink spelling still matches MAIN_ROOT.
+    __lg_raw_wts=$(git -C "$MAIN_ROOT" worktree list --porcelain 2>/dev/null \
         | awk '/^worktree /{ $1=""; sub(/^ /,""); print }' || echo "")
+    while IFS= read -r __lg_w; do
+        [ -n "$__lg_w" ] || continue
+        __lg_wc=$(cd "$__lg_w" 2>/dev/null && pwd) || __lg_wc="$__lg_w"
+        [ "$__lg_wc" = "$MAIN_ROOT" ] && continue
+        ALL_WORKTREES="${ALL_WORKTREES}${ALL_WORKTREES:+
+}${__lg_wc}"
+    done <<EOF_LG_RAWWT
+$__lg_raw_wts
+EOF_LG_RAWWT
 fi
 __under_any_worktree() {  # $1 = absolute path
     local w
@@ -469,7 +520,12 @@ __git_write_text() {
 __protected_basename() {  # $1=basename $2=slug → 0 if trusted family for slug
     case "$1" in
         "plan-w-team-ship-verdict-$2.json"|"plan-w-team-test-green-$2.json"|\
-        "plan-w-team-goal-$2.json"|"plan-w-team-lane-release-$2.json") return 0 ;;
+        "plan-w-team-goal-$2.json"|"plan-w-team-lane-release-$2.json"|\
+        "pwt-lane-alive-memo-$2.json") return 0 ;;
+        # The confirmed-dead memo AUTHORISES a lane release (this hook reads it, and exit 1 releases
+        # the binding). A non-owner Bash write could forge {"verdict":1,…} to drop the guard on a
+        # live lane, so it is protected exactly like the evaluator-trusted artifacts. The hook writes
+        # the memo IN-PROCESS (not via a tool call), so it is unaffected by its own PreToolUse gate.
     esac
     return 1
 }
@@ -618,6 +674,33 @@ EOF_TOK
     return 1
 }
 
+# ── Confirmed-dead lane release helper (BRIEF §4.4, Surprise 4) ──────────────
+# The ONE liveness truth, memoized per goal-mtime + TTL (this hook runs on every Bash call).
+# Echoes 0 alive / 1 confirmed-dead / 2 cannot-determine. Defaults to 2 (HOLD) on ANY error, so
+# a broken/absent predicate can NEVER release a lane. Seam: PWT_LANE_ALIVE_BIN.
+__lg_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+__lg_lane_alive_verdict() {   # $1=slug $2=goal_file → 0/1/2
+    local slug="$1" gf="$2"
+    local bin="${PWT_LANE_ALIVE_BIN:-$MAIN_ROOT/.claude/scripts/pwt-lane-alive.sh}"
+    [ -x "$bin" ] || { echo 2; return 0; }
+    local memo="$STATE_DIR/pwt-lane-alive-memo-${slug}.json"
+    local gm now ttl="${PWT_LANE_ALIVE_MEMO_TTL_S:-30}" m_gm m_ts m_v
+    gm=$(__lg_mtime "$gf"); now=$(date +%s 2>/dev/null || echo 0)
+    if [ -f "$memo" ]; then
+        m_gm=$(jq -r '.goal_mtime // ""' "$memo" 2>/dev/null || echo "")
+        m_ts=$(jq -r '.ts // 0' "$memo" 2>/dev/null || echo 0)
+        m_v=$(jq -r '.verdict // ""' "$memo" 2>/dev/null || echo "")
+        if [ "$m_gm" = "$gm" ] && [ -n "$m_v" ] && [ $((now - m_ts)) -lt "$ttl" ] 2>/dev/null; then
+            echo "$m_v"; return 0
+        fi
+    fi
+    "$bin" "$slug" >/dev/null 2>&1; local v=$?
+    case "$v" in 0|1|2) : ;; *) v=2 ;; esac
+    jq -cn --arg gm "$gm" --argjson ts "$now" --argjson v "$v" \
+       '{goal_mtime:$gm, ts:$ts, verdict:$v}' > "$memo.tmp.$$" 2>/dev/null && mv "$memo.tmp.$$" "$memo" 2>/dev/null || true
+    echo "$v"
+}
+
 # ── Evaluate each live lane ──────────────────────────────────────────────────
 shopt -s nullglob
 for GF in "$STATE_DIR"/plan-w-team-goal-*.json; do
@@ -646,6 +729,13 @@ for GF in "$STATE_DIR"/plan-w-team-goal-*.json; do
 
     # The owning worker is never restricted by its own lane.
     [ -n "$SELF8" ] && [ "$SELF8" = "$W8" ] && continue
+
+    # Confirmed-dead lane release (BRIEF §4.4): a worker the ONE liveness truth confirms dead
+    # (exit 1 — ESRCH + no pgrep) no longer binds anyone; exit 0 (alive) / 2 (cannot-determine)
+    # HOLDS the binding (fail-CLOSED — never release on uncertainty). Kill switch below.
+    if [ "${PWT_DISABLE_LANE_ALIVE_RELEASE:-0}" != "1" ]; then
+        [ "$(__lg_lane_alive_verdict "$SLUG" "$GF")" = "1" ] && continue
+    fi
 
     # SID-less harness (old Claude Code): we cannot prove this session is NOT
     # the worker, so per-session rules would misfire on the worker itself.

@@ -71,6 +71,9 @@
 #   2  usage
 #   6  validation refuse — NOTHING was mutated, worker untouched
 #   7  new session UUID undiscoverable — no history row is written with an empty new_sid
+#   8  duplicate lead after resume — bookkeeping WAS done (worker_sid rotated, history row written),
+#      but 2+ live leads remain under the worktree (a rival worker survived the stop); stop the
+#      straggler(s) named on stderr, then re-arm. Distinct from 7, which means "nothing to adopt".
 #
 # The script does NOT launch the terminal watcher; it prints the exact re-arm
 # command and leaves wait mechanics to the caller.
@@ -364,9 +367,50 @@ fi
 # `grep -F` so no character in it (or in the operator's message) is ever read as
 # a regex, and it survives the transcript's JSON escaping unchanged.
 MARKER="[pwt-steer:$(date -u +%s)-$$]"
-STEER_TEXT="$MESSAGE
+
+# ── Resume at the recorded manifest stage (BRIEF §5) ─────────────────────────
+# A resumed run that re-enters Step 0 re-does scope+spec it already finished (observed: two steers
+# on 2026-08-29 both re-entered Step 0). Map the manifest's current_stage onto the EXISTING
+# Run-State Router verdict routes so the worker continues where it stopped. Gated on run_sid match
+# (the manifest must describe THIS worker), and fail-SAFE to the full 0→8 pipeline (parity) on a
+# missing/unrecognized stage. Kill switch: PWT_DISABLE_MANIFEST_STAGE_RESUME=1.
+STAGE_DIRECTIVE=""; M_STAGE=""
+if [ "${PWT_DISABLE_MANIFEST_STAGE_RESUME:-0}" != "1" ]; then
+  __steer_mf="$MAIN_ROOT/.claude/state/plan-w-team-manifest-${SLUG}.json"
+  if [ -f "$__steer_mf" ]; then
+    M_STAGE=$(jq -r '.current_stage // ""' "$__steer_mf" 2>/dev/null || echo "")
+    __steer_mrsid=$(jq -r '.run_sid // ""' "$__steer_mf" 2>/dev/null || echo "")
+    # The arms below match the REAL manifest vocabulary written to `current_stage` — the exact
+    # labels surface-status.sh / pwt-manifest.sh emit at each step: 0-spawn, scope-challenge,
+    # specification, task-breakdown, 3-execute, review, ship, post-ship, retro-complete, stall:*.
+    # (Earlier arms used invented aliases like `docs*`/`6-ship` that never matched, so `post-ship`
+    # silently fell through to the full-pipeline default — code-review MODERATE #2/#8, 2026-08-29.)
+    if [ -z "$__steer_mrsid" ] || [ "${__steer_mrsid:0:8}" = "${WORKER_SID:0:8}" ]; then
+      case "$M_STAGE" in
+        specification)   STAGE_DIRECTIVE="Resume at Step 2 (task breakdown) — the spec already exists; do NOT re-run Step 0/1. Continue 2→8." ;;
+        task-breakdown)  STAGE_DIRECTIVE="Resume at Steps 3-4 (execute) — tasks are broken down; do NOT re-enter Step 0. Continue 3-4→8." ;;
+        3-execute)       STAGE_DIRECTIVE="Resume at Steps 3-4 (execute) — this is a mid-execution continuation; do NOT re-enter Step 0. Continue the build, then 5→8." ;;
+        review)          STAGE_DIRECTIVE="Resume at Step 5 (fix-first review) — the build is complete but unreviewed; continue 5→8." ;;
+        ship)            STAGE_DIRECTIVE="Resume at Step 6 (ship) — the run ENTERED ship, but 'ship' is written on ENTRY so the landing may be INCOMPLETE. Re-verify with plan-w-team-land.sh status --slug ${SLUG}; if it is not LANDED, finish the merge/push, THEN 7→8. Do NOT assume the ship already completed." ;;
+        post-ship)       STAGE_DIRECTIVE="Resume at Steps 7-8 (post-ship → retro) — the run shipped and landed; finish docs and the retro. Do NOT re-execute or re-ship." ;;
+        retro-complete)  STAGE_DIRECTIVE="The run already reached retro-complete — verify the landing and, if unlanded, land it (plan-w-team-land.sh status/resume)." ;;
+        *)               STAGE_DIRECTIVE="" ;;   # 0-spawn / scope-challenge / stall:* / none → full 0→8 (parity)
+      esac
+    fi
+  fi
+fi
+
+if [ -n "$STAGE_DIRECTIVE" ]; then
+  STEER_TEXT="[resume-at-stage: ${M_STAGE}] ${STAGE_DIRECTIVE}
+
+$MESSAGE
 
 $MARKER"
+else
+  STEER_TEXT="$MESSAGE
+
+$MARKER"
+fi
 
 # Transcript search root. Claude Code names a project dir after the cwd with the
 # separators flattened; that derivation is an OPTIMIZATION only — if the computed
@@ -399,9 +443,12 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  goal-state:      $GOAL_FILE"
   echo "  worker sid:      $WORKER_SID"
   echo "  resume cwd:      $RESUME_CWD"
-  echo "  would run:       $CLAUDE_BIN stop $WORKER_SID"
+  echo "  would run:       $CLAUDE_BIN stop ${WORKER_SID:0:8}"
+  echo "  resume-at-stage: ${M_STAGE:-<none>} → ${STAGE_DIRECTIVE:-full pipeline 0→8}"
   echo "  extra env:       ${EXTRA_ENV[@]+${EXTRA_ENV[@]}}"
   echo "  would run:       env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 ${EXTRA_ENV[@]+${EXTRA_ENV[@]} }$CLAUDE_BIN --bg --resume $WORKER_SID --model $PRIMARY_MODEL --fallback-model $FALLBACK_MODEL <steer-text>"
+  echo "  steer-text:"
+  printf '%s\n' "$STEER_TEXT" | sed 's/^/    | /'
   echo "  delivery marker: $MARKER"
   exit 0
 fi
@@ -411,37 +458,81 @@ fi
 # timestamp granularity (a -newer comparison is not).
 BEFORE_LIST="$(__steer_list_transcripts)"
 
-# ─── (2) STOP — capture and CLASSIFY the real outcome (O3, 2026-08-29) ───────
-# The old code printed "stop returned non-zero … continuing" on EVERY steer,
-# so the operator could not tell "a duplicate worker was actually stopped" from
-# "nothing was there to stop". Capture stdout+stderr+rc and say what happened —
-# tolerant by design: a stop that finds nothing is a normal steer of an
-# already-terminal worker, not a failure.
-echo "pwt-steer: stopping worker $WORKER_SID …"
-STOP_OUT=$("$CLAUDE_BIN" stop "$WORKER_SID" 2>&1); STOP_RC=$?
+# ─── (2) STOP by HANDLE — classify truthfully; a genuine failure or a still-live lead REFUSES ──
+# BRIEF §6b, CONFIRMED on this run's own resume: `claude stop` addresses jobs by the 8-char bg
+# HANDLE, not the 36-char session UUID. The old code stopped by "$WORKER_SID" (the UUID) — it NEVER
+# matched ("No job matching '<uuid>'"), so the stop silently failed and the resume created a SECOND
+# live lead beside the still-running old one (the double-worker the operator had to reap by hand).
+# Fix: stop by ${WORKER_SID:0:8}; classify stopped|already-gone|failed; a GENUINE failure exits
+# non-zero (never the old "continuing" line); and process evidence must show the old lead dead
+# before resuming — a still-alive lead REFUSES rather than duplicating.
+WORKER_HANDLE="${WORKER_SID:0:8}"
+echo "pwt-steer: stopping worker $WORKER_SID (handle $WORKER_HANDLE) …"
+STOP_OUT=$("$CLAUDE_BIN" stop "$WORKER_HANDLE" 2>&1); STOP_RC=$?
 STOP_TAIL=$(printf '%s' "$STOP_OUT" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | cut -c1-160)
+STOP_CLASS="failed"
 if [ "$STOP_RC" -eq 0 ]; then
-  echo "  stop: worker $WORKER_SID stopped (exit 0)${STOP_TAIL:+ — $STOP_TAIL}"
+  STOP_CLASS="stopped"
+  echo "  stop: worker $WORKER_HANDLE stopped (exit 0)${STOP_TAIL:+ — $STOP_TAIL}"
 else
   case "$STOP_OUT" in
-    *[Nn]"ot found"*|*"o such"*|*"o session"*|*"nknown session"*|*"already"*)
-      echo "  stop: worker $WORKER_SID already gone / not found (exit $STOP_RC)${STOP_TAIL:+ — $STOP_TAIL} — continuing" >&2 ;;
+    *[Nn]"ot found"*|*"o such"*|*"o session"*|*"nknown session"*|*"o job matching"*|*"already"*)
+      STOP_CLASS="already-gone"
+      echo "  stop: worker $WORKER_HANDLE already gone / not found (exit $STOP_RC)${STOP_TAIL:+ — $STOP_TAIL}" >&2 ;;
     *)
-      echo "  stop: returned exit $STOP_RC${STOP_TAIL:+ — $STOP_TAIL} — continuing to resume + delivery verification" >&2 ;;
+      STOP_CLASS="failed"
+      echo "  stop: FAILED (exit $STOP_RC)${STOP_TAIL:+ — $STOP_TAIL}" >&2 ;;
   esac
+fi
+# A genuine stop FAILURE is a real failure — do not resume blind over a possibly-live worker.
+if [ "$STOP_CLASS" = "failed" ]; then
+  refuse "stop of worker $WORKER_HANDLE FAILED (exit $STOP_RC) — not resuming; investigate, then retry"
+fi
+# Confirm the old lead is DEAD by process evidence before resuming (never duplicate a live lead).
+# Exit 0 (alive) → refuse. Exit 1/2 (dead / cannot-determine) → proceed: a fresh stop lags the
+# registry, and cannot-determine after a clean stop is the expected transient. Reuses the ONE
+# liveness truth. Kill switch: PWT_DISABLE_STEER_LIVENESS=1.
+LA_BIN="${PWT_LANE_ALIVE_BIN:-$MAIN_ROOT/.claude/scripts/pwt-lane-alive.sh}"
+if [ -x "$LA_BIN" ] && [ "${PWT_DISABLE_STEER_LIVENESS:-0}" != "1" ]; then
+  __steer_liveness_tries=0
+  while [ "$__steer_liveness_tries" -lt 3 ]; do
+    "$LA_BIN" "$SLUG" --worker-sid "$WORKER_SID" >/dev/null 2>&1; LA_RC=$?
+    [ "$LA_RC" != "0" ] && break        # dead or cannot-determine → clear to resume
+    __steer_liveness_tries=$((__steer_liveness_tries + 1))
+    sleep 1
+  done
+  if [ "${LA_RC:-2}" = "0" ]; then
+    refuse "the OLD lead $WORKER_HANDLE is STILL process-alive after stop — refusing to resume (would create a duplicate lead)." \
+           "Stop it by hand and retry:  claude stop $WORKER_HANDLE"
+  fi
 fi
 
 # ─── (3) RESUME — argv-form exec, inside the worktree, pinned + route-guarded ─
 # No `sh -c`, no eval, no re-quoting: the steer text is ONE argv element handed
 # straight to execve, so quotes/backslashes/`$`/`;`/globs in the operator's
 # message can never be re-parsed by a shell.
+#
+# Regain the FULL launch environment a fresh spawn gets (BRIEF §5, AC4): source the ONE shared
+# builder (pwt-launch-env.sh) so a resumed worker keeps the stop-hook-cap raise, workflow-disable,
+# lean statusline and supervisor=0 — not just the recursion guard it used to carry. Operator --env
+# (EXTRA_ENV) is appended AFTER, so it still overrides (e.g. land.sh's PLAN_W_TEAM_AUTO_APPROVE_PUSH=1).
+STEER_LAUNCH_LIB="$MAIN_ROOT/.claude/scripts/pwt-launch-env.sh"
+STEER_LAUNCH_ENV="PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1"
+if [ -r "$STEER_LAUNCH_LIB" ]; then
+  # shellcheck disable=SC1090
+  . "$STEER_LAUNCH_LIB"
+  __pwt_scrub_leak_env
+  STEER_LAUNCH_ENV=$(__pwt_build_launch_env 0)
+fi
 RESUME_OUT="${TMPDIR:-/tmp}/pwt-steer-resume-$$.out"
 (
   cd "$RESUME_CWD" 2>/dev/null || exit 127
   # `${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}` — the bash 3.2 empty-array-under-set-u
   # idiom.  A bare "${EXTRA_ENV[@]}" on an EMPTY array is an unbound-variable
   # error there, which would break every steer that passes no --env.
-  exec env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 \
+  # $STEER_LAUNCH_ENV is intentionally UNQUOTED so `env` word-splits its KEY=VAL pairs
+  # (same idiom as pwt-goal.sh's `env $LAUNCH_ENV claude`).
+  exec env $STEER_LAUNCH_ENV \
     ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} \
     "$CLAUDE_BIN" \
     --bg --resume "$WORKER_SID" \
@@ -606,6 +697,24 @@ for dir in $BOOK_DIRS; do
 done
 IFS="$OLDIFS"
 
+# Keep the run manifest's run_sid tracking the LIVE lead. The resume-at-stage gate above compares
+# manifest.run_sid to the current worker_sid; without this, a SECOND steer would see the ORIGINAL
+# spawn sid (never rotated) versus the first steer's rotated worker_sid, the prefixes would differ,
+# and the stage directive would be dropped — re-entering the full 0→8 pipeline, the exact bug the
+# gate exists to prevent (code-review MODERATE #1, 2026-08-29). Best-effort; never fatal.
+if [ -n "$NEW_SID" ] && [ "$NEW_SID" != "$WORKER_SID" ]; then
+  __steer_manifest="$MAIN_ROOT/.claude/state/plan-w-team-manifest-${SLUG}.json"
+  if [ -f "$__steer_manifest" ]; then
+    __mtmp="$__steer_manifest.tmp.$$"
+    if jq --arg ns "$NEW_SID" '.run_sid = $ns' "$__steer_manifest" > "$__mtmp" 2>/dev/null \
+         && [ -s "$__mtmp" ] && jq -e . "$__mtmp" >/dev/null 2>&1; then
+      mv -f "$__mtmp" "$__steer_manifest" 2>/dev/null || rm -f "$__mtmp" 2>/dev/null
+    else
+      rm -f "$__mtmp" 2>/dev/null
+    fi
+  fi
+fi
+
 if [ "$UPDATED" = "0" ]; then
   echo "✗ pwt-steer: no goal-state file could be updated — the run's bookkeeping is now stale" >&2
   echo "  the worker WAS steered (new sid $NEW_SID); update worker_sid manually before re-arming." >&2
@@ -666,28 +775,35 @@ fi
 # Only a CLEAN registry read showing a count != 1 warns; an unqueryable registry
 # is silent. Reuses pwt-live-session-cwds.sh (its __QUERY_FAILED__ discipline ==
 # silence here) so there is no second, divergent liveness probe.
-LIVE_CWDS_SH="$(dirname "$0")/pwt-live-session-cwds.sh"
-[ -x "$LIVE_CWDS_SH" ] || LIVE_CWDS_SH=""
-if [ -n "$LIVE_CWDS_SH" ]; then
-  CWDS_OUT=$("$LIVE_CWDS_SH" 2>/dev/null)
-  case "$CWDS_OUT" in
-    ''|*__QUERY_FAILED__*) : ;;   # indeterminate → silent (fail-open)
-    *)
-      LEADS=$(printf '%s\n' "$CWDS_OUT" | awk -v wt="$RESUME_CWD" '
-        $0 == wt || index($0, wt "/") == 1 { n++ } END { print n + 0 }')
-      if [ "$LEADS" != "1" ]; then
-        echo "⚠ pwt-steer: expected exactly ONE live lead under $RESUME_CWD after the steer, found $LEADS" >&2
-        if [ "${LEADS:-0}" -gt 1 ]; then
-          echo "  a rival worker may still be running — inspect and stop the straggler(s):" >&2
-          echo "    claude agents --json | jq '.[] | select((.cwd//\"\")|startswith(\"$RESUME_CWD\"))'" >&2
-        else
-          echo "  the resumed worker is not visible in the registry yet — re-check before trusting the steer:" >&2
-          echo "    claude agents --json | jq '.[] | select((.sessionId//\"\")|startswith(\"$(printf '%s' "$NEW_SID" | cut -c1-8)\"))'" >&2
-        fi
-      fi
-      ;;
-  esac
+# BRIEF §5, AC4: a live duplicate NAMES every sid and FAILS LOUDLY (exit 8), instead of the old
+# bare-count advisory. Uses claude-agents-extended.sh so the sid↔cwd correlation is EXACT (its
+# CLAUDE_AGENTS_RAW seam makes this testable). Fail-OPEN on an unqueryable/flaky registry — a
+# transient miscount must never flip a good steer to failure. Kill switch: PWT_DISABLE_STEER_ONE_LEAD=1.
+DUP_LEAD=0
+if [ "${PWT_DISABLE_STEER_ONE_LEAD:-0}" != "1" ]; then
+  EXT_AGENTS="$(dirname "$0")/claude-agents-extended.sh"
+  if [ -x "$EXT_AGENTS" ]; then
+    AGENTS_JSON=$(CLAUDE_AGENTS_RETRY="${CLAUDE_AGENTS_RETRY:-3}" "$EXT_AGENTS" --json --bg-only 2>/dev/null || echo "")
+  else
+    AGENTS_JSON=$("$CLAUDE_BIN" agents --json 2>/dev/null || echo "")
+  fi
+  if printf '%s' "$AGENTS_JSON" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
+    LEAD_SIDS=$(printf '%s' "$AGENTS_JSON" | jq -r --arg wt "$RESUME_CWD" '
+      .[]? | select((.kind//"background")=="background")
+           | select(((.cwd//"")==$wt) or ((.cwd//"")|startswith($wt+"/")))
+           | (.sessionId//"") | select(.!="")' 2>/dev/null)
+    LEAD_N=$(printf '%s\n' "$LEAD_SIDS" | grep -c . 2>/dev/null || echo 0)
+    if [ "${LEAD_N:-0}" -gt 1 ]; then
+      DUP_LEAD=1
+      echo "✗ pwt-steer: DUPLICATE LEAD — found $LEAD_N live leads under $RESUME_CWD after the steer (exactly ONE allowed); a rival worker is still running." >&2
+      echo "  live lead sids (stop the straggler(s); handle = first 8 chars of a sid):" >&2
+      printf '%s\n' "$LEAD_SIDS" | while IFS= read -r __sid; do [ -n "$__sid" ] && echo "    $__sid   (claude stop ${__sid:0:8})" >&2; done
+    elif [ "${LEAD_N:-0}" -eq 0 ]; then
+      echo "⚠ pwt-steer: no live lead visible under $RESUME_CWD yet — re-check before trusting the steer (sid ${NEW_SID:0:8})." >&2
+    fi
+  fi
 fi
 
+[ "$DUP_LEAD" = "1" ] && exit 8
 [ "$VERIFIED" = "1" ] && exit 0
 exit 5

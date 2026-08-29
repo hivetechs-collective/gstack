@@ -14,6 +14,62 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.16.0] — 2026-08-29 (Governor Contract phase 1 — governed mode, one liveness truth, truthful stop/resume)
+
+Phase 1 of the Governor Contract (brief: `docs/directions/pwt-brief-governor-phase1-c3-c5.md`).
+**P0: `/plan-w-team` stays byte-for-byte unchanged in every repo with no governor** — off by
+default, proven by the parity harness.
+
+- **Governed-mode detection** (`pwt-governor-lib.sh`, §2): opt-in via env `PWT_GOVERNOR` or a
+  `.claude/state/pwt-governor.json` manifest (schema `pwt-governor/1`). OFF by default; a broken
+  manifest is treated as ABSENT plus ONE stderr warning; the manifest is gitignored (operator-authored).
+- **Parity harness** (`tests/skill/helpers/parity_helper.bash` + `tests/skill/cases/governor-parity.bats`, §3):
+  `assert_parity` byte-compares against goldens; the empty-manifest and env-only mutations match too.
+- **C3 — one liveness truth** (`pwt-lane-alive.sh`): exit 0 alive / 1 not-alive / 2 cannot-determine;
+  alive requires positive PROCESS evidence corroborated (never the registry alone); confirmed-dead
+  needs the ESRCH + no-`pgrep` conjunction (a stale pid HOLDS at exit 2); corrected `bg-spare`
+  ownership (claim socket / pty-host child / live children — unclaimed spare and daemon never count);
+  a `blocked` worker is process-alive. Wired into await-terminal (WORKER_GONE corroboration),
+  pwt-status (lane-alive line), the DS1 Tier B spawn guard (confirmed-dead downgrade), and the lane
+  guard (confirmed-dead RELEASE, memoized). Governed `liveness_cmd` consult records both answers to
+  `plan-w-team-liveness-<slug>.jsonl` and prefers process on disagreement (NEVER created ungoverned).
+- **O4** host-health orphan age floor (`PWT_HOST_ORPHAN_MIN_AGE_S`, default 300) + worktree-cwd exclusion.
+- **C5 — truthful stop/resume**: `pwt-steer.sh` stops by the 8-char HANDLE (not the 36-char UUID — the
+  confirmed root cause of the duplicate-lead incident), classifies the stop outcome (a genuine failure
+  exits non-zero, never the old "continuing" line), refuses to resume while the old lead is
+  process-alive, names EVERY sid on a live duplicate, resumes at the recorded manifest stage, and
+  regains the FULL launch env via the shared `pwt-launch-env.sh` builder. New `pwt-resume.sh` fronts
+  `plan-w-team-land.sh resume` (reuses worktree+UUID, refuses on terminal/landed) and adds a sanctioned
+  gate-answered clear of an EVALUATOR-stamped terminal with provenance (`terminal_state_source=gate-answered:<actor>`).
+- **Lane-guard D10 / D11**: D10 — exclude `MAIN_ROOT` from `ALL_WORKTREES` so a bound supervisor's
+  `.claude/state/` Bash bookkeeping reaches the STATE_DIR allowance (protected artifacts still deny);
+  D11 — mask heredoc bodies before redirect extraction (a markdown `> quote` in a heredoc is prose).
+- **Landing `base_sha`**: the manifest records the run's base commit at spawn; the landing gate reports
+  `NOT_LANDED / UNDIVERGED` for a branch with no commit beyond it (fixing the vacuous-ancestry false
+  positive that made a watcher exit on false success), while every existing FF/squash/merge control stays green.
+- **Spawn-test isolation** (§3, AC6): `run.sh` brackets the session registry (fail-open on an
+  empty/invalid snapshot) and fails on a NEW background session left under a TMPDIR sandbox;
+  `locate-claude.sh` honors `PWT_CLAUDE_BIN` and refuses the install-path fall-through under
+  `PWT_CLAUDE_BIN_STRICT=1`.
+- **Live evidence — this run itself**: resumed twice mid-flight (a 5-hour usage-limit death, then a
+  process restart), demonstrating the C5 resume-at-recorded-stage requirement and the landing
+  vacuous-ancestry false positive (the resume guard fired on this run's own undiverged HEAD).
+- **Step-5 review hardening** (three read-only reviewers on the diff): (a) `pwt-lane-alive.sh` — a
+  missing/erroring `pgrep` now returns `UNKNOWN`, not `0`, so it can never flip cannot-determine →
+  confirmed-dead (AC8 conjunction is structural, not conventional); (b) governed `liveness_cmd` is
+  REFUSED at runtime when the manifest is git-tracked and SKIPPED when no timeout binary exists
+  (AC9's "with a timeout" / "never armed by a tracked manifest" clauses, enforced not just
+  gitignored); (c) the confirmed-dead release memo joins the lane-guard protected set (a forged memo
+  can no longer authorise a release); (d) `pwt-resume.sh` drops a `--env` flag the real
+  `plan-w-team-land.sh` parser rejects (land.sh already forwards auto-approve-push itself); (e)
+  `pwt-steer.sh` resume-at-stage now matches the REAL manifest vocabulary (`post-ship` routes to
+  docs+retro instead of a full re-pipeline; `ship` re-verifies the landing instead of assuming it),
+  keeps the manifest `run_sid` tracking the rotated lead so a SECOND steer still resumes at stage,
+  and gives DUPLICATE-LEAD its own exit 8 (distinct from 7 = UUID-undiscoverable).
+
+Every new behaviour has one kill switch that restores the prior behaviour. New scripts are
+allowlisted in the sync; new state artifacts are registered; DIRECTION docs relocated to `docs/directions/`.
+
 ## [2.15.0] — 2026-08-29 (Lane guard decides by RESOLVED TARGET) (5a64f80)
 
 **PWT-LANE1 out-of-repo scoping.** A bound supervisor's `git` writes and in-place edits

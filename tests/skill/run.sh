@@ -183,6 +183,28 @@ if [ "${SKILL_SKIP_STATE_LEAK_GUARD:-0}" != "1" ] && command -v git >/dev/null 2
   STATE_BEFORE="$(git -C "$REPO_ROOT" status --porcelain -- .claude/state 2>/dev/null | LC_ALL=C sort)"
 fi
 
+# ── Session-registry leak guard: BEFORE (Governor Contract §3, AC6) ──────────
+# run A's full-suite runs left ~12 REAL `claude --bg` sessions in the registry when a spawn test
+# reached the real `claude` instead of a stub. Snapshot background session ids (+cwd) before/after
+# and fail the suite if a NEW one appears whose cwd is under a TMPDIR sandbox (a leaked TEST spawn) —
+# operator/fleet sessions in real project dirs are NOT flagged, and an unqueryable/empty registry
+# SKIPS (fail-open — the flaky empty-but-exit-0 case must never fail a good suite).
+# Bypass: SKILL_SKIP_SESSION_LEAK_GUARD=1.
+SESSION_LEAK=0
+SESSION_LEAKED=""
+SESSION_GUARD_ACTIVE=0
+SESSION_BEFORE=""
+__run_session_ids() {   # emit "sid<TAB>cwd" per background session; nothing on any failure
+  command -v claude >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  claude agents --json 2>/dev/null \
+    | jq -r '.[]? | select((.kind//"")=="background") | "\(.sessionId // "")\t\(.cwd // "")"' 2>/dev/null
+}
+if [ "${SKILL_SKIP_SESSION_LEAK_GUARD:-0}" != "1" ]; then
+  SESSION_BEFORE="$(__run_session_ids | LC_ALL=C sort)"
+  [ -n "$SESSION_BEFORE" ] && SESSION_GUARD_ACTIVE=1
+fi
+
 # Use --tap to get machine-parseable output AND tee it to terminal for dev UX.
 # `bats` exits non-zero on any failure; capture exit independently of the tee
 # pipeline so PIPESTAT does not mask it.
@@ -552,11 +574,26 @@ if [ "$ARCHIVE" = "1" ]; then
   fi
 fi
 
+# ── Session-registry leak guard: AFTER + diff (Governor Contract §3, AC6) ────
+if [ "$SESSION_GUARD_ACTIVE" = "1" ]; then
+  SESSION_AFTER="$(__run_session_ids | LC_ALL=C sort)"
+  if [ -n "$SESSION_AFTER" ]; then
+    NEW_SESSIONS="$(comm -13 <(printf '%s\n' "$SESSION_BEFORE") <(printf '%s\n' "$SESSION_AFTER") | sed '/^[[:space:]]*$/d')"
+    # Flag only NEW sessions whose cwd is under a TMPDIR sandbox — a leaked TEST spawn. A legit
+    # operator/fleet session lives under a real project dir and is never flagged.
+    SESSION_LEAKED="$(printf '%s\n' "$NEW_SESSIONS" | awk -F'\t' -v t="${TMPDIR:-/tmp}" '
+      $2 != "" && (index($2, t)==1 || index($2, "/tmp/")==1 || index($2, "/var/folders/")==1 \
+                   || index($2, "/private/tmp/")==1 || index($2, "plan-w-team-test")>0) { print }')"
+    [ -n "$SESSION_LEAKED" ] && SESSION_LEAK=1
+  fi
+fi
+
 # Final summary line for human eyes. The suite is green only when the bats
 # phase, the shell-integration phase, the TypeScript phase all pass AND no test
-# leaked into the live .claude/state tree (R6 state-leak guard).
+# leaked into the live .claude/state tree (R6 state-leak guard) or the session
+# registry (Governor Contract §3 session-leak guard).
 if [ "$BATS_EXIT" -eq 0 ] && [ "${SHELL_FAILED:-0}" -eq 0 ] && [ "${TS_FAILED:-0}" -eq 0 ] \
-   && [ "${STATE_LEAK:-0}" -eq 0 ]; then
+   && [ "${STATE_LEAK:-0}" -eq 0 ] && [ "${SESSION_LEAK:-0}" -eq 0 ]; then
   echo "✓ all tests passed (bats + ${SHELL_PASSED:-0} shell integration tests + ${TS_PASSED:-0} TS test file(s))"
   __suite_exit 0
 fi
@@ -572,5 +609,10 @@ fi
 if [ "${STATE_LEAK:-0}" -ne 0 ]; then
   echo "✗ state-leak guard failed — bats phase dirtied the live .claude/state tree:"
   printf '%s\n' "$STATE_LEAKED_PATHS" | grep -v '^$' | sed 's/^/    /'
+fi
+if [ "${SESSION_LEAK:-0}" -ne 0 ]; then
+  echo "✗ session-registry leak — the suite left NEW background session(s) in the registry (a spawn test reached the real claude):"
+  printf '%s\n' "$SESSION_LEAKED" | grep -v '^$' | sed 's/^/    /'
+  echo "  stop them (claude stop <handle>) and stub PWT_CLAUDE_BIN (or set PWT_CLAUDE_BIN_STRICT=1) in the offending spawn test."
 fi
 __suite_exit 1

@@ -182,6 +182,11 @@ GOAL_FILE="$STATE_DIR/plan-w-team-goal-${SLUG}.json"
 MANIFEST_FILE="$STATE_DIR/plan-w-team-manifest-${SLUG}.json"
 LANDED_FILE="$STATE_DIR/plan-w-team-landed-${SLUG}.json"
 AUDIT_FILE="$STATE_DIR/plan-w-team-land-audit.jsonl"
+# base_sha (Governor Contract phase 1, §6b): the commit the run's worktree branched from, so the
+# ancestor landing check can tell a genuine landing from an UNDIVERGED branch (SHA==default tip,
+# no unique commits) — which git alone reads as vacuously "landed".
+BASE_SHA=""
+[ -f "$MANIFEST_FILE" ] && BASE_SHA=$(jq -r '.base_sha // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
 
 ts_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -243,6 +248,21 @@ __evaluate() {
             "$LOCAL_REF")  [ "$HAS_LOCAL_REF"  = "1" ] || continue ;;
         esac
         if g merge-base --is-ancestor "$SHA" "$ref" 2>/dev/null; then
+            # UNDIVERGED guard (§6b, 2026-08-29): `--is-ancestor` is vacuously TRUE when SHA==ref
+            # (a branch that never diverged), so a run that landed NOTHING reported LANDED — the false
+            # positive that made a supervisor's watcher exit on false success. When the manifest
+            # recorded a base_sha, require ≥1 commit beyond it (a real landing puts the run's commits
+            # on the default branch). No base_sha → today's behaviour (do not regress older runs).
+            # Kill switch: PWT_LAND_ALLOW_UNDIVERGED=1.
+            if [ "${PWT_LAND_ALLOW_UNDIVERGED:-0}" != "1" ] && [ -n "$BASE_SHA" ]; then
+                _ahead_base=$(g rev-list --count "${BASE_SHA}..${SHA}" 2>/dev/null || echo "")
+                if [ "${_ahead_base:-0}" = "0" ]; then
+                    VERDICT="NOT_LANDED"
+                    REASON="UNDIVERGED: ${SHA} has no commit beyond the run's base ${BASE_SHA} — nothing was landed"
+                    MERGED=false; MERGED_VIA=""; PUSHED=false; TAG_REACHABLE=""; TAGS=""; DEFAULT_REF="$ref"; LANDED_SHA=""
+                    return 0
+                fi
+            fi
             MERGED=true; MERGED_VIA="ancestor"; DEFAULT_REF="$ref"; LANDED_SHA="$SHA"
             break
         fi

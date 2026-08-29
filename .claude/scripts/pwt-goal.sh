@@ -967,8 +967,15 @@ __pwt_init_manifest() {
     [ -z "$slug" ] && return 0
     local helper="$(dirname "$0")/pwt-manifest.sh"
     [ -x "$helper" ] || return 0
+    # base_sha (Governor Contract §6b): the commit the worker's worktree branches from, so the
+    # landing gate can tell a genuine landing from an undiverged branch. state_dir is
+    # <root>/.claude/state, so <root> = state_dir/../.. ; record that repo's HEAD (best-effort).
+    local __base_sha="" __base_root
+    __base_root=$(cd "$state_dir/../.." 2>/dev/null && pwd)
+    [ -n "$__base_root" ] && __base_sha=$(git -C "$__base_root" rev-parse HEAD 2>/dev/null || echo "")
     PWT_MANIFEST_STATE_DIR="$state_dir" "$helper" init \
         --slug "$slug" --run-sid "$run_sid" --stage "0-spawn" --strategy "unresolved" \
+        ${__base_sha:+--base-sha $__base_sha} \
         >/dev/null 2>&1 || true
     return 0
 }
@@ -1280,6 +1287,29 @@ if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; } && [ "$_PWT_BYPASS" != "
             >> "$GUARD_DIR/plan-w-team-ds1-audit.jsonl" 2>/dev/null || true
     }
 
+    # ── C3 (BRIEF §4.4): corroborate a "still live" DS1 hit with the ONE liveness
+    # truth. Returns 0 ONLY when the recorded worker's own predicate CONFIRMS it
+    # dead (exit 1 — ESRCH + no pgrep); any other verdict (alive / cannot-determine)
+    # returns non-zero so the caller KEEPS the refusal (fail-closed for spawn — never
+    # allow a duplicate on uncertainty). Kill switch: PWT_DISABLE_DS1_LANE_ALIVE=1.
+    __ds1_lane_alive_confirms_dead() {  # $1=guard_dir $2=sid8 → 0 if predicate confirms dead
+        [ "${PWT_DISABLE_DS1_LANE_ALIVE:-0}" = "1" ] && return 1
+        local gdir="$1" sid8="$2" bin slug gf w
+        bin="${PWT_LANE_ALIVE_BIN:-$GUARD_PROJECT_ROOT/.claude/scripts/pwt-lane-alive.sh}"
+        [ -x "$bin" ] || return 1
+        command -v jq >/dev/null 2>&1 || return 1
+        slug=""
+        for gf in "$gdir"/plan-w-team-goal-*.json \
+                  "$(dirname "$gdir" 2>/dev/null)/worktrees"/*/.claude/state/plan-w-team-goal-*.json; do
+            [ -f "$gf" ] || continue
+            w=$(jq -r '.worker_sid // ""' "$gf" 2>/dev/null)
+            if [ "${w:0:8}" = "$sid8" ]; then slug=$(jq -r '.slug // ""' "$gf" 2>/dev/null); break; fi
+        done
+        [ -n "$slug" ] || return 1
+        "$bin" "$slug" >/dev/null 2>&1
+        [ "$?" = "1" ]
+    }
+
     # ── F3 goal-state fallback: CLI-independent liveness evidence. A recorded
     # worker sid that OWNS a goal-state with terminal_state null and a fresh
     # mtime (< PWT_DS1_GOALSTATE_FRESH_HOURS, default 6) is running a live lane
@@ -1480,6 +1510,12 @@ EOF
                             DS_LIVE_HIT=$(__ds1_goalstate_live_hit "$GUARD_DIR" "$LIVE_SIDS")
                             [ -n "$DS_LIVE_HIT" ] && __ds1_audit "refuse" "tierB-goalstate-fallback" "$DS_LIVE_HIT" "live goal-state owned by recorded worker"
                         fi
+                        # C3: a recorded worker the ONE liveness truth CONFIRMS dead is a stale hit,
+                        # not a duplicate → clear it and proceed (see __ds1_lane_alive_confirms_dead).
+                        if [ -n "$DS_LIVE_HIT" ] && __ds1_lane_alive_confirms_dead "$GUARD_DIR" "$DS_LIVE_HIT"; then
+                            __ds1_audit "proceed" "tierB-lane-alive-confirmed-dead" "$DS_LIVE_HIT" "predicate confirms recorded worker dead — stale hit, not a duplicate"
+                            DS_LIVE_HIT=""
+                        fi
                         if [ -n "$DS_LIVE_HIT" ]; then
                             cat >&2 <<LIVEGUARD
 ✗ Double-spawn refused: a route-hook worker (${DS_LIVE_HIT}...) recorded by an
@@ -1511,6 +1547,11 @@ LIVEGUARD
                         # worker owning a live goal-state is refusal-grade
                         # evidence even with no listing at all.
                         DS_LIVE_HIT=$(__ds1_goalstate_live_hit "$GUARD_DIR" "$LIVE_SIDS")
+                        # C3: a confirmed-dead recorded worker is a stale hit, not a duplicate.
+                        if [ -n "$DS_LIVE_HIT" ] && __ds1_lane_alive_confirms_dead "$GUARD_DIR" "$DS_LIVE_HIT"; then
+                            __ds1_audit "proceed" "tierB-lane-alive-confirmed-dead" "$DS_LIVE_HIT" "listing indeterminate; predicate confirms recorded worker dead — stale hit"
+                            DS_LIVE_HIT=""
+                        fi
                         if [ -n "$DS_LIVE_HIT" ]; then
                             echo "✗ Double-spawn refused: agents listing unavailable, but recorded route-hook worker ${DS_LIVE_HIT}... owns a LIVE goal-state (terminal_state null, fresh) — this manual launch would duplicate it. PLAN_W_TEAM_FORCE_SPAWN=1 to override." >&2
                             __ds1_audit "refuse" "tierB-goalstate-fallback-indeterminate" "$DS_LIVE_HIT" "listing indeterminate; live goal-state owned by recorded worker"
@@ -1896,78 +1937,16 @@ if [ "$LAUNCH" = "1" ]; then
     # without this env var would trigger natural-language detection on the
     # quoted "use /plan-w-team to …" inside the supervisor's own bootstrap.
     # Observed in production 2026-05-21 (sids 0b5856d7 → 4bbb2cb8 cascade).
-    LAUNCH_ENV="PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1"
-
-    # PWT-CTX worker env hygiene: the deictic escape hatch is for THIS
-    # invocation only. `env $LAUNCH_ENV claude` inherits our environment, so an
-    # operator who exported PLAN_W_TEAM_ALLOW_CONTEXT_BLIND=1 in their shell
-    # would silently pass it to the worker — and to every pwt-goal the worker
-    # itself runs, neutering the guard fleet-wide for the whole session tree.
-    # That is exactly the recorded PLAN_W_TEAM_DISABLE_* leak class. Unset it
-    # here, after the guard above has already consumed it.
-    unset PLAN_W_TEAM_ALLOW_CONTEXT_BLIND
-
-    # Same leak class, spend axis (Model Tiering v3): PLAN_W_TEAM_FORCE_FABLE_CONSULT
-    # forces a Fable consult on a spec the classifier judged trivial. Exported once
-    # in a shell for one deliberate run, it would inherit into this worker and every
-    # nested pwt-goal — turning a one-run override into a fleet-wide spend amplifier
-    # against a shared weekly bucket. The consult is a per-run decision, so unset it
-    # here; an operator who wants it in a worker passes it to that worker explicitly.
-    unset PLAN_W_TEAM_FORCE_FABLE_CONSULT
-    if [ "$AUTO_PUSH" = "1" ]; then
-        LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_AUTO_APPROVE_PUSH=1"
-    fi
-    # PWT-WF1 workflow guard: bg workers/supervisor run headless, where the
-    # Dynamic-Workflows tool (/workflows) can auto-run — and the literal token
-    # "workflow" appears dozens of times in /plan-w-team prose (workflow lock,
-    # "autonomous workflow", …), so an incidental token could spawn a nested
-    # fan-out that bypasses gated dispatch + the RAM-budget gate. Disable it in
-    # every bg session this script spawns. Env-var name verified present in the
-    # CLI 2.1.156 binary (string table: CLAUDE_CODE_DISABLE_WORKFLOWS, alongside
-    # the full CLAUDE_CODE_DISABLE_* catalog). Headless/bg only — interactive
-    # sessions are untouched and may still author workflows.
-    LAUNCH_ENV="$LAUNCH_ENV CLAUDE_CODE_DISABLE_WORKFLOWS=1"
-
-    # PWT-P3 no-caps guarantee: Claude Code defaults the consecutive-Stop-hook
-    # block cap to 8. A full /plan-w-team run blocks the Stop hook far more than
-    # 8 times (the goal-evaluator blocks every turn until terminal), so without
-    # a raised cap the bg worker this launcher spawns is silently force-stopped
-    # mid-pipeline after ~8 evaluator blocks — defeating BOTH P3 ("no turn cap")
-    # and P12 ("one bg worker for a multi-hour run") for the canonical autonomous
-    # path. The interactive mitigation (~/.zshrc) never reaches a --bg/headless
-    # session (it does not source ~/.zshrc), so propagate the cap into the worker
-    # env here. Also set repo-wide in .claude/settings.json env (covers
-    # interactive + synced consumers); belt-and-braces. See
-    # docs/operations/pwt-principles-enforcement-audit-2026-06-02.md (P3/C1).
-    LAUNCH_ENV="$LAUNCH_ENV CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=${PWT_STOP_HOOK_BLOCK_CAP:-200}"
-
-    # Spec-fanout override forwarding (1.50.0 AUTO mode): §1b-pre defaults to
-    # AUTO in-stage (fires on non-trivial specs) with NO env needed. Forward the
-    # operator's explicit override ONLY when set, so `=0` (hard off) and `=1`
-    # (force on) reach bg workers too — one knob, every path. Unset → nothing
-    # forwarded → worker resolves AUTO from the stage file.
-    if [ -n "${PLAN_W_TEAM_SPEC_FANOUT:-}" ]; then
-        LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_SPEC_FANOUT=${PLAN_W_TEAM_SPEC_FANOUT}"
-    fi
-
-    # PWT-SUP-YIELD safety: force PLAN_W_TEAM_SUPERVISOR_SESSION=0 in the worker so
-    # it can NEVER inherit a supervisor=1 marker from a spawning supervisor session.
-    # The goal-evaluator lets a supervisor session YIELD instead of block; the
-    # WORKER must always block-to-terminal, so it must never look like a supervisor.
-    # `env A=0` overrides any inherited A=1. See plan-w-team-goal-evaluator.sh
-    # (PWT-SUP-YIELD) + shared/supervisor-protocol.md §Wait mechanism.
-    LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_SUPERVISOR_SESSION=0"
-
-    # F1 lean statusline (2026-08-19 host-starvation incident). Every bg session
-    # this script spawns is a per-turn statusline-render machine with no human
-    # watching it, and the statusline's transcript-history helpers (ccusage,
-    # usage-breakdown) cost MORE the longer the run gets — a positive feedback
-    # loop that measured load 24–27 on 12 cores and starved the run's own lane
-    # for hours. Threading the flag here covers every spawn site at once (worker
-    # + supervisor), the same pattern as the PWT_PRIMARY_MODEL pin.
-    # Kill switch: PWT_DISABLE_LEAN_STATUSLINE=1 in the session's own env.
-    # Spec: docs/specs/pwt-host-load-and-stall-protection.md §F1.
-    LAUNCH_ENV="$LAUNCH_ENV PWT_LEAN_STATUSLINE=1"
+    # LAUNCH_ENV is built by the ONE shared function in pwt-launch-env.sh so a RESUMED worker
+    # (pwt-steer.sh / pwt-resume.sh) regains the IDENTICAL environment of a fresh spawn — the
+    # C5 "resume that continues" reuse-first requirement (BRIEF §5; AC4 grep-provable single
+    # definition). The per-var rationale (PWT-CTX leak scrub, PWT-WF1 workflow guard, PWT-P3
+    # Stop-hook cap, spec-fanout forwarding, PWT-SUP-YIELD, F1 lean statusline) now lives beside
+    # the code that sets it in pwt-launch-env.sh. __pwt_scrub_leak_env is called DIRECTLY (not
+    # in a subshell) so the unset lands in THIS shell before `env $LAUNCH_ENV claude` inherits it.
+    . "$(dirname "$0")/pwt-launch-env.sh"
+    __pwt_scrub_leak_env
+    LAUNCH_ENV=$(__pwt_build_launch_env "$AUTO_PUSH")
 
     # Model pinning for bg spawns (Model Tiering v4, skill 1.58.0):
     #   --model pins the PRIMARY explicitly so bg fleets NEVER silently inherit

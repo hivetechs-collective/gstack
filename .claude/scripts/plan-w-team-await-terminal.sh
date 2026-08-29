@@ -548,8 +548,26 @@ while :; do
         gone_streak=$((gone_streak + 1))
         dead_streak=0
         if [ "$gone_streak" -ge "$GONE_CONFIRM" ]; then
-          echo "terminal=WORKER_GONE sid=$WORKER_SID slug=$SLUG (absent ${gone_streak} consecutive checks)"
-          exit 0
+          # C3 (BRIEF §4.4): absence from the registry is NOT death — corroborate with the ONE
+          # liveness truth before declaring WORKER_GONE. exit 1 (confirmed dead) or predicate
+          # unavailable → gone (unchanged); exit 0 (alive — registry lag) → reset the streak and
+          # keep waiting; exit 2 (cannot-determine) → keep waiting (never DIED on uncertainty).
+          # Kill switch: PWT_DISABLE_AWAIT_LANE_ALIVE=1 restores presence-only.
+          __await_gone=1
+          if [ "${PWT_DISABLE_AWAIT_LANE_ALIVE:-0}" != "1" ]; then
+            __await_la="${PWT_LANE_ALIVE_BIN:-$(dirname "$0")/pwt-lane-alive.sh}"
+            if [ -x "$__await_la" ]; then
+              "$__await_la" "$SLUG" --worker-sid "$WORKER_SID" >/dev/null 2>&1
+              case "$?" in
+                0) gone_streak=0; __await_gone=0 ;;   # alive (registry lag) → keep waiting
+                2) __await_gone=0 ;;                   # cannot-determine → keep waiting (fail-closed)
+              esac
+            fi
+          fi
+          if [ "$__await_gone" = "1" ]; then
+            echo "terminal=WORKER_GONE sid=$WORKER_SID slug=$SLUG (absent ${gone_streak} consecutive checks, process-confirmed)"
+            exit 0
+          fi
         fi
       fi
     fi

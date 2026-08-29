@@ -232,6 +232,15 @@ AGENTS_LIVE=$(jq -n --argjson lp "$LIVE_PID" '[{kind:"background", sessionId:"44
 OUT2=$(PWT_STATUS_AGENTS_OVERRIDE="$AGENTS_LIVE" "$SCRIPT" o1-run 2>&1)
 assert_contains "O1 one live lead prints no stale note" "1 lead, " "$OUT2"
 assert_not_contains "O1 no stale-registry note when all live" "stale-registry" "$OUT2"
+# C3 (Governor Contract phase 1): the lane-alive verdict line uses the ONE liveness truth via
+# PWT_LANE_ALIVE_BIN; exit 2 (cannot-determine) → "unknown" (fail-closed), exit 0 → "alive".
+LA2=$(mktemp -t pwt-status-la2.XXXXXX); printf '#!/bin/bash\nexit 2\n' > "$LA2"; chmod +x "$LA2"
+OUT3=$(PWT_STATUS_AGENTS_OVERRIDE="$AGENTS_LIVE" PWT_LANE_ALIVE_BIN="$LA2" "$SCRIPT" o1-run 2>&1)
+assert_contains "C3 pwt-status: cannot-determine (exit 2) → lane-alive unknown (fail-closed)" "lane-alive: unknown" "$OUT3"
+LA0=$(mktemp -t pwt-status-la0.XXXXXX); printf '#!/bin/bash\nprintf %s "{\\"live_by_process\\":1,\\"live_by_registry\\":1}"\nexit 0\n' > "$LA0"; chmod +x "$LA0"
+OUT4=$(PWT_STATUS_AGENTS_OVERRIDE="$AGENTS_LIVE" PWT_LANE_ALIVE_BIN="$LA0" "$SCRIPT" o1-run 2>&1)
+assert_contains "C3 pwt-status: predicate alive (exit 0) → lane-alive alive" "lane-alive: alive" "$OUT4"
+rm -f "$LA2" "$LA0"
 teardown_fake_root
 
 echo ""

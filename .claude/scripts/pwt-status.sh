@@ -239,6 +239,21 @@ EOF_ROWS
     fi
     printf '%s' "$LISTING"
 
+    # C3 (BRIEF §4.4): the ONE liveness truth for THIS run's worker — live_by_process /
+    # live_by_registry from the process-corroborated predicate (extends the O1 pid corroboration
+    # above with a single named verdict). exit 2 (cannot-determine) prints "unknown", never "live".
+    # Kill switch: PWT_DISABLE_STATUS_LANE_ALIVE=1.
+    if [ "${PWT_DISABLE_STATUS_LANE_ALIVE:-0}" != "1" ]; then
+        LA_BIN="${PWT_LANE_ALIVE_BIN:-$(dirname "$0")/pwt-lane-alive.sh}"
+        if [ -x "$LA_BIN" ]; then
+            LA_JSON=$("$LA_BIN" "$WANT_SLUG" --json 2>/dev/null); LA_RC=$?
+            case "$LA_RC" in 0) LA_V="alive" ;; 1) LA_V="not-alive" ;; *) LA_V="unknown" ;; esac
+            LA_LP=$(printf '%s' "$LA_JSON" | jq -r '.live_by_process // "?"' 2>/dev/null || echo "?")
+            LA_LR=$(printf '%s' "$LA_JSON" | jq -r '.live_by_registry // "?"' 2>/dev/null || echo "?")
+            printf '  lane-alive: %s (live_by_process=%s live_by_registry=%s)\n' "$LA_V" "$LA_LP" "$LA_LR"
+        fi
+    fi
+
     # Tasks
     TASK_N=$(echo "$MAN" | jq '.tasks | length')
     if [ "${TASK_N:-0}" -gt 0 ]; then
