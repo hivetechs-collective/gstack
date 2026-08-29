@@ -167,8 +167,12 @@ if [ "$MODE" = "detail" ]; then
     fi
 
     # Live sessions in the worktree (lead + nested builder subagents).
+    # Test seam: PWT_STATUS_AGENTS_OVERRIDE supplies the registry JSON directly
+    # (skips the claude call), the same convention as PWT_LIVE_SESSION_CWDS_OVERRIDE.
     AGENTS='[]'
-    if [ -x "$AGENTS_EXTENDED" ] && [ -n "$WT" ]; then
+    if [ -n "${PWT_STATUS_AGENTS_OVERRIDE:-}" ]; then
+        AGENTS=$(single_json "$PWT_STATUS_AGENTS_OVERRIDE" '[]')
+    elif [ -x "$AGENTS_EXTENDED" ] && [ -n "$WT" ]; then
         AGENTS=$(single_json "$("$AGENTS_EXTENDED" --cwd "$WT" 2>/dev/null)" '[]')
     fi
 
@@ -196,15 +200,44 @@ if [ "$MODE" = "detail" ]; then
     # Live sessions: lead (kind background/interactive), builders (subagent),
     # and dynamic-Workflow lens-agents (workflow). Lead = anything that is NOT a
     # sub-tier agent, so exclude BOTH subagent and workflow kinds.
-    LEAD_N=$(echo "$AGENTS" | jq '[.[] | select(.kind!="subagent" and .kind!="workflow")] | length')
-    SUB_N=$(echo "$AGENTS" | jq '[.[] | select(.kind=="subagent")] | length')
-    WF_N=$(echo "$AGENTS" | jq '[.[] | select(.kind=="workflow")] | length')
+    # O1 (2026-08-29): corroborate each LEAD row's registry liveness with pid
+    # evidence before counting it live. `claude agents --json` is intermittently
+    # empty-but-exit-0 under load AND lingers stale rows after a steer — a
+    # supervisor reading "3 lead busy" at face value would chase rival workers
+    # that no longer exist (the founder-relayed incident). A lead row whose pid is
+    # dead is marked stale-registry; a row with no numeric pid cannot be disproven,
+    # so it is counted live (fail-open — an empty registry stays 0 lead, unchanged).
+    # subagentType defaults to "-" (never empty): a tab is IFS-whitespace, so an
+    # empty MIDDLE field would collapse under `read` and shift pid into the wrong
+    # variable. pid is last, so an empty pid is safe (trailing-field trimming).
+    ROWS=$(echo "$AGENTS" | jq -r '.[] | [(.kind//"?"),(.sessionId//"?"),(.status//"?"),(.subagentType // "-"),(.pid//"")] | @tsv' 2>/dev/null)
+    LEAD_LIVE=0; LEAD_STALE=0; SUB_N=0; WF_N=0; LISTING=""
+    while IFS="$(printf '\t')" read -r RKIND RSID RSTAT RSUB RPID; do
+        [ -n "$RKIND" ] || continue
+        case "$RKIND" in
+            subagent) SUB_N=$((SUB_N + 1)); LISTING="${LISTING}    [${RKIND}] ${RSID}  ${RSTAT}  ${RSUB}
+" ;;
+            workflow) WF_N=$((WF_N + 1)); LISTING="${LISTING}    [${RKIND}] ${RSID}  ${RSTAT}  ${RSUB}
+" ;;
+            *)  MARK=""
+                case "$RPID" in
+                    ''|*[!0-9]*) LEAD_LIVE=$((LEAD_LIVE + 1)) ;;   # no numeric pid → cannot disprove → live
+                    *) if kill -0 "$RPID" 2>/dev/null; then LEAD_LIVE=$((LEAD_LIVE + 1)); else LEAD_STALE=$((LEAD_STALE + 1)); MARK="  [stale-registry]"; fi ;;
+                esac
+                LISTING="${LISTING}    [${RKIND}] ${RSID}  ${RSTAT}  ${RSUB}${MARK}
+" ;;
+        esac
+    done <<EOF_ROWS
+$ROWS
+EOF_ROWS
+    STALE_NOTE=""
+    [ "$LEAD_STALE" -gt 0 ] && STALE_NOTE=" ($LEAD_STALE stale-registry)"
     if [ "${WF_N:-0}" -gt 0 ]; then
-        printf '  sessions: %s lead, %s builder-subagent(s), %s workflow lens-agent(s) live\n' "${LEAD_N:-0}" "${SUB_N:-0}" "${WF_N:-0}"
+        printf '  sessions: %s lead%s, %s builder-subagent(s), %s workflow lens-agent(s) live\n' "$LEAD_LIVE" "$STALE_NOTE" "$SUB_N" "$WF_N"
     else
-        printf '  sessions: %s lead, %s builder-subagent(s) live\n' "${LEAD_N:-0}" "${SUB_N:-0}"
+        printf '  sessions: %s lead%s, %s builder-subagent(s) live\n' "$LEAD_LIVE" "$STALE_NOTE" "$SUB_N"
     fi
-    echo "$AGENTS" | jq -r '.[] | "    [\(.kind)] \(.sessionId // "?")  \(.status // "?")  \(.subagentType // "")"' 2>/dev/null
+    printf '%s' "$LISTING"
 
     # Tasks
     TASK_N=$(echo "$MAN" | jq '.tasks | length')

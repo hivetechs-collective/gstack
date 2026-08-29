@@ -1958,27 +1958,39 @@ if [ "$LAUNCH" = "1" ]; then
     # (PWT-SUP-YIELD) + shared/supervisor-protocol.md §Wait mechanism.
     LAUNCH_ENV="$LAUNCH_ENV PLAN_W_TEAM_SUPERVISOR_SESSION=0"
 
+    # F1 lean statusline (2026-08-19 host-starvation incident). Every bg session
+    # this script spawns is a per-turn statusline-render machine with no human
+    # watching it, and the statusline's transcript-history helpers (ccusage,
+    # usage-breakdown) cost MORE the longer the run gets — a positive feedback
+    # loop that measured load 24–27 on 12 cores and starved the run's own lane
+    # for hours. Threading the flag here covers every spawn site at once (worker
+    # + supervisor), the same pattern as the PWT_PRIMARY_MODEL pin.
+    # Kill switch: PWT_DISABLE_LEAN_STATUSLINE=1 in the session's own env.
+    # Spec: docs/specs/pwt-host-load-and-stall-protection.md §F1.
+    LAUNCH_ENV="$LAUNCH_ENV PWT_LEAN_STATUSLINE=1"
+
     # Model pinning for bg spawns (Model Tiering v4, skill 1.58.0):
     #   --model pins the PRIMARY explicitly so bg fleets NEVER silently inherit
     #   an expensive interactive session default (2026-07 incident: a Fable 5
     #   user default silently upgraded every bg worker/supervisor — ~2x Opus
-    #   burn per token, two-account weekly-limit lockout). Brain tier = Opus 5
-    #   (`claude-opus-5`, 2026-07-24 rollover): a drop-in upgrade at Opus 4.8's
-    #   pricing and feature set, so the pin moves generation without changing
-    #   the burn profile. Opus 5 is ALSO the Fable-skip / Fable-refusal landing
+    #   burn per token, two-account weekly-limit lockout). Brain tier = Opus 4.8
+    #   (`claude-opus-4-8`). Model Tiering v5 (founder order 2026-08-29): Opus 5
+    #   (`claude-opus-5`) is FORBIDDEN everywhere — it proved unreliable in fleet
+    #   use; the only permitted models are Fable 5 at its guard-gated sites and
+    #   Opus 4.8. Opus 4.8 is ALSO the Fable-skip / Fable-refusal landing
     #   tier — when plan-w-team-fable-guard.sh returns SKIP the run continues
     #   on this model, so it must always name the current Brain generation.
     #   --fallback-model: BEST-EFFORT only — `claude --help` documents the flag
     #   for print/headless runs and the 2026-06-28 regression probe recorded it
     #   as likely inert under --bg. Do NOT rely on it for capacity exhaustion;
     #   the load-bearing protection is the explicit --model primary pin above.
-    #   Default fallback claude-sonnet-5 (near-Opus coding, same tokenizer,
-    #   separate Max Sonnet bucket) is kept as belt-and-suspenders; the durable
+    #   Default fallback claude-opus-4-8 (founder doctrine 2026-08-29: a fallback
+    #   that takes over the lead is intelligent work — never Sonnet); the durable
     #   lever, if degradation is ever needed, is settings.json fallbackModel.
     #   Override via PWT_PRIMARY_MODEL / PWT_FALLBACK_MODEL. Threaded into both
     #   bg spawn sites below (worker + supervisor).
-    PWT_PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-5}"
-    PWT_FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-sonnet-5}"
+    PWT_PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-4-8}"
+    PWT_FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-opus-4-8}"
 
     # Resolve PROJECT_ROOT to the active worktree, not the main checkout.
     # When CLAUDE_PROJECT_DIR is inherited from a parent process, it can point
@@ -2139,7 +2151,10 @@ if [ "$LAUNCH" = "1" ]; then
         env $LAUNCH_ENV "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
         LAUNCH_RC=$?
     else
-        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
+        # Carries PWT_LEAN_STATUSLINE=1 too: this branch is a safety net, and a
+        # safety net that drops the host-load protection would reintroduce the
+        # exact failure it exists to survive.
+        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 PWT_LEAN_STATUSLINE=1 "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
         LAUNCH_RC=$?
     fi
 
@@ -2570,7 +2585,7 @@ SUPEOF
     # 2026-05-21: sid 0b5856d7 → 4bbb2cb8 → f2ec9cb9 → 7a4c658b cascade).
     SUP_OUT_FILE=$(mktemp -t pwt-goal-supervisor.XXXXXX 2>/dev/null || echo "")
     if [ -n "$SUP_OUT_FILE" ]; then
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-5}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-sonnet-5}" "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
         SUP_RC=$?
         SUPERVISOR_SID=""
         if [ -s "$SUP_OUT_FILE" ]; then
@@ -2584,7 +2599,7 @@ SUPEOF
         SUPERVISOR_SID=""
         SUP_RC=1
         echo "WARN: mktemp failed for supervisor; spawning anyway" >&2
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-5}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-sonnet-5}" "$SUPERVISOR_BOOTSTRAP" >&2 || true
+        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" "$SUPERVISOR_BOOTSTRAP" >&2 || true
     fi
 
     if [ -n "$SUPERVISOR_SID" ]; then

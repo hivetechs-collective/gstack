@@ -2,7 +2,7 @@
 name: evaluator
 color: orange
 description: Active quality evaluator that tests build output against acceptance criteria and drives iterative refinement
-model: claude-opus-5
+model: claude-opus-4-8
 effort: high
 disallowedTools:
   - Write

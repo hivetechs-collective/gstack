@@ -13,7 +13,7 @@ version: 1.2.0
 # ============================================================================
 # MODEL CONFIGURATION (Required for v2.1.0)
 # ============================================================================
-model: opus # Critical quality work requires best model
+model: claude-opus-4-8 # Critical quality work requires best model
 context: fork
 
 # ============================================================================

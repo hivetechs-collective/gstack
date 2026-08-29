@@ -88,6 +88,25 @@ set -o pipefail
 # script's own dir is the most reliable place to find the helper.
 GC_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
 
+# ─── shared dirty-ignore policy ───────────────────────────────────────────
+# The ignore sets, the porcelain filter, the tracked-dirt veto and
+# preserve-then-reap live in ONE module shared with plan-w-team-worktree-on-merge.sh
+# (see that file's header for why a private copy is a bug, not a convenience).
+# Co-located, so it ships and syncs with this script.
+PWT_DIRTY_IGNORE_LIB="${PWT_DIRTY_IGNORE_LIB:-$GC_SCRIPT_DIR/plan-w-team-dirty-ignore-lib.sh}"
+if [ -r "$PWT_DIRTY_IGNORE_LIB" ]; then
+    # shellcheck source=plan-w-team-dirty-ignore-lib.sh disable=SC1090
+    . "$PWT_DIRTY_IGNORE_LIB"
+    PWT_LIB_OK=1
+else
+    # FAIL-CLOSED: without the module there is no dirty filter, no tracked-dirt
+    # veto and no backup routine — i.e. none of the guards that make a removal
+    # safe can be evaluated. Refuse to classify anything as reapable, same
+    # posture as VETO 0 below.
+    PWT_LIB_OK=0
+    echo "[plan-w-team-worktree-gc] dirty-ignore lib not readable at $PWT_DIRTY_IGNORE_LIB — nothing is reapable" >&2
+fi
+
 # ─── disabled? ────────────────────────────────────────────────────────────
 if [ "${PWT_WORKTREE_GC_DISABLE:-0}" = "1" ]; then
     printf '{"skipped":true,"reason":"PWT_WORKTREE_GC_DISABLE=1","worktrees":[]}\n'
@@ -217,8 +236,17 @@ fi
 # four vetoes exist to prevent, reachable by an environment gap rather than a
 # race. So python3 is now a hard precondition: without it the classifier cannot
 # be trusted at all, and nothing is reaped.
+# The probe itself is shared (__pwt_python_ok) so on-merge applies the identical
+# precondition. A missing lib is folded in here: no lib ⇒ no guards ⇒ not trusted.
+# PY_OK_REASON keeps the two causes distinguishable in the classifier output —
+# reporting "python3 unavailable" when the real cause was a missing module sends
+# whoever debugs a fleet-wide keep-everything to the wrong place entirely.
 PY_OK=1
-if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'pass' >/dev/null 2>&1; then
+PY_OK_REASON="python3 unavailable"
+if [ "${PWT_LIB_OK:-0}" != "1" ]; then
+    PY_OK=0
+    PY_OK_REASON="dirty-ignore lib unavailable"
+elif ! __pwt_python_ok; then
     PY_OK=0
 fi
 
@@ -551,81 +579,13 @@ origin_reachable() {
         | sed 's/^[* ]*//' | grep -q '^origin/'
 }
 
-# ─── dirty-ignore policy (SHARED: classify_one + preserve_then_reap) ───────
-# Dirtiness confined to these paths is policy churn, not real work. The
-# dirtiness decision (classify_one) and the backup decision (preserve_then_reap)
-# MUST agree on BOTH the default set and the matcher — a one-sided edit
-# desynchronizes them (could classify clean-and-reapable at one site while the
-# other treats the same path as real dirt — the 2026-06-08 leak class; the
-# 1.41.0 fix had to patch both sites). Hence ONE default + ONE filter here.
-# AC2 (push-not-merge hardening, 2026-06-06): the default ignore set is
-# BROADENED beyond ".claude/state/" because repo policy is to NEVER commit the
-# synced tooling layer (.claude/* identical across every checkout) nor
-# regenerable build trees. Without this, a pushed-but-unmerged worktree shows
-# "dirty = 48-52 files" (all .claude/*) forever and pins itself UNSAFE-KEEP —
-# the accumulation Fix #1/#2 target. Tokens are either:
-#   • PREFIX tokens (contain "/" e.g. ".claude/", "ios/Pods/"): match by
-#     equality or startswith (anchored at the worktree root).
-#   • SEGMENT tokens (bare name, no "/", e.g. "node_modules", "build", "dist",
-#     "DerivedData", ".expo"): match if the name appears as ANY path segment
-#     (covers monorepo nesting like apps/web/build/, packages/x/node_modules/).
-# ".claude/" subsumes the old ".claude/state/" default. "tests/skill/" and
-# "docs/operations/" are the rest of the claude-pattern-SYNCED tooling layer:
-# like .claude/, a consumer receives them by sync (never develops them), so a
-# merged/pushed worktree whose ONLY dirt is synced .bats/test/doc files would
-# otherwise be pinned UNSAFE-KEEP forever and never reclaimed (2026-06-08 leak).
-# PWT_WORKTREE_GC_DIRTY_IGNORE overrides — it replaces the whole set (empty
-# disables). bash 3.2 + zsh safe (no arrays in the shell path; the matcher
-# runs in python).
-PWT_DIRTY_IGNORE_DEFAULT=".claude/:tests/skill/:docs/operations/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist"
-
-# BACKUP-only ignore set (preserve_then_reap). Deliberately NARROWER than the
-# classify set: it drops `.claude/`, `tests/skill/` and `docs/operations/` so an
-# untracked authored file under those prefixes is still copied into the backup
-# before a reap, and keeps only regenerable build trees plus machine-written
-# runtime state (`.claude/state/`). See the rationale block in preserve_then_reap.
-# Override with PWT_WORKTREE_GC_PRESERVE_IGNORE (empty = preserve everything).
-PWT_PRESERVE_IGNORE_DEFAULT=".claude/state/:node_modules:ios/Pods/:android/.gradle/:build:DerivedData:.expo:dist"
-
-# Shared porcelain dirty-filter (python source). Contract at BOTH call sites:
-#   stdin:  `git status --porcelain` output
-#   env:    IGNORE_PREFIXES = colon-separated ignore tokens (as above)
-#   stdout: only the REAL (non-ignored) porcelain lines survive
-PWT_DIRTY_FILTER_PY='
-import sys, os
-toks = [p for p in os.environ.get("IGNORE_PREFIXES", "").split(":") if p]
-prefixes = [t for t in toks if "/" in t]                 # anchored path-prefix tokens
-segments = [t.strip("/") for t in toks if "/" not in t]  # any-depth segment tokens
-q = chr(34)
-def ignored(path):
-    for pre in prefixes:                                 # prefix: eq or startswith at root
-        if path == pre.rstrip("/") or path.startswith(pre):
-            return True
-    if segments:                                         # segment: name at any depth
-        parts = path.split("/")
-        for seg in segments:
-            if seg in parts:
-                return True
-    return False
-for line in sys.stdin:
-    line = line.rstrip(chr(10))
-    if not line.strip():
-        continue
-    path = line[3:] if len(line) > 3 else ""
-    if " -> " in path:               # renamed: take destination
-        path = path.split(" -> ", 1)[1]
-    path = path.strip()
-    if len(path) >= 2 and path[0] == q and path[-1] == q:
-        path = path[1:-1]            # unquote paths with special chars
-    if ignored(path):
-        continue
-    print(line)                      # a REAL (non-ignored) change survives
-'
-
-__pwt_dirty_ignore_filter() {
-    # $1 = ignore set (colon-separated); porcelain on stdin → REAL lines on stdout.
-    IGNORE_PREFIXES="$1" python3 -c "$PWT_DIRTY_FILTER_PY" 2>/dev/null
-}
+# ─── dirty-ignore policy ──────────────────────────────────────────────────
+# MOVED to .claude/scripts/plan-w-team-dirty-ignore-lib.sh (sourced at the top of
+# this script) so the periodic GC and the per-merge ship path cannot drift apart.
+# It defines PWT_DIRTY_IGNORE_DEFAULT, PWT_PRESERVE_IGNORE_DEFAULT,
+# PWT_DIRTY_FILTER_PY, __pwt_dirty_ignore_filter, __pwt_tracked_dirty,
+# __pwt_python_ok and preserve_then_reap. Do NOT re-add a local copy here — that
+# fork is the 2026-06-08 WT-2 defect class.
 
 # ─── classification ───────────────────────────────────────────────────────
 # ─── SAFE-PRUNE-SHIPPED marker validation (Part B, disk-hygiene as-it-goes) ──
@@ -704,7 +664,7 @@ classify_one() {
     # realpath) may be trusted ahead of this gate.
     if [ "${PY_OK:-1}" != "1" ]; then
         CLASS="UNSAFE-KEEP"
-        REASON="python3 unavailable — lock/dirty/liveness/registration guards cannot be evaluated; fail-closed"
+        REASON="${PY_OK_REASON:-python3 unavailable} — lock/dirty/liveness/registration guards cannot be evaluated; fail-closed"
         return 0
     fi
 
@@ -736,7 +696,7 @@ classify_one() {
     # (PWT_DIRTY_IGNORE_DEFAULT + __pwt_dirty_ignore_filter) — this dirtiness
     # decision and preserve_then_reap's backup decision MUST stay in lockstep.
     local porcelain real_dirty ignore_prefixes
-    porcelain="$(git -C "$wt_path" status --porcelain 2>/dev/null || echo "")"
+    porcelain="$(git -C "$wt_path" -c core.quotePath=false status --porcelain 2>/dev/null || echo "")"
     ignore_prefixes="${PWT_WORKTREE_GC_DIRTY_IGNORE-$PWT_DIRTY_IGNORE_DEFAULT}"
     if [ -z "$porcelain" ]; then
         UNCOMMITTED=0
@@ -756,20 +716,14 @@ classify_one() {
     # exactly the same reason. Measured on the live
     # `pwt-please-use-plan-w-team-…` lane 2026-07-30.
     #
-    # Scoped to TRACKED changes on purpose. Making *all* dirt an absolute veto
-    # would revert the 2026-06-08 leak fix — hooks rewrite `.claude/state/*` into
-    # every worktree, so "any dirt pins forever" is what fed the 2026-05-29
-    # 67-worktree / 64 GB ENOSPC pileup. `git status --porcelain` gives us the
-    # exact discriminator: `??` is untracked (machine churn — stays ignorable),
-    # `!!` is ignored, and every other XY code means a tracked, committed file was
-    # deliberately edited/staged/deleted/renamed. That is authored work in every
-    # case, and no ignore prefix may override it.
+    # The discriminator lives in __pwt_tracked_dirty (shared module) so the
+    # per-merge ship path applies the identical veto; see that function's comment
+    # for why it is scoped to TRACKED changes and why it is pure shell.
     UNCOMMITTED_TRACKED=0
     if [ -n "$porcelain" ]; then
-        local tracked_lines
-        tracked_lines="$(printf '%s\n' "$porcelain" \
-            | grep -v '^??' | grep -v '^!!' | grep -v '^[[:space:]]*$' || true)"
-        [ -n "$tracked_lines" ] && UNCOMMITTED_TRACKED=1
+        if printf '%s\n' "$porcelain" | __pwt_tracked_dirty; then
+            UNCOMMITTED_TRACKED=1
+        fi
     fi
 
     # Shipped-marker check (Part B, disk-hygiene as-it-goes) — computed here so
@@ -1075,94 +1029,11 @@ classify_one() {
 #   return 0  → nothing real to preserve, OR preserved successfully → safe to remove
 #   return 1  → content existed but the backup write FAILED → caller MUST skip rm
 # bash 3.2 + zsh safe.
-preserve_then_reap() {
-    local wt_path="$1"
-    local name backup_dir ts stamp had_content=0
-    name="$(basename "$wt_path")"
-    backup_dir="$MAIN_CHECKOUT/.claude/state/hygiene-backups"
-    ts="$(date -u +%Y%m%dT%H%M%SZ)"
-    stamp="$backup_dir/${name}-${ts}"
-
-    # Resolve the worktree's own toplevel (empty / != wt_path means NOT its own git WT)
-    local wt_top real_wt
-    wt_top="$(git -C "$wt_path" rev-parse --show-toplevel 2>/dev/null || echo "")"
-    real_wt="$(realpath "$wt_path" 2>/dev/null || echo "$wt_path")"
-    [ -n "$wt_top" ] && wt_top="$(realpath "$wt_top" 2>/dev/null || echo "$wt_top")"
-
-    # The CLASSIFY ignore set answers "may this worktree be reaped?"; the BACKUP
-    # ignore set answers "what must survive if it is?". Those are different
-    # questions and using one set for both lost data (measured 2026-07-30):
-    #   • a TRACKED modification under `.claude/` IS captured, because
-    #     `git diff HEAD` ignores the prefix filter entirely — verified.
-    #   • an UNTRACKED authored file under `.claude/` (a brand-new script, spec,
-    #     or test — the normal shape of a /plan-w-team tooling lane) is invisible
-    #     to `git diff HEAD` AND filtered out of `real_dirty` by the `.claude/`
-    #     prefix, so both arms of the guard below saw "nothing real to preserve"
-    #     and the file was destroyed with no backup at all.
-    # So the backup path uses a deliberately NARROWER set: only genuinely
-    # regenerable trees and machine-written runtime state. Widening what we
-    # preserve costs a few KB of patch; narrowing it costs authored work.
-    local ignore_set="${PWT_WORKTREE_GC_PRESERVE_IGNORE-$PWT_PRESERVE_IGNORE_DEFAULT}"
-
-    if [ -n "$wt_top" ] && [ "$wt_top" = "$real_wt" ]; then
-        # Genuine worktree → diff + untracked list, filtered to non-ignored paths.
-        local diff_out porcelain real_dirty
-        diff_out="$(git -C "$wt_path" diff HEAD 2>/dev/null || echo "")"
-        porcelain="$(git -C "$wt_path" status --porcelain 2>/dev/null || echo "")"
-        real_dirty="$(printf '%s\n' "$porcelain" | __pwt_dirty_ignore_filter "$ignore_set")"
-        if [ -z "$diff_out" ] && [ -z "$real_dirty" ]; then
-            return 0   # clean (or only policy churn) — nothing real to preserve
-        fi
-        had_content=1
-        mkdir -p "$backup_dir" 2>/dev/null || { echo "[preserve] FAILED to mkdir $backup_dir — skipping rm of $name" >&2; return 1; }
-        {
-            printf '# preserve-then-reap %s\n# worktree: %s\n# at: %s\n\n## git diff HEAD\n' "$name" "$wt_path" "$ts"
-            printf '%s\n' "$diff_out"
-            printf '\n## untracked/modified (non-ignored)\n%s\n' "$real_dirty"
-        } > "${stamp}.patch" 2>/dev/null || { echo "[preserve] FAILED to write ${stamp}.patch — skipping rm of $name" >&2; return 1; }
-        echo "[preserve] backed up real delta of $name → ${stamp}.patch" >&2
-        return 0
-    fi
-
-    # Non-git orphan dir: manifest + copy of NON-ignored files only.
-    local manifest
-    manifest="$(cd "$wt_path" 2>/dev/null && find . -type f 2>/dev/null | IGNORE_PREFIXES="$ignore_set" python3 -c '
-import sys, os
-toks=[p for p in os.environ.get("IGNORE_PREFIXES","").split(":") if p]
-prefixes=[t for t in toks if "/" in t]; segments=[t.strip("/") for t in toks if "/" not in t]
-def ig(p):
-    p=p[2:] if p.startswith("./") else p
-    for pre in prefixes:
-        if p==pre.rstrip("/") or p.startswith(pre): return True
-    parts=p.split("/")
-    for s in segments:
-        if s in parts: return True
-    return False
-for line in sys.stdin:
-    line=line.rstrip("\n")
-    if line and not ig(line): print(line)
-' 2>/dev/null)"
-    if [ -z "$manifest" ]; then
-        return 0   # only ignored content (node_modules, etc) — nothing real to preserve
-    fi
-    had_content=1
-    mkdir -p "${stamp}.files" 2>/dev/null || { echo "[preserve] FAILED to mkdir ${stamp}.files — skipping rm of $name" >&2; return 1; }
-    printf '%s\n' "$manifest" > "${stamp}.manifest.txt" 2>/dev/null || { echo "[preserve] FAILED to write manifest — skipping rm of $name" >&2; return 1; }
-    # Copy each non-ignored file, preserving relative structure. Fail-safe: any copy
-    # failure aborts and signals "skip rm" so the source is never destroyed.
-    local f rel dest
-    while IFS= read -r f; do
-        [ -z "$f" ] && continue
-        rel="${f#./}"
-        dest="${stamp}.files/$rel"
-        mkdir -p "$(dirname "$dest")" 2>/dev/null || { echo "[preserve] FAILED dir for $rel — skipping rm of $name" >&2; return 1; }
-        cp -p "$wt_path/$rel" "$dest" 2>/dev/null || { echo "[preserve] FAILED copy $rel — skipping rm of $name" >&2; return 1; }
-    done <<EOF_MANIFEST
-$manifest
-EOF_MANIFEST
-    echo "[preserve] backed up orphan-dir files of $name → ${stamp}.files/ (manifest: ${stamp}.manifest.txt)" >&2
-    return 0
-}
+# preserve_then_reap() MOVED to .claude/scripts/plan-w-team-dirty-ignore-lib.sh
+# (sourced at the top of this script). It reads the $MAIN_CHECKOUT global set
+# above and returns non-zero to mean "backup failed — do NOT remove"; remove_one
+# below honors that. The per-merge ship path calls the same function, so both
+# destructive paths back up authored work identically.
 
 # ─── remove worktree + branch ─────────────────────────────────────────────
 remove_one() {

@@ -314,6 +314,7 @@ Emitted by `plan-w-team-surface-status.sh` at the end of every lead-driven stage
  "ts":"<ISO8601 UTC>",
  "workflow_lock":"active|done|missing",
  "ship_readiness_gate":"PASS|FAIL|pending|n/a",
+ "landed":"<sha>|null",
  "fleet":{"spawned":N,"completed":N,"failed":N,"running":N,"max_concurrent":N},
  "pending_escalations":[...],
  "low_confidence_routes":N}
@@ -322,6 +323,8 @@ Emitted by `plan-w-team-surface-status.sh` at the end of every lead-driven stage
 ````
 
 `pending_escalations` lists UNRESOLVED sites only — the emitter subtracts sites closed by an `escalation_resolved` row (per-call_site, file-order last-wins pairing; see `shared/supervisor-protocol.md` §Supervisor-Actions JSONL Schema).
+
+`landed` (2.13.0, F6) is the sha on the default branch that carries this run's work, or `null`. It is READ from the deterministic artifact `plan-w-team-landed-<slug>.json` that `plan-w-team-land.sh verify` writes after recomputing merged / tag-reachable / pushed from git — the emitter cannot mint a landing. When it is non-null the helper also prints a bare, grep-able `landed=<sha>` line above the fenced block. The evaluator ANDs a verified landing into SUCCESS for worktree-isolated runs; see [`docs/operations/plan-w-team-landing-gate.md`](../../../../docs/operations/plan-w-team-landing-gate.md). Kill switch: `PWT_DISABLE_LANDING_GATE=1`.
 
 Stage labels in use:
 - `scope-challenge` (after Step 0)

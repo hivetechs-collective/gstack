@@ -64,7 +64,12 @@ if [ -x "$PWTGOAL" ]; then
   # cascade guard (exit 4). We re-enable the cap (=0) and neutralize the cascade
   # signal (empty, which the guard's ="1" check treats as off). PLAN_W_TEAM_FORCE_SPAWN=1
   # bypasses the double-spawn flag guard so a hermetic spawn path is deterministic.
-  GENV="PLAN_W_TEAM_DISABLE_RAM_GATE=1 PLAN_W_TEAM_DISABLE_FAIR_SHARE=1 PWT_RAM_CLAIMS_REGISTRY=$TMP/claims.jsonl PWT_PROJECT_ROOT_OVERRIDE=$GROOT CLAUDE_PROJECT_DIR=$GROOT PLAN_W_TEAM_DISABLE_WORKTREE_CAP=0 PLAN_W_TEAM_DISABLE_PROMPT_ROUTE= PLAN_W_TEAM_FORCE_SPAWN=1"
+  # PWT_MAX_WORKTREES=10 PINS the cap to its documented default: the operator's env
+  # commonly RAISES it (e.g. PWT_MAX_WORKTREES=18 from ~/.zshrc), which the 10-dir
+  # fixtures below would never reach, silently no-op'ing the cap-refusal assertions.
+  # This was the [8]/[8c] full-suite red surfaced by run 6ef25f4f — the code is
+  # correct (it honors the override); the test just had a hermeticity hole (2.15.0).
+  GENV="PLAN_W_TEAM_DISABLE_RAM_GATE=1 PLAN_W_TEAM_DISABLE_FAIR_SHARE=1 PWT_RAM_CLAIMS_REGISTRY=$TMP/claims.jsonl PWT_PROJECT_ROOT_OVERRIDE=$GROOT CLAUDE_PROJECT_DIR=$GROOT PLAN_W_TEAM_DISABLE_WORKTREE_CAP=0 PWT_MAX_WORKTREES=10 PLAN_W_TEAM_DISABLE_PROMPT_ROUTE= PLAN_W_TEAM_FORCE_SPAWN=1"
 
   # [7] free_gb < floor → spawn refused, exit 5
   env $GENV DISK_BUDGET_STUB_DF="$(mkdf 8388608 92)" bash "$PWTGOAL" --worker-only "integration low disk" >/dev/null 2>&1

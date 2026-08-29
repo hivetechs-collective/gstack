@@ -2,7 +2,7 @@
 name: supervisor
 color: cyan
 description: Persistent /plan-w-team dispatch supervisor — owns Step 3-4 spawn decisions for one run, delegates classified pause-sites to route_orchestrator, escalates only on hard-gate sites, writes audit log and per-turn transcript summaries
-model: claude-opus-5
+model: claude-opus-4-8
 effort: high
 allowedTools:
   - Agent

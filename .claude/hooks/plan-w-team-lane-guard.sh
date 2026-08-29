@@ -47,6 +47,23 @@
 # a guard that bricks sessions is worse than one that under-detects. Denies
 # are only ever issued on POSITIVE evidence.
 #
+# RESOLVED-TARGET RULE (2.15.0): a bound supervisor's git writes and in-place
+# edits are decided by the RESOLVED TARGET, not the command class. A supervisor
+# committing in a DIFFERENT repo (`git -C /abs/other commit`) or editing an
+# absolute file outside the lane repo (`sed -i '' … /abs/other/f`) is not doing
+# the lane's work — it is ALLOWED (with an audit row). The SAME work in the lane
+# repo or any of its worktrees still DENIES. One predicate, __target_is_foreign,
+# is shared by the Edit/Write path AND the two Bash classes so D1–D4 cannot
+# diverge again. DELIBERATE fail-closed vs fail-open asymmetry on "unresolvable":
+#   • git-write / in-place edit → FAIL-CLOSED. ALLOW only on positive proof the
+#     target resolves (symlinks followed) OUTSIDE MAIN_ROOT and all worktrees;
+#     relative / $var / glob / .. / ~ / symlink-into-repo → DENY (reason names
+#     "unresolvable" where it applies). The operator's time-boxed allowance file
+#     (plan-w-team-lane-guard-allow-<sid8>.json, scope "outside-repo") relaxes
+#     ONLY this unresolvable branch — never a provably-inside target.
+#   • rm/mv/cp mutator + redirect/tee → FAIL-OPEN (unchanged). Deny only on a
+#     provable in-repo target; $vars pass — the file-tool wall is the hard one.
+#
 # Kill switch: PLAN_W_TEAM_DISABLE_LANE_GUARD=1
 # Audit trail: .claude/state/plan-w-team-lane-guard-audit.jsonl (denies only)
 # Spec: docs/operations/lane-enforcement.md
@@ -136,17 +153,248 @@ __under() {  # $1=path  $2=dir  → 0 if path is dir or inside dir
 FILE_ABS=""
 [ -n "$FILE_PATH" ] && FILE_ABS=$(__abs_path "$FILE_PATH")
 
+# ── F4 hygiene subsystem toggle ─────────────────────────────────────────────
+# PWT_DISABLE_LANE_GUARD_HYGIENE=1 reverts to the pre-2026-08-19 pure-deny
+# guard: no shell masking, no git-tag exemption, no host-hygiene ALLOW class,
+# deny-only auditing. A kill switch that only half-reverts is not a revert.
+HYGIENE=1
+[ "${PWT_DISABLE_LANE_GUARD_HYGIENE:-0}" = "1" ] && HYGIENE=0
+
+# ── Shell-text masking (F4a — the shared root of two false positives) ───────
+# The guard classifies a Bash command by grepping its TEXT. Twice on 2026-08-19
+# that read text the shell would never have executed:
+#
+#   awk '$3 > 50'              the `>` is inside single quotes — an awk body,
+#                              not a redirect. __redirect_targets extracted the
+#                              target "50'", resolved it against cwd, found it
+#                              under the repo, and DENIED an inspection command.
+#
+#   mv "$(command -v ccusage)" $HOME/x
+#                              the mutator scan whitespace-tokenizes the command,
+#                              so the substitution shed the fragment `ccusage)"`,
+#                              which also resolved under the repo and DENIED the
+#                              one remediation the incident actually needed.
+#
+# Both are the same bug: shell text read as if it were shell structure. Mask it
+# once, before any extraction, so every classifier sees only real structure:
+#
+#   inside ANY quotes  → the shell operators > < ; | & are LITERAL TEXT; blank
+#                        them. Path characters are PRESERVED, so a legitimately
+#                        quoted repo path ('/repo/src') still resolves and still
+#                        denies — masking must never widen the permit set.
+#   inside $( ) or ` ` → unresolvable by definition; blank EVERYTHING, which
+#                        also stops fragments from becoming candidate targets.
+__mask_shell_text() {
+    printf '%s' "$1" | awk '
+    {
+      n = length($0); out = ""; i = 1
+      mode = "N"     # N=normal S=single D=double C=substitution
+      ret  = "N"     # where C returns to
+      depth = 0      # $( ) nesting; -1 marks a backtick span
+      while (i <= n) {
+        c = substr($0, i, 1)
+        nx = (i < n) ? substr($0, i + 1, 1) : ""
+        if (mode == "N") {
+          if (c == "\"")                 { mode = "D"; out = out c; i++; continue }
+          if (c == "'"'"'")              { mode = "S"; out = out c; i++; continue }
+          if (c == "$" && nx == "(")     { mode = "C"; ret = "N"; depth = 1; out = out "$("; i += 2; continue }
+          if (c == "`")                  { mode = "C"; ret = "N"; depth = -1; out = out c; i++; continue }
+          out = out c; i++; continue
+        }
+        if (mode == "S" || mode == "D") {
+          if (mode == "D" && c == "\\")  { out = out "__"; i += 2; continue }
+          if (mode == "D" && c == "\"")  { mode = "N"; out = out c; i++; continue }
+          if (mode == "S" && c == "'"'"'") { mode = "N"; out = out c; i++; continue }
+          if (mode == "D" && c == "$" && nx == "(") { mode = "C"; ret = "D"; depth = 1; out = out "$("; i += 2; continue }
+          if (mode == "D" && c == "`")   { mode = "C"; ret = "D"; depth = -1; out = out c; i++; continue }
+          # A backtick reaching here is inside SINGLE quotes (D-mode backticks were
+          # consumed just above) — the shell does NO substitution there, so it is
+          # literal prose. Blank it like the other operators so `${SEP}` cannot read
+          # `` `git commit …` `` inside quoted text as a command boundary (D9).
+          if (c == ">" || c == "<" || c == ";" || c == "|" || c == "&" || c == "`") { out = out "_"; i++; continue }
+          out = out c; i++; continue
+        }
+        # mode == "C": inside a command substitution.
+        if (depth == -1) {
+          if (c == "`") { mode = ret; depth = 0; out = out c } else { out = out "_" }
+          i++; continue
+        }
+        if (c == "(") depth++
+        else if (c == ")") {
+          depth--
+          if (depth == 0) { mode = ret; out = out ")"; i++; continue }
+        }
+        out = out "_"; i++; continue
+      }
+      print out
+    }' 2>/dev/null
+}
+
+# CMD_SCAN is what every classifier below reads. CMD stays intact for messages —
+# an operator must see what they actually typed, not our normalized view.
+#
+# Computed LAZILY, on first use inside the live-lane loop. This hook fires on
+# every Bash call in every session on the machine, and the overwhelming majority
+# of those have no live lane at all — masking them would add an awk spawn per
+# tool call to the whole host. That is precisely the per-call spawn cost this
+# release exists to remove; paying it here to fix a classifier would be an
+# unusually literal own goal.
+CMD_SCAN=""
+CMD_SCAN_READY=0
+__ensure_cmd_scan() {
+    [ "$CMD_SCAN_READY" = "1" ] && return 0
+    CMD_SCAN="$CMD"
+    if [ "$HYGIENE" = "1" ] && [ -n "$CMD" ]; then
+        MASKED=$(__mask_shell_text "$CMD")
+        # Fail CLOSED to the unmasked text: if awk is missing or errors, we keep
+        # today's (over-strict) behavior rather than silently classifying nothing.
+        [ -n "$MASKED" ] && CMD_SCAN="$MASKED"
+    fi
+    CMD_SCAN_READY=1
+}
+
+# ── Worktree set (F4c) ──────────────────────────────────────────────────────
+# "Outside the repo" must mean outside the repo AND all of its worktrees. Ones
+# under MAIN_ROOT are already covered by the prefix test; this catches a
+# worktree mounted elsewhere. Failure to enumerate only makes us stricter.
+ALL_WORKTREES=""
+if [ "$HYGIENE" = "1" ]; then
+    ALL_WORKTREES=$(git -C "$MAIN_ROOT" worktree list --porcelain 2>/dev/null \
+        | awk '/^worktree /{ $1=""; sub(/^ /,""); print }' || echo "")
+fi
+__under_any_worktree() {  # $1 = absolute path
+    local w
+    [ -n "$ALL_WORKTREES" ] || return 1
+    while IFS= read -r w; do
+        [ -n "$w" ] || continue
+        __under "$1" "$w" && return 0
+    done <<EOF_WTALL
+$ALL_WORKTREES
+EOF_WTALL
+    return 1
+}
+
+# ── Shared resolved-target predicate (2.15.0) ────────────────────────────────
+# Canonicalize a candidate target to a LOGICAL absolute path with the FINAL
+# component's symlink FOLLOWED, or empty when the token cannot be statically
+# resolved. Empty = "no positive proof of location" (fail-closed for the
+# git-write/in-place classes). Logical `cd+pwd` (never `pwd -P`) so a resolved
+# target compares apples-to-apples with MAIN_ROOT / WT (both canonicalized
+# logically at :99 / :417). bash 3.2: no `readlink -f`; a bounded readlink loop
+# follows a symlinked final component, python3 realpath is the last backstop.
+__realpath_target() {  # $1 = raw token → canonical abs path or "" (unresolvable)
+    local t="$1" d b link i=0
+    t="${t%\"}"; t="${t#\"}"; t="${t%\'}"; t="${t#\'}"
+    case "$t" in
+        ''|*'$'*|*'`'*|*'*'*|*'?'*|*'['*|'~'*) return 0 ;;   # var/sub/glob/~ → unresolvable
+        /*) : ;;
+        *) return 0 ;;                                       # relative → unresolvable (fail-closed)
+    esac
+    case "$t" in *'/../'*|*'/..'|'../'*) return 0 ;; esac    # .. → unresolvable
+    d=$(dirname "$t"); b=$(basename "$t")
+    while [ -L "$d/$b" ] && [ "$i" -lt 40 ]; do
+        link=$(readlink "$d/$b" 2>/dev/null) || break
+        case "$link" in
+            /*) d=$(dirname "$link"); b=$(basename "$link") ;;
+            *)  d=$(cd "$d" 2>/dev/null && cd "$(dirname "$link")" 2>/dev/null && pwd) || return 0
+                b=$(basename "$link") ;;
+        esac
+        [ -n "$d" ] || return 0
+        i=$((i + 1))
+    done
+    if [ -d "$d" ]; then
+        printf '%s/%s' "$(cd "$d" 2>/dev/null && pwd)" "$b"
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$t" 2>/dev/null
+    else
+        printf '%s/%s' "$d" "$b"   # absolute, ..-free, glob-free lexical fallback
+    fi
+}
+
+# in-repo = under MAIN_ROOT OR under any worktree (the deny zone).
+__path_in_repo() {  # $1 = absolute path
+    __under "$1" "$MAIN_ROOT" && return 0
+    __under_any_worktree "$1" && return 0
+    return 1
+}
+
+# THE shared predicate: 0 (true) iff the token PROVABLY resolves to a FOREIGN
+# path — outside MAIN_ROOT and every worktree. Used by Edit/Write AND the
+# git-write / in-place Bash classes.
+__target_is_foreign() {  # $1 = raw token
+    local real
+    real=$(__realpath_target "$1")
+    [ -n "$real" ] || return 1          # unresolvable → not provably foreign
+    __path_in_repo "$real" && return 1  # resolves in-repo → not foreign
+    return 0
+}
+
+# ISO-8601 (…Z) → epoch seconds, or "" (portable: BSD date, GNU date, python3).
+__iso_to_epoch() {  # $1 = "YYYY-MM-DDTHH:MM:SSZ"
+    local iso="$1" e
+    e=$(date -u -j -f "%Y-%m-%dT%H:%M:%SZ" "$iso" +%s 2>/dev/null) && { printf '%s' "$e"; return 0; }
+    e=$(date -u -d "$iso" +%s 2>/dev/null) && { printf '%s' "$e"; return 0; }
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import sys,calendar,time; print(calendar.timegm(time.strptime(sys.argv[1],"%Y-%m-%dT%H:%M:%SZ")))' "$iso" 2>/dev/null && return 0
+    fi
+    printf ''
+}
+
+# Operator's time-boxed allowance (§3.4). Relaxes ONLY the fail-closed
+# UNRESOLVABLE branch of git-write/in-place — NEVER a provably-inside target.
+# Written from OUTSIDE the bound session (like the release valve):
+#   .claude/state/plan-w-team-lane-guard-allow-<self-sid8>.json
+#   {"until":"<iso>","scope":"outside-repo"}
+__outside_repo_allowance_active() {  # 0 = a valid, in-scope, unexpired allowance exists
+    [ "$HYGIENE" = "1" ] || return 1
+    [ -n "$SELF8" ] || return 1
+    local f="$STATE_DIR/plan-w-team-lane-guard-allow-${SELF8}.json" scope until now exp
+    [ -f "$f" ] || return 1
+    jq -e . "$f" >/dev/null 2>&1 || return 1
+    scope=$(jq -r '.scope // ""' "$f" 2>/dev/null)
+    [ "$scope" = "outside-repo" ] || return 1
+    until=$(jq -r '.until // ""' "$f" 2>/dev/null)
+    [ -n "$until" ] || return 1
+    exp=$(__iso_to_epoch "$until")
+    [ -n "$exp" ] || return 1
+    now=$(date -u +%s)
+    [ "$now" -lt "$exp" ] 2>/dev/null || return 1
+    return 0
+}
+
+# For the FAIL-CLOSED classes (git-write, in-place). 0 = ALLOW this target,
+# 1 = DENY. A provably-inside target ALWAYS denies (the allowance never covers
+# it); a provably-outside target always allows; an UNRESOLVABLE target denies
+# unless the operator's allowance is active.
+__write_target_ok() {  # $1 = raw token
+    local real
+    real=$(__realpath_target "$1")
+    if [ -n "$real" ]; then
+        __path_in_repo "$real" && return 1   # provably inside → DENY
+        return 0                              # provably outside → ALLOW
+    fi
+    __outside_repo_allowance_active && return 0
+    return 1                                  # unresolvable, no allowance → DENY
+}
+
 # ── Deny plumbing ────────────────────────────────────────────────────────────
 AUDIT="$STATE_DIR/plan-w-team-lane-guard-audit.jsonl"
-__audit() {  # $1=kind $2=slug $3=target
+# Every verdict the guard REACHES is recorded — denies as before, plus the
+# positively-classified host-hygiene ALLOWs and classifier exemptions the F4
+# scope adds. Deliberately NOT logged: the "no live lane applies" path. That is
+# not a verdict, and a row per Bash call in every session on the machine is a
+# disk-exhaustion vector, not an audit trail. Bound documented in
+# docs/operations/host-load-protection.md.
+__audit() {  # $1=decision $2=kind $3=slug $4=target $5=reason
     jq -cn --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg sid "$SELF8" \
-        --arg tool "$TOOL" --arg kind "$1" --arg slug "$2" --arg target "$3" \
-        '{ts:$ts, sid:$sid, tool:$tool, decision:"deny", kind:$kind, slug:$slug, target:$target}' \
+        --arg tool "$TOOL" --arg decision "$1" --arg kind "$2" --arg slug "$3" \
+        --arg target "$4" --arg reason "${5:-}" \
+        '{ts:$ts, sid:$sid, tool:$tool, decision:$decision, kind:$kind, slug:$slug, target:$target, reason:$reason}' \
         >> "$AUDIT" 2>/dev/null || true
 }
 
 __deny_role() {  # $1=slug $2=worker8 $3=worktree $4=target
-    __audit "supervisor-implementing" "$1" "$4"
+    __audit "deny" "supervisor-implementing" "$1" "$4"
     cat >&2 <<MSGEOF
 ⛔ LANE GUARD (PWT-LANE1): this session is the SUPERVISOR of live /plan-w-team lane '$1' (worker ${2}, worktree: ${3:-main checkout}). Supervisors observe and steer — they NEVER implement, run builds, or commit. This $TOOL call (${4}) is the lane's work and is denied.
 
@@ -162,7 +410,7 @@ MSGEOF
 }
 
 __deny_worktree() {  # $1=slug $2=worker8 $3=worktree $4=target
-    __audit "foreign-worktree-write" "$1" "$4"
+    __audit "deny" "foreign-worktree-write" "$1" "$4"
     cat >&2 <<MSGEOF
 ⛔ LANE GUARD (PWT-LANE1): ${4} is inside the worktree of live /plan-w-team lane '$1', owned by worker ${2} — and this session (${SELF8:-unknown}) is not that worker. Two writers in one lane worktree corrupt the run. Steer the owning worker instead (stop + resume with instructions), or escalate to the user.
 MSGEOF
@@ -170,7 +418,7 @@ MSGEOF
 }
 
 __deny_artifact() {  # $1=slug $2=basename $3=why
-    __audit "trusted-artifact-tamper" "$1" "$2"
+    __audit "deny" "trusted-artifact-tamper" "$1" "$2"
     cat >&2 <<MSGEOF
 ⛔ LANE GUARD (PWT-LANE1): ${2} is a terminal-decision artifact for live lane '$1' — the Stop evaluator TRUSTS it, so only the pipeline may produce it (${3}). Hand-building it would mark the goal done without the work being done. If the run must end: escalate to the user; only the USER releases or halts a lane from outside the supervising session.
 MSGEOF
@@ -188,7 +436,30 @@ GO_BUILD_RE="${SEP}go[[:space:]]+(build|run|test|install|get|generate)([[:space:
 SKILL_SUITE_RE="tests/skill/run(-scenarios)?\.sh"
 MUTATOR_RE="${SEP}(rm|mv|cp|ln|truncate|dd|rsync|shred|unlink|install)([[:space:]]|$)"
 EXEC_MUTATOR_RE="-(exec|execdir)[[:space:]]+(rm|mv|cp)([[:space:]]|;)|xargs([[:space:]]+-[^[:space:]]+)*[[:space:]]+(rm|mv|cp)([[:space:]]|$)"
-INPLACE_RE="sed[[:space:]]+(-[a-zA-Z]*i|--in-place)|perl[[:space:]]+[^|;&]*-[a-zA-Z]*i([[:space:]]|$)"
+# ${SEP}-anchored like its siblings (D8, 2026-08-29): the literal words "sed -i"
+# inside a quoted string argument are prose, not a command — only a real in-place
+# edit at a command-word boundary classifies. Both alternatives sit INSIDE the
+# group so the anchor applies to each.
+INPLACE_RE="${SEP}(sed[[:space:]]+(-[a-zA-Z]*i|--in-place)|perl[[:space:]]+[^|;&]*-[a-zA-Z]*i([[:space:]]|$))"
+# Host hygiene (F4c): process control is not lane work. These were never denied
+# — the incident's `pkill` was allowed — so this class adds EVIDENCE, not
+# authority: a supervisor that kills its own lane is now provable after the fact.
+HYGIENE_PROC_RE="${SEP}(kill|pkill|killall|renice)([[:space:]]|$)"
+
+# Read-only LISTING forms of write-subcommands are inspection, not writes.
+# GIT_WRITE_RE lists `tag`/`worktree`/`stash` as write subcommands with no
+# exemption, so `git tag -l`, `git worktree list`, `git stash list|show` — all
+# read-only — were denied (2026-08-19 tag remediation; D7/D9 2026-08-29 for the
+# worktree/stash forms, incl. a backtick-quoted `` `git worktree list` `` inside
+# prose). Strip only the read-only FORM from a WORKING COPY before the write
+# test, so `git tag v1` / `git worktree add …` still deny, and
+# `git worktree list && git commit -m x` still denies on the surviving commit.
+__git_write_text() {
+    # Single source for the read-only-listing strip is __strip_readonly_git
+    # (defined with the git-write resolver); this keeps the tag/worktree/stash
+    # list patterns from drifting between two copies.
+    printf '%s' "$CMD_SCAN" | __strip_readonly_git
+}
 
 # A redirect / tee / mutator target is ALLOWED when it provably lands outside
 # the main checkout (tmp, /dev, $HOME dotfiles, other repos) or inside
@@ -204,29 +475,147 @@ __protected_basename() {  # $1=basename $2=slug → 0 if trusted family for slug
 }
 __bash_target_denied() {  # $1=raw target token  $2=slug → 0 if deny
     local t="$1" abs base
-    # Strip simple quoting; a token still carrying $ or backticks is
-    # unresolvable → allow (no positive evidence).
+    # Strip simple quoting; a token still carrying $ or backticks — or a leading
+    # `~` the guard cannot expand (the shell would, to $HOME, outside the repo) —
+    # is unresolvable → allow (no positive evidence). Without the `~` arm a
+    # `>> ~/…/file` redirect resolves against CWD, lands under the repo, and
+    # falsely denies (D9, 2026-08-29).
     t="${t%\"}"; t="${t#\"}"; t="${t%\'}"; t="${t#\'}"
-    case "$t" in ''|*'$'*|*'`'*) return 1 ;; esac
+    case "$t" in ''|*'$'*|*'`'*|'~'*) return 1 ;; esac
     case "$t" in /dev/*) return 1 ;; esac
     abs=$(__abs_path "$t")
     [ -n "$abs" ] || return 1
+    # A worktree mounted OUTSIDE the main checkout is still the repo. Checked
+    # before the MAIN_ROOT prefix test so "outside the repo" can never be read
+    # as "outside MAIN_ROOT" alone.
+    if [ "$HYGIENE" = "1" ] && __under_any_worktree "$abs"; then return 0; fi
     __under "$abs" "$MAIN_ROOT" || return 1
     if __under "$abs" "$STATE_DIR"; then
         base=$(basename "$abs")
         __protected_basename "$base" "$2" && return 0
+        # The operator allowance valve is operator-written (from OUTSIDE the bound
+        # session, like the release valve); a bound supervisor writing its own
+        # would self-authorize the fail-closed branch (a relative in-repo `sed -i`
+        # would then pass). This function runs only for the bound supervisor, so
+        # denying here never blocks the operator.
+        case "$base" in plan-w-team-lane-guard-allow-*.json) return 0 ;; esac
         return 1
     fi
     return 0
 }
 # Extract redirect targets (skips fd-dups like 2>&1 — & can't start a target).
+# Both read CMD_SCAN, not CMD: a `>` inside quotes has already been blanked, so
+# an awk/grep body can no longer masquerade as a redirect.
 __redirect_targets() {
-    printf '%s' "$CMD" | grep -oE '[0-9]*>>?[[:space:]]*[^[:space:]<>;&|)]+' 2>/dev/null \
+    printf '%s' "$CMD_SCAN" | grep -oE '[0-9]*>>?[[:space:]]*[^[:space:]<>;&|)]+' 2>/dev/null \
         | sed -E 's/^[0-9]*>>?[[:space:]]*//'
 }
 __tee_targets() {
-    printf '%s' "$CMD" | grep -oE 'tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*[^;&|<>]+' 2>/dev/null \
+    printf '%s' "$CMD_SCAN" | grep -oE 'tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*[^;&|<>]+' 2>/dev/null \
         | sed -E 's/^tee[[:space:]]+//; s/-[a-zA-Z]+[[:space:]]+//g'
+}
+
+# ── Resolved-target decision for git-write (FAIL-CLOSED; 2.15.0 review fix) ──
+# git resolves its git-dir and work-tree INDEPENDENTLY. `-C <p>` and a literal
+# `cd <p>` move BOTH (git runs as if started in <p>); `--git-dir=<g>` moves ONLY
+# the git-dir (the work-tree then defaults to CWD); `--work-tree=<w>` moves ONLY
+# the work-tree (the git-dir is still DISCOVERED from CWD). So a lone foreign
+# `--work-tree` on `git push` — whose refs land in the CWD-discovered (lane)
+# git-dir — is NOT a foreign write, and neither is a lone foreign `--git-dir` on
+# `git checkout`, whose files land in the CWD (lane) work-tree. The pre-review
+# code treated ANY foreign anchor as whole-command proof, which let a bound
+# supervisor push/reset the lane by attaching a throwaway anchor. Fix: walk the
+# command's segments tracking the cd-established base, and require BOTH the
+# effective git-dir AND the effective work-tree of EVERY git-write to be foreign.
+__strip_readonly_git() {   # stdin → read-only listing forms neutralized (raw under HYGIENE=0)
+    if [ "$HYGIENE" = "0" ]; then cat; return 0; fi
+    sed -E \
+        -e 's/git[[:space:]]+tag[[:space:]]+(-[a-zA-Z]*l[a-zA-Z]*|--list)/git-tag-list-readonly/g' \
+        -e 's/git[[:space:]]+worktree[[:space:]]+list/git-worktree-list-readonly/g' \
+        -e 's/git[[:space:]]+stash[[:space:]]+(list|show)/git-stash-list-readonly/g' 2>/dev/null
+}
+__git_write_targets_foreign() {   # 0 = ALLOW, 1 = DENY
+    local seg trimmed cur_base="$CWD" cval gdval wtval inv_base gitdir worktree
+    while IFS= read -r seg; do
+        trimmed=$(printf '%s' "$seg" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+        [ -n "$trimmed" ] || continue
+        # A `cd` segment re-bases every later command. Bare `cd` (→ $HOME) and a
+        # variable/relative target are unresolvable → force the base unresolvable
+        # so a later git-write anchored on it denies (fail-closed).
+        case "$trimmed" in
+            cd|cd[[:space:]]*)
+                cval=$(printf '%s' "$trimmed" | sed -E 's/^cd[[:space:]]*//; s/[[:space:]].*//')
+                if [ -n "$cval" ]; then cur_base="$cval"; else cur_base='~unresolvable~'; fi
+                continue
+                ;;
+        esac
+        # Is this segment a git-write? (read-only listing forms neutralized first.)
+        printf '%s' "$trimmed" | __strip_readonly_git | grep -qE "$GIT_WRITE_RE" || continue
+        cval=$(printf '%s' "$trimmed" | grep -oE '(^|[[:space:]])-C[[:space:]]+[^[:space:]]+' 2>/dev/null | head -1 | sed -E 's/.*-C[[:space:]]+//')
+        gdval=$(printf '%s' "$trimmed" | grep -oE '[-][-]git-dir[= ][^[:space:]]+' 2>/dev/null | head -1 | sed -E 's/^--git-dir[= ]//')
+        wtval=$(printf '%s' "$trimmed" | grep -oE '[-][-]work-tree[= ][^[:space:]]+' 2>/dev/null | head -1 | sed -E 's/^--work-tree[= ]//')
+        # -C (and a preceding cd) set the BASE that git-dir/work-tree default to;
+        # --git-dir/--work-tree override ONLY their own location. Require both.
+        if [ -n "$cval" ]; then inv_base="$cval"; else inv_base="$cur_base"; fi
+        gitdir="${gdval:-$inv_base}"
+        worktree="${wtval:-$inv_base}"
+        __write_target_ok "$gitdir" || return 1
+        __write_target_ok "$worktree" || return 1
+    done <<EOF_SEGS
+$(printf '%s' "$CMD_SCAN" | awk '{ gsub(/&&|\|\|/, "\n"); gsub(/[;&|]/, "\n"); print }')
+EOF_SEGS
+    return 0
+}
+
+# Quote-aware tokenizer over the MASKED command. Emits one line per token whose
+# FIRST char is Q (the token was quoted) or P (plain), then the unquoted token.
+# Quoting is what tells a sed/perl SCRIPT (quoted, e.g. 's/a b/c/') from a
+# relative-path OPERAND (plain, e.g. src/app.ts), and it keeps a quoted script
+# with internal spaces as ONE token. SQ is passed via -v so no literal single
+# quote appears in the awk program.
+__masked_tokens() {
+    printf '%s' "$CMD_SCAN" | awk -v SQ="'" '
+    {
+      n = length($0); i = 1
+      while (i <= n) {
+        c = substr($0, i, 1)
+        if (c == " " || c == "\t") { i++; continue }
+        tok = ""; q = "P"
+        while (i <= n) {
+          c = substr($0, i, 1)
+          if (c == " " || c == "\t") break
+          if (c == SQ)  { q = "Q"; i++; while (i <= n) { c = substr($0, i, 1); i++; if (c == SQ) break; tok = tok c }; continue }
+          if (c == "\"") { q = "Q"; i++; while (i <= n) { c = substr($0, i, 1); i++; if (c == "\"") break; tok = tok c }; continue }
+          tok = tok c; i++
+        }
+        print q tok
+      }
+    }' 2>/dev/null
+}
+# 0 = ALLOW (every in-place file operand provably foreign), 1 = DENY. Fail-closed:
+# no absolute operand, a plain relative/glob/var operand, or an in-repo/unresolvable
+# absolute operand → DENY. A quoted non-absolute token is the sed/perl script → ignored.
+__inplace_targets_foreign() {
+    local line q tok had_abs=0
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        q="${line%"${line#?}"}"; tok="${line#?}"
+        case "$tok" in
+            /*) had_abs=1; __write_target_ok "$tok" || return 1 ;;
+            -*) : ;;
+            *)
+                if [ "$q" = "P" ]; then
+                    case "$tok" in
+                        */*|*'*'*|*'?'*|*'['*|'~'*|*'$'*) return 1 ;;
+                    esac
+                fi
+                ;;
+        esac
+    done <<EOF_TOK
+$(__masked_tokens)
+EOF_TOK
+    [ "$had_abs" = "1" ] && return 0
+    return 1
 }
 
 # ── Evaluate each live lane ──────────────────────────────────────────────────
@@ -311,12 +700,31 @@ for GF in "$STATE_DIR"/plan-w-team-goal-*.json; do
                     __deny_artifact "$SLUG" "$BASE" "the Stop evaluator owns terminal_state; a supervisor writing it is self-termination spoofing" ;;
                 "plan-w-team-lane-release-${SLUG}.json")
                     __deny_artifact "$SLUG" "$BASE" "the release valve is USER-only; a supervisor releasing its own lane defeats the guard" ;;
+                plan-w-team-lane-guard-allow-*.json)
+                    __deny_artifact "$SLUG" "$BASE" "the operator allowance valve is written from OUTSIDE the bound session; a supervisor writing its own would self-authorize the guard's fail-closed branch" ;;
             esac
-            if __under "$FILE_ABS" "$MAIN_ROOT" && ! __under "$FILE_ABS" "$STATE_DIR"; then
+            if __under "$FILE_ABS" "$STATE_DIR"; then
+                : # .claude/state/ bookkeeping stays allowed
+            elif [ "$HYGIENE" = "1" ]; then
+                # Share the resolved-target predicate with the Bash classes so the
+                # SAME file cannot be Edit-allowed but git/sed-denied. A symlink
+                # whose real target is in-repo denies (realpath); a provably
+                # foreign file is allowed + audited.
+                FILE_REAL=$(__realpath_target "$FILE_ABS"); [ -n "$FILE_REAL" ] || FILE_REAL="$FILE_ABS"
+                if __path_in_repo "$FILE_REAL"; then
+                    __deny_role "$SLUG" "$W8" "$WT" "$FILE_ABS"
+                else
+                    __audit "allow" "outside-repo-edit" "$SLUG" "$FILE_ABS" \
+                        "file resolves outside the lane repo and all worktrees"
+                fi
+            elif __under "$FILE_ABS" "$MAIN_ROOT"; then
                 __deny_role "$SLUG" "$W8" "$WT" "$FILE_ABS"
             fi
         fi
     else
+        # A live lane applies and the tool is Bash — NOW the masking is worth its
+        # spawn. Memoized, so a second live lane in the same call is free.
+        __ensure_cmd_scan
         # (2') Any non-worker session: Bash that WRITES a trusted artifact for
         # this lane is forgery. Reading it (cat/jq, even with 2>/dev/null fd
         # redirects) stays legal — only a redirect TARGET naming the family, or
@@ -329,7 +737,7 @@ for GF in "$STATE_DIR"/plan-w-team-goal-*.json; do
 $(__redirect_targets)
 EOF_FAMR
             if [ "$FORGE" = "0" ] \
-               && printf '%s' "$CMD" | grep -qE "(mv|cp|rm|touch|tee)[[:space:]][^;|&]*${FAM}"; then
+               && printf '%s' "$CMD_SCAN" | grep -qE "(mv|cp|rm|touch|tee)[[:space:]][^;|&]*${FAM}"; then
                 FORGE=1
             fi
             [ "$FORGE" = "1" ] && __deny_artifact "$SLUG" "${FAM}.json" "only the pipeline's own gates may produce it"
@@ -338,8 +746,8 @@ EOF_FAMR
         # worktree — a git-write/mutator naming its literal path, or a redirect
         # whose target lands inside it. Reads (tail/cat with fd redirects) pass.
         if [ -n "$WT" ]; then
-            if printf '%s' "$CMD" | grep -qF "$WT" \
-               && printf '%s' "$CMD" | grep -qE "$GIT_WRITE_RE|$MUTATOR_RE"; then
+            if printf '%s' "$CMD_SCAN" | grep -qF "$WT" \
+               && printf '%s' "$(__git_write_text)" | grep -qE "$GIT_WRITE_RE|$MUTATOR_RE"; then
                 __deny_worktree "$SLUG" "$W8" "$WT" "Bash: ${CMD:0:120}"
             fi
             while IFS= read -r TGT; do
@@ -354,26 +762,68 @@ EOF_WTREDIR
         fi
         # (3') Bound supervisor: implementing/building/shipping shapes.
         if [ "$BOUND" = "1" ]; then
-            if printf '%s' "$CMD" | grep -qE "$GIT_WRITE_RE"; then
-                __deny_role "$SLUG" "$W8" "$WT" "Bash git-write: ${CMD:0:120}"
+            # Host hygiene (F4c) — ALLOW + audit, before any deny test can see
+            # it. Process control is not lane work: the supervisor's job during
+            # a host-distress event is exactly to kill or renice whatever is
+            # starving the lane. This grants no NEW authority (kill/pkill were
+            # never in a deny regex); it records the decision so the next
+            # incident is diagnosable, and it documents the scope.
+            if [ "$HYGIENE" = "1" ] && printf '%s' "$CMD_SCAN" | grep -qE "$HYGIENE_PROC_RE"; then
+                __audit "allow" "host-hygiene-process" "$SLUG" "${CMD:0:160}" \
+                    "process control is host hygiene, not lane work"
             fi
-            if printf '%s' "$CMD" | grep -qE "$BUILDER_RE|$GO_BUILD_RE|$SKILL_SUITE_RE"; then
+            if printf '%s' "$(__git_write_text)" | grep -qE "$GIT_WRITE_RE"; then
+                if [ "$HYGIENE" = "1" ] && __git_write_targets_foreign; then
+                    __audit "allow" "outside-repo-git-write" "$SLUG" "${CMD:0:160}" \
+                        "every git-write target resolves outside the lane repo and all worktrees"
+                else
+                    __deny_role "$SLUG" "$W8" "$WT" \
+                        "Bash git-write (target in lane repo/worktree or unresolvable — use an absolute -C path): ${CMD:0:120}"
+                fi
+            fi
+            # A command that ONLY listed refs reached here as an allow: record
+            # the exemption so "why was this permitted?" is answerable on disk.
+            if [ "$HYGIENE" = "1" ] \
+               && printf '%s' "$CMD_SCAN" | grep -qE "${SEP}git[[:space:]]+(tag[[:space:]]+(-[a-zA-Z]*l[a-zA-Z]*|--list)|worktree[[:space:]]+list|stash[[:space:]]+(list|show))"; then
+                __audit "allow" "classifier-exemption" "$SLUG" "${CMD:0:160}" \
+                    "git tag -l / worktree list / stash list|show are read-only, not git-writes"
+            fi
+            if printf '%s' "$CMD_SCAN" | grep -qE "$BUILDER_RE|$GO_BUILD_RE|$SKILL_SUITE_RE"; then
                 __deny_role "$SLUG" "$W8" "$WT" "Bash build/test: ${CMD:0:120}"
             fi
-            if printf '%s' "$CMD" | grep -qE "$INPLACE_RE"; then
-                __deny_role "$SLUG" "$W8" "$WT" "Bash in-place edit: ${CMD:0:120}"
+            if printf '%s' "$CMD_SCAN" | grep -qE "$INPLACE_RE"; then
+                if [ "$HYGIENE" = "1" ] && __inplace_targets_foreign; then
+                    __audit "allow" "outside-repo-edit" "$SLUG" "${CMD:0:160}" \
+                        "every in-place file operand resolves outside the lane repo and all worktrees"
+                else
+                    __deny_role "$SLUG" "$W8" "$WT" \
+                        "Bash in-place edit (target in lane repo/worktree or unresolvable — use an absolute path): ${CMD:0:120}"
+                fi
             fi
-            if printf '%s' "$CMD" | grep -qE "$MUTATOR_RE|$EXEC_MUTATOR_RE"; then
-                # Deny only on a provable repo target (fail-open on $vars).
+            if printf '%s' "$CMD_SCAN" | grep -qE "$MUTATOR_RE|$EXEC_MUTATOR_RE"; then
+                # Deny on a provable repo/worktree target; fail open on $vars.
+                # RESOLVED counts tokens we could prove are OUTSIDE, so an
+                # all-outside mutation (the `mv "$(command -v ccusage)"` the
+                # incident needed) is an ALLOW we can audit rather than a
+                # silent pass. One in-repo target still denies the whole call.
                 DENIED=0
+                RESOLVED_OUT=0
                 while IFS= read -r TOK; do
                     [ -n "$TOK" ] || continue
                     case "$TOK" in -*) continue ;; esac
                     if __bash_target_denied "$TOK" "$SLUG"; then DENIED=1; break; fi
+                    case "$TOK" in
+                        ''|*'$'*|*'`'*) : ;;   # unresolvable — proves nothing
+                        /*) RESOLVED_OUT=$((RESOLVED_OUT + 1)) ;;
+                    esac
                 done <<EOF_TOKENS
-$(printf '%s' "$CMD" | tr ' ' '\n' | grep -vE '^(sudo|rm|mv|cp|ln|truncate|dd|rsync|shred|unlink|install|xargs|find)$' | head -40)
+$(printf '%s' "$CMD_SCAN" | tr ' ' '\n' | grep -vE '^(sudo|rm|mv|cp|ln|truncate|dd|rsync|shred|unlink|install|xargs|find)$' | head -40)
 EOF_TOKENS
                 [ "$DENIED" = "1" ] && __deny_role "$SLUG" "$W8" "$WT" "Bash mutator: ${CMD:0:120}"
+                if [ "$HYGIENE" = "1" ] && [ "$RESOLVED_OUT" -gt 0 ]; then
+                    __audit "allow" "host-hygiene-mutation" "$SLUG" "${CMD:0:160}" \
+                        "every resolvable target is outside the repo and all its worktrees"
+                fi
             fi
             # Redirect / tee targets that provably land in the repo.
             while IFS= read -r TGT; do

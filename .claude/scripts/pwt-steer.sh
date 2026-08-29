@@ -44,10 +44,20 @@
 #   --timeout-s    delivery-verification budget, default 60
 #   --allow-main   permit the resume from the main checkout when no worker
 #                  worktree exists (breaks isolation — deliberate opt-in)
+#   --env K=V      repeatable; regenerate launch-time env the resume would
+#                  otherwise lose (RC4/F8: plan-w-team-land.sh passes
+#                  PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 so the resumed session's ship
+#                  stage behaves like the run it is continuing). KEY must be a
+#                  shell identifier, and any guard-shaped key (*DISABLE*/*FORCE*)
+#                  is REFUSED: this injects env into a bypassPermissions session,
+#                  and ~50 such switches exist here — including the lane guard,
+#                  the actor gate, the goal evaluator, the PWT-DS2 cascade guard
+#                  and FORCE_SPAWN. Refused by name SHAPE, not by an enumerated
+#                  list, so the rule cannot rot as new switches are added.
 #
 # ENV
-#   PWT_PRIMARY_MODEL   (default claude-opus-5)    — pinned; never inherit the CLI default
-#   PWT_FALLBACK_MODEL  (default claude-sonnet-5)
+#   PWT_PRIMARY_MODEL   (default claude-opus-4-8)  — pinned; never inherit the CLI default; claude-opus-5 is FORBIDDEN (founder order 2026-08-29)
+#   PWT_FALLBACK_MODEL  (default claude-opus-4-8)  — a fallback doing the lead's work is intelligent work, never Sonnet (founder doctrine 2026-08-29)
 #   PWT_STEER_POLL_S    (default 1)                — verification poll interval
 #   CLAUDE_PROJECTS_DIR (default ~/.claude/projects)
 #
@@ -79,9 +89,16 @@ DRY_RUN=0
 ALLOW_MAIN=0
 TIMEOUT_S=60
 MESSAGE_SET=0
+# --env KEY=VAL, repeatable.  A resume does NOT inherit the environment the
+# launcher originally granted the worker, so a run resumed to finish a stage that
+# depends on a launch-time flag (e.g. PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 at the ship
+# stage) would silently behave differently from the run it is continuing.  Added
+# for plan-w-team-land.sh's resume-to-land remediation (RC4/F8).
+# bash 3.2: a plain indexed array is fine; associative arrays are not.
+EXTRA_ENV=()
 
-PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-5}"
-FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-sonnet-5}"
+PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-4-8}"
+FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-opus-4-8}"
 POLL_S="${PWT_STEER_POLL_S:-1}"
 
 usage() {
@@ -89,8 +106,13 @@ usage() {
 usage: pwt-steer.sh --slug <slug> --message <steer-text>
                     [--worker-sid <uuid>] [--state-dir <dir>]
                     [--dry-run] [--timeout-s <n>] [--allow-main]
+                    [--env KEY=VALUE]...
 
   operator-invoked only — never forward unreviewed third-party text via --message.
+  --env regenerates launch-time environment the resume would otherwise lose
+        (e.g. PLAN_W_TEAM_AUTO_APPROVE_PUSH=1). KEY must be a shell identifier,
+        and guard-shaped keys (*DISABLE*/*FORCE*) are refused — they would turn
+        off protections in a bypassPermissions session. Export those instead.
 
 exit: 0 verified · 5 steered-unverified · 2 usage · 6 validation refuse
       7 new session UUID undiscoverable
@@ -105,6 +127,42 @@ while [ $# -gt 0 ]; do
     --worker-sid) WORKER_SID="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     --state-dir)  STATE_DIR_OVERRIDE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     --timeout-s)  TIMEOUT_S="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    --env)
+      __e="${2:-}"
+      # Strict shape check.  This value is injected into a session running under
+      # bypassPermissions, so a malformed or hostile entry is refused outright
+      # rather than best-effort parsed.
+      case "$__e" in
+        [A-Za-z_]*=*) : ;;
+        *) echo "✗ --env expects KEY=VALUE with a valid shell identifier KEY (got: '$__e')" >&2; exit 2 ;;
+      esac
+      printf '%s' "${__e%%=*}" | grep -Eq '^[A-Za-z_][A-Za-z0-9_]*$' || {
+        echo "✗ --env KEY is not a valid identifier: '${__e%%=*}'" >&2; exit 2; }
+      # GUARD-DISABLING KEYS ARE REFUSED BY NAME SHAPE, not by an enumerated list.
+      #
+      # This flag injects environment into a session running under
+      # bypassPermissions, and this repo has ~50 `*_DISABLE_*` / `*_FORCE_*` kill
+      # switches — among them PLAN_W_TEAM_DISABLE_LANE_GUARD (the PreToolUse
+      # cross-lane write guard), _DISABLE_ACTOR_GATE (PWT-LANE2 anti-spoof),
+      # _DISABLE_GOAL (the terminal evaluator), _DISABLE_PROMPT_ROUTE (the PWT-DS2
+      # cascade guard) and _FORCE_SPAWN (bypasses BOTH double-spawn tiers).
+      # A denylist naming today's guards would go stale the first time a release
+      # adds one — the same observed-once-enum defect that made double-spawn
+      # Tier B structurally inert. A name-shape rule cannot rot.
+      #
+      # This costs the operator nothing: pwt-steer is OPERATOR-INVOKED ONLY, and
+      # an operator who genuinely needs one of these can `export` it before
+      # invoking. `--env` exists so a SCRIPT can regenerate launch-time env
+      # (RC4/F8), not so a caller can turn guards off in someone else's session.
+      case "${__e%%=*}" in
+        *DISABLE*|*FORCE*)
+          echo "✗ --env refuses guard-shaped keys (*DISABLE*/*FORCE*): '${__e%%=*}'" >&2
+          echo "  These turn off protections in a session running under bypassPermissions." >&2
+          echo "  If you genuinely need it, export it before invoking pwt-steer.sh." >&2
+          exit 2 ;;
+      esac
+      EXTRA_ENV[${#EXTRA_ENV[@]}]="$__e"
+      shift; [ $# -gt 0 ] && shift ;;
     --dry-run)    DRY_RUN=1; shift ;;
     --allow-main) ALLOW_MAIN=1; shift ;;
     -h|--help)    usage ;;
@@ -342,7 +400,8 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  worker sid:      $WORKER_SID"
   echo "  resume cwd:      $RESUME_CWD"
   echo "  would run:       $CLAUDE_BIN stop $WORKER_SID"
-  echo "  would run:       env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 $CLAUDE_BIN --bg --resume $WORKER_SID --model $PRIMARY_MODEL --fallback-model $FALLBACK_MODEL <steer-text>"
+  echo "  extra env:       ${EXTRA_ENV[@]+${EXTRA_ENV[@]}}"
+  echo "  would run:       env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 ${EXTRA_ENV[@]+${EXTRA_ENV[@]} }$CLAUDE_BIN --bg --resume $WORKER_SID --model $PRIMARY_MODEL --fallback-model $FALLBACK_MODEL <steer-text>"
   echo "  delivery marker: $MARKER"
   exit 0
 fi
@@ -352,10 +411,25 @@ fi
 # timestamp granularity (a -newer comparison is not).
 BEFORE_LIST="$(__steer_list_transcripts)"
 
-# ─── (2) STOP — tolerate an already-dead worker ─────────────────────────────
+# ─── (2) STOP — capture and CLASSIFY the real outcome (O3, 2026-08-29) ───────
+# The old code printed "stop returned non-zero … continuing" on EVERY steer,
+# so the operator could not tell "a duplicate worker was actually stopped" from
+# "nothing was there to stop". Capture stdout+stderr+rc and say what happened —
+# tolerant by design: a stop that finds nothing is a normal steer of an
+# already-terminal worker, not a failure.
 echo "pwt-steer: stopping worker $WORKER_SID …"
-"$CLAUDE_BIN" stop "$WORKER_SID" >/dev/null 2>&1 || \
-  echo "  note: stop returned non-zero (worker may already be stopped) — continuing" >&2
+STOP_OUT=$("$CLAUDE_BIN" stop "$WORKER_SID" 2>&1); STOP_RC=$?
+STOP_TAIL=$(printf '%s' "$STOP_OUT" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | cut -c1-160)
+if [ "$STOP_RC" -eq 0 ]; then
+  echo "  stop: worker $WORKER_SID stopped (exit 0)${STOP_TAIL:+ — $STOP_TAIL}"
+else
+  case "$STOP_OUT" in
+    *[Nn]"ot found"*|*"o such"*|*"o session"*|*"nknown session"*|*"already"*)
+      echo "  stop: worker $WORKER_SID already gone / not found (exit $STOP_RC)${STOP_TAIL:+ — $STOP_TAIL} — continuing" >&2 ;;
+    *)
+      echo "  stop: returned exit $STOP_RC${STOP_TAIL:+ — $STOP_TAIL} — continuing to resume + delivery verification" >&2 ;;
+  esac
+fi
 
 # ─── (3) RESUME — argv-form exec, inside the worktree, pinned + route-guarded ─
 # No `sh -c`, no eval, no re-quoting: the steer text is ONE argv element handed
@@ -364,7 +438,12 @@ echo "pwt-steer: stopping worker $WORKER_SID …"
 RESUME_OUT="${TMPDIR:-/tmp}/pwt-steer-resume-$$.out"
 (
   cd "$RESUME_CWD" 2>/dev/null || exit 127
-  exec env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 "$CLAUDE_BIN" \
+  # `${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}` — the bash 3.2 empty-array-under-set-u
+  # idiom.  A bare "${EXTRA_ENV[@]}" on an EMPTY array is an unbound-variable
+  # error there, which would break every steer that passes no --env.
+  exec env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 \
+    ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} \
+    "$CLAUDE_BIN" \
     --bg --resume "$WORKER_SID" \
     --model "$PRIMARY_MODEL" --fallback-model "$FALLBACK_MODEL" \
     "$STEER_TEXT"
@@ -575,6 +654,39 @@ if [ "$REFUSED_ADOPT" = "1" ]; then
   echo "  re-arm watcher (after resolving the sid):  $AWAIT_HELPER --slug $SLUG --worker-sid <RESOLVED-UUID>"
 else
   echo "  re-arm watcher:  $AWAIT_HELPER --slug $SLUG --worker-sid $NEW_SID"
+fi
+
+# ─── (7) POST-RESUME liveness assertion (O3, 2026-08-29) — loud ADVISORY ─────
+# After the steer, exactly ONE live lead should own the slug's worktree. Two
+# means a rival worker is still running (the double-worker failure the operator
+# had to detect by hand); zero means the resume never took. This is a FAIL-OPEN
+# ADVISORY, not a new hard-fail exit: `claude agents --json` is intermittently
+# empty under load (G9), and the exit-code contract above is depended on by
+# callers/tests, so a transient miscount must never flip a good steer to failure.
+# Only a CLEAN registry read showing a count != 1 warns; an unqueryable registry
+# is silent. Reuses pwt-live-session-cwds.sh (its __QUERY_FAILED__ discipline ==
+# silence here) so there is no second, divergent liveness probe.
+LIVE_CWDS_SH="$(dirname "$0")/pwt-live-session-cwds.sh"
+[ -x "$LIVE_CWDS_SH" ] || LIVE_CWDS_SH=""
+if [ -n "$LIVE_CWDS_SH" ]; then
+  CWDS_OUT=$("$LIVE_CWDS_SH" 2>/dev/null)
+  case "$CWDS_OUT" in
+    ''|*__QUERY_FAILED__*) : ;;   # indeterminate → silent (fail-open)
+    *)
+      LEADS=$(printf '%s\n' "$CWDS_OUT" | awk -v wt="$RESUME_CWD" '
+        $0 == wt || index($0, wt "/") == 1 { n++ } END { print n + 0 }')
+      if [ "$LEADS" != "1" ]; then
+        echo "⚠ pwt-steer: expected exactly ONE live lead under $RESUME_CWD after the steer, found $LEADS" >&2
+        if [ "${LEADS:-0}" -gt 1 ]; then
+          echo "  a rival worker may still be running — inspect and stop the straggler(s):" >&2
+          echo "    claude agents --json | jq '.[] | select((.cwd//\"\")|startswith(\"$RESUME_CWD\"))'" >&2
+        else
+          echo "  the resumed worker is not visible in the registry yet — re-check before trusting the steer:" >&2
+          echo "    claude agents --json | jq '.[] | select((.sessionId//\"\")|startswith(\"$(printf '%s' "$NEW_SID" | cut -c1-8)\"))'" >&2
+        fi
+      fi
+      ;;
+  esac
 fi
 
 [ "$VERIFIED" = "1" ] && exit 0

@@ -209,6 +209,31 @@ assert_contains "json has sessions key" '"sessions"' "$JOUT"
 assert_eq "unknown slug → exit 3" "3" "$?"
 teardown_fake_root
 
+echo "T14: O1 — rollup corroborates lead liveness with pid; stale registry rows are counted and marked"
+setup_fake_root
+SD="$FAKE_ROOT/.claude/state"
+WT="$FAKE_ROOT/.claude/worktrees/o1-wt"
+mkdir -p "$WT/.claude/state"
+PWT_MANIFEST_STATE_DIR="$SD" bash "$MANIFEST_SH" init --slug o1-run --run-sid deadbeef \
+    --strategy parallel-builders --stage 3-execute >/dev/null 2>&1
+PWT_MANIFEST_STATE_DIR="$SD" bash "$MANIFEST_SH" set --slug o1-run --worktree "$WT" >/dev/null 2>&1
+LIVE_PID=$$
+# 1 live lead (this shell) + 2 dead-pid leads → "1 lead (2 stale-registry)"
+AGENTS_JSON=$(jq -n --argjson lp "$LIVE_PID" '[
+  {kind:"background",  sessionId:"11111111-aaaa", status:"busy", pid:$lp},
+  {kind:"background",  sessionId:"22222222-bbbb", status:"busy", pid:999998},
+  {kind:"interactive", sessionId:"33333333-cccc", status:"idle", pid:999999}
+]')
+OUT=$(PWT_STATUS_AGENTS_OVERRIDE="$AGENTS_JSON" "$SCRIPT" o1-run 2>&1)
+assert_contains "O1 counts 1 live lead, 2 stale" "1 lead (2 stale-registry)" "$OUT"
+assert_contains "O1 marks a stale row" "[stale-registry]" "$OUT"
+# a single live lead → no stale note
+AGENTS_LIVE=$(jq -n --argjson lp "$LIVE_PID" '[{kind:"background", sessionId:"44444444-dddd", status:"busy", pid:$lp}]')
+OUT2=$(PWT_STATUS_AGENTS_OVERRIDE="$AGENTS_LIVE" "$SCRIPT" o1-run 2>&1)
+assert_contains "O1 one live lead prints no stale note" "1 lead, " "$OUT2"
+assert_not_contains "O1 no stale-registry note when all live" "stale-registry" "$OUT2"
+teardown_fake_root
+
 echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

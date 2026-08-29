@@ -55,6 +55,33 @@ Every ledger cell uses one of these five glyphs. No prose in cells.
 
 A ledger with any ❌ or ⏳ row is **not shippable**. `🚫` is acceptable when the Notes column cites a concrete reason (e.g., "T5 skipped — solo repo, Tier-Light").
 
+### Load-normalized budgets (F5 — annotate, do not gate)
+
+The "Default runtime budget" column above is a wall-clock number, and wall-clock
+time on a saturated host measures the host, not the code. The 2026-08-19 incident
+recorded the _same_ battery command at **229 / 252 / 302 / 454 seconds** purely by
+load. A tier row that blew its budget under load 26 on 12 cores is not evidence of
+a performance regression — but nothing recorded the load, so the two were
+indistinguishable after the fact.
+
+Whenever a duration is compared to a budget, record the 1-minute load average
+alongside it, and annotate any **over-budget** verdict as `load-suspect` when
+load exceeded `1.5 × ncpu` at measurement time:
+
+```bash
+.claude/scripts/plan-w-team-host-health.sh --repo-root "$(git rev-parse --show-toplevel)"
+# → .load_1m, .ncpu, .load_suspect
+```
+
+`plan-w-team-test-green.sh` does this automatically: its verdict artifact carries
+`load_1m`, `ncpu` and `load_suspect` beside the existing `duration_s`. For a
+hand-filled ledger row, put it in Notes — e.g.
+`T3 ✅ 412s (budget 20min) — load-suspect: load 26.1 vs 12 cpu`.
+
+**This is observability, not a gate.** A `load-suspect` row is still ✅ if it
+passed; the annotation exists so the next reader can tell "slow code" from
+"starved host" instead of guessing. Kill switch: `PWT_DISABLE_LOAD_ANNOTATION=1`.
+
 ---
 
 ## Evidence Ledger Template
@@ -117,15 +144,15 @@ If an evidence cell would be empty, the row is not done — use ⏳ until the ev
 
 ## Interaction with `/plan-w-team` lifecycle
 
-| Step                    | Ledger interaction                                                                                                                                                                                                                                                                                                                                                         |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Step 1 Specification    | Test Plan names the active tiers for the feature (from profile or spec override)                                                                                                                                                                                                                                                                                           |
+| Step                    | Ledger interaction                                                                                                                                                                                                                                                                                                                                                                |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Step 1 Specification    | Test Plan names the active tiers for the feature (from profile or spec override)                                                                                                                                                                                                                                                                                                  |
 | Step 2 Task breakdown   | Paired test tasks (`N.a`) own the T1/T2 rows for their area — applies to UI scope AND non-UI code-adding scopes (BACKEND/INFRASTRUCTURE/SCRIPTS/LIBRARY/API) per STE extension. Refactor/docs/config remain single-task. Hot-path files get an optional `N.p` benchmark slot (performance-testing-specialist); one-way-door tasks get `mutation_required: true` (TO2 default-on). |
-| Step 3 Execute          | Builders update their paired test task's ledger cells as evidence lands                                                                                                                                                                                                                                                                                                    |
-| Step 4 Evaluator        | Evaluator refuses to PASS a verdict if ledger has ❌ or empty active rows                                                                                                                                                                                                                                                                                                  |
-| Step 5 Fix-first review | Pass 1 CRITICAL: ledger is complete; every active tier has a verdict and evidence                                                                                                                                                                                                                                                                                          |
-| Step 6 Ship             | Ledger copied into PR body / ship artifact; ship gate blocks on incomplete ledger                                                                                                                                                                                                                                                                                          |
-| Step 8 Retro            | Retro metrics: which tiers flaked, which were skipped, whether profile was appropriate                                                                                                                                                                                                                                                                                     |
+| Step 3 Execute          | Builders update their paired test task's ledger cells as evidence lands                                                                                                                                                                                                                                                                                                           |
+| Step 4 Evaluator        | Evaluator refuses to PASS a verdict if ledger has ❌ or empty active rows                                                                                                                                                                                                                                                                                                         |
+| Step 5 Fix-first review | Pass 1 CRITICAL: ledger is complete; every active tier has a verdict and evidence                                                                                                                                                                                                                                                                                                 |
+| Step 6 Ship             | Ledger copied into PR body / ship artifact; ship gate blocks on incomplete ledger                                                                                                                                                                                                                                                                                                 |
+| Step 8 Retro            | Retro metrics: which tiers flaked, which were skipped, whether profile was appropriate                                                                                                                                                                                                                                                                                            |
 
 ---
 

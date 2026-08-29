@@ -11,7 +11,7 @@ description: |
   retroactive-security-coverage tasks executed by security-expert before
   retro. Pure read-only analysis — does not write code.
 color: red
-model: claude-opus-5
+model: claude-opus-4-8
 context: fork
 sdk_utilization: 70%
 sdk_features:

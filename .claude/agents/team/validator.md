@@ -2,7 +2,7 @@
 name: validator
 color: green
 description: Read-only code inspector for quality verification
-model: claude-opus-5
+model: claude-opus-4-8
 effort: high
 disallowedTools:
   - Write

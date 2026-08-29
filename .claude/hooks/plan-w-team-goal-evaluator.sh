@@ -893,6 +893,103 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         esac
     fi
 
+    # F6 — LANDING GATE (RC4, 2026-08-19).  A worktree-isolated lead can complete
+    # every stage, tag locally, and land NOTHING: the field instance emitted
+    # `retro-complete` at 13:21:11Z with its branch 31 commits ahead of master,
+    # nothing on the remote, and the tag local-only.  The root cause is structural
+    # — PWT-WT1 made merge-to-default an honor-system step ("…if you want the main
+    # checkout to inherit the merge") — and the ending is DETERMINISTIC, not
+    # occasional: the bg worker's stdin is /dev/null, so the ship-stage `git push`
+    # permission prompt AUTO-REJECTS with no visible trace.
+    #
+    # So SUCCESS gets one more conjunct for worktree-isolated runs: a deterministic
+    # landing artifact, written ONLY by `plan-w-team-land.sh verify`, which
+    # recomputes merged/tag-reachable/pushed from git before writing.
+    #
+    # SCOPED, not global: the gate engages only on POSITIVE detection of worktree
+    # isolation.  An indeterminate answer skips it, so every non-worktree run keeps
+    # today's behaviour byte-for-byte — a gate that fires where it was never needed
+    # would wedge interactive runs for a failure mode they cannot have.
+    #
+    # Fail-CLOSED on the artifact (C3's contract: a missing corroboration is a
+    # block, not a pass).  Fail-OPEN on the git RE-verification: when git cannot
+    # answer, the artifact alone stands, because a Stop hook that errors is worse
+    # than one that under-tightens.
+    # Kill switch: PWT_DISABLE_LANDING_GATE=1.
+    if [ "$TERMINAL" = "SUCCESS" ] && [ "${PWT_DISABLE_LANDING_GATE:-0}" != "1" ]; then
+        # Isolation is read from the RUN MANIFEST — the run's own record of where
+        # it executed — and from nothing else.
+        #
+        # An earlier revision also treated "the goal-file PATH contains
+        # /.claude/worktrees/" as a signal. That conflates two different facts:
+        # "this RUN is worktree-isolated" and "this CHECKOUT happens to live under
+        # a worktrees directory". They coincide in production and diverge
+        # everywhere else — it false-fired across the whole evaluator + antipark
+        # shell corpus, which sets PWT_PROJECT_ROOT_OVERRIDE to the repo root, and
+        # claude-pattern's own repo root IS a worktree when the skill self-hosts.
+        # Same class as feedback_test_worktree_cwd_fragility: a path SPELLING is
+        # not a fact about the run.
+        #
+        # `worktree_path` is written by pwt-manifest.sh at EVERY stage (every stage
+        # calls surface-status.sh), so it is authoritative, run-scoped and current.
+        # A missing manifest is INDETERMINATE and skips the gate — the documented
+        # fail-open stance. That is not a hole in practice: a run with no manifest
+        # never emitted a status block, so it never emitted retro-complete either,
+        # and SUCCESS could not have fired in the first place.
+        LG_ISOLATED=0
+        for LG_MAN in "$(dirname "$GOAL_FILE")/plan-w-team-manifest-${SLUG}.json" \
+                      "${MAIN_STATE_DIR:-}/plan-w-team-manifest-${SLUG}.json"; do
+            [ -f "$LG_MAN" ] || continue
+            LG_WT=$(jq -r '.worktree_path // ""' "$LG_MAN" 2>/dev/null || echo "")
+            case "$LG_WT" in *"/.claude/worktrees/"*) LG_ISOLATED=1; break ;; esac
+        done
+
+        if [ "$LG_ISOLATED" = "1" ]; then
+            # Read the artifact from every dir a legitimate writer may have used;
+            # `verify` dual-writes for exactly this reason.
+            LG_SHA=""; LG_FOUND=""
+            for LG_DIR in "$(dirname "$GOAL_FILE")" "$PWD/.claude/state" "${MAIN_STATE_DIR:-}"; do
+                [ -n "$LG_DIR" ] || continue
+                LG_ART="$LG_DIR/plan-w-team-landed-${SLUG}.json"
+                [ -f "$LG_ART" ] || continue
+                # Slug match is required: a foreign artifact must never satisfy this run.
+                if [ "$(jq -r '.slug // ""' "$LG_ART" 2>/dev/null)" != "$SLUG" ]; then continue; fi
+                LG_SHA=$(jq -r 'select(.verdict=="LANDED") | .landed_sha // ""' "$LG_ART" 2>/dev/null || echo "")
+                if [ -n "$LG_SHA" ]; then LG_FOUND="$LG_ART"; break; fi
+            done
+
+            if [ -z "$LG_SHA" ]; then
+                TERMINAL=""
+                REASON=""
+                CRITERIA_BLOCK_REASON="SUCCESS anchors present but this run is WORKTREE-ISOLATED and has not LANDED: no verified landing artifact at .claude/state/plan-w-team-landed-${SLUG}.json. A run that ships but does not land leaves its commits on a worktree branch and nothing on the default branch (RC4, 2026-08-19). Land it — merge into the default branch in bisectable order, make the tag reachable, push honouring the push-ack gate — then run: .claude/scripts/plan-w-team-land.sh verify --slug ${SLUG}. Diagnose the current state with: .claude/scripts/plan-w-team-land.sh status --slug ${SLUG}. Remediate a dead run with: .claude/scripts/plan-w-team-land.sh resume --slug ${SLUG}. Kill switch: PWT_DISABLE_LANDING_GATE=1."
+                echo "[goal-evaluator] SLUG=$SLUG landing-gate: worktree-isolated run with no verified landing artifact — withholding SUCCESS (F6)" >&2
+                dbg "SLUG=$SLUG F6 landing-gate withheld SUCCESS — no landing artifact"
+            else
+                # Corroborate the recorded sha against git right now.  An artifact
+                # from an earlier attempt whose landing was later rewound must not
+                # keep passing the gate.
+                LG_DEFAULT=$(jq -r '.default_ref // ""' "$LG_FOUND" 2>/dev/null || echo "")
+                if command -v git >/dev/null 2>&1 && [ -n "$LG_DEFAULT" ] \
+                   && git rev-parse --git-dir >/dev/null 2>&1 \
+                   && git show-ref --verify --quiet "$LG_DEFAULT" 2>/dev/null; then
+                    if ! git merge-base --is-ancestor "$LG_SHA" "$LG_DEFAULT" 2>/dev/null; then
+                        TERMINAL=""
+                        REASON=""
+                        CRITERIA_BLOCK_REASON="A landing artifact exists for slug=${SLUG} recording landed=${LG_SHA}, but that commit is NOT reachable from ${LG_DEFAULT} right now — the landing was rewound, or the artifact is stale. Re-land and re-run: .claude/scripts/plan-w-team-land.sh verify --slug ${SLUG}."
+                        echo "[goal-evaluator] SLUG=$SLUG landing-gate: artifact sha $LG_SHA not reachable from $LG_DEFAULT — withholding SUCCESS (F6)" >&2
+                        dbg "SLUG=$SLUG F6 landing-gate withheld SUCCESS — stale artifact"
+                    else
+                        dbg "SLUG=$SLUG F6 landing-gate PASSED: landed=$LG_SHA reachable from $LG_DEFAULT"
+                    fi
+                else
+                    dbg "SLUG=$SLUG F6 landing-gate PASSED on artifact alone (git re-verification unavailable): landed=$LG_SHA"
+                fi
+            fi
+        else
+            dbg "SLUG=$SLUG F6 landing-gate skipped: run is not positively worktree-isolated"
+        fi
+    fi
+
     if [ -z "$TERMINAL" ]; then
         dbg "(1) SUCCESS not matched: needed stage=retro-complete + workflow_lock=done + slug=$SLUG colocated on one decoded line"
     fi

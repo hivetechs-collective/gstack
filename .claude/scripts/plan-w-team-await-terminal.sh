@@ -32,6 +32,19 @@
 #   4  duplicate watcher (1.54.0) → stdout: "duplicate slug=<slug> pid=<pid> ..." —
 #         another watcher already owns this slug+worker-sid wait; DEFER to it,
 #         do NOT re-launch (re-launching would loop straight back here).
+#   6  dead-but-unflipped (F7, RC4 2026-08-19) → stdout:
+#         "terminal=UNFLIPPED diagnosis=<COMPLETE_UNLANDED|DIED_MID_<stage>> …"
+#         The watched worker is PRESENT in `claude agents --json` but its state is
+#         blocked/done — dead in every sense that matters — while the goal-state's
+#         terminal_state is still null. Distinct from 0 (a real terminal), because
+#         the supervisor's next action differs: land it, or resume the work. The
+#         line names the last stage event and the exact remediation command.
+#         Kill switch: PWT_DISABLE_UNFLIPPED_DETECT=1.
+#   5  host distress (F3, 2026-08-19) → stdout: a "⚠ HOST-DISTRESS" block naming
+#         the consumer and the evidence. NOT a terminal and NOT a re-arm: the run
+#         is alive, and something (possibly the run itself) is starving the host.
+#         Deliberately distinct from 0/3/4 so a supervisor can never misread
+#         distress as a terminal verdict or as a routine heartbeat.
 #   2  bad usage
 set -u
 
@@ -225,6 +238,88 @@ __goal_state_shows_unfinished() {
   return 0
 }
 
+# ── F7 — landing awareness (RC4, 2026-08-19) ────────────────────────────────
+# The RC4 run emitted `retro-complete` and had EVERY done-criterion met:true, so
+# TERTIARY above would have reported `terminal=SUCCESS source=transcript` for a run
+# whose 31 commits never left its worktree branch — the watcher would have
+# certified the exact ending the landing gate exists to prevent, and F7's
+# dead-but-unflipped detector below would never be reached.
+#
+# So the watcher consults the same deterministic artifact the evaluator's F6 gate
+# reads: `.claude/state/plan-w-team-landed-<slug>.json`, written ONLY by
+# `plan-w-team-land.sh verify` after recomputing merged/tag-reachable/pushed from
+# git.  Read-only here — never a git call on the poll loop.
+#
+# Returns 0 when the LANDING GATE APPLIES AND IS UNSATISFIED, i.e. "do not certify
+# this run as done".  Everything indeterminate returns 1, preserving pre-2.13.0
+# behaviour exactly: not worktree-isolated, kill switch set, or no jq.
+__landing_missing() {
+  local gf art slug_in verdict d __wt_iso
+  [ "${PWT_DISABLE_LANDING_GATE:-0}" = "1" ] && return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  gf="$(__resolve_goal_file)"
+  # Isolation comes from the RUN MANIFEST's worktree_path and nothing else —
+  # the SAME rule the evaluator's F6 gate uses. If these two ever disagreed, the
+  # gate and the watcher could reach opposite conclusions about the same run.
+  #
+  # Deliberately NOT keyed on a path spelling (neither the goal file's nor the
+  # observer's $PWD): "this CHECKOUT sits under a worktrees dir" is not the same
+  # fact as "this RUN is worktree-isolated", and conflating them false-fires
+  # wherever a checkout happens to live in one — including claude-pattern's own
+  # repo root when the skill self-hosts (feedback_test_worktree_cwd_fragility).
+  __wt_iso=0
+  for d in "$(dirname "$gf")" "$PROJECT_ROOT/.claude/state"; do
+    [ -n "$d" ] || continue
+    [ -f "$d/plan-w-team-manifest-${SLUG}.json" ] || continue
+    case "$(jq -r '.worktree_path // ""' "$d/plan-w-team-manifest-${SLUG}.json" 2>/dev/null)" in
+      *"/.claude/worktrees/"*) __wt_iso=1; break ;;
+    esac
+  done
+  [ "$__wt_iso" = "1" ] || return 1
+
+  for d in "$(dirname "$gf")" "$PROJECT_ROOT/.claude/state" "$PWD/.claude/state"; do
+    [ -n "$d" ] || continue
+    art="$d/plan-w-team-landed-${SLUG}.json"
+    [ -f "$art" ] || continue
+    slug_in=$(jq -r '.slug // ""' "$art" 2>/dev/null || echo "")
+    [ "$slug_in" = "$SLUG" ] || continue          # a foreign artifact proves nothing
+    verdict=$(jq -r '.verdict // ""' "$art" 2>/dev/null || echo "")
+    [ "$verdict" = "LANDED" ] && return 1         # landed → gate satisfied
+  done
+  return 0
+}
+
+# Last stage event for the F7 diagnosis.  The stage-event stream is written by
+# plan-w-team-surface-status.sh at every stage via pwt-manifest.sh, so it is the
+# cheapest honest answer to "how far did this run get before it died?".
+__last_stage() {
+  local f d v
+  command -v jq >/dev/null 2>&1 || { printf '%s' ""; return 0; }
+  # Capture, then test for a NON-EMPTY value before accepting it. Emitting on the
+  # pipeline's exit status alone would accept an EMPTY answer as success — an
+  # empty stage-events file, or a last line with no `.stage`, both make `jq -r`
+  # exit 0 with no output — and the manifest fallback below would never run. The
+  # diagnosis would silently degrade to "unknown" while the real stage sat one
+  # source away.
+  for d in "$PROJECT_ROOT/.claude/state" "$(dirname "$(__resolve_goal_file)")"; do
+    [ -n "$d" ] || continue
+    f="$d/plan-w-team-stage-events-${SLUG}.jsonl"
+    [ -f "$f" ] || continue
+    v=$(tail -1 "$f" 2>/dev/null | jq -r '.stage // ""' 2>/dev/null || echo "")
+    if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+  done
+  # Manifest fallback — current_stage is the same value, last writer wins.
+  for d in "$PROJECT_ROOT/.claude/state" "$(dirname "$(__resolve_goal_file)")"; do
+    [ -n "$d" ] || continue
+    f="$d/plan-w-team-manifest-${SLUG}.json"
+    [ -f "$f" ] || continue
+    v=$(jq -r '.current_stage // ""' "$f" 2>/dev/null || echo "")
+    if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+  done
+  printf '%s' ""
+}
+
 # Non-looping diagnostic seam (--print-goal-file): resolve and exit, never watch.
 if [ "${PRINT_GOAL_FILE:-0}" = "1" ]; then
   __resolve_goal_file
@@ -261,8 +356,75 @@ if ! __pwt_await_claim; then
   __pwt_await_claim || true   # fail-open: if the re-claim races, watch anyway
 fi
 
+# ── Host-distress watch (F3, 2026-08-19 incident) ───────────────────────────
+# The 2026-08-19 run was alive-but-drowning for 4.5 hours and the detection
+# mechanism was a human asking "is it stuck?". Every signal the supervisor had
+# was about the WORKER (terminal_state, liveness, transcript) — none about the
+# HOST the worker was failing to make progress on. This samples the shared
+# host-health sampler on the same loop and surfaces distress PROACTIVELY.
+#
+# Debounced exactly like the WORKER_GONE path above (C2 lesson: never act on a
+# single sample of a noisy signal). A CPU spike during a build is normal; the
+# same breach on two consecutive samples is a condition.
+#
+# Fail-open throughout: no sampler, no jq, an unreadable sample, or a sampler
+# that itself says supported=false ⇒ no breach, streak reset, watch unaffected.
+DISTRESS_INTERVAL="${PWT_HOST_DISTRESS_INTERVAL_S:-60}"
+DISTRESS_CONFIRM="${PWT_HOST_DISTRESS_CONFIRM:-2}"
+HOST_HEALTH_BIN="$PROJECT_ROOT/.claude/scripts/plan-w-team-host-health.sh"
+case "$DISTRESS_INTERVAL" in ''|*[!0-9]*) DISTRESS_INTERVAL=60 ;; esac
+case "$DISTRESS_CONFIRM"  in ''|*[!0-9]*) DISTRESS_CONFIRM=2 ;; esac
+
+__distress_state_dir() {
+  if [ -n "$STATE_DIR_OVERRIDE" ]; then printf '%s\n' "$STATE_DIR_OVERRIDE"; return 0; fi
+  local gf; gf="$(__resolve_goal_file)"
+  if [ -n "$gf" ]; then printf '%s\n' "$(dirname "$gf")"; return 0; fi
+  printf '%s\n' "$PROJECT_ROOT/.claude/state"
+}
+
+__write_distress_artifact() {  # $1 = health JSON
+  local dir file tmp
+  dir="$(__distress_state_dir)"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  file="$dir/plan-w-team-host-distress-${SLUG}.json"
+  tmp="$file.tmp.$$"
+  jq -n --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg slug "$SLUG" \
+     --arg sid "$WORKER_SID" --arg source "await-terminal" \
+     --argjson health "$1" \
+     '{ts:$ts, slug:$slug, source:$source, worker_sid:$sid, host_health:$health,
+       guidance:"Supervisor observed host distress on two consecutive samples. The run is ALIVE — do not terminate it for this. Identify the consumer named in host_health.top_consumers; if it is not lane work, host hygiene (kill/renice) is an ALLOWED supervisor action."}' \
+     > "$tmp" 2>/dev/null && mv -f "$tmp" "$file" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null || true
+}
+
+__emit_distress_block() {  # $1 = health JSON
+  local reasons load ncpu ratio topcmd toppcpu orphans
+  reasons=$(printf '%s' "$1" | jq -r '(.breach_reasons // []) | join(", ")' 2>/dev/null || echo "")
+  load=$(printf '%s' "$1"    | jq -r '.load_1m // "?"' 2>/dev/null || echo "?")
+  ncpu=$(printf '%s' "$1"    | jq -r '.ncpu // "?"' 2>/dev/null || echo "?")
+  ratio=$(printf '%s' "$1"   | jq -r '.load_ratio // "?"' 2>/dev/null || echo "?")
+  topcmd=$(printf '%s' "$1"  | jq -r '.top_consumers[0].command // "(none identified)"' 2>/dev/null || echo "(none)")
+  toppcpu=$(printf '%s' "$1" | jq -r '.top_consumers[0].pcpu // 0' 2>/dev/null || echo 0)
+  orphans=$(printf '%s' "$1" | jq -r '.orphan_count // 0' 2>/dev/null || echo 0)
+  cat <<DISTRESSEOF
+⚠ HOST-DISTRESS  slug=$SLUG${WORKER_SID:+ worker=${WORKER_SID:0:8}}
+   breached: $reasons  (confirmed on $DISTRESS_CONFIRM consecutive samples)
+   load 1m:  $load  vs ncpu $ncpu  (ratio ${ratio}x)
+   consumer: $topcmd  (${toppcpu}% CPU)
+   lane orphans: $orphans
+   The run is ALIVE — this is NOT a terminal state and the goal evaluator must
+   not end the run for it. Act on the consumer: if it is not lane work, host
+   hygiene (kill/renice) is an allowed supervisor action; if it IS lane work,
+   prefer degraded mode over adding parallelism.
+   Artifact: $(__distress_state_dir)/plan-w-team-host-distress-${SLUG}.json
+DISTRESSEOF
+}
+
 elapsed=0
 gone_streak=0
+dead_streak=0
+breach_streak=0
+dist_elapsed=0
 while :; do
   # (1) PRIMARY — terminal/halt via goal-state (reliable: the evaluator writes it).
   #     Re-resolve each tick: the worktree-isolated worker may create the file after
@@ -300,6 +462,12 @@ while :; do
       # Still working: the anchors are stale history from a blocked stop.
       # Say so once per tick at heartbeat volume, then keep polling.
       :
+    elif __landing_missing; then
+      # F7/R7 (RC4): retro-complete + every criterion met, but the run is
+      # worktree-isolated and nothing landed. This is the RC4 ending exactly —
+      # certifying SUCCESS here would launder it. Withhold and keep polling; when
+      # the worker dies, (2c) below classifies it as COMPLETE_UNLANDED.
+      :
     else
       echo "terminal=SUCCESS source=transcript sid=$WORKER_SID slug=$SLUG"
       exit 0
@@ -323,13 +491,92 @@ while :; do
     if printf '%s' "$AGENTS" | jq -e 'type=="array" and length>0' >/dev/null 2>&1; then
       if printf '%s' "$AGENTS" | jq -e --arg s "${WORKER_SID:0:8}" 'any(.[]?; ((.sessionId//"")|tostring)[0:8]==$s)' >/dev/null 2>&1; then
         gone_streak=0   # still present
+        # ── (2c) F7 — dead-but-unflipped (RC4, 2026-08-19) ────────────────────
+        # PRESENCE IS NOT LIFE. The RC4 worker showed idle/done in
+        # `claude agents --json` while this watcher kept exiting 3 (heartbeat)
+        # forever; a human asking "are we close?" was the detection mechanism.
+        # The asymmetry was already documented: PWT-DS1 Tier B defines
+        #   alive = present AND state ∉ {blocked, done}
+        # and this loop checked presence ONLY. Adopt the same EXCLUSION predicate.
+        #
+        # `.state` is absent on interactive rows (the mixed-schema reality measured
+        # 2026-08-19: interactive rows carry `status`, background rows carry
+        # `state`), so a row WITHOUT `.state` counts as ALIVE. Narrowing a liveness
+        # predicate must never invent a death — that is the direction that reaps
+        # live work, and it is why followup row 147 exists.
+        if [ "${PWT_DISABLE_UNFLIPPED_DETECT:-0}" != "1" ] \
+           && printf '%s' "$AGENTS" | jq -e --arg s "${WORKER_SID:0:8}" '
+                 any(.[]?; ((.sessionId//"")|tostring)[0:8]==$s
+                           and ((.state//"") == "blocked" or (.state//"") == "done"))
+             ' >/dev/null 2>&1; then
+          dead_streak=$((dead_streak + 1))
+          if [ "$dead_streak" -ge "$GONE_CONFIRM" ]; then
+            # Only a NULL terminal_state is a gap. PRIMARY already returned for a
+            # written one, but re-read defensively: a race between PRIMARY's read
+            # and this branch must resolve toward "the run is fine".
+            UNF_GOAL="$(__resolve_goal_file)"
+            UNF_TS=""
+            [ -n "$UNF_GOAL" ] && [ -f "$UNF_GOAL" ] \
+              && UNF_TS=$(jq -r '.terminal_state // ""' "$UNF_GOAL" 2>/dev/null || echo "")
+            if [ -z "$UNF_TS" ] || [ "$UNF_TS" = "null" ]; then
+              UNF_STAGE="$(__last_stage)"
+              [ -n "$UNF_STAGE" ] || UNF_STAGE="unknown"
+              # Two diagnoses, and they need different actions from the supervisor:
+              # a run that FINISHED and did not land is remediated by landing it;
+              # a run that DIED mid-execute is remediated by resuming the work.
+              if [ "$UNF_STAGE" = "retro-complete" ] || __transcript_shows_success; then
+                UNF_DIAG="COMPLETE_UNLANDED"
+              else
+                UNF_DIAG="DIED_MID_${UNF_STAGE}"
+              fi
+              echo "terminal=UNFLIPPED diagnosis=$UNF_DIAG last_stage=$UNF_STAGE sid=$WORKER_SID slug=$SLUG (state in {blocked,done} for ${dead_streak} consecutive checks, terminal_state=null)"
+              if [ "$UNF_DIAG" = "COMPLETE_UNLANDED" ]; then
+                echo "  → the run finished every stage but did not LAND. Remediate:"
+                echo "      .claude/scripts/plan-w-team-land.sh status --slug $SLUG"
+                echo "      .claude/scripts/plan-w-team-land.sh resume --slug $SLUG"
+              else
+                echo "  → the run died at stage '$UNF_STAGE' without writing a terminal. Inspect, then steer:"
+                echo "      .claude/scripts/pwt-steer.sh --slug $SLUG --message '<next action>'"
+              fi
+              exit 6
+            fi
+          fi
+        else
+          dead_streak=0
+        fi
       else
         gone_streak=$((gone_streak + 1))
+        dead_streak=0
         if [ "$gone_streak" -ge "$GONE_CONFIRM" ]; then
           echo "terminal=WORKER_GONE sid=$WORKER_SID slug=$SLUG (absent ${gone_streak} consecutive checks)"
           exit 0
         fi
       fi
+    fi
+  fi
+
+  # (2b) HOST DISTRESS — proactive, additive, and strictly AFTER the terminal
+  #      checks above, so a real terminal always wins: a run that finished must
+  #      never be reported as distressed instead of done.
+  if [ "${PWT_DISABLE_HOST_DISTRESS:-0}" != "1" ] \
+     && [ -x "$HOST_HEALTH_BIN" ] && command -v jq >/dev/null 2>&1 \
+     && [ "$dist_elapsed" -ge "$DISTRESS_INTERVAL" ]; then
+    dist_elapsed=0
+    HEALTH=$("$HOST_HEALTH_BIN" --repo-root "$PROJECT_ROOT" 2>/dev/null || echo "")
+    IS_BREACH=""
+    [ -n "$HEALTH" ] && IS_BREACH=$(printf '%s' "$HEALTH" | jq -r '.breach // false' 2>/dev/null || echo "")
+    if [ "$IS_BREACH" = "true" ]; then
+      breach_streak=$((breach_streak + 1))
+      if [ "$breach_streak" -ge "$DISTRESS_CONFIRM" ]; then
+        __write_distress_artifact "$HEALTH"
+        __emit_distress_block "$HEALTH"
+        exit 5
+      fi
+    else
+      # Anything that is not a POSITIVE breach — including an unreadable sample
+      # or an unsupported host — resets the streak. Distress is only ever
+      # claimed on repeated positive evidence.
+      breach_streak=0
     fi
   fi
 
@@ -341,4 +588,5 @@ while :; do
 
   sleep "$INTERVAL"
   elapsed=$((elapsed + INTERVAL))
+  dist_elapsed=$((dist_elapsed + INTERVAL))
 done

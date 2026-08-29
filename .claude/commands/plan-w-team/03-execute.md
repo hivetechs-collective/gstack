@@ -220,6 +220,59 @@ Several PreToolUse hooks will block operations. Builders must understand these t
 
 **Hook profiles**: All hooks respect `CLAUDE_HOOK_PROFILE` (default: `standard`). Set to `minimal` to disable most hooks, or `strict` for all hooks including governance audit. Individual hooks can be disabled via `CLAUDE_DISABLED_HOOKS=hook_id1,hook_id2`.
 
+### Long Verifications: Bound, Reap, Stall Semantics (F2 — 2026-08-19 incident)
+
+A verification that outlives the Bash tool's 600s cap does **not** get cleaned up
+when the harness stops waiting. The abandoned zsh wrapper and its children keep
+running. The 2026-08-19 ship stage retried the same step every ~10 minutes for
+**4.5 hours**, accumulating ~17 orphan wrappers plus 40-minute-old hung `pytest`
+processes — and each leaked tree added the load that caused the next timeout.
+Nothing was written down, so the run looked identical to one making progress.
+
+Two rules, in priority order:
+
+**1. Launch long verifications in the background — background the WRAPPER, not
+the suite.** A full suite, a battery, or a gold-regression run goes out via
+`run_in_background: true` with explicit completion detection, so it never races
+the 600s cap in the first place. `plan-w-team-test-green.sh` already owns this
+inversion for the skill suite (it runs the suite synchronously so callers can
+background _it_, and derives green only from the literal trailing `SUITE_EXIT=0`).
+
+**2. Any step that DOES hit a bound goes through the stall runner before any
+retry.** `plan-w-team-verify-run.sh` runs the command as the leader of its own
+process group, so a timeout reaps the whole tree instead of orphaning it:
+
+```bash
+.claude/scripts/plan-w-team-verify-run.sh \
+  --slug "$SLUG" --step full-suite --timeout 900 -- make test-skill
+```
+
+| Exit | Meaning              | Required next action                                                                |
+| ---- | -------------------- | ----------------------------------------------------------------------------------- |
+| `0`  | passed               | continue                                                                            |
+| `n`  | ordinary failure     | fix the failure (§5-0 fix-immediately). `127` is "not found", never a stall         |
+| `10` | `STALL_TIMEOUT`      | group reaped (`orphans_after` recorded), stall event written — a retry IS permitted |
+| `12` | `STALL_CAP_EXCEEDED` | **STOP.** Do not retry. Read the distress artifact and choose explicitly (below)    |
+
+**The cap is K=3 consecutive timeouts on the same step, and it is not advisable —
+it is enforced.** At the cap the runner refuses to execute the command at all,
+runs a mandatory host-health diagnosis (1-min load vs `hw.ncpu`, top consumers,
+lane-orphan count) and writes
+`.claude/state/plan-w-team-host-distress-<slug>.json`. The lead then picks ONE:
+
+- **degraded mode** — re-run serially / backgrounded with a longer bound, when
+  `host_health` shows the cause is internal to the run; or
+- **`USER_ESCALATION` halt** — emit the hard-gate escalation block, when the
+  cause is external capacity.
+
+A fourth blind retry is not a legal continuation. "Retry #47" is not a strategy:
+a repeated identical timeout is a verdict about the HOST, and another attempt
+only adds load to the thing that is already saturated.
+
+Kill switch: `PWT_DISABLE_STALL_DETECTION=1` (the runner `exec`s the command
+directly — no bound, no reaping, no state). Full contract:
+[`docs/operations/host-load-protection.md`](../../../docs/operations/host-load-protection.md).
+
 ### Tmux Visual Orchestration
 
 When running inside tmux, builders get colored status panes automatically via the `agent-tmux-panes` hook:

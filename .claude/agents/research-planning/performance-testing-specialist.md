@@ -7,7 +7,7 @@ description: |
   identify performance bottlenecks, or establish performance baselines.
   Specializes in K6, JMeter, Gatling, and performance analysis. Examples:
 color: orange
-model: inherit
+model: claude-opus-4-8
 context: fork
 sdk_utilization: 60%
 sdk_features:

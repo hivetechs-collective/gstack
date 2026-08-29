@@ -501,11 +501,40 @@ trailing `SUITE_EXIT=0` — a killed or truncated run is red by construction.
 Repos WITHOUT the harness are unaffected: the wrapper exits 3 `NO-SUITE`, writes no
 artifact, and this block no-ops — exactly today's behavior.
 
+**Bound it (F2, 2026-08-19 incident).** The wrapper inversion above stops a
+TRUNCATED log being misread as green, but it does not stop the run from looping:
+on 2026-08-19 this exact gate was retried every ~10 minutes for 4.5 hours, each
+abandoned attempt orphaning its process tree (~17 wrappers plus hung `pytest`
+children), each leak adding the load that caused the next timeout. Run the
+wrapper through `plan-w-team-verify-run.sh` so a bound firing REAPS the group,
+writes a stall event, and hits a hard K=3 cap instead of retrying forever. See
+`03-execute.md` §Long Verifications for the exit-code contract; `12` means stop
+and choose degraded-mode-or-halt, never a fourth attempt.
+
 ```bash
 TEST_GREEN="$(git rev-parse --show-toplevel)/.claude/scripts/plan-w-team-test-green.sh"
+VERIFY_RUN="$(git rev-parse --show-toplevel)/.claude/scripts/plan-w-team-verify-run.sh"
 if [ -x "$TEST_GREEN" ]; then
-  "$TEST_GREEN" --slug "$SLUG"
+  if [ -x "$VERIFY_RUN" ]; then
+    "$VERIFY_RUN" --slug "$SLUG" --step ship-skill-suite \
+      --timeout "${PWT_SHIP_SUITE_TIMEOUT_S:-1800}" -- "$TEST_GREEN" --slug "$SLUG"
+  else
+    "$TEST_GREEN" --slug "$SLUG"
+  fi
   TG_RC=$?
+  # Stall verdicts are NOT suite verdicts — they are host verdicts, and they
+  # must not be laundered into "the suite is red" (which would send the lead
+  # hunting a test failure that does not exist).
+  case "$TG_RC" in
+    10) echo "⏱ Ship gate 6b-skill: STALL_TIMEOUT — group reaped, stall event written."
+        echo "  Re-run this gate. Attempt 3 triggers a mandatory host-health diagnosis."
+        exit 1 ;;
+    12) echo "⛔ Ship gate 6b-skill: STALL_CAP_EXCEEDED — 3 consecutive timeouts."
+        echo "  Do NOT retry. Read .claude/state/plan-w-team-host-distress-${SLUG}.json"
+        echo "  and choose: (a) degraded mode, or (b) USER_ESCALATION halt."
+        printf '{"slug":"%s","stage":"ship","pending_escalations":["host-distress-halt"]}\n' "$SLUG"
+        exit 1 ;;
+  esac
   case "$TG_RC" in
     0) echo "✓ Ship gate 6b-skill: skill suite GREEN (trailing SUITE_EXIT=0)" ;;
     3) echo "→ Ship gate 6b-skill: NO-SUITE — no skill harness in this repo, skipping (run_tests() alone gates)" ;;
@@ -1437,6 +1466,57 @@ fi
 This runs on the SHIP path (PR opened), independent of whether the merge has landed —
 unlike §6h below, which only fires on a clean merge to remove the whole worktree.
 
+## 6h-0. Landing a `--worker-only` run that has NO supervisor (2.11.0)
+
+§6h assigns the merge to the **supervisor**, and §6g-ter gives an autonomous worker a
+`gh pr merge` self-merge path. Neither covers the case a `--worker-only` run actually
+lands in when the repo has no PR flow for the change: the worker is worktree-isolated,
+there is no supervisor session to hand off to, and **the auto-mode classifier denies any
+git operation targeting the primary checkout** — `git -C <main-checkout> …` is refused
+outright, by design (that isolation is what stops a worker clobbering a concurrent
+editor). A worker that tries the cross-checkout merge just collects a denial.
+
+The sanctioned fallback is to land through the **remote**, which the worker is allowed to
+touch, and to leave the local primary checkout to the operator:
+
+```bash
+# Pre-condition: the run branch already CONTAINS the default branch (integrate first —
+# `git merge <default>` inside the worktree — so this is a fast-forward, never a
+# force-push). Assert it rather than assuming it.
+DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
+git fetch --quiet origin "$DEFAULT_BRANCH"
+if ! git merge-base --is-ancestor "origin/$DEFAULT_BRANCH" HEAD; then
+  echo "✗ refusing to land: origin/$DEFAULT_BRANCH is NOT an ancestor of HEAD —"
+  echo "  integrate it into the run branch first; never force-push the default branch."
+  exit 1
+fi
+
+# Fast-forward the default branch on the remote. This is the push-ack pause site.
+git push origin "HEAD:$DEFAULT_BRANCH"
+
+# Verify the landing rather than trusting the push's exit code.
+git fetch --quiet origin "$DEFAULT_BRANCH"
+git merge-base --is-ancestor HEAD "origin/$DEFAULT_BRANCH" \
+  && echo "✅ landed on origin/$DEFAULT_BRANCH (verified ancestor)" \
+  || { echo "✗ push reported success but HEAD is not on origin/$DEFAULT_BRANCH"; exit 1; }
+```
+
+Then **report the residual to the operator** — do not silently leave it:
+
+> The local primary checkout is now behind `origin/<default>`. It is not stale in any
+> dangerous sense (nothing was rewritten), but until someone runs `git pull --ff-only`
+> there, `git show main:<path>` in that checkout reads pre-ship content.
+
+Why not just open a PR and self-merge (§6g-ter)? That path is correct when the repo runs a
+PR flow; it is ceremony when the operator's convention is to commit to the default branch
+directly (`user_workflow.md`: solo dev, PRs only for risky features). Pick §6g-ter when a
+PR already exists or the change is risky enough to want one; pick this when the run is a
+direct-to-default ship.
+
+**Ordering note:** §6h's worktree reclaim must still run AFTER this, and it will now
+correctly _refuse_ to reclaim while this very session is live in the worktree — that is
+invariant 3 doing its job (see the fail-closed liveness contract, 2.11.0), not a failure.
+
 ## 6h. Post-Merge Worktree Cleanup (supervisor-only)
 
 When the worker's feature branch has been **merged to the default branch on the parent repo** (clean merge, ship-readiness gate PASS), the supervisor — NOT the worker — reclaims the worker's worktree + branch. The supervisor has the right context: it knows the merge happened and that the worktree is now post-merge garbage.
@@ -1500,6 +1580,93 @@ if [ "${PLAN_W_TEAM_DISABLE_SHIP_SYNC:-0}" != "1" ]; then
   fi
 fi
 ```
+
+## 6i. Landing Verification Gate (F6 — ENFORCING for worktree-isolated leads, 2.13.0)
+
+**Why this exists.** §6h-0 and §6g-ter document two landing PATHS; neither was ever
+ENFORCED. PWT-WT1 left the merge as prose — the manifest's own wording was
+"ExitWorktree happens implicitly when the session ends (or explicitly after Step 8
+retro **if you want** the main checkout to inherit the merge)". For an autonomous
+`--worker-only` run whose done-when includes a landed version + tag, "if you want" is
+exactly the class the Rule-Enforcement Invariant bans.
+
+**The field instance (RC4, 2026-08-19).** A 15-hour run completed all 8 stages,
+emitted `retro-complete`, captured a retro and created a tag — and landed nothing.
+The worktree branch sat **31 commits ahead** of master; local master and
+origin/master had none of them; the tag existed only locally; `terminal_state` stayed
+`null`. Every observability surface said "finished" and "still open" at the same time.
+
+**And it is deterministic, not occasional.** The spawn line passes no
+permission-mode flag, so the worker runs on the project's default allowlist — which
+does not include `git push` — and its stdin is `/dev/null` (the Bug-A backstop), so a
+permission prompt **auto-rejects instead of blocking**. `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1`
+clears only the SKILL's push-ack gate, one layer above the harness permission that was
+never granted.
+
+**The permission story, decided (2.13.0).** Push is a **user-owned grant**, not
+something the pipeline installs for itself. Auto-granting `git push` at spawn would
+install a security decision invisibly. Instead: the operator pre-authorizes narrowly in
+`.claude/settings.local.json` (README → "Push authorization for unattended goals"), and
+this gate makes the _denial_ impossible to miss. A silently auto-rejected push now
+BLOCKS the goal instead of vanishing.
+
+### Land first (worktree-isolated leads — MANDATORY)
+
+If you have not already landed via §6g-ter (`gh pr merge`) or §6h-0 (verified
+fast-forward to the remote), do it now. Both are accepted; the gate checks the
+OUTCOME, not the path.
+
+**Dirty-tree protocol — delegated, not re-typed.** A pre-existing modified file that
+the merge also touches must survive the landing. This is CODE, not prose, precisely
+because prose cannot be asserted: AC8 requires the dirty-tree case to be proven by
+content comparison, and the 2026-08-19 recovery did it by hand from one supervisor's
+context. The stash stack is shared with every other worktree of the repo and other
+sessions push/pop it concurrently, so the helper pushes with a unique tag, captures the
+entry's SHA immediately, **applies** by SHA (never `pop`), and drops by re-finding the
+entry by tag:
+
+```bash
+# Integrate the default branch so the landing push is a FAST-FORWARD, never a
+# force-push. Refuses on a real conflict (exit 10) with the tree restored.
+.claude/scripts/plan-w-team-land.sh merge --slug "$SLUG" || exit 1
+```
+
+Then land through §6h-0's verified fast-forward (assert-ancestor → push → re-verify by
+ancestor check, never by the push's exit code), and push the tag.
+
+### Verify the landing (ENFORCING)
+
+```bash
+# Recomputes merged / tag-reachable / pushed from git and writes the artifact the
+# goal evaluator reads. It CANNOT be satisfied by assertion — there is no --force.
+if .claude/scripts/plan-w-team-land.sh verify --slug "$SLUG"; then
+  LANDED_SHA=$(jq -r '.landed_sha' ".claude/state/plan-w-team-landed-${SLUG}.json" 2>/dev/null)
+  echo "✅ landing verified: landed=$LANDED_SHA"
+else
+  echo "✗ LANDING GATE: this run has NOT landed. Diagnose:"
+  echo "    .claude/scripts/plan-w-team-land.sh status --slug $SLUG"
+  echo "  Land it (above), then re-run verify. Do NOT proceed to retro unlanded —"
+  echo "  the goal evaluator will withhold SUCCESS and the run will not terminate."
+  exit 1
+fi
+```
+
+**What happens if you skip this.** The evaluator's F6 AND-check withholds SUCCESS for
+any worktree-isolated run with no verified landing artifact, and
+`plan-w-team-await-terminal.sh` reports `terminal=UNFLIPPED diagnosis=COMPLETE_UNLANDED`
+(exit 6) once the worker dies, naming `plan-w-team-land.sh resume` as the remediation.
+The run cannot silently end unlanded any more; it can only end unlanded LOUDLY.
+
+**When the push is denied** (no `git push` grant in `.claude/settings.local.json`,
+bg stdin at `/dev/null`): treat it as the existing **`push-ack` pause site** — log an
+`escalation` row with `call_site: "push-ack"` so it surfaces in `pending_escalations`,
+and stop. That is a first-class, visible halt. It is NOT a new pause-site enum: reusing
+`push-ack` keeps the hard-gate list in `plan-w-team-surface-status.sh` and every goal's
+halt conditions unchanged.
+
+Kill switch: `PWT_DISABLE_LANDING_GATE=1` disables the evaluator's AND-check (the
+watcher and the remediation script are deliberately unaffected). Full contract:
+[`docs/operations/plan-w-team-landing-gate.md`](../../../docs/operations/plan-w-team-landing-gate.md).
 
 ## End-of-Stage Status Block (PWT-T5)
 

@@ -14,7 +14,7 @@ version: 1.2.0
 # ============================================================================
 # MODEL CONFIGURATION (Required for v2.1.0)
 # ============================================================================
-model: opus # Design requires deep reasoning
+model: claude-fable-5 # Design work = Fable 5 (founder doctrine 2026-08-29)
 context: fork
 
 # ============================================================================

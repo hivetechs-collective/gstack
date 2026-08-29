@@ -1036,6 +1036,72 @@ This sweep is scoped to THIS run's subagents (`--scope subagents-of-current-run`
 ```bash
 SLUG="<feature-slug>"
 
+# 0. Untracked sweep — BEFORE the GC passes (recursive-followup row 17 / WT-5).
+#    Every step below reclaims a WHOLE worktree. Nothing has ever cleared a file
+#    INSIDE one that survives, so a worktree the GC keeps (in-use, unmerged,
+#    ORPHAN-ASK, or held by a fail-closed arm) accumulates untracked churn
+#    forever — and preserve_then_reap copies that churn into EVERY backup as if
+#    it were authored work, burying the files the backup exists to save.
+#
+#    It removes only what is provably recoverable: `.claude/state/` scratch and
+#    other repo-declared regenerable classes, plus files byte-identical to the
+#    default branch's blob for the same path (git holds the bytes). A brand-new
+#    `.claude/` script, an edited copy of a synced file, and `output/*.html` are
+#    KEPT, as are the six DURABLE cross-run artifacts under `.claude/state/`.
+#    Every guard fails closed to sweeping NOTHING; a skip is never a run failure.
+#
+#    Ordered first so the GC's preserve_then_reap backups contain authored work
+#    only. Kill switches: PWT_RETRO_DISABLE_UNTRACKED_SWEEP=1 (this call site),
+#    PWT_UNTRACKED_SWEEP_DISABLE=1 (the script itself).
+#
+#    REPORT-ONLY BY DEFAULT (2.14.1). Opt in to deletion with
+#    PWT_RETRO_UNTRACKED_SWEEP_EXECUTE=1. This is an evidence-driven default, not
+#    timidity, and the evidence is that the candidate set is EMPTY where this runs:
+#      * source repo — `.gitignore` already excludes every live per-run state class
+#        from `--exclude-standard`, so class STATE enumerates nothing; and all four
+#        live worktrees measured ZERO untracked-not-ignored files (2026-08-21).
+#      * managed consumers — `sync-to-project.sh` ships a default-deny
+#        `.claude/state/*` gitignore block fleet-wide (2026-06-09), so class STATE
+#        is enumeration-invisible there too; class SYNCED is separately inert
+#        because the synced tooling layer has no default-branch counterpart.
+#    Measured in a consumer-shaped fixture: WITHOUT the default-deny block 2 files
+#    are removed; WITH it (what the sync actually ships) ZERO are.
+#
+#    So the only repos where this sweep has TEETH are ones whose gitignore is
+#    degraded or hand-edited — and in exactly those repos an un-gitignored
+#    `plan-w-team-goal-*.json` seed becomes enumerable, i.e. the sweep would delete
+#    a live worker's run state with no backup. Value and risk are inversely
+#    correlated, so the destructive arm stays opt-in until a run actually reports a
+#    non-zero candidate set. Dry-run still records candidates in the retro JSON,
+#    which is how that evidence gets collected.
+SWEEP_MODE="--json"
+[ "${PWT_RETRO_UNTRACKED_SWEEP_EXECUTE:-0}" = "1" ] && SWEEP_MODE="--execute --json"
+if [ "${PWT_RETRO_DISABLE_UNTRACKED_SWEEP:-0}" != "1" ] && [ -x .claude/scripts/plan-w-team-worktree-untracked-sweep.sh ]; then
+  # shellcheck disable=SC2086  # SWEEP_MODE is a script-controlled flag list
+  SWEEP_JSON=$(.claude/scripts/plan-w-team-worktree-untracked-sweep.sh $SWEEP_MODE 2>/dev/null || echo '{}')
+  SWEEP_REMOVED=$(printf '%s' "$SWEEP_JSON" | jq -r '.totals.removed // 0' 2>/dev/null || echo 0)
+  SWEEP_REASON=$(printf '%s' "$SWEEP_JSON" | jq -r '.reason // "ok"' 2>/dev/null || echo ok)
+  if [ "${PWT_RETRO_UNTRACKED_SWEEP_EXECUTE:-0}" = "1" ]; then
+    echo "✓ untracked sweep (worktree-scoped, before GC): $SWEEP_REMOVED removed [$SWEEP_REASON]"
+  else
+    echo "✓ untracked sweep (REPORT-ONLY, before GC): $SWEEP_REMOVED candidate(s) [$SWEEP_REASON]"
+    echo "  set PWT_RETRO_UNTRACKED_SWEEP_EXECUTE=1 to act on them"
+    # SELF-SURFACING (2.14.2). Report-only data rots unread: nobody opens 17
+    # repos' retro JSONs by hand, so a non-zero candidate set would sit in
+    # quality_signals forever and report-only would quietly become permanent —
+    # the same unfalsifiable state the originating ledger row sat in for two
+    # months. A non-zero count therefore queues a durable follow-up, which the
+    # NEXT run's pre-flight in THIS repo surfaces automatically. Zero stays
+    # silent (that is the expected reading and needs no noise).
+    if [ "${SWEEP_REMOVED:-0}" -gt 0 ] 2>/dev/null \
+       && [ -x .claude/scripts/plan-w-team-followups.sh ]; then
+      .claude/scripts/plan-w-team-followups.sh add --slug "$SLUG" \
+        --text "UNTRACKED-SWEEP CANDIDATES OBSERVED ($SWEEP_REMOVED) in $(basename "$PWD") — the first non-zero report since the sweep went report-only in 2.14.1. This is the recorded FLIP CONDITION: inspect them with 'plan-w-team-worktree-untracked-sweep.sh --print-classified', confirm every candidate is genuinely class STATE or class SYNCED, then decide whether to set PWT_RETRO_UNTRACKED_SWEEP_EXECUTE=1 for this repo. NOTE the inverse value/risk property: a non-zero count here usually means this repo's .gitignore does NOT carry the default-deny .claude/state/* block that sync-to-project.sh:1444-1487 ships, which is also the condition under which a live plan-w-team-goal-*.json seed becomes deletable. Check the gitignore FIRST — repairing it may be the correct fix rather than enabling deletion." >/dev/null 2>&1 \
+        && echo "  ⚠ non-zero candidates — queued a follow-up so this cannot go unread"
+    fi
+  fi
+fi
+
 # 1. Subagent worktrees of THIS run (safety invariants enforced inside the GC:
 #    never touches uncommitted / in-use / non-.claude-worktrees paths).
 #    PWT_WORKTREE_GC_IGNORE_LOCKS=1: the run is over, so any lock still held by
@@ -1100,13 +1166,15 @@ if [ -f "$RETRO_STATE" ] && command -v jq >/dev/null 2>&1; then
   TMP=$(mktemp "${RETRO_STATE}.tmp.XXXXXX")
   jq --argjson wt "${WT_GC_JSON:-{}}" --argjson comp "${COMP_GC_JSON:-{}}" \
      --argjson fullgc "${FULL_GC_JSON:-{}}" --argjson jsfreed "${JS_FREED:-0}" \
+     --argjson usweep "${SWEEP_JSON:-{}}" \
     '.quality_signals.worktree_gc = $wt | .quality_signals.companion_gc = $comp
-     | .quality_signals.full_repo_gc = $fullgc | .quality_signals.job_scratch_freed = $jsfreed' \
+     | .quality_signals.full_repo_gc = $fullgc | .quality_signals.job_scratch_freed = $jsfreed
+     | .quality_signals.untracked_sweep = $usweep' \
     "$RETRO_STATE" > "$TMP" 2>/dev/null && mv "$TMP" "$RETRO_STATE" || rm -f "$TMP"
 fi
 ```
 
-**Kill switches:** `PWT_WORKTREE_GC_DISABLE=1` and `PWT_COMPANION_GC_DISABLE=1` each no-op their respective sweep. Both default ON. See `docs/operations/worktree-lifecycle.md` for the full lifecycle contract, the per-merge cleanup path (`§Step 6 ship`), and how to install the weekly accumulated-debt GC.
+**Kill switches:** `PWT_UNTRACKED_SWEEP_DISABLE=1`, `PWT_WORKTREE_GC_DISABLE=1` and `PWT_COMPANION_GC_DISABLE=1` each no-op their respective pass; `PWT_RETRO_DISABLE_UNTRACKED_SWEEP=1` disables the sweep at this call site only. All default ON. See `docs/operations/worktree-lifecycle.md` for the full lifecycle contract, the untracked sweep's recoverability argument, the per-merge cleanup path (`§Step 6 ship`), and how to install the weekly accumulated-debt GC.
 
 ## 8j-octies. Stage-File Bypass Rate (quality signal — P1)
 

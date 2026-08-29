@@ -260,6 +260,40 @@ fi
 
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 
+# ─── LOAD ANNOTATION (F5, 2026-08-19 incident) ──────────────────────────────
+# `duration_s` alone cannot distinguish "this suite is slow" from "this host was
+# saturated when the suite ran". The incident measured the SAME battery command
+# at 229 / 252 / 302 / 454 seconds purely by load, and every one of those numbers
+# was recorded without the context needed to read it. Record the load beside the
+# duration so an over-budget verdict can be annotated `load-suspect` instead of
+# being mistaken for a performance regression.
+#
+# OBSERVABILITY ONLY — this changes no gate. `green` is still decided solely by
+# the trailing SUITE_EXIT marker.
+LOAD_1M="null"; NCPU="null"; LOAD_SUSPECT="null"
+if [ "${PWT_DISABLE_LOAD_ANNOTATION:-0}" != "1" ]; then
+  HH="$CUR_ROOT/.claude/scripts/plan-w-team-host-health.sh"
+  [ -x "$HH" ] || HH="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/plan-w-team-host-health.sh"
+  if [ -x "$HH" ] && command -v jq >/dev/null 2>&1; then
+    HH_JSON=$("$HH" --repo-root "$CUR_ROOT" 2>/dev/null || echo "")
+    if [ -n "$HH_JSON" ]; then
+      # NOT `// "null"`: jq's alternative operator fires on `false` as well as
+      # `null`, so `.load_suspect // "null"` rewrites every honest `false` into
+      # `null` — silently deleting the "this run was NOT load-suspect" evidence,
+      # which is precisely the reading this annotation exists to support.
+      LOAD_1M=$(printf '%s' "$HH_JSON"      | jq -r 'if .load_1m == null then "null" else .load_1m end' 2>/dev/null || echo "null")
+      NCPU=$(printf '%s' "$HH_JSON"         | jq -r 'if .ncpu == null then "null" else .ncpu end' 2>/dev/null || echo "null")
+      LOAD_SUSPECT=$(printf '%s' "$HH_JSON" | jq -r 'if .load_suspect == null then "null" else .load_suspect end' 2>/dev/null || echo "null")
+    fi
+  fi
+  # Shape-guard every value: they are interpolated as BARE JSON below, so a
+  # surprise string would produce a malformed artifact that every reader then
+  # treats as "unreadable verdict".
+  case "$LOAD_1M"      in ''|*[!0-9.]*) LOAD_1M="null" ;; esac
+  case "$NCPU"         in ''|*[!0-9]*)  NCPU="null" ;; esac
+  case "$LOAD_SUSPECT" in true|false) : ;; *) LOAD_SUSPECT="null" ;; esac
+fi
+
 # ─── WATCHED-TREE DIGEST (content anchor for the commit gate) ───────────────
 # The verdict alone only says "a suite run ended green at time T". It says nothing
 # about WHAT was tested, so a gate that trusts it would happily wave through content
@@ -363,7 +397,12 @@ write_artifact() {
       --argjson suite_exit "$JSON_EXIT" \
       --argjson green "$GREEN" \
       --argjson duration_s "$DURATION" \
-      '{ts:$ts, slug:$slug, suite_exit:$suite_exit, green:$green, reason:$reason, log_path:$log_path, duration_s:$duration_s, tree_digest:$tree_digest}' \
+      --argjson load_1m "$LOAD_1M" \
+      --argjson ncpu "$NCPU" \
+      --argjson load_suspect "$LOAD_SUSPECT" \
+      '{ts:$ts, slug:$slug, suite_exit:$suite_exit, green:$green, reason:$reason, log_path:$log_path, duration_s:$duration_s, tree_digest:$tree_digest}
+       + (if $load_suspect == null and $load_1m == null and $ncpu == null then {}
+          else {load_1m:$load_1m, ncpu:$ncpu, load_suspect:$load_suspect} end)' \
       > "$tmp" 2>/dev/null || return 0
   else
     # jq-absent fallback: every interpolated value is PROGRAM-CONTROLLED — $TS/$REASON/
@@ -377,8 +416,15 @@ write_artifact() {
       *) safe_log="$LOG_PATH" ;;
     esac
     # $TREE_DIGEST is 64 lowercase hex or empty — validated above, never user text.
-    printf '{"ts":"%s","slug":"%s","suite_exit":%s,"green":%s,"reason":"%s","log_path":"%s","duration_s":%s,"tree_digest":"%s"}\n' \
-      "$TS" "$SLUG" "$JSON_EXIT" "$GREEN" "$REASON" "$safe_log" "$DURATION" "$TREE_DIGEST" \
+    # The load fields are likewise shape-guarded numerics/booleans/null, so they
+    # are safe to interpolate bare. Omitted entirely when annotation is off, so
+    # the jq-absent artifact keeps the same shape as the jq one.
+    local load_frag=""
+    if [ "$LOAD_1M" != "null" ] || [ "$NCPU" != "null" ] || [ "$LOAD_SUSPECT" != "null" ]; then
+      load_frag=$(printf ',"load_1m":%s,"ncpu":%s,"load_suspect":%s' "$LOAD_1M" "$NCPU" "$LOAD_SUSPECT")
+    fi
+    printf '{"ts":"%s","slug":"%s","suite_exit":%s,"green":%s,"reason":"%s","log_path":"%s","duration_s":%s,"tree_digest":"%s"%s}\n' \
+      "$TS" "$SLUG" "$JSON_EXIT" "$GREEN" "$REASON" "$safe_log" "$DURATION" "$TREE_DIGEST" "$load_frag" \
       > "$tmp" 2>/dev/null || return 0
   fi
   mv -f "$tmp" "$file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }

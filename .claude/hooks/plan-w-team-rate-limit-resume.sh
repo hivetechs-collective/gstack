@@ -11,7 +11,7 @@
 # that waits until the usage block resets, then re-engages the parked session
 # in its own tmux pane. Attempt ladder:
 #   1. plain "continue" after the gate lifts
-#   2. still parked → step the lead down a model rung (/model claude-opus-5)
+#   2. still parked → step the lead down a model rung (/model claude-opus-4-8; claude-opus-5 is forbidden, founder order 2026-08-29)
 #      and continue — the interactive-lead analog of the spawn sites'
 #      --fallback-model degradation
 #   3. still parked → one more wait + continue
@@ -87,9 +87,9 @@ if [ "$MODE" = "--sleeper" ]; then
     case $attempt in
       1) inject "continue — auto-resume: the rate-limit gate has lifted (plan-w-team rate-limit-resume, attempt 1)" ;;
       2) # fallback-model rung: step the lead down a tier, then continue
-         inject "/model claude-opus-5"
+         inject "/model claude-opus-4-8"
          sleep 5
-         inject "continue — auto-resume attempt 2: stepped down to claude-opus-5 (fallback rung) after the previous attempt stayed rate-limited; continue the pipeline" ;;
+         inject "continue — auto-resume attempt 2: stepped down to claude-opus-4-8 (fallback rung) after the previous attempt stayed rate-limited; continue the pipeline" ;;
       3) inject "continue — auto-resume: final attempt (plan-w-team rate-limit-resume, attempt 3)" ;;
     esac
     if woke_up; then

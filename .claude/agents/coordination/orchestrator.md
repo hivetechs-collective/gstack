@@ -9,7 +9,7 @@ description: |
   Use this agent when you have complex, multi-faceted goals that require coordination
   between multiple specialist agents working simultaneously. Coordinates the full
   roster of spawnable specialists across modern tech stacks. Examples:
-model: opus
+model: claude-opus-4-8
 
 # ============================================================================
 # TOOL CONFIGURATION

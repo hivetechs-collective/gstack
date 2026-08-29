@@ -168,7 +168,13 @@ cat > "$LEGACY_LOG" <<EOF
 {"ts":"2026-05-19T22:05:00Z","event":"escalation","slug":"$LEGACY_SLUG","call_site":"push-ack","reason":"hard-gate"}
 {"ts":"2026-05-19T22:06:00Z","event":"route_delegation","slug":"$LEGACY_SLUG","call_site":"qa-tier-selection","router_choice":"standard","router_confidence":"low"}
 EOF
-GOLDEN_JSON='{"slug":"legacy-golden-test-fixed","stage":"ship","workflow_lock":"missing","ship_readiness_gate":"pending","fleet":{},"pending_escalations":["credential-wall","push-ack","scope-unlock-for-drift","secret-scan-allow"],"low_confidence_routes":1}'
+# SCHEMA ADDITION, 2.13.0 (F6): `"landed": null` was added to the golden when the
+# status block gained the landing anchor. That is a DELIBERATE shape change, not a
+# drifted expectation — the escalation-pairing behaviour this golden exists to pin
+# (the pending_escalations array and low_confidence_routes) is byte-identical, and
+# `landed` is null here because the fixture has no landing artifact. Any FUTURE
+# mismatch in the other fields is still a real regression.
+GOLDEN_JSON='{"slug":"legacy-golden-test-fixed","stage":"ship","workflow_lock":"missing","ship_readiness_gate":"pending","landed":null,"fleet":{},"pending_escalations":["credential-wall","push-ack","scope-unlock-for-drift","secret-scan-allow"],"low_confidence_routes":1}'
 JSON=$("$HELPER" "$LEGACY_SLUG" "ship" 2>/dev/null | extract_json)
 ACTUAL_NO_TS=$(echo "$JSON" | jq -S -c 'del(.ts)')
 EXPECTED_NO_TS=$(echo "$GOLDEN_JSON" | jq -S -c .)

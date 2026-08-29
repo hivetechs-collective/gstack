@@ -205,6 +205,38 @@ authoritative registry.
 **Source**: `shared/state-artifacts.md`; `.claude/scripts/plan-w-team-symmetry-check.sh`
 (registry path + exit-code contract in the header).
 
+## G13 — The lane guard decides by RESOLVED TARGET; use absolute paths for out-of-repo work while supervising
+
+**Bites you**: while you are the BOUND supervisor of a live `/plan-w-team` lane, a `git`
+write or an in-place edit that is _not_ resolvably outside the lane repo is DENIED — even
+when the work is in a _different_ repository. `git -C "$P" commit`, `git -C ../other add`,
+`cd "$VAR" && git commit`, `sed -i '' 's/a/b/' *.md` all read as unresolvable and deny;
+`git worktree add …` denies because it operates on the current repo. (This is the correct
+role contract — a supervisor must not implement the lane's work — but it surprises you when
+the work is genuinely elsewhere.)
+
+**Why**: since 2.15.0 the guard resolves the effective target (`-C`/`--git-dir`/`--work-tree`,
+a literal `cd`, or the file operand), follows symlinks, and ALLOWS (with an audit row) only
+on positive proof the target is outside `MAIN_ROOT` and every worktree. It is deliberately
+**fail-closed** for git-write/in-place — an unresolvable target (`$var`, relative, glob, `~`,
+`..`, a symlink into the repo) DENIES — while the `rm`/`mv`/`cp` mutator and redirect/`tee`
+classes stay **fail-open** (deny only on a provable in-repo target). The two policies share
+ONE predicate (`__target_is_foreign`), so the Edit/Write tool and the Bash classes cannot
+diverge on the same file.
+
+**Do instead**: for out-of-repo work while supervising, use an **absolute** `-C` path
+(`git -C /Users/…/other-repo commit …`), a **literal absolute** `cd`
+(`cd /Users/…/other-repo && git commit …`), or an **absolute** file path
+(`sed -i '' 's/a/b/' /Users/…/other-repo/f.md`) — the Edit/Write tool already works this way.
+For lane work, steer the worker instead. If the resolver is genuinely too conservative for a
+legitimate out-of-repo op it cannot statically resolve, the OPERATOR (not the supervisor) may
+drop a time-boxed `.claude/state/plan-w-team-lane-guard-allow-<sid8>.json`
+(`{"until":"<iso>","scope":"outside-repo"}`) — it relaxes ONLY the unresolvable branch and
+NEVER permits a write inside the lane repo/worktrees.
+
+**Source**: `.claude/hooks/plan-w-team-lane-guard.sh` (header + `__target_is_foreign` /
+`__write_target_ok`); `docs/operations/lane-enforcement.md` §"Resolved-target scoping".
+
 ---
 
 ## Adding a gotcha

@@ -16,6 +16,24 @@ if command -v jq >/dev/null 2>&1; then
   HAS_JQ=1
 fi
 
+# ---- lean mode for /plan-w-team pipeline sessions (F1, 2026-08-19 incident) ----
+# A pipeline worker/supervisor re-renders this line on EVERY tool-call turn, and
+# the two helpers that parse the transcript corpus (ccusage, usage-breakdown)
+# cost more the longer the run gets. That is a positive feedback loop: longer
+# run → bigger transcripts → costlier helper → slower host → longer run. It
+# measured load 24–27 on 12 cores over hours and starved the run's own lane.
+# pwt-goal.sh exports PWT_LEAN_STATUSLINE=1 into every bg spawn, and the
+# supervisor protocol sets it for the duration of supervision, so those sessions
+# render the cheap segments only. Nobody is watching a bg worker's status line.
+# Kill switch: PWT_DISABLE_LEAN_STATUSLINE=1 restores the full line everywhere.
+# Scope note: this skips the TRANSCRIPT-HISTORY parsers specifically. The
+# bg-agents segment stays — it is O(sessions), already cached and detached, and
+# it is the one segment that is actually about the pipeline.
+PWT_LEAN=0
+if [ "${PWT_LEAN_STATUSLINE:-0}" = "1" ] && [ "${PWT_DISABLE_LEAN_STATUSLINE:-0}" != "1" ]; then
+  PWT_LEAN=1
+fi
+
 # ---- logging (opt-in) ----
 # LOCAL PATCH on cc-statusline-generated code — regenerating via cc-statusline
 # would clobber it. The generated block appended the full session-input JSON
@@ -329,20 +347,22 @@ else
   fi
 fi
 
-# Get token data and session info from ccusage if available
-if command -v ccusage >/dev/null 2>&1 && [ "$HAS_JQ" -eq 1 ]; then
-  blocks_output=""
-  
-  # Try ccusage with timeout for token data and session info
-  if command -v timeout >/dev/null 2>&1; then
-    blocks_output=$(timeout 5s ccusage blocks --json 2>/dev/null)
-  elif command -v gtimeout >/dev/null 2>&1; then
-    # macOS with coreutils installed
-    blocks_output=$(gtimeout 5s ccusage blocks --json 2>/dev/null)
-  else
-    # No timeout available, run directly (ccusage should be fast)
-    blocks_output=$(ccusage blocks --json 2>/dev/null)
-  fi
+# Get token data and session info via the bounded ccusage helper.
+#
+# The previous inline block probed `timeout`, then `gtimeout`, then — on a host
+# with NEITHER, which is stock macOS — ran `ccusage blocks --json` UNBOUNDED,
+# with a comment ("ccusage should be fast") standing in for the bound. There was
+# also no cache and no singleton, so every render stacked another multi-second,
+# multi-core process. That was root cause RC1 of the 2026-08-19 incident.
+#
+# ccusage-blocks.sh now owns the bound (a real timeout binary is REQUIRED — no
+# binary, no call), the 60s cache and the mkdir singleton, and it honors the lean
+# gate. Same helper shape as plan-usage.sh / usage-breakdown.sh / account-info.sh.
+# A repo that has not synced the helper simply renders no token segment — the
+# unbounded path is gone, not relocated.
+CCUSAGE_HELPER="$PWD/.claude/scripts/ccusage-blocks.sh"
+if [ "$PWT_LEAN" -eq 0 ] && [ -x "$CCUSAGE_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
+  blocks_output=$("$CCUSAGE_HELPER" 2>/dev/null)
   if [ -n "$blocks_output" ]; then
     active_block=$(echo "$blocks_output" | jq -c '.blocks[] | select(.isActive == true)' 2>/dev/null | head -n1)
     if [ -n "$active_block" ]; then
@@ -798,8 +818,12 @@ fi
 # Mirrors Boris's /usage interactive output: percentages can overlap because a
 # turn may invoke multiple tool categories.
 line4=""
+#
+# Skipped in lean mode (F1): this helper aggregates ~/.claude/projects/**/*.jsonl,
+# so like ccusage its cost scales with the run's own transcript output — the same
+# feedback loop, one layer over. Its 60s cache bounds the rate, not the cost.
 USAGE_BREAKDOWN_HELPER="$PWD/.claude/scripts/usage-breakdown.sh"
-if [ -x "$USAGE_BREAKDOWN_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
+if [ "$PWT_LEAN" -eq 0 ] && [ -x "$USAGE_BREAKDOWN_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
   ub_json=$("$USAGE_BREAKDOWN_HELPER" 2>/dev/null)
   if [ -n "$ub_json" ] && [ "$ub_json" != "{}" ]; then
     # Build "🎯 Today: Skill /X N% · Agent Y N% · MCP Z N%" segment.

@@ -155,6 +155,32 @@ if [ -f "$SUP_LOG" ] && command -v jq >/dev/null 2>&1; then
     [ -z "$LOW_CONF" ] && LOW_CONF=0
 fi
 
+# Landing anchor (F6, RC4 2026-08-19) — the sha on the default branch that carries
+# this run's work, or empty when the run has not landed.
+#
+# READ, never asserted: the value comes from the deterministic artifact that
+# `plan-w-team-land.sh verify` writes, and that script recomputes the predicate
+# from git before writing.  This emitter cannot mint a landing, which is the whole
+# point — the RC4 failure was a run that LOOKED finished on every observability
+# surface while its 31 commits sat unmerged, unpushed and untagged on a worktree
+# branch.  Both state dirs are consulted for the same reason `verify` dual-writes
+# to them: worktree-side and MAIN-side readers see different halves.
+LANDED_SHA=""
+for __ld in "$STATE_DIR/plan-w-team-landed-${SLUG}.json" \
+            "$FALLBACK_STATE_DIR/plan-w-team-landed-${SLUG}.json" \
+            "$PWD_STATE_DIR/plan-w-team-landed-${SLUG}.json"; do
+    [ -f "$__ld" ] || continue
+    if command -v jq >/dev/null 2>&1; then
+        __v=$(jq -r 'select(.verdict=="LANDED") | .landed_sha // ""' "$__ld" 2>/dev/null || echo "")
+        __s=$(jq -r '.slug // ""' "$__ld" 2>/dev/null || echo "")
+        # A foreign-slug artifact must never be reported as this run's landing.
+        if [ -n "$__v" ] && [ "$__s" = "$SLUG" ]; then
+            LANDED_SHA="$__v"
+            break
+        fi
+    fi
+done
+
 # Emit the fenced status block — JSON is built via jq so quoting is safe
 STATUS_JSON=$(jq -n \
     --arg slug "$SLUG" \
@@ -162,11 +188,17 @@ STATUS_JSON=$(jq -n \
     --arg ts "$TS" \
     --arg lock "$LOCK_STATE" \
     --arg ship "$SHIP_GATE" \
+    --arg landed "$LANDED_SHA" \
     --argjson fleet "$FLEET" \
     --argjson esc "$PENDING_ESC" \
     --argjson low "$LOW_CONF" \
-    '{slug:$slug, stage:$stage, ts:$ts, workflow_lock:$lock, ship_readiness_gate:$ship, fleet:$fleet, pending_escalations:$esc, low_confidence_routes:$low}' \
+    '{slug:$slug, stage:$stage, ts:$ts, workflow_lock:$lock, ship_readiness_gate:$ship, landed:(if $landed == "" then null else $landed end), fleet:$fleet, pending_escalations:$esc, low_confidence_routes:$low}' \
     2>/dev/null) || STATUS_JSON='{"slug":"'"$SLUG"'","stage":"'"$STAGE"'","ts":"'"$TS"'","error":"jq-failed"}'
+
+# The grep-able anchor the addendum specifies, on its own line so a plain
+# `grep -o 'landed=[0-9a-f]*'` finds it without JSON parsing.  Printed ONLY when a
+# real landing artifact backs it.
+[ -n "$LANDED_SHA" ] && printf '\nlanded=%s\n' "$LANDED_SHA"
 
 printf '\n```status\n%s\n```\n' "$STATUS_JSON"
 

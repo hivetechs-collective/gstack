@@ -7,7 +7,7 @@ description: |
   proactively at the start of new projects, when scaling existing systems, or
   when making major architectural decisions. Examples:
 color: green
-model: claude-opus-5
+model: claude-fable-5
 context: fork
 
 # ============================================================================

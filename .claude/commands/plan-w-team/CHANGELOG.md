@@ -14,6 +14,598 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.15.0] — 2026-08-29 (Lane guard decides by RESOLVED TARGET) (5a64f80)
+
+**PWT-LANE1 out-of-repo scoping.** A bound supervisor's `git` writes and in-place edits
+are now decided by the RESOLVED TARGET, not the command class. Committing in a DIFFERENT
+repo (`git -C /abs/other commit`, `cd /abs/other && git commit`) or editing an absolute
+file outside the lane repo (`sed -i '' … /abs/other/f`) is ALLOWED with an audit row; the
+lane repo, its worktrees, and every relative / `$var` / glob / `~` / symlink-into-repo
+target stay DENIED. Closes the internal inconsistency where the same file could be
+`Edit`-ed but not `git -C`-committed or `sed -i`-edited (2026-08-29 incident: an operator
+hand-ran three commits). D6 foreign-worktree-write, the kill switch, and the fail-open
+`rm`/`mv`/`cp`+redirect/`tee` class are unchanged.
+
+- **One shared predicate** (`__target_is_foreign`, over `__realpath_target` +
+  `__path_in_repo`) is used by the Edit/Write path AND both Bash classes, so they cannot
+  diverge again. Symlinks are followed (a symlink-into-repo denies); resolution is bash-3.2
+  safe (bounded `readlink` loop + logical `cd+pwd`, python3 realpath backstop) — no new
+  dependency.
+- **Deliberate fail-closed vs fail-open policy**, documented in the hook header,
+  `docs/operations/lane-enforcement.md` §"Resolved-target scoping", and `shared/gotchas.md`
+  G13: git-write/in-place DENY on unresolvable (positive proof of "outside" required);
+  mutator/redirect stay fail-open.
+- **D7**: read-only listing forms (`git worktree list`, `git stash list|show`) are stripped
+  before the write test like `git tag -l` (and audited as `classifier-exemption`).
+  **D8**: `INPLACE_RE` is `${SEP}`-anchored so quoted prose "sed -i" is not classified.
+  **D9**: the shell mask blanks a backtick inside single quotes so `` `git commit` `` in
+  quoted prose is not a command boundary.
+- **Operator allowance valve** `.claude/state/plan-w-team-lane-guard-allow-<sid8>.json`
+  (`{"until","scope:"outside-repo"}`): relaxes ONLY the unresolvable branch, never a
+  provably-inside target, and expires. Registered in `shared/state-artifacts.md`.
+- **Adjacent findings**: **O1** — `pwt-status.sh` corroborates each lead row's `.pid` with
+  `kill -0` and prints `N lead (M stale-registry)` (test seam `PWT_STATUS_AGENTS_OVERRIDE`).
+  **O2** — no ps/lsof cwd-walking probe in claude-pattern enumerates `bg-spare` daemons;
+  filed as a recursive-followups row with the evidence (nothing to fix here). **O3** —
+  `pwt-steer.sh` prints the real stop outcome (stopped / already-gone / failed) instead of a
+  generic note, and a fail-open loud advisory asserts exactly ONE live lead owns the slug's
+  worktree after resume (reuses `pwt-live-session-cwds.sh`).
+- **Security (independent review find, HIGH — git-dir/work-tree independence)**: git resolves
+  its git-dir and work-tree INDEPENDENTLY, so a lone foreign `--work-tree` on `git push` (refs
+  land in the CWD-discovered lane git-dir) or a lone foreign `--git-dir` on `git checkout`
+  (files land in the CWD lane work-tree) would have read as a foreign write and ALLOWed — a
+  bound supervisor could push/reset the lane by attaching a throwaway anchor. Fixed: the
+  git-write resolver walks the command's segments (tracking the `cd`-established base) and
+  requires BOTH the effective git-dir AND the effective work-tree of every git-write to be
+  foreign. Regressions: the three git-dir/work-tree-independence cases + mutation M4.
+- **Security (fix-first review find)**: a bound supervisor may write under `.claude/state/`,
+  so it could write its OWN `plan-w-team-lane-guard-allow-<sid8>.json` and self-authorize the
+  fail-closed branch (a relative in-repo `sed -i` would then pass). Closed: the guard now
+  denies the bound supervisor writing any allowance valve (Edit/Write AND Bash redirect),
+  exactly as it already denies the release valve. Regression: `T12-SEC`.
+- **Corpus aligned to Model Tiering v5 (authorized scope expansion, origin-chat supervisor
+  2026-08-29)**: the full-suite gate surfaced 8 pre-existing failures that 2.14.3 changed the
+  SOURCE for (design = Fable 5, intelligent = Opus 4.8, Opus 5 FORBIDDEN) but never updated the
+  CORPUS for — `model-tiering-v2.bats` (Hands/hard-lane/fallback pins), `model-tiering-v3.bats`
+  fable-fanout (sanctioned-site sweep, manifest, agent set), `opus48-uplift.bats` AC1, and the
+  `plugin-integration.bats` silent-failure-hunter pin. Aligned to v5 under governance guardrails:
+  every negative guard STAYS negative, the Fable sanctioned set is an EXPLICIT allowlist (the four
+  design agents), not a count; the r10 legacy allowlist is kept consistent. Adds
+  `tests/skill/cases/model-tiering-v5.bats` — the canonical v5 negative guard (Brain = Opus 4.8,
+  design = the four Fable agents, mechanical = Haiku, no agent/spawn-site/test requires Opus 5,
+  no fan-out lane pins Fable). The code was already correct; only stale expectations moved.
+- **Fixes the PWT-DISK2 worktree-cap full-suite red (authorized bounded scope, origin-chat
+  supervisor 2026-08-29)**: `disk-budget.test.sh` [8]/[8c] failed deterministically because the
+  test's `GENV` — which pins the capacity-gate env for hermeticity — omitted `PWT_MAX_WORKTREES`.
+  The operator's ambient env raises it (`PWT_MAX_WORKTREES=18` from `~/.zshrc`), so the 10-worktree
+  fixtures never reached the cap and the refusal/auto-GC-retry assertions silently no-op'd. The
+  **code is correct** (the cap honors the documented `PWT_MAX_WORKTREES` override and defaults to
+  10); the fix pins `PWT_MAX_WORKTREES=10` in `GENV` to restore the hermeticity the comment already
+  claims. Test-only, ~1 line, no spawn-semantics change. disk-budget.test.sh 9/2 → 11/11.
+- **Tests**: `plan-w-team-lane-guard.bats` 43 → 66 (T1–T12 + T12-SEC + git-dir/work-tree
+  independence bypass trio + D7/D8/D9 + M1–M4
+  mutation checks, every ALLOW with a DENY twin); `pwt-status.test.sh` +O1; `pwt-steer.test.sh`
+  +O3 (EXPECTED_PASSES 87 → 95) and a fix for the pre-existing broken T4g assertion
+  (a two-word `--fallback-model claude-opus-4-8` needle that the stub's one-arg-per-line
+  argv.log could never match — it was failing the whole shell-test phase at baseline).
+
+## [2.14.3] — 2026-08-29 (Model Tiering v5 — Opus 5 FORBIDDEN)
+
+**Founder order (2026-08-29): "remove Opus 5 from ever being used; make sure you're using
+Fable 5 or Claude Opus 4.8."** Opus 5 proved unreliable in fleet use (repeated refusals and
+dead rungs under the CleanRev Shipyard, 2026-08), so the v4 generation rollover is reversed
+and locked rather than treated as a drop-in pin move:
+
+- **Brain tier = `claude-opus-4-8`** again: frontmatter pins for `team/builder-opus`,
+  `team/supervisor`, `team/evaluator`, `team/validator`, `team/silent-failure-hunter`,
+  `research-planning/security-gap-analyzer`, `research-planning/system-architect`,
+  `research-planning/test-gap-analyzer`.
+- `pwt-goal.sh`: `PWT_PRIMARY_MODEL` default at both bg spawn sites (worker + supervisor)
+  → `claude-opus-4-8`; rationale comment rewritten. `pwt-steer.sh`: resume pin default →
+  `claude-opus-4-8`. `plan-w-team-rate-limit-resume.sh`: attempt-2 step-down rung →
+  `/model claude-opus-4-8`.
+- **Tiers by the nature of the work** (second founder order, same day: "all design work
+  needs to be Fable 5; all other intelligent helper work Opus 4.8; Sonnet can be used in
+  things that don't require intelligence"): design agents `system-architect`,
+  `ui-designer`, `style-theme-expert` → `claude-fable-5`; the routine builder lane
+  `team/builder`, `react-typescript-specialist`, `rust-backend-specialist`,
+  `stagehand-expert`, `claude-code-docs-updater`, `documentation-expert`,
+  `performance-testing-specialist`, `unit-testing-specialist`, and every roster agent that
+  was pinned to the alias `opus` (resolves to Opus 5 — banned as a pin) or `inherit`
+  (`orchestrator`, `release-orchestrator`, `github-security-orchestrator`, `meta-agent`,
+  `security-expert`, `api-expert`, `database-expert`, `code-review-expert`,
+  `terraform-specialist`, `kubernetes-specialist`, `llm-application-specialist`) →
+  `claude-opus-4-8`; `mechanical/*` stay Haiku. `PWT_FALLBACK_MODEL` defaults
+  (`pwt-goal.sh` both spawn sites, `pwt-steer.sh`) → `claude-opus-4-8`.
+- Fable tier keeps its guard (two sites + cap) — Fable does design, never fan-out
+  building; its skip/refusal landing tier is Opus 4.8.
+- Tests: `pwt-steer.test.sh` T4f/T4g expect the 4.8 primary and fallback pins;
+  `agent-registry-check.bats` fixture pinned to 4.8. `opus48-uplift.bats` AC3 still passes —
+  `claude-opus-5` remains in the manifest only as history (v4 note) and in the v5 note that
+  forbids it.
+- Manifest: Model Strategy table (Builder agents → Brain/4.8, new Design agents row,
+  "Skip/refusal lands on Brain (Opus 4.8)"); Generation note (Model Tiering v5).
+
+Consumer repos pick this up on the next `sync-to-project.sh`; the CleanRev fleet already
+enforces the same rule at runtime (`sdk-organs/ladder.py` `FORBIDDEN_MODEL_RE`, watchdog/CE
+ladders `claude-fable-5 claude-opus-4-8`, `dispatch-lane.sh` default `claude-opus-4-8`).
+
+## [2.14.2] — 2026-08-22 (579f5c8)
+
+**Name the flip condition, and make report-only data self-surfacing.** Closing note
+from the Fable consult, adopted: a report-only mode with no recorded threshold
+quietly becomes permanent — the same unfalsifiable state the originating ledger row
+sat in for two months — and nobody opens 17 repos' retro JSONs by hand.
+
+Two changes, both small:
+
+- **`§8j-septies` auto-queues a follow-up when the candidate count is non-zero.**
+  The next run's pre-flight in that repo prints it, so a non-zero result cannot go
+  unread. Zero stays silent — that is the expected reading and needs no noise. The
+  queued text tells the reader to check that repo's `.gitignore` for the
+  default-deny `.claude/state/*` block FIRST, because a missing block is usually
+  the real defect and repairing it is the correct fix rather than enabling
+  deletion. (`plan-w-team-followups.sh` already ships to every consumer, so this
+  works fleet-wide.)
+- **The decision is written down with both outcomes and a count**
+  (`worktree-lifecycle.md` §"The flip condition"): enable per-repo on any non-zero
+  after ruling out a degraded gitignore; or, after **≥ 10 retros across ≥ 3 repos**
+  all reporting zero, close the capability as **confirmed-inert** — keep the script
+  and corpus, drop the call site. An inert call site running forever is worse than
+  no call site, and that outcome is now as recorded as the other.
+
+No behaviour change when the count is zero, which is every environment measured so
+far.
+
+## [2.14.1] — 2026-08-22 (0b8c658)
+
+**Safety hardening of the untracked sweep, from a Fable spec consult that arrived
+after 2.14.0 landed.** The Step-1 fan-out returned zero verdicts before the AC
+freeze (recorded `NO_VERDICTS_RETURNED`); the consult reported afterwards. Its
+findings were verified independently rather than accepted on faith, and the ones
+that held are fixed here. Spec: the `## AMENDMENT — post-ship Fable consult` section.
+
+**The value analysis was correct, and it changes the default.** The sweep's
+candidate set is empty in every environment it actually runs in: the source
+`.gitignore` (`:61-81`) already excludes the live per-run state classes from
+`--exclude-standard`, and `sync-to-project.sh:1444-1487` ships a default-deny
+`.claude/state/*` block to every managed consumer (2026-06-09). Measured in a
+consumer fixture: **without** that block 2 files are removed, **with** it **zero**.
+The only repos where the sweep has teeth are ones whose gitignore is degraded — and
+there an un-gitignored `plan-w-team-goal-*.json` seed becomes deletable, so value
+and risk are inversely correlated. `§8j-septies` is therefore **report-only by
+default**; opt in with `PWT_RETRO_UNTRACKED_SWEEP_EXECUTE=1`. The dry-run still
+records candidates in the retro JSON, which is how the evidence for flipping it
+gets collected.
+
+**A real data-loss window, closed.** The sweep shipped with liveness + a 30-minute
+newborn grace and no lock veto. `git worktree add` writes the lock (carrying
+`pid N`) at SPAWN, while the session becomes visible to `claude agents --json` only
+on REGISTRATION — a gap measured at **~43 minutes** (`worktree-lifecycle.md:222`).
+A worktree at minute 31–43 was past the grace, absent from the live-cwd set, and
+sweepable while its owner was alive. GC veto 3 is now ported (live pid ⇒ keep;
+unparseable reason ⇒ keep, fail-closed; dead pid ⇒ still reapable, GC parity) and
+the newborn default is raised 30 → **60**, above the measured gap.
+
+Three further gaps closed:
+
+- **`claude-agents-extended.sh` is now REQUIRED** (missing ⇒ sweep nothing). The
+  empty⇒blind rule only caught the ALL-empty case; the canonical probe's inclusion
+  predicate drops `background`+`state:blocked` rows, so a probe returning other
+  live sessions while blind to a blocked worker passed both the gate and the in-use
+  veto. The GC tolerates the helper's absence because it has three more vetoes and
+  writes a backup; this sweep has neither.
+- **The sweep gets its own `PWT_SWEEP_DISCARD_IGNORE`** (defaulting to the preserve
+  set). Reading `PWT_WORKTREE_GC_PRESERVE_IGNORE` gave one env var opposite safety
+  directions — widening means "back up less" for `preserve_then_reap` and "delete
+  more" here, so trimming backup volume would silently widen the fleet's delete set.
+- **Class SYNCED now requires MODE equality**, not just byte equality.
+  `git hash-object` is blind to the executable bit, so a `chmod +x`'d copy was
+  byte-identical to the ref yet not reproducible by `git checkout <ref> -- <path>`.
+
+Spec holes closed: the class-SYNCED prefix list is now written down
+(`PWT_SWEEP_SYNCED_PREFIXES`, default `.claude/:tests/skill/:docs/operations/`) and
+GATE-0's `<repo>` resolution is pinned to `--git-common-dir` (never
+`--show-toplevel`, the 1.29.0 seed-mislocation bug class).
+
+Not taken, with reasons recorded in the spec: deriving the discard set by `comm -23`
+instead of `FILTER_INVERT` (sound, but the matcher is already shipped, tested and
+green fleet-wide — churning it again is now the larger risk), and holding the
+consumer sync entirely (superseded by the report-only default: what ships is a
+non-destructive reporter, and shipping it is what collects the per-repo evidence).
+
+Tests: sweep corpus 53 → **67** (lock veto live/unparseable/dead-pid, required
+extended helper, own discard knob, mode equality — each with a positive control).
+
+## [2.14.0] — 2026-08-21 (6fd991d)
+
+**Worktree-scoped untracked sweep — the first cleanup path with FILE granularity.**
+Closes recursive-followup row 17 (WT-5, 2026-06-08 cleanup-eval). Spec:
+[`docs/specs/resolve-recursive-followup-row-17-cleanup-eval-2026-06-08-wt-5-deferred-no-clean-c8448fc5.md`](../../../docs/specs/resolve-recursive-followup-row-17-cleanup-eval-2026-06-08-wt-5-deferred-no-clean-c8448fc5.md);
+operations doc: [`docs/operations/worktree-lifecycle.md`](../../../docs/operations/worktree-lifecycle.md)
+§"Untracked sweep".
+
+Every cleanup path in this subsystem reclaimed a **whole worktree**. Nothing ever cleared a
+file *inside* one that survives, which left two gaps: a worktree the GC keeps — in-use,
+unmerged, `ORPHAN-ASK`, or held by any fail-closed arm — accumulated untracked churn
+forever (the 2026-06-08 audit measured 48–52 untracked `.claude/*` files in one); and
+`preserve_then_reap`, which filters backups with the NARROW preserve set, copied that churn
+into **every** backup as if it were authored work, burying the files the backup exists to
+save.
+
+`plan-w-team-worktree-untracked-sweep.sh` (dry-run default, `--execute`, `--json`,
+`--print-classified`) runs at retro §8j-septies **before** both GC passes. It removes two
+classes and keeps everything else:
+
+- **STATE** — matches the BACKUP ignore set, i.e. the set `preserve_then_reap` already
+  declines to save, **minus a durable keep-list**.
+- **SYNCED** — under a synced-tooling prefix **and** hashing to the same blob the default
+  branch stores for that path.
+- **AUTHORED** — everything else, including every path whose class could not be PROVEN.
+  A brand-new `.claude/` script, an edited copy of a synced file, and `output/*.html` all
+  survive.
+
+**The invariant is recoverability, not disjointness — the first draft got this wrong.** The
+spec claimed the sweep never removes anything `preserve_then_reap` would back up. The oracle
+test disproved it on its first run: class SYNCED *does* remove such files, because
+`.claude/` is absent from the narrow backup set. That claim was a proxy and the proxy was
+false; keeping it would have meant deleting a true test or gutting class SYNCED to satisfy a
+property that never mattered. What makes a removal safe is that the bytes can be got back,
+and a reachable git object is *strictly stronger* than a backup copy. Class STATE is proven
+by disjointness from the backup set; class SYNCED by restoring the file after real removal
+and byte-comparing. Both non-vacuously.
+
+**A blanket `.claude/state/` discard would have destroyed durable data.** `.claude/state/`
+is in the BACKUP ignore set because a worktree being *destroyed* has worthless per-run
+state — but this sweep runs on worktrees that *survive*, and six `.claude/state/` artifacts
+are declared cross-run DURABLE by `shared/state-artifacts.md`, including
+`plan-w-team-recursive-followups.jsonl`, the ledger this row came from. They are excluded by
+a keep-list the corpus **re-derives from the registry**, so a future durable artifact cannot
+silently become sweepable.
+
+Five fail-closed gates (lib, python3, liveness, default-ref, per-worktree in-use/newborn),
+each sweeping NOTHING rather than guessing, in VETO-0-correct order — only the pure-shell
+realpath containment check may precede the python3 probe. One deliberate divergence from the
+GC and on-merge: an **empty** liveness result with no failure token is treated as blind. The
+GC can read "no rows" as "nothing live" because it has three further vetoes and writes a
+backup first; this sweep has neither.
+
+Gitignored trees (`node_modules/`, `dist/`, `build/`) are **out of scope by construction** —
+`--exclude-standard` never lists them. `worktree-deps-share.sh` may back them with a shared
+store, and deleting through a shared symlink would destroy it for every other worktree.
+
+Shared-module change: `PWT_DIRTY_FILTER_PY` gains a `FILTER_INVERT` mode and
+`__pwt_path_discard_filter`, so the sweep gets the complement of the ignore-token partition
+from the **same** matcher — a fourth private copy would have been the most dangerous of the
+four, because this one decides what to delete.
+
+Two bugs caught by the corpus rather than by review:
+`paths=$(git ls-files -z)` silently drops every NUL (bash cannot hold NUL in a variable), so
+the read loop found no delimiter and processed **zero** files while every guard reported
+success — a sweep that scans nothing and calls itself clean; now a temp file, pinned by a
+`scanned > 0` regression. And the row accumulator used TAB as its `read` IFS, which is
+IFS-*whitespace*: runs collapse and empty fields drop, shifting every later column. Switched
+to US (`\x1f`) and pinned structurally.
+
+Tests: new corpus **53 cases**, 8/8 mutations verified RED; `plan-w-team-dirty-ignore-lib`
+59 → **66**; GC and on-merge unchanged. Sync allowlist updated so both new files reach the
+managed consumers.
+
+## [2.13.0] — 2026-08-19 (6204909)
+
+**The landing gate — a run that ships but does not LAND can no longer report SUCCESS.**
+The two deltas queued against 2.12.0, shipped together: RC4 (F6/F7/F8) from the source
+spec's ADDENDUM, and the README permission story that is its other half. Spec:
+[`docs/specs/pwt-host-load-and-stall-protection.md`](../../../docs/specs/pwt-host-load-and-stall-protection.md)
+(**AMENDED**, not superseded — see its new `## DELTA RESOLUTION` section); run spec:
+[`docs/specs/process-the-two-queued-deltas-for-the-just-landed-plan-w-team-v2-12-0-host-load-128610c0.md`](../../../docs/specs/process-the-two-queued-deltas-for-the-just-landed-plan-w-team-v2-12-0-host-load-128610c0.md);
+operations doc: [`docs/operations/plan-w-team-landing-gate.md`](../../../docs/operations/plan-w-team-landing-gate.md).
+Closes recursive-followup row 142.
+
+A 15-hour run completed **all 8 stages** — `retro-complete` at 13:21:11Z, retro captured,
+tag created — and landed **nothing**. The worktree branch sat 31 commits ahead of master;
+local master and origin/master had none of them; the tag existed only locally;
+`terminal_state` stayed `null`, so the run was simultaneously "finished" (stage events)
+and "still open" (goal-state). The watcher kept exiting 3 over the corpse because its
+liveness check read PRESENCE only. Recovery was a manual resume that lived in exactly one
+supervisor's context.
+
+Root cause: PWT-WT1 made merge-to-default an **honor-system step** — "ExitWorktree happens
+implicitly when the session ends (or explicitly after Step 8 retro **if you want** the main
+checkout to inherit the merge)". For an autonomous run whose done-when includes a landed
+version + tag, "if you want" is exactly the class the Rule-Enforcement Invariant bans. And
+the ending is **deterministic, not occasional**: the bg worker gets no permission-mode flag
+and `</dev/null` stdin, so the ship-stage `git push` prompt **auto-rejects with no visible
+trace**; `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` clears only the SKILL's push-ack gate, one layer
+above the harness permission that was never granted.
+
+**The permission story, decided.** The addendum demanded an explicit choice and offered two.
+2.13.0 takes the second: **push is a user-owned grant**, and the fix makes the denial LOUD
+rather than automatic. Granting `git push` at spawn was rejected because it installs a
+security decision invisibly — the same principle the README delta states in its own words.
+
+- `feat` **F6 — landing is a verified artifact, ANDed into SUCCESS.** New
+  `.claude/scripts/plan-w-team-land.sh` owns the predicate in ONE place (the gate and the
+  remediation must never disagree): `merged` accepts **ancestry OR tree-equality** — the
+  latter because §6g-ter's `gh pr merge --squash` puts the work in a NEW commit that the
+  branch tip is nobody's ancestor of, and an ancestry-only predicate would have refused the
+  pipeline's own sanctioned path — plus `tag_reachable` and `pushed`; no remote ⇒
+  `pushed:"n/a"` so a local-only repo can still land. `verify` writes
+  `.claude/state/plan-w-team-landed-<slug>.json` **only on a true verdict** and **removes**
+  it when the predicate turns false, so a rewound landing cannot keep passing; there is no
+  `--force` and no caller-asserted path, because the artifact IS the gate.
+  `plan-w-team-surface-status.sh` reads it into a `landed` field plus a bare, grep-able
+  `landed=<sha>` line. `plan-w-team-goal-evaluator.sh` withholds SUCCESS for a
+  worktree-isolated run without one, naming the failed check and all three remediation
+  commands. **Scoped, not global:** isolation is read from the run manifest's
+  `worktree_path` and from nothing else. An earlier revision of this change also accepted
+  "the goal-file PATH contains `/.claude/worktrees/`" — that conflates "this RUN is
+  worktree-isolated" with "this CHECKOUT happens to live under a worktrees directory", and
+  it false-fired across the entire evaluator + antipark shell corpus (those harnesses point
+  `PWT_PROJECT_ROOT_OVERRIDE` at the repo root, and claude-pattern's own repo root IS a
+  worktree whenever the skill self-hosts). A path SPELLING is not a fact about a run;
+  `worktree_path` is, and `pwt-manifest.sh` writes it at every stage. Indeterminate ⇒ gate
+  SKIPPED, leaving every non-worktree run byte-for-byte unchanged — and that is not a hole
+  in practice, since a run with no manifest never emitted a status block and therefore never
+  emitted `retro-complete` either. Fail-CLOSED on the artifact (C3's contract),
+  fail-OPEN on the git re-verification (a Stop hook that errors is worse than one that
+  under-tightens). New `merge` subcommand carries the dirty-tree protocol as CODE rather
+  than stage-file prose — AC8 requires it proven by content comparison, and the shared stash
+  stack means unique tag → capture SHA → **apply** (never `pop`) → drop by re-found tag.
+  Kill switch `PWT_DISABLE_LANDING_GATE=1`.
+- `feat` **F7 — the watcher stops heartbeating over a corpse.**
+  `plan-w-team-await-terminal.sh` adopts PWT-DS1 Tier B's exclusion predicate
+  (alive = present AND `state` ∉ {blocked, done}) and exits **6** on dead-but-unflipped,
+  with a diagnosis naming the last stage event: `COMPLETE_UNLANDED` (land it) vs
+  `DIED_MID_<stage>` (resume the work) — two cases that need opposite supervisor actions.
+  A row with **no** `.state` counts as ALIVE: interactive rows carry `status`, background
+  rows carry `state`, and narrowing a liveness predicate must never invent a death.
+  **The TERTIARY coupling is what makes F7 reachable at all** — the transcript-success
+  detector runs first, and the RC4 worker had `retro-complete` + every criterion `met:true`,
+  so it would have certified `terminal=SUCCESS source=transcript` for the exact ending this
+  work prevents; it now consults the same landing artifact and withholds. Kill switch
+  `PWT_DISABLE_UNFLIPPED_DETECT=1`, deliberately distinct from F6's (the addendum requires
+  the landing-gate switch to leave watcher and remediation working).
+- `feat` **F8 — resume-to-land is scripted, not runbook knowledge.**
+  `plan-w-team-land.sh resume` refuses (exit 6, nothing mutated) when already landed,
+  already terminal, missing a `worker_sid`, or missing `pwt-steer.sh` — every refusal
+  audited to `plan-w-team-land-audit.jsonl`, so a refusal is as diagnosable as an action.
+  It **delegates** stop+resume to `pwt-steer.sh` rather than reimplementing the three traps
+  that script closes by construction (36-char UUID vs 8-char handle, resume from inside the
+  worktree, launch-succeeded ≠ delivery-succeeded) plus its goal-state bookkeeping and
+  old-watcher teardown. `pwt-steer.sh` gains `--env KEY=VALUE` for the one thing it lacked —
+  a resume loses the launch-time environment — and **refuses**
+  `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE` as a key, because that is the PWT-DS2 cascade guard,
+  not a knob. It **never writes `terminal_state`**: the lane guard refuses supervisor writes
+  to that field as self-termination spoofing (observed live 2026-08-19), so the flip must
+  come from the resumed session's own Stop evaluator. Asserted by test, not just documented.
+- `docs` **The permission story, where the operator meets it.** README gains a Step-7
+  "Push authorization for unattended goals" subsection (the auto-rejection, the two ways to
+  handle it, the narrow allowlist entries, and why a trailing wildcard also matches
+  `--force`), a `settings.local.json` three-layer reference section after "What Gets Synced",
+  and a Step-2 collaborator-vs-maintainer parity paragraph. New
+  `dotfiles/claude/settings.local.template.json`; `setup-new-project.sh` installs it **only**
+  when the target has no overlay and never touches an existing one.
+- `test` `tests/skill/cases/landing-gate.bats` (33 cases: AC8/AC9/AC10) and
+  `tests/skill/cases/permission-story.bats` (AC11–AC14). Four are deliberate **positive
+  controls** — a non-worktree run still reaches SUCCESS, a live worker still heartbeats, a
+  `.state`-less row counts as alive, a reachable tag passes — because a gate that refuses
+  everything is as broken as one that refuses nothing.
+- `chore` `plan-w-team-land.sh` added to the `sync-to-project.sh` allowlist (copy line **and**
+  dry-run line): §6i, the evaluator and the watcher all sync and all name it, so a consumer
+  without the script would exit 1 at ship and then block SUCCESS forever on a remediation
+  command that does not exist. Both new artifacts registered in `shared/state-artifacts.md`;
+  `landed` added to the Status-Block Schema in `shared/goal-conditions.md`.
+
+**Deliberately NOT done** (still open, with reasons): followup row 147 — narrowing
+`pwt-live-session-cwds.sh`'s inclusion predicate is a NEIGHBOUR of F7, not part of it, and
+needs a fleet-wide scope decision the periodic GC and `plan-w-team-zombie-prune.sh` must both
+sign off on (they genuinely disagree on whether `blocked` means alive). Followup row 143 —
+registering the lane guard as a one-way-door surface changes merge behaviour across 17
+consumer repos and is its own delta.
+
+## [2.12.0] — 2026-08-19 (3bab477)
+
+**Host-load protection, verification stall detection, and lane-guard hygiene** — the
+2026-08-19 incident response. Spec: [`docs/specs/pwt-host-load-and-stall-protection.md`](../../../docs/specs/pwt-host-load-and-stall-protection.md)
+(promoted verbatim from the authoring repo); operations doc:
+[`docs/operations/host-load-protection.md`](../../../docs/operations/host-load-protection.md).
+
+A 14-hour run spent **4.5 hours** looping on "Running the full suite and validators…" with
+no commit, no stage event and no alert — and **the only active process on the machine was
+that run**. It starved itself: the statusline spawned an unbounded, uncached, un-singletoned
+`ccusage` per render; `ccusage` re-parses the transcript corpus, so its cost grew with the
+run's own output (longer run → bigger transcripts → costlier helper → slower host → longer
+run); load hit 24–27 on 12 cores; the full suite crawled past the Bash tool's 600s cap; each
+timed-out call leaked its whole process tree (~17 orphan wrappers + 40-min-old hung pytest);
+and the step was retried blindly every ~10 minutes with nothing written down. The human
+asking "is it stuck?" was the detection mechanism. Three independent root causes, five fixes,
+one kill switch each.
+
+- `feat` **F1 — the spawn source is gone.** New `.claude/scripts/ccusage-blocks.sh` (a fourth
+  statusline helper, same shape as `plan-usage.sh`/`usage-breakdown.sh`/`account-info.sh`):
+  lean gate first, then a **REQUIRED** real bound (`gtimeout`→`timeout`→**skip**; the
+  unbounded fallback is DELETED, not hidden behind a flag), a `mkdir` singleton, a 60s cache,
+  and a `nohup`-detached refresh so a cancelled statusline cannot orphan a half-run helper.
+  `statusline.sh` no longer contains any `ccusage` call of its own and skips
+  `usage-breakdown.sh` (the other transcript-corpus parser) in lean mode. `pwt-goal.sh`
+  exports `PWT_LEAN_STATUSLINE=1` into **every** bg spawn via `LAUNCH_ENV` **and** the
+  bare-fallback branch; the supervisor protocol + manifest Step 3c export it for the duration
+  of supervision. Kill switch `PWT_DISABLE_LEAN_STATUSLINE=1`.
+- `feat` **F2 — the executor has stall semantics.** New
+  `.claude/scripts/plan-w-team-verify-run.sh` runs a command as the leader of its **own
+  process group** (`set -m`), so a bound firing reaps the whole tree (TERM → grace → KILL)
+  instead of orphaning it. The zero-surviving-descendants contract is **measured**, not
+  assumed: `orphans_after` is enumerated and recorded in every stall event. Retry cap
+  **K=3** per `(slug, step)` behind a `mkdir` lock (without it two runners each read "2" and
+  both proceed, granting a 4th attempt against a cap of 3); at the cap the runner REFUSES to
+  execute the command, runs a mandatory host-health diagnosis, writes the distress artifact,
+  and requires an explicit degraded-mode-or-halt choice. Exits `10` STALL_TIMEOUT / `12`
+  STALL_CAP_EXCEEDED. Wired into `03-execute.md` (protocol) and `05-ship.md` §6b, where a
+  stall verdict is surfaced as a HOST verdict and never laundered into "the suite is red".
+  Kill switch `PWT_DISABLE_STALL_DETECTION=1`.
+- `feat` **F3 — the supervisor watches the host, not just the worker.**
+  `plan-w-team-await-terminal.sh` samples host health on its existing loop and exits **5** —
+  distinct from `0` terminal / `3` re-arm / `4` duplicate — when a breach repeats on two
+  consecutive samples, emitting a proactive `⚠ HOST-DISTRESS` block naming the consumer and
+  the evidence. Strictly additive and ordered AFTER the terminal checks, so a real terminal
+  always wins. Exit 5 is **not** a reason to end the run (P3 no-caps is untouched). Kill
+  switch `PWT_DISABLE_HOST_DISTRESS=1`.
+- `feat` **shared sampler** — new `.claude/scripts/plan-w-team-host-health.sh` (load, ncpu,
+  top consumers, non-lane max %CPU, lane orphans, `load_suspect`, `breach_reasons`). One
+  sampler, three consumers (F2/F3/F5) rather than three copies of a load parser. Lane
+  processes are EXCLUDED from the runaway-CPU signal (the run's own builders are supposed to
+  use CPU) and are the only ones counted as orphans. Fail-open: it never claims distress it
+  cannot evidence.
+- `fix` **F4 — the lane guard stopped blocking its own incident response.** Two classifier
+  false-positives shared one root cause — the guard read shell TEXT as shell STRUCTURE. New
+  `__mask_shell_text` neutralizes operators inside quotes and blanks command substitutions
+  **before** any extraction, so `awk '$3 > 50'` is no longer a redirect and
+  `mv "$(command -v ccusage)"` no longer sheds the fragment `` ccusage)" ``. Path characters
+  inside quotes are PRESERVED, so `rm -rf '/repo/src'` still denies — a test asserts the
+  masking cannot widen the permit set. `git tag -l`/`--list` is exempted as read-only while
+  `git tag v1` and `git tag -l && git commit` still deny. New host-hygiene ALLOW class for
+  BOUND supervisors: `kill`/`pkill`/`killall`/`renice` (evidence, not new authority — these
+  were never denied), and `mv`/`cp`/`ln`/`rm` when **every** resolvable target is provably
+  outside the repo **and every path in `git worktree list`**. `__audit` now records ALLOWs as
+  well as DENYs, with the "no live lane" path deliberately excluded as a disk-exhaustion
+  vector. Kill switch `PWT_DISABLE_LANE_GUARD_HYGIENE=1` (narrowing only — there is no
+  widening env var).
+- `feat` **F5 — durations carry their load context.** `plan-w-team-test-green.sh` records
+  `load_1m`, `ncpu` and `load_suspect` beside `duration_s`; `shared/qa-tiers.md` carries the
+  `load-suspect` annotation rule for hand-filled ledger rows. Observability only, no gating
+  change (the same battery command measured 229/252/302/454 s purely by load). Kill switch
+  `PWT_DISABLE_LOAD_ANNOTATION=1`.
+- `fix` **four self-inflicted defects caught while building this**, three of them the same
+  "fail-open on an input we actually HAVE" class the incident itself is made of:
+  (1) the sampler handed its lane set to `awk -v`, which rejects a newline in the value —
+  with no worktrees the string ends in one, awk exited non-zero, the `|| echo ""` swallowed
+  it, and the ENTIRE process table normalized to empty (`max_nonlane_pcpu: 0` on a host that
+  is on fire). Now passed through the environment.
+  (2) `jq '.load_suspect // "null"'` rewrites every honest `false` into `null` — jq's `//`
+  fires on `false` as well as `null` — silently deleting the "NOT load-suspect" evidence the
+  annotation exists to provide.
+  (3) with no breach reasons, `printf '%s' "" | jq -R` emits NOTHING while exiting 0, so
+  `--argjson breach_reasons ''` failed the whole emit and dropped the sampler into its
+  jq-ABSENT fallback, where `top_consumers` is hardcoded `[]`. Net effect: on any healthy
+  host the sampler named no consumers at all, so the `⚠ HOST-DISTRESS` block could never
+  say WHAT was starving the run — the one field it exists for. Every stubbed test took the
+  breach path and missed it; only running the sampler for real surfaced it.
+  (4) the stall runner's watchdog was killed by pid, orphaning its `sleep` for the remainder
+  of the bound — an orphan produced by the very script whose contract is "zero surviving
+  descendants". It now runs in its own process group and is group-killed.
+  All four now have regression tests, and (1)–(3) are written up in the operations doc so
+  the next author does not re-introduce them.
+- `perf` the lane guard's shell masking is computed **lazily**, only once a live lane is
+  confirmed and the tool is Bash. The hook fires on every Bash call in every session on the
+  machine, and masking them all would add an awk spawn per tool call host-wide — the exact
+  per-call spawn cost this release exists to remove.
+- `fix` **registry gap (pre-existing).** `.claude/state/plan-w-team-ds1-audit.jsonl` shipped
+  in 2.10.0 without a `shared/state-artifacts.md` entry, so `plan-w-team-symmetry-check.sh`
+  reported an orphan reader (exit 4) — the exact "writer pointing at a wholly undeclared
+  file" case the registry exists to catch. Registered; the check is green again.
+- `test` **49 new cases**: `tests/skill/cases/host-load-protection.bats` (34 — AC1/AC2/AC3/AC5,
+  including a grandchild-reaping proof and a per-fix kill-switch assertion) and 15 AC4 cases
+  appended to `tests/skill/cases/plan-w-team-lane-guard.bats`. All 28 pre-existing lane-guard
+  cases still pass unchanged — the invariant that mattered most for a one-way-door change.
+- `chore` all three new scripts added to `sync-to-project.sh` (plus the dry-run listing);
+  `ccusage-blocks.sh` carries an explicit comment because it does not match the
+  `plan-w-team-*`/`pwt-*` prefix the allowlist checker enforces.
+## [2.11.0] — 2026-08-19 (213a323)
+
+**WT-2 — the per-merge ship path and the periodic GC now share ONE dirtiness policy.**
+Resolves the `open` recursive follow-up queued by the 2026-06-08 `cleanup-eval` retro.
+
+`plan-w-team-worktree-on-merge.sh` invariant 2 tested **raw porcelain** with no ignore
+filter, making it stricter than `plan-w-team-worktree-gc.sh`. Because hooks rewrite
+`.claude/state/*` into every worktree, ship-time reclaim skipped nearly every worktree the
+periodic GC would have reaped — the leak was masked only because the GC swept up later.
+Measured before the fix on a merged worktree whose entire porcelain was `?? .claude/`:
+GC reported `uncommitted: false`, on-merge reported
+`safe-skip: uncommitted changes in worktree (invariant 2)` and left the worktree on disk.
+
+- `feat` **`plan-w-team-dirty-ignore-lib.sh`** — new sourceable module that is the SINGLE
+  definition site for `PWT_DIRTY_IGNORE_DEFAULT`, `PWT_PRESERVE_IGNORE_DEFAULT`,
+  `PWT_DIRTY_FILTER_PY`, `__pwt_dirty_ignore_filter`, `__pwt_path_ignore_filter`,
+  `__pwt_tracked_dirty`, `__pwt_python_ok`, `__pwt_copy_files` and `preserve_then_reap`.
+  Both cleanup scripts source it; neither carries a private copy. This is the structural
+  fix for a recurring class — 1.41.0 had to patch the same leak twice because two sites
+  held their own ignore sets, and WT-2 then found a third answer in on-merge.
+- `fix` **on-merge adopts the GC's whole dirtiness contract, not just its filter.** The
+  filter is only the *loosening* half; shipping it alone would have traded a leaked
+  worktree for destroyed authored work (the 2026-07-30 loss class). Invariant 2 is now
+  ordered: tracked dirt → absolute veto (ignore set does not apply, pure shell so it
+  survives a broken python3); unevaluable guard → strict raw-porcelain skip; filtered
+  remainder → skip; then `preserve_then_reap` before the destructive removal, with a
+  failed backup aborting the removal.
+- `fix` **fail-safe on unevaluable guards — on-merge gains a hoisted VETO 0.** The matcher
+  runs in python3, and a broken interpreter emits nothing — indistinguishable from
+  "clean". on-merge now probes first and degrades to *keep* on a missing module
+  (`PWT_DIRTY_IGNORE_LIB`) or a broken interpreter, never to *clean*. The check sits
+  **above every invariant**, not inside the dirt branch: a CLEAN worktree skips that
+  branch, and invariant 3 (in-use) is *also* python3-backed — it returns an empty
+  live-cwd list when the interpreter is broken — so a merged-but-live worktree would
+  otherwise be removed with its in-use veto never evaluated. Found while writing the
+  test, not by reading. The GC folds a missing module into its existing VETO 0, and its
+  fail-closed reason now names the ACTUAL cause (a missing module no longer reports
+  "python3 unavailable", which would send a fleet-wide keep-everything to the wrong place).
+- `fix` **`preserve_then_reap` now backs up untracked CONTENT, not just filenames.**
+  `git status --porcelain` collapses a wholly-untracked directory to one `?? dir/` entry,
+  so the old patch recorded a directory name while the files inside were destroyed with
+  the worktree. Untracked paths are now enumerated with `git ls-files --others` and copied
+  into `<name>-<ts>.files/`. Benefits both callers. This mattered here because closing the
+  leak is what makes on-merge start deleting these worktrees at all.
+- `fix` **the untracked enumeration passes `core.quotePath=false`.** With git's default, a
+  path holding non-ASCII bytes returns double-quoted and octal-escaped
+  (`".claude/hooks/caf\303\251.sh"`). That string names no file on disk, so the copy
+  failed, `preserve_then_reap` returned non-zero, and the caller skipped the removal —
+  ONE accented filename anywhere in a worktree would have silently re-opened the very
+  leak this release closes. It failed safe (never lossy), but it was still wrong. Spaces
+  do not trigger quoting; non-ASCII does. Found by testing the shadow path, not by review.
+- `refactor` the orphan-dir arm's inlined prefix/segment matcher (a fourth private copy of
+  the token semantics) now calls the shared `__pwt_path_ignore_filter`.
+- `test` `plan-w-team-dirty-ignore-lib.test.sh` (new, 59 cases) — including a mechanical
+  single-source-of-truth guard that fails if any shared symbol, or the ignore token list
+  itself, is ever defined in a second file, the both-consumers-fail-closed matrix, and the
+  unusual-filename round trip. `plan-w-team-worktree-on-merge.test.sh` grows the GC-parity
+  set including the backup-failure abort (26 → 50). GC suite unchanged at 131/131 (the
+  move is a relocation). Full skill suite 1249/1249.
+- `chore` `sync-to-project.sh` ships the module + its test (explicit allowlist entry AND
+  dry-run listing) ordered BEFORE the two scripts that source it.
+- `docs` `docs/operations/worktree-lifecycle.md` — the shared-policy banner, the
+  "when the filter cannot be evaluated" degradation matrix, and what the backup saves.
+- `chore` **CLAUDE.md size ratchet repaired** (pre-existing red, not caused by this work):
+  the `claude-md-size` live anchor was already failing on main at 40688 chars vs the
+  40000 limit (from `1c14d06`). Since this run's definition-of-done requires 100% of
+  tests passing, it had to go green to ship. Information-preserving: the two
+  self-described-historical Model Tiering v2/v3 notes were consolidated (canonical copy
+  lives in the skill manifest) and markdown table alignment padding was collapsed across
+  53 rows. 40688 → 36717 chars.
+- `fix` **on-merge invariant 3 reaches fail-closed liveness parity with the GC.** WT-2
+  *loosens* invariant 2, so on-merge now reclaims worktrees it used to safe-skip on any
+  dirt — which makes invariant 3 (in-use) load-bearing where a dirtiness veto used to
+  backstop it. But on-merge never consulted the canonical `pwt-live-session-cwds.sh`
+  probe and had no `LIVE_QUERY_FAILED` arm: a missing/non-executable helper, or the
+  known-flaky empty-but-exit-0 `claude agents --json`, left `LIVE_CWDS` empty and skipped
+  the in-use check **entirely** rather than keeping the worktree. On the 2.9.0
+  `.pwt-shipped` force path — where invariant 2 is deliberately relaxed and invariant 3
+  is the *sole* remaining protection — that could force-remove a worktree with a live
+  session in it. on-merge now mirrors the GC's 2026-06-07 mid-flight-reap contract:
+  canonical probe first, `__QUERY_FAILED__`/missing-helper ⇒ fail closed ⇒ KEEP, and
+  `claude-agents-extended.sh` demoted to an **additive-only** secondary source that can
+  add protected paths but never clear the fail-closed flag.
+- `fix` All surviving `git status --porcelain` call sites in the three cleanup scripts now
+  pass `-c core.quotePath=false`, so every path enumeration in the module speaks one
+  dialect (aligns them with the `ls-files` site fixed in 2.8.0). Consistency, not a
+  verdict change — the shared filter already stripped the surrounding quotes.
+- `docs` `05-ship.md` §6h now states what a `--worker-only` run with no supervisor does
+  when the auto-mode classifier denies the cross-checkout merge — the branch is landed by
+  pushing it to `origin/main` as a verified fast-forward, and the stale local `main`
+  checkout is reported to the operator. Closes the OPS follow-up from the run-2 retro.
+- Spec: `docs/specs/resolve-recursive-followup-row-16-cleanup-eval-2026-06-08-wt-2-medium-deferred-p-1a44b2dd.md`
+  (the previously-cited `worktree-on-merge-dirty-ignore-parity.md` was never written —
+  dangling reference corrected).
+
 ## [2.10.0] — 2026-08-18 (7e20b16)
 
 **Double-spawn defense rebuilt after the cleanscale trifecta (3rd recurrence; rootcause:

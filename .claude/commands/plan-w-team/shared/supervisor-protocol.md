@@ -656,6 +656,13 @@ the state flips and wakes the supervisor THE INSTANT it does:
 # instead of dragging it back to busy-poll every turn (PWT-SUP-YIELD). The worker
 # never sets this — pwt-goal forces it to 0 — so worker blocking is unchanged.
 export PLAN_W_TEAM_SUPERVISOR_SESSION=1
+# F1 (2026-08-19 host-starvation incident): a supervising session re-renders its
+# status line on every turn for the whole supervision window — hours. The
+# statusline's transcript-history helpers (ccusage, usage-breakdown) cost MORE
+# the longer the run gets, so an attended supervisor is a second copy of the
+# feedback loop that starved the 2026-08-19 run. Lean for the duration.
+# Kill switch: PWT_DISABLE_LEAN_STATUSLINE=1.
+export PWT_LEAN_STATUSLINE=1
 # run_in_background: true — the harness re-invokes the supervisor when this exits.
 .claude/scripts/plan-w-team-await-terminal.sh --slug "$SLUG" --worker-sid "$WORKER_SID"
 ```
@@ -671,8 +678,72 @@ terminal/halt reached (read `terminal_state` and emit the TERMINAL/⚠HALT block
 this is a heartbeat, **NOT** a wall-clock cap; principle #3 forbids turn/time caps
 on the work); `4` = duplicate watcher (1.54.0 singleton — another watcher already
 owns this slug+worker-sid wait: DEFER to it, do **NOT** re-launch; re-launching
-loops straight back to exit 4). Tune via `PWT_AWAIT_INTERVAL_S` /
-`PWT_AWAIT_HEARTBEAT_S`.
+loops straight back to exit 4); `5` = **host distress** (F3 — see below);
+`6` = **dead-but-unflipped** (F7 — see below). Tune via
+`PWT_AWAIT_INTERVAL_S` / `PWT_AWAIT_HEARTBEAT_S`.
+
+### Exit 5 — HOST-DISTRESS (F3, 2026-08-19 incident)
+
+Every other signal the supervisor has is about the WORKER. On 2026-08-19 the
+worker was alive, responsive, and making zero progress for 4.5 hours because the
+HOST was saturated — and the detection mechanism was the human asking "is it
+stuck?". The watcher now samples `plan-w-team-host-health.sh` on the same loop
+(default every `PWT_HOST_DISTRESS_INTERVAL_S=60`) and exits `5` when a breach
+repeats on `PWT_HOST_DISTRESS_CONFIRM=2` consecutive samples. Breach conditions:
+1-min load > 1.5×ncpu, OR a single **non-lane** process sustained above 150% CPU,
+OR ≥5 lane orphans.
+
+**Exit 5 is neither a terminal nor a re-arm.** On waking to it, the supervisor:
+
+1. **Surfaces the `⚠ HOST-DISTRESS` block immediately** — proactively, without
+   being asked. That is the entire point of the fix. The block names the
+   consumer, the load ratio, and the orphan count; the same evidence is written
+   to `.claude/state/plan-w-team-host-distress-<slug>.json`.
+2. **Does NOT terminate the run.** The run is alive and the goal evaluator is
+   right to keep it alive (principle #3 — no wall-clock caps). Distress is a
+   condition to act on, not a reason to stop.
+3. **Acts on the consumer.** If it is not lane work, host hygiene — `kill` /
+   `pkill` / `renice`, and mutations whose targets are all outside the repo — is
+   an explicitly ALLOWED supervisor action (see `docs/operations/lane-enforcement.md`
+   §Host-hygiene scope). If it IS lane work, prefer degraded mode over adding
+   parallelism.
+4. **Re-launches the wait** afterwards, exactly as for exit 3.
+
+The supervisor still may not implement, build, or commit — remediating the host
+is not doing the lane's work. Kill switch: `PWT_DISABLE_HOST_DISTRESS=1`.
+
+### Exit 6 — DEAD-BUT-UNFLIPPED (F7, RC4 2026-08-19)
+
+The complement of exit 5: there, the worker was alive and the host was sick; here,
+the worker is **dead in every sense that matters** while every surface still reports
+an open run. On 2026-08-19 a 15-hour run finished all 8 stages at 13:21:11Z, the
+worker went `done` in `claude agents --json` — and this watcher kept exiting 3
+forever, because its liveness check read PRESENCE only. The supervisor discovered
+the death by manual polling; a human question ("are we close?") was again part of
+the detection path.
+
+The watcher now uses PWT-DS1 Tier B's exclusion predicate — **alive = present AND
+`state` ∉ {blocked, done}** — and exits `6` when a not-alive row persists for
+`PWT_AWAIT_GONE_CONFIRM` consecutive checks while `terminal_state` is still null.
+A row with no `.state` (interactive sessions carry `status` instead) counts as
+ALIVE: narrowing a liveness predicate must never invent a death.
+
+The exit line carries a **diagnosis**, because the two cases need opposite actions:
+
+| Diagnosis           | What it means                                                                                                            | Supervisor action                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------- |
+| `COMPLETE_UNLANDED` | Last stage event was `retro-complete` (or the transcript shows it) — the pipeline FINISHED and the release never landed. | `plan-w-team-land.sh status --slug <slug>` to see which check failed, then `plan-w-team-land.sh resume --slug <slug>`. |
+| `DIED_MID_<stage>`  | The worker died at `<stage>` without writing a terminal.                                                                 | Inspect, then `pwt-steer.sh --slug <slug> --message '<next action>'`.                                                  |
+
+**Exit 6 is not a terminal.** Like exit 5 it is a condition to act on. The flip to
+terminal must still come from the resumed pipeline session's own Stop evaluator (or
+the user's lane-release file) — the lane guard refuses a supervisor write to
+`terminal_state` as self-termination spoofing, correctly, and
+`plan-w-team-land.sh` therefore never writes that field either.
+
+Kill switch: `PWT_DISABLE_UNFLIPPED_DETECT=1` (distinct from
+`PWT_DISABLE_LANDING_GATE=1`, which turns off only the evaluator's F6 AND-check and
+leaves the watcher and the remediation script working).
 
 **Worktree-aware goal-state resolution (PWT-WT2).** PWT-WT1 spawns `--worker-only`
 workers with `claude --bg --worktree`, so the worker runs inside
