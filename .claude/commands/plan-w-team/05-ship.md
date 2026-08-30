@@ -1193,11 +1193,28 @@ with commits proceeds straight through to the ack gate below.
 
 **Autonomous-run auto-clear (PLAN_W_TEAM_AUTO_APPROVE_PUSH).** A `pwt-goal.sh --worker-only` worker (and the `--launch` path) exports `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` into the worker env precisely so the push-ack gate clears WITHOUT a human pause — the whole point of an unattended run. Before this was consumed (1.35.0), the var was set but inert: the worker either hand-`touch`ed the ack file (brittle, LLM-dependent) or blocked here and stopped short of ship. Auto-create the ack file when the env signal is present so the autonomous push proceeds deterministically. Interactive runs (var unset) are unchanged — they still require the explicit opt-in.
 
+**Governed delegated approver (C4, phase 2 — Governor Contract).** When a governor with a
+file-mode approver is armed AND the gate was NOT already auto-cleared above, the run writes a
+`pwt-pause/1` request and AWAITS the governor's decision (no wall-clock cap): `approve` creates
+this exact `$ACK_FILE` (byte-for-byte what a human `touch` or auto-approve does), `deny` /
+`escalate` / silence leave it absent so the existing halt below fires. The auto-approve check
+runs FIRST, so `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` still short-circuits every governor. Ungoverned
+(or no file-mode approver), `pwt-approver.sh` exits `10` immediately and nothing changes.
+
 ```bash
 ACK_FILE=".claude/state/plan-w-team-ack-$SLUG"
 if [ ! -f "$ACK_FILE" ] && [ "${PLAN_W_TEAM_AUTO_APPROVE_PUSH:-0}" = "1" ]; then
   : > "$ACK_FILE"
   echo "✓ push-ack auto-cleared (PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 — autonomous run)"
+fi
+# C4: delegated approver. Engage ONLY when GOVERNED (parity: an ungoverned run must not
+# run the approver at all — not even to exit 10 — or it would add a stderr line the P0
+# invariant forbids). If approved, it creates $ACK_FILE and the gate below proceeds;
+# deny/escalate/silence leave it absent.
+if [ ! -f "$ACK_FILE" ] && [ -x .claude/scripts/pwt-approver.sh ] && [ -r .claude/scripts/pwt-governor-lib.sh ] \
+   && ( . .claude/scripts/pwt-governor-lib.sh 2>/dev/null; pwt_governed ); then
+  .claude/scripts/pwt-approver.sh await --slug "$SLUG" --gate push-ack --risk two-way \
+    --proposed-action "push ${BRANCH:-<branch>} to origin default branch" --block 2>&1 || true
 fi
 if [ ! -f "$ACK_FILE" ]; then
   echo "Ship gate 6g: no push acknowledgment."

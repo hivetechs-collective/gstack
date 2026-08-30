@@ -148,6 +148,96 @@ collect_slugs() {
     } | sort -u
 }
 
+# ── pwt-status/1 schema field sources (phase 2, C1) ──────────────────────────
+# Every helper is read-only + FAIL-OPEN: an unreadable source yields {}/null/""/0,
+# never an error. Callers run inside the detail --json block where WT is set.
+goal_json_for() {  # $1=slug → goal-state JSON or {}
+    local slug="$1" f
+    for f in "$STATE_DIR/plan-w-team-goal-${slug}.json" "${WT:-}/.claude/state/plan-w-team-goal-${slug}.json"; do
+        [ -n "$f" ] && [ -f "$f" ] && jq -e . "$f" >/dev/null 2>&1 && { cat "$f"; return 0; }
+    done
+    echo '{}'
+}
+lane_alive_json_for() {  # $1=slug → {live_by_process,live_by_registry,...} or {}
+    local slug="$1" bin j
+    [ "${PWT_DISABLE_STATUS_LANE_ALIVE:-0}" = "1" ] && { echo '{}'; return 0; }
+    bin="${PWT_LANE_ALIVE_BIN:-$SCRIPT_DIR/pwt-lane-alive.sh}"
+    [ -x "$bin" ] || { echo '{}'; return 0; }
+    j=$("$bin" "$slug" --json 2>/dev/null)
+    printf '%s' "$j" | jq -e . >/dev/null 2>&1 && printf '%s' "$j" || echo '{}'
+}
+pause_site_for() {  # $1=slug → {gate,since,evidence_path} or null
+    local slug="$1" adir="" gm f gate since dec dv
+    gm="$STATE_DIR/pwt-governor.json"
+    [ -f "$gm" ] && adir=$(jq -r '.approver.dir // ""' "$gm" 2>/dev/null)
+    [ -n "$adir" ] || adir=".claude/state/pwt-pause"
+    case "$adir" in /*) : ;; *) adir="$PROJECT_ROOT/$adir" ;; esac
+    [ -d "$adir" ] || { echo null; return 0; }
+    for f in "$adir/$slug".*.request.json; do
+        [ -f "$f" ] || continue
+        gate=$(jq -r '.gate // ""' "$f" 2>/dev/null)
+        dec="$adir/$slug.$gate.decision.json"
+        if [ -f "$dec" ]; then
+            dv=$(jq -r '.decision // ""' "$dec" 2>/dev/null)
+            case "$dv" in approve|deny) continue ;; esac   # already consumed → not pending
+        fi
+        since=$(jq -r '.since // ""' "$f" 2>/dev/null)
+        jq -n --arg g "$gate" --arg s "$since" --arg e "$f" '{gate:$g, since:$s, evidence_path:$e}'
+        return 0
+    done
+    echo null
+}
+landed_for() {  # $1=slug → {verdict,sha} or null
+    local slug="$1" art landbin out v
+    for art in "$STATE_DIR/plan-w-team-landed-${slug}.json" "${WT:-}/.claude/state/plan-w-team-landed-${slug}.json"; do
+        [ -n "$art" ] && [ -f "$art" ] || continue
+        [ "$(jq -r '.slug // ""' "$art" 2>/dev/null)" = "$slug" ] || continue
+        jq -n --arg v "$(jq -r '.verdict // ""' "$art" 2>/dev/null)" \
+              --arg s "$(jq -r '.landed_sha // ""' "$art" 2>/dev/null)" '{verdict:$v, sha:$s}'
+        return 0
+    done
+    landbin="${PWT_STATUS_LAND_BIN:-$SCRIPT_DIR/plan-w-team-land.sh}"
+    if [ -x "$landbin" ]; then
+        out=$("$landbin" status --slug "$slug" 2>/dev/null)
+        # Priority match: specific verdicts win over the generic NOT_LANDED (which
+        # they co-occur with in land.sh output), and LANDED is last so NOT_LANDED
+        # never resolves to LANDED by substring.
+        v=""
+        for cand in UNDIVERGED TAG_UNREACHABLE NOT_MERGED NOT_PUSHED NOT_LANDED LANDED; do
+            case "$out" in *"$cand"*) v="$cand"; break ;; esac
+        done
+        [ -n "$v" ] && { jq -n --arg v "$v" '{verdict:$v, sha:null}'; return 0; }
+    fi
+    echo null
+}
+last_event_at_for() {  # $1=slug → ts string or empty
+    local slug="$1" ev
+    ev="$STATE_DIR/plan-w-team-stage-events-${slug}.jsonl"
+    [ -f "$ev" ] || { echo ""; return 0; }
+    tail -1 "$ev" 2>/dev/null | jq -r '.ts // ""' 2>/dev/null || echo ""
+}
+worker_pid_from_agents() {  # $1=agents-json $2=wsid → numeric pid or empty
+    local agents="$1" wsid="$2"
+    [ -n "$wsid" ] || { echo ""; return 0; }
+    printf '%s' "$agents" | jq -r --arg w "$(printf '%s' "$wsid" | cut -c1-8)" \
+        '.[]? | select(((.sessionId // "")|ascii_downcase)|startswith($w)) | (.pid // empty)' 2>/dev/null | head -1
+}
+resources_for() {  # $1=worker-pid $2=agents-json → {rss_gb,builders_rss_gb} or null
+    local wpid="$1" agents="$2" wrss=0 brss=0 rss bpid
+    command -v ps >/dev/null 2>&1 || { echo null; return 0; }
+    if printf '%s' "$wpid" | grep -qE '^[0-9]+$'; then
+        rss=$(ps -o rss= -p "$wpid" 2>/dev/null | tr -d ' ')
+        printf '%s' "$rss" | grep -qE '^[0-9]+$' && wrss=$rss
+    fi
+    for bpid in $(printf '%s' "$agents" | jq -r '.[]? | select((.kind//"")=="subagent") | (.pid // empty)' 2>/dev/null); do
+        printf '%s' "$bpid" | grep -qE '^[0-9]+$' || continue
+        rss=$(ps -o rss= -p "$bpid" 2>/dev/null | tr -d ' ')
+        printf '%s' "$rss" | grep -qE '^[0-9]+$' && brss=$((brss + rss))
+    done
+    jq -n --argjson w "$wrss" --argjson b "$brss" \
+        '{rss_gb: (($w/1048576*1000|floor)/1000), builders_rss_gb: (($b/1048576*1000|floor)/1000)}'
+}
+
 # ── detail / rollup mode ─────────────────────────────────────────────────────
 if [ "$MODE" = "detail" ]; then
     [ -n "$WANT_SLUG" ] || { echo "pwt-status: --detail needs a slug" >&2; exit 2; }
@@ -177,8 +267,63 @@ if [ "$MODE" = "detail" ]; then
     fi
 
     if [ "$WANT_JSON" = "1" ]; then
-        jq -n --argjson m "$MAN" --argjson f "$FLEET" --argjson a "$AGENTS" \
-            '{manifest:$m, fleet:$f, sessions:$a}'
+        # ── pwt-status/1 schema (phase 2, C1) ────────────────────────────────
+        # ADDITIVE: the versioned schema fields at the top level, PLUS the existing
+        # manifest/fleet/sessions sub-objects (back-compat for pwt-status.test.sh and
+        # any other reader). The governor's stable, machine-readable run API.
+        GOAL_JSON="$(goal_json_for "$WANT_SLUG")"
+        LANE_ALIVE_JSON="$(lane_alive_json_for "$WANT_SLUG")"
+        PAUSE_SITE_JSON="$(pause_site_for "$WANT_SLUG")"
+        LANDED_JSON="$(landed_for "$WANT_SLUG")"
+        LAST_EVENT_AT="$(last_event_at_for "$WANT_SLUG")"
+        WSID_FOR_PID="$(printf '%s' "$GOAL_JSON" | jq -r '.worker_sid // ""' 2>/dev/null)"
+        [ -n "$WSID_FOR_PID" ] || WSID_FOR_PID="$(echo "$MAN" | jq -r '.run_sid // ""')"
+        WORKER_PID="$(worker_pid_from_agents "$AGENTS" "$WSID_FOR_PID")"
+        RES_JSON="$(resources_for "$WORKER_PID" "$AGENTS")"
+        jq -n \
+            --argjson m "$MAN" --argjson f "$FLEET" --argjson a "$AGENTS" \
+            --argjson g "$GOAL_JSON" --argjson la "$LANE_ALIVE_JSON" \
+            --argjson ps "$PAUSE_SITE_JSON" --argjson landed "$LANDED_JSON" \
+            --argjson res "$RES_JSON" --arg last "$LAST_EVENT_AT" --arg wpid "$WORKER_PID" '
+            ($m // {}) as $man | ($g // {}) as $goal |
+            {
+              schema: "pwt-status/1",
+              slug: ($man.slug // ""),
+              stage: ($man.current_stage // null),
+              strategy: ($man.strategy // null),
+              strategy_reason: ($man.strategy_justification // null),
+              tasks: {
+                total: (($man.tasks // []) | length),
+                done: (($man.tasks // []) | map(select(.status=="done")) | length),
+                in_progress: (($man.tasks // []) | map(select(.status=="running")) | length)
+              },
+              builders: {
+                declared: ($man.builder_count // 0),
+                live_by_process: ($la.live_by_process // null),
+                live_by_registry: ($la.live_by_registry // null)
+              },
+              acs: (
+                ($goal.feature_specific_done_criteria // []) as $c |
+                { total: ($c|length),
+                  pass: ($c|map(select(.met==true))|length),
+                  fail: 0,
+                  pending: ($c|map(select(.met!=true))|length) }
+              ),
+              pause_site: $ps,
+              terminal_state: ($goal.terminal_state // $man.terminal_state // null),
+              terminal_state_source: ($goal.terminal_state_source // null),
+              worker: {
+                sid: ($goal.worker_sid // $man.run_sid // null),
+                pid: (if $wpid=="" then null else ($wpid|tonumber? // null) end),
+                started_at: ($goal.started_at // null)
+              },
+              resources: $res,
+              last_event_at: (if $last=="" then ($man.updated_at // null) else $last end),
+              landed: $landed,
+              manifest: $man,
+              fleet: $f,
+              sessions: $a
+            }'
         exit 0
     fi
 

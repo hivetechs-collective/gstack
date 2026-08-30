@@ -272,6 +272,21 @@ with open(sys.argv[1], "a") as f:
 PY
 }
 
+# Governed-only event-sink tee for a stage transition (phase 2, C1). Sources the
+# governor lib and tees {event:"stage", from, to} to the manifest's event_sink.
+# GOVERNED-ONLY + FAIL-OPEN: a no-op ungoverned and on any error — NEVER adds a file
+# or a stderr line to a nominally-ungoverned run (parity). $1=slug $2=from $3=to.
+__emit_stage_transition_event() {
+    local lib; lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/pwt-governor-lib.sh"
+    [ -r "$lib" ] || return 0
+    # shellcheck disable=SC1090
+    . "$lib" 2>/dev/null || return 0
+    command -v pwt_governor_emit_event >/dev/null 2>&1 || return 0
+    local detail
+    detail=$(FROM="${2:-}" TO="${3:-}" python3 -c 'import json,os;print(json.dumps({"event":"stage","from":os.environ.get("FROM",""),"to":os.environ.get("TO","")}))' 2>/dev/null) || return 0
+    pwt_governor_emit_event "$1" "$detail" 2>/dev/null || true
+}
+
 case "$SUB" in
     help|"")
         usage; [ "$SUB" = "help" ] && exit 0 || exit 2 ;;
@@ -279,10 +294,24 @@ case "$SUB" in
     init|set)
         [ -z "$SLUG" ] && { echo "pwt-manifest $SUB: --slug required" >&2; exit 0; }
         __ensure_gitignored
+        # Capture the OLD stage before the patch so a governed transition event can
+        # report from→to (read-only; empty when no prior manifest).
+        OLD_STAGE=""
+        if [ -n "$STAGE" ] && [ -f "$(manifest_path "$SLUG")" ]; then
+            OLD_STAGE=$(MPATH="$(manifest_path "$SLUG")" python3 -c 'import json,os
+try:
+    print((json.load(open(os.environ["MPATH"])) or {}).get("current_stage","") or "")
+except Exception:
+    pass' 2>/dev/null || echo "")
+        fi
         PATCH="$(__build_patch)"
         __apply "$(manifest_path "$SLUG")" "$PATCH" "null"
         # A stage change emits a transition event (structured stream — no ANSI grep).
-        [ -n "$STAGE" ] && __append_stage_event "$(events_path "$SLUG")"
+        if [ -n "$STAGE" ]; then
+            __append_stage_event "$(events_path "$SLUG")"
+            # Governed-only: also tee the transition to the governor's event_sink.
+            __emit_stage_transition_event "$SLUG" "$OLD_STAGE" "$STAGE"
+        fi
         exit 0 ;;
 
     task)

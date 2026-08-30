@@ -55,7 +55,9 @@ claude() {
   if command git rev-parse --show-toplevel >/dev/null 2>&1; then
     export CLAUDE_CODE_TASK_LIST_ID="$(basename "$(command git rev-parse --show-toplevel)")"
   fi
-  : "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:=80}"
+  : "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:=25}"
+  : "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:=250000}"   # documented knob (tokens): compact interactive sessions at ~250K instead of the 1M limit (2026-08-30 burn audit)
+  export CLAUDE_CODE_AUTO_COMPACT_WINDOW
   : "${BASH_DEFAULT_TIMEOUT_MS:=300000}"
   export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE BASH_DEFAULT_TIMEOUT_MS
   # Restore built-in Grep/Glob tools (removed by default since CC 2.1.216;

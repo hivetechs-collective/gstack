@@ -476,6 +476,52 @@ MSGEOF
     exit 2
 }
 
+# ── C4 (phase 2): the delegated-approver DECISION file is off-limits to the lane ──
+# A <slug>.<gate>.decision.json is the GOVERNOR's delegated approval — written by an
+# out-of-band governor, NEVER by the lane's own worker or bound supervisor. Either of
+# them writing one would SELF-APPROVE a hard gate (push-ack / secret-scan-allow /
+# scope-unlock-for-drift). The REQUEST file (<slug>.<gate>.request.json) is the run's
+# to write; only the DECISION is denied. Basename-only (the approver dir is
+# governor-configurable) — the family name is the discriminant; no legitimate file matches.
+__deny_decision() {  # $1=slug $2=worker8
+    __audit "deny" "self-approval-decision" "$1" "${FILE_ABS:-Bash: ${CMD:0:120}}"
+    cat >&2 <<MSGEOF
+⛔ LANE GUARD (C4 delegated approver): a <slug>.<gate>.decision.json for live lane '$1' is the GOVERNOR's delegated-approval artifact — written by the out-of-band governor, NEVER by the lane's own worker or bound supervisor. Writing your own decision would self-approve a hard gate (push-ack / secret-scan-allow / scope-unlock-for-drift). Denied. The request file (<slug>.<gate>.request.json) is yours to write; the DECISION is the governor's. If the gate must be answered from inside this lane, escalate to the user. Kill switch: PLAN_W_TEAM_DISABLE_LANE_GUARD=1.
+MSGEOF
+    exit 2
+}
+# Does THIS tool call WRITE a <slug>.<gate>.decision.json? File tools: the resolved
+# FILE_ABS basename — this is the HARD wall (a Write/Edit naming the decision file is
+# reliably denied). Bash: a redirect/tee target or a write-verb operand, gated behind a
+# cheap `.decision.json` substring pre-filter — this is BEST-EFFORT, exactly like the
+# guard's existing ship-verdict/test-green forgery classifiers (:822): it catches natural
+# drift, not an adversary constructing the filename indirectly (a variable fragment, a
+# python3/dd writer, a symlink). That is an accepted limitation — the file-tool path is the
+# guarantee, and the operator gate-files a decision would produce are themselves not in the
+# protected set, so the exempt worker can already touch them directly (see governor-contract.md
+# phase-2 §"Self-approval — what the lane guard does and does not guarantee").
+__decision_file_target() {  # $1=slug → 0 if this call targets a decision file for the slug
+    local slug="$1" base tgt
+    if [ "$TOOL" != "Bash" ]; then
+        [ -n "${FILE_ABS:-}" ] || return 1
+        base=$(basename "$FILE_ABS")
+        case "$base" in "$slug".*.decision.json) return 0 ;; esac
+        return 1
+    fi
+    case "${CMD:-}" in *".decision.json"*) : ;; *) return 1 ;; esac
+    __ensure_cmd_scan
+    while IFS= read -r tgt; do
+        [ -n "$tgt" ] || continue
+        base=$(basename "$tgt")
+        case "$base" in "$slug".*.decision.json) return 0 ;; esac
+    done <<EOF_DECTGT
+$(__redirect_targets)
+$(__tee_targets)
+EOF_DECTGT
+    printf '%s' "$CMD_SCAN" | grep -qE "(mv|cp|rm|touch|tee|install)[[:space:]][^;|&]*${slug}[^;|&]*\.decision\.json" && return 0
+    return 1
+}
+
 # ── Bash command classifiers (bound-supervisor policy) ───────────────────────
 # Separators before a command word: start, ;, &, |, $( or backtick. Deliberate
 # scope: catch the natural drift shapes, not an adversary — the file-tool path
@@ -727,8 +773,13 @@ for GF in "$STATE_DIR"/plan-w-team-goal-*.json; do
     esac
     W8="${WSID:0:8}"
 
-    # The owning worker is never restricted by its own lane.
-    [ -n "$SELF8" ] && [ "$SELF8" = "$W8" ] && continue
+    # The owning worker is never restricted by its own lane — EXCEPT it may not write
+    # its own gate DECISION (C4 self-approval). Checked BEFORE the exemption so the
+    # exemption cannot bypass it; the worker still writes the REQUEST file freely.
+    if [ -n "$SELF8" ] && [ "$SELF8" = "$W8" ]; then
+        __decision_file_target "$SLUG" && __deny_decision "$SLUG" "$W8"
+        continue
+    fi
 
     # Confirmed-dead lane release (BRIEF §4.4): a worker the ONE liveness truth confirms dead
     # (exit 1 — ESRCH + no pgrep) no longer binds anyone; exit 0 (alive) / 2 (cannot-determine)
@@ -766,6 +817,13 @@ for GF in "$STATE_DIR"/plan-w-team-goal-*.json; do
              | tr '[:upper:]' '[:lower:]' | cut -c1-8 | grep -qFx "$SELF8"; then
             BOUND=1
         fi
+    fi
+
+    # C4: a BOUND supervisor may not write a gate DECISION either (self-approval).
+    # An out-of-band GOVERNOR (neither worker nor bound → BOUND=0) reaches here and is
+    # NOT denied — that is exactly the delegated-approval path the contract enables.
+    if [ "$BOUND" = "1" ] && __decision_file_target "$SLUG"; then
+        __deny_decision "$SLUG" "$W8"
     fi
 
     if [ "$TOOL" != "Bash" ]; then

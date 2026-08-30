@@ -215,6 +215,15 @@ __pla_governed_consult() {   # $1=slug $2=process_verdict(0/1/2) → echoes fina
     jq -cn --arg ts "$ts" --arg slug "$slug" --argjson process "$pv" --argjson governor_verdict "$gv" \
        '{ts:$ts, slug:$slug, kind:"liveness-disagreement", process:$process, governor_verdict:$governor_verdict, resolution:"prefer-process"}' \
        >> "$jf" 2>/dev/null || true
+    # C1 (phase 2): tee a liveness-disagreement event to the governor's event_sink.
+    # The lib is already sourced above; emit is governed-only + fail-open (parity: this
+    # whole function already returned before here when ungoverned).
+    if command -v pwt_governor_emit_event >/dev/null 2>&1; then
+      pwt_governor_emit_event "$slug" \
+        "$(jq -cn --argjson process "$pv" --argjson governor "$gv" \
+             '{event:"liveness-disagreement", process:$process, governor:$governor}' 2>/dev/null)" \
+        2>/dev/null || true
+    fi
   fi
   echo "$pv"   # process evidence wins in phase 1
 }

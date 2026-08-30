@@ -328,6 +328,41 @@ __is_stale_foreign_goal() {
     return 0   # aged + not-ours + not-live → SKIP
 }
 
+# ── Landing corroboration (AC6 — rotated-lead SUCCESS gap, phase 2) ───────────
+# A VERIFIED landing artifact (plan-w-team-landed-<slug>.json, verdict=LANDED, written
+# ONLY by plan-w-team-land.sh verify) is an ALTERNATIVE corroboration to a PASS
+# ship-verdict for the worker-mode C3 gate and the PWT-LANE2 actor gate. A steered/
+# rotated-lead run whose owning worker_sid no longer matches the live lead, and whose
+# ship-verdict is unavailable/sanitised (REDACTED), was wrongly withheld from SUCCESS
+# even though it GENUINELY LANDED to the default branch. The landing artifact is a
+# strictly STRONGER, equally-deterministic proof (you cannot land without pushing through
+# the push grant), so accepting it does not weaken anti-spoof. This mirrors the F6
+# landing-gate read + git re-verification; F6 still runs downstream unchanged.
+# Returns 0 = corroborated (landed + reachable), 1 = not. Fail-OPEN to trusting a present
+# artifact when git cannot re-verify (same stance as F6). Kill switch:
+# PWT_DISABLE_LANDING_CORROBORATION=1 → always 1 (reverts to ship-verdict-only).
+__landing_corroborated() {  # $1=goalfile $2=slug
+    [ "${PWT_DISABLE_LANDING_CORROBORATION:-0}" = "1" ] && return 1
+    local gf="$1" slug="$2" dir art sha def
+    for dir in "$(dirname "$gf")" "$PWD/.claude/state" "${MAIN_STATE_DIR:-}"; do
+        [ -n "$dir" ] || continue
+        art="$dir/plan-w-team-landed-${slug}.json"
+        [ -f "$art" ] || continue
+        [ "$(jq -r '.slug // ""' "$art" 2>/dev/null)" = "$slug" ] || continue
+        sha=$(jq -r 'select(.verdict=="LANDED") | .landed_sha // ""' "$art" 2>/dev/null || echo "")
+        [ -n "$sha" ] || continue
+        def=$(jq -r '.default_ref // ""' "$art" 2>/dev/null || echo "")
+        if command -v git >/dev/null 2>&1 && [ -n "$def" ] \
+             && git rev-parse --git-dir >/dev/null 2>&1 \
+             && git show-ref --verify --quiet "$def" 2>/dev/null; then
+            git merge-base --is-ancestor "$sha" "$def" 2>/dev/null && return 0
+            continue   # artifact present but sha not reachable → stale; keep looking
+        fi
+        return 0   # artifact present, git cannot re-verify → trust it (F6's fail-open)
+    done
+    return 1
+}
+
 # Transcript: Claude Code passes the path in the hook input
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""' 2>/dev/null)
 
@@ -849,12 +884,16 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
     # SUCCESS. Interactive runs keep transcript-only detection (human watching).
     if [ "$TERMINAL" = "SUCCESS" ] && [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-}" = "1" ]; then
         SHIP_VERDICT_FILE="$(dirname "$GOAL_FILE")/plan-w-team-ship-verdict-${SLUG}.json"
-        if [ "$(jq -r '.verdict // ""' "$SHIP_VERDICT_FILE" 2>/dev/null)" != "PASS" ]; then
+        # AC6: a VERIFIED landing artifact corroborates SUCCESS even when the ship-verdict
+        # is unavailable/REDACTED (a rotated-lead run that genuinely LANDED) — a strictly
+        # stronger, equally-deterministic proof than the ship-verdict.
+        if [ "$(jq -r '.verdict // ""' "$SHIP_VERDICT_FILE" 2>/dev/null)" != "PASS" ] \
+             && ! __landing_corroborated "$GOAL_FILE" "$SLUG"; then
             TERMINAL=""
             REASON=""
-            CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but no deterministic ship-verdict for slug=$SLUG. Step 6 writes .claude/state/plan-w-team-ship-verdict-${SLUG}.json with verdict=PASS only after every §6 ENFORCING gate passes; SUCCESS is withheld until it exists. Continue the pipeline through a real ship."
-            echo "[goal-evaluator] SLUG=$SLUG worker-mode: SUCCESS anchors present but ship-verdict missing/!=PASS — withholding SUCCESS (C3 anti-spoof)" >&2
-            dbg "SLUG=$SLUG worker-mode SUCCESS withheld — no PASS ship-verdict at $SHIP_VERDICT_FILE"
+            CRITERIA_BLOCK_REASON="Generic SUCCESS anchors present but no deterministic ship-verdict AND no verified landing artifact for slug=$SLUG. Step 6 writes .claude/state/plan-w-team-ship-verdict-${SLUG}.json with verdict=PASS only after every §6 ENFORCING gate passes; a rotated-lead run may instead prove completion with a verified landing artifact (plan-w-team-land.sh verify). SUCCESS is withheld until one exists. Continue the pipeline through a real ship, or land it."
+            echo "[goal-evaluator] SLUG=$SLUG worker-mode: SUCCESS anchors present but no PASS ship-verdict and no verified landing — withholding SUCCESS (C3 anti-spoof)" >&2
+            dbg "SLUG=$SLUG worker-mode SUCCESS withheld — no PASS ship-verdict at $SHIP_VERDICT_FILE and no landing corroboration"
         fi
     fi
 
@@ -881,6 +920,14 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
             [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*)
                 if [ "${SELF_SID:0:8}" != "${AA_WSID:0:8}" ]; then
                     AA_SV_FILE="$(dirname "$GOAL_FILE")/plan-w-team-ship-verdict-${SLUG}.json"
+                    # AC6 SECURITY (phase-2 review): the landing artifact is deliberately NOT accepted
+                    # here. PWT-LANE2 defends against a NON-OWNER testifying SUCCESS, and
+                    # plan-w-team-landed-<slug>.json is NOT in the lane guard's protected set — a
+                    # non-owner can write it, and the git re-verification trusts the artifact's own
+                    # default_ref (empty ⇒ fail-open). Using it as the SUFFICIENT condition here would
+                    # let a supervisor/observer FORGE SUCCESS. The rotated-lead landing path is honored
+                    # ONLY in the worker-mode C3 gate above, whose caller is the trusted pipeline
+                    # executor (which can forge the ship-verdict too, so the trust model is unchanged).
                     if [ "$(jq -r '.verdict // ""' "$AA_SV_FILE" 2>/dev/null)" != "PASS" ]; then
                         TERMINAL=""
                         REASON=""

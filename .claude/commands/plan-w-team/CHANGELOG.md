@@ -14,6 +14,57 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.17.0] — 2026-08-29 (Governor Contract phase 2 — C1 observability, C4 delegated approver, rotated-lead SUCCESS)
+
+Phase 2 of the Governor Contract (spec: `docs/specs/governor-contract-phase-2-c1-observability-c4-approver.md`;
+brief: `docs/directions/DIRECTION-pwt-governor-contract-for-shipyard-2026-08-29.md` §C1/§C4).
+**P0 unchanged: ungoverned `/plan-w-team` stays byte-for-byte identical** — every new behaviour is
+governed-only or a deliberately regenerated-once golden. Builds on 2.16.0 (`3cbc9f3`).
+
+- **C1 — `pwt-status/1` schema** (`pwt-status.sh --json <slug>`, applied ungoverned too): a versioned,
+  machine-readable run API added ADDITIVELY over the existing `manifest`/`fleet`/`sessions` sub-objects
+  (existing readers unaffected). Fields: `stage`, `strategy`, `strategy_reason`, `tasks{total,done,in_progress}`,
+  `builders{declared,live_by_process,live_by_registry}` (live counts from `pwt-lane-alive`), `acs{total,pass,fail,pending}`,
+  `pause_site` (null | `{gate,since,evidence_path}` from a pending approver request), `terminal_state` + `terminal_state_source`,
+  `worker{sid,pid,started_at}`, `resources{rss_gb,builders_rss_gb}`, `last_event_at`, and `landed{verdict,sha}`
+  (surfaces the UNDIVERGED verdict). Read-only + fail-open throughout. The `pwt-status --json` parity golden
+  was regenerated ONCE (reviewed diff, `tests/skill/parity/pwt-status-json.golden`); every other golden stays byte-identical.
+- **C1 — governed event sink** (`pwt-governor-lib.sh`: `pwt_governor_emit_event` + the shared
+  `pwt_governor_run_cmd` execution primitive): tees EXACTLY ONE JSON line `{ts, slug, detail}` per event
+  (stage transition, pause, decision, liveness-disagreement) to the manifest's `event_sink` command, under
+  the phase-1 execution contract — argv exec via `env -i`, timeout REQUIRED (no timeout binary ⇒ SKIP),
+  git-tracked-manifest REFUSAL, fail-open emission (a dead/failing sink never blocks the pipeline).
+  **Ungoverned it emits ZERO lines and creates no file.** Wired at `pwt-manifest.sh set --stage`,
+  `pwt-lane-alive.sh` §4.5, and `pwt-approver.sh`. Kill switch: `PWT_DISABLE_EVENT_SINK=1`.
+- **C4 — delegated approver** (`pwt-approver.sh`, new; wired into `05-ship.md` §6g): on a governed hard-gate
+  pause site with a file-mode approver, the run writes `<dir>/<slug>.<gate>.request.json` (`pwt-pause/1`),
+  emits the pause event, and AWAITS (no wall-clock cap) `<slug>.<gate>.decision.json`. `approve` creates the
+  gate's EXISTING operator file (`plan-w-team-ack-` / `-secret-scan-allow-` / `-scope-unlock-` — byte-for-byte
+  what a human touch does), `deny` takes the deny path, `escalate`/silence stay halted. Every decision audited
+  with `by` + `grant_ref`; a one-way approve without `grant_ref` escalates; malformed decisions are ignored
+  loudly. **`PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` precedence preserved** (auto-clear runs first). A tracked or
+  escaping approver dir is refused (falls back to the human prompt). Kill switch: `PWT_APPROVER_DISABLE=1`.
+- **C4 — structural self-approval denial** (`plan-w-team-lane-guard.sh`): the decision-file family
+  `<slug>.*.decision.json` is denied to BOTH the owning worker (checked before its exemption) and the bound
+  supervisor; only an out-of-band governor (neither) may write a decision. The REQUEST file stays the run's to
+  write. Second layer: `pwt-approver.sh` ignores malformed/mis-authored decisions loudly.
+- **Rotated-lead SUCCESS gap** (`plan-w-team-goal-evaluator.sh`): the worker-mode C3 gate now accepts a
+  VERIFIED landing artifact (`plan-w-team-land.sh verify`, git-reverified) as an ALTERNATIVE corroboration to
+  a PASS ship-verdict — a rotated-lead run whose ship-verdict is REDACTED but which genuinely LANDED now flips
+  SUCCESS. The real rotated-lead run is always a bg worker (worker mode ⇒ C3), so C3 fully covers it. **The
+  PWT-LANE2 actor gate deliberately stays STRICT** (phase-2 security review): the landing artifact is not in
+  the lane guard's protected set, so a non-owner could forge it — the actor gate keeps requiring the
+  structurally-protected PASS ship-verdict, and the C3 use is safe because its caller is the trusted executor
+  (which can forge the ship-verdict too). Kill switch: `PWT_DISABLE_LANDING_CORROBORATION=1`.
+- **Docs + state**: `docs/operations/governor-contract.md` phase-2 section; `shared/state-artifacts.md`
+  registers the request/decision/approver-audit artifacts; `shared/governance-tags.md` flags the lane-guard
+  decision-file + event_sink command-execution surfaces. The already-shipped `pwt-resume.sh --reason
+  gate-answered` re-entry is documented as the follow-up for an already-stamped terminal.
+- **Tests**: `tests/skill/cases/{pwt-status-schema,governor-event-sink,rotated-lead-success}.bats`,
+  `governor-parity.bats` (regenerated `pwt-status` golden + governed-only inertness), and
+  `.claude/scripts/pwt-approver.test.sh` (approve/deny/escalate/silence round-trip, malformed, one-way-grant,
+  worker+supervisor decision denial).
+
 ## [2.16.0] — 2026-08-29 (Governor Contract phase 1 — governed mode, one liveness truth, truthful stop/resume)
 
 Phase 1 of the Governor Contract (brief: `docs/directions/pwt-brief-governor-phase1-c3-c5.md`).
