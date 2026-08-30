@@ -365,6 +365,16 @@ Options:
                        Trades safety for autonomy — only push-ack auto-approves;
                        secret-scan-allow and scope-unlock-for-drift still halt.
       --no-auto-push   Explicit opt-out even with --launch (require push confirm)
+      --lane-settings-json FILE
+                       Per-lane credential seam (v6 item 5). Drop FILE at
+                       <worktree>/.claude/settings.local.json (mode 0600) BEFORE
+                       the worker's first API call, so this lane authenticates
+                       with its own account. FILE is a settings.local.json with
+                       an "env" block (e.g. CLAUDE_CODE_OAUTH_TOKEN). Requires
+                       worktree isolation; fail-closed if it cannot be dropped.
+                       Env equivalent: PWT_LANE_SETTINGS_JSON=<path> (flag wins).
+                       The file is gitignored (never committed) and reaped with
+                       the worktree at land; never printed to logs.
   -h, --help           Show this help
 
 Examples:
@@ -402,6 +412,11 @@ PWT_TYPE_EXPLICIT=0  # 1 iff -t/--type was explicitly passed (Fix 5 — explicit
 REQUEST=""
 BRIEF_PATH=""  # --brief <path>: written brief that grounds a deictic request (T2 §2a)
 SPEC_PATH=""   # --spec <path>: governor-supplied given-spec (Governor Contract phase 3, C6)
+# --lane-settings-json <file> / PWT_LANE_SETTINGS_JSON=<path>: per-lane credential
+# settings.local.json dropped into the lane worktree before the worker's first API
+# call, so each lane authenticates with its own account (v6 item 5). Env is the
+# default; the flag overrides it.
+LANE_SETTINGS_JSON="${PWT_LANE_SETTINGS_JSON:-}"
 __PWT_SLUG_OVERRIDE=""   # phase 3 C6: when set, __pwt_safe_slug returns it verbatim at EVERY site
 
 # ─── --resume-staleness-check (AC4 — bg-worker resume staleness self-exit) ───
@@ -541,6 +556,7 @@ while [ $# -gt 0 ]; do
         -t|--type) TYPE="$2"; PWT_TYPE_EXPLICIT=1; shift 2 ;;
         --brief) BRIEF_PATH="$2"; shift 2 ;;
         --spec) SPEC_PATH="$2"; shift 2 ;;
+        --lane-settings-json) LANE_SETTINGS_JSON="$2"; shift 2 ;;
         --hours|--turns)
             echo "Note: $1 removed by design — /plan-w-team has no wall-clock or turn caps. Ignoring '$1 $2'." >&2
             shift 2 ;;
@@ -888,6 +904,54 @@ __pwt_main_repo_root() {
     fi
     [ -z "$root" ] && root="${PROJECT_ROOT:-$PWD}"
     printf '%s\n' "$root"
+}
+
+# ─── item 5 (v6): per-lane credential seam ──────────────────────────────────
+# The documented way to give a background session its own account is the lane
+# directory's `.claude/settings.local.json` `env` block — NOT the daemon's env
+# (the daemon-rotation workaround this seam retires). Because `claude --bg
+# --worktree <name>` creates the worktree AND starts the session in one step, we
+# PRE-CREATE the worktree, drop the operator-supplied file at
+# `<wt>/.claude/settings.local.json` mode 0600, then let `--worktree <name>`
+# REUSE it (verified on CLI 2.1.251: claude adopts an already-registered worktree
+# at that path rather than colliding). The file is gitignored in consumers, so it
+# is never committed, never backed up (preserve_then_reap enumerates with
+# --exclude-standard), and dies with the worktree at land-time reclaim; the
+# survivor untracked-sweep scrubs it explicitly from any worktree that outlives
+# its lane. Its value is an OAuth token — never echo the file's contents.
+
+__pwt_validate_lane_settings() {
+    # $1 = candidate settings file. Returns 0 if usable, non-zero + a message on
+    # stderr otherwise. Never prints the file's contents.
+    local f="${1:-}"
+    [ -n "$f" ] || { echo "lane-settings: empty path" >&2; return 1; }
+    [ -f "$f" ] || { echo "lane-settings: file not found: $f" >&2; return 1; }
+    [ -r "$f" ] || { echo "lane-settings: file not readable: $f" >&2; return 1; }
+    [ -s "$f" ] || { echo "lane-settings: file is empty: $f" >&2; return 1; }
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json,sys; json.load(open(sys.argv[1]))' "$f" >/dev/null 2>&1 \
+            || { echo "lane-settings: not valid JSON: $f" >&2; return 1; }
+    fi
+    return 0
+}
+
+__pwt_inject_lane_settings() {
+    # $1 = worktree absolute path (must already exist). $2 = validated source file.
+    # Drops <wt>/.claude/settings.local.json with mode 0600. Returns 0 on success;
+    # non-zero + a message on any failure so the caller can FAIL CLOSED (never
+    # spawn the lane on the wrong / daemon-default account). Never echoes contents.
+    local wt="${1:-}" src="${2:-}" dst_dir dst
+    [ -n "$wt" ] && [ -d "$wt" ] || { echo "lane-settings: worktree not a directory: $wt" >&2; return 1; }
+    dst_dir="$wt/.claude"
+    dst="$dst_dir/settings.local.json"
+    mkdir -p "$dst_dir" 2>/dev/null || { echo "lane-settings: FAILED mkdir $dst_dir" >&2; return 1; }
+    # Create with restrictive perms from the start (umask 077 → 0600 for a fresh
+    # file), so the token is never briefly world-readable, then chmod explicitly in
+    # case the destination pre-existed with looser perms.
+    ( umask 077; cp "$src" "$dst" ) 2>/dev/null || { echo "lane-settings: FAILED copy into $dst" >&2; return 1; }
+    chmod 600 "$dst" 2>/dev/null || { echo "lane-settings: FAILED chmod 600 $dst" >&2; return 1; }
+    [ -s "$dst" ] || { echo "lane-settings: FAILED — $dst empty after copy" >&2; return 1; }
+    return 0
 }
 
 # ─── SKILL VERSION + COMMIT SHA ─────────────────────────────────────────────
@@ -2229,6 +2293,44 @@ if [ "$LAUNCH" = "1" ]; then
         WT_FLAG="--worktree ${WT_NAME:0:60}"
     fi
 
+    # ─── item 5 (v6): drop the per-lane credential BEFORE the worker starts ─────
+    # When --lane-settings-json / PWT_LANE_SETTINGS_JSON is set, PRE-CREATE the
+    # worktree here and drop the operator's settings.local.json (mode 0600) into
+    # it, so the worker authenticates with its own account from its first API call.
+    # `--worktree <name>` below then REUSES this worktree (see the header on
+    # __pwt_inject_lane_settings). FAIL CLOSED at every step: if we cannot drop the
+    # credential we ABORT rather than silently launch on the daemon-default account.
+    if [ -n "$LANE_SETTINGS_JSON" ]; then
+        if [ -z "$WT_FLAG" ]; then
+            echo "FATAL: --lane-settings-json requires worktree isolation, but PWT_DISABLE_WORKER_WORKTREE=1 disabled it." >&2
+            echo "       Refusing to drop a lane credential into the shared main checkout." >&2
+            exit 1
+        fi
+        if ! __pwt_validate_lane_settings "$LANE_SETTINGS_JSON"; then
+            echo "FATAL: --lane-settings-json validation failed; refusing to launch on the wrong account." >&2
+            exit 1
+        fi
+        LANE_MAIN_ROOT="$(__pwt_main_repo_root)"
+        LANE_WT_PATH="$LANE_MAIN_ROOT/.claude/worktrees/${WT_NAME:0:60}"
+        if [ -e "$LANE_WT_PATH" ]; then
+            echo "FATAL: lane worktree path already exists: $LANE_WT_PATH" >&2
+            echo "       A stale run may own it. Remove it (git worktree remove) and retry." >&2
+            exit 1
+        fi
+        if ! git -C "$LANE_MAIN_ROOT" worktree add "$LANE_WT_PATH" -b "${WT_NAME:0:60}" HEAD >/dev/null 2>&1; then
+            echo "FATAL: could not pre-create lane worktree at $LANE_WT_PATH" >&2
+            exit 1
+        fi
+        if ! __pwt_inject_lane_settings "$LANE_WT_PATH" "$LANE_SETTINGS_JSON"; then
+            # Roll back so we never leave a half-provisioned lane (worktree with no
+            # credential) that would then launch on the wrong account.
+            git -C "$LANE_MAIN_ROOT" worktree remove --force "$LANE_WT_PATH" >/dev/null 2>&1 || true
+            echo "FATAL: could not inject lane credential; aborted (worktree rolled back)." >&2
+            exit 1
+        fi
+        echo "  lane credential:    dropped $LANE_WT_PATH/.claude/settings.local.json (mode 0600; contents not logged)" >&2
+    fi
+
     # Bug A (2026-08-15): pre-decide the project's MCP-server trust so a fresh bg
     # worker never freezes on the one-time "N new MCP servers found" interactive
     # TUI (a --bg session has no one to press a key → infinite startup hang, parts
@@ -2368,11 +2470,17 @@ if [ "$LAUNCH" = "1" ]; then
     # The fix derives the worker's runtime location the SAME way
     # `claude --bg --worktree <name>` does (git-common-dir → MAIN_REPO_ROOT,
     # correct even from inside a sibling worktree) and seeds:
-    #   (1) the worker's OWN runtime worktree state dir (PRIMARY) — but only
-    #       when that worktree already exists on disk (claude --bg created it
-    #       during startup, before returning the SID). We never pre-create it,
-    #       or claude's later `git worktree add` would collide on a non-empty
-    #       path. This is what the worker's evaluator finds via PWD_STATE_DIR.
+    #   (1) the worker's OWN runtime worktree state dir (PRIMARY) — present once
+    #       the worktree exists on disk. The DEFAULT path does not pre-create it
+    #       and relies on `claude --bg` creating it during startup (before
+    #       returning the SID). The `--lane-settings-json` seam (item 5) DOES
+    #       pre-create it via `git worktree add` so the per-lane credential can be
+    #       dropped first; `claude --bg --worktree <name>` then REUSES the
+    #       already-registered worktree — verified on CLI 2.1.251 that it ADOPTS
+    #       the existing path rather than colliding (this comment previously
+    #       assumed a collision; a bounded probe disproved that). Either way, by
+    #       the time we seed here the worktree exists. This is what the worker's
+    #       evaluator finds via PWD_STATE_DIR.
     #   (2) the canonical MAIN_REPO_ROOT/.claude/state (ALWAYS) — await-terminal
     #       resolves this on its main path, and the worker's goal-evaluator
     #       resolves it via its THIRD goal-file source: the MAIN checkout from

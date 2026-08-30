@@ -10,7 +10,7 @@ description: |
   by unit-testing-specialist before retro. Pure read-only analysis — does
   not write code.
 color: yellow
-model: claude-opus-4-8
+model: inherit # Model Tiering v6 — spec/review fan-out follows the lane (PWT_PRIMARY_MODEL, floor claude-opus-4-8)
 context: fork
 sdk_utilization: 70%
 sdk_features:

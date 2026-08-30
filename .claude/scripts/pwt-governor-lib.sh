@@ -156,8 +156,10 @@ pwt_governor_clamp_builders() {   # $1 = requested
 # Ungoverned ⇒ empty (the caller keeps its own default).
 #
 # ⚠ THE ALLOW-LIST IS BOUND TO tests/skill/cases/model-tiering-v5.bats (the FUNCTIONAL sweep,
-#   v5-8). A model generation rollover (v6) MUST update BOTH — the sweep fails loudly if this
-#   table and the doctrine drift apart (Model Tiering v5, skill 2.14.3: Opus 5 FORBIDDEN).
+#   v5-8). A model GENERATION rollover MUST update BOTH — the sweep fails loudly if this table
+#   and the doctrine drift apart (Model Tiering v5, skill 2.14.3: Opus 5 FORBIDDEN). Model
+#   Tiering v6 (2.20.0) was NOT such a rollover: it moved subagent tiers to follow-the-lane at
+#   agent frontmatter + spawn sites and left this governor policy table byte-for-byte unchanged.
 pwt_governor_model() {   # $1 = tier (design|intelligent|mechanical)
   local tier="${1:-}" default=""
   case "$tier" in

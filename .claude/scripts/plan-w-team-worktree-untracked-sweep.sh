@@ -488,6 +488,28 @@ EOF
         fi
     fi
 
+    # ─── per-lane credential scrub (item 5, v6) ──────────────────────────────────
+    # `.claude/settings.local.json` is the per-lane OAuth credential dropped by
+    # `pwt-goal --lane-settings-json`. It is GITIGNORED, so the --exclude-standard
+    # enumeration below never reaches it — yet a credential must NEVER outlive its
+    # lane. A worktree reaching this line has passed every veto above (containment,
+    # in-use, live-pid lock, newborn grace), so its lane is over and the token is
+    # stale. Scrub it explicitly, accounting straight into the RUN TOTALS so the
+    # count survives the enumeration early-returns that follow. Its value is a
+    # token — the path is logged, the contents never are.
+    if [ -f "$wt/.claude/settings.local.json" ]; then
+        [ "$PRINT_CLASSIFIED" = "1" ] && printf 'CREDENTIAL\t%s\n' ".claude/settings.local.json" >&2
+        if [ "$EXECUTE" = "1" ]; then
+            if rm -f -- "$wt/.claude/settings.local.json" 2>/dev/null; then
+                TOTAL_REMOVED=$((TOTAL_REMOVED + 1))
+            else
+                TOTAL_REMOVE_FAILED=$((TOTAL_REMOVE_FAILED + 1))
+            fi
+        else
+            TOTAL_REMOVED=$((TOTAL_REMOVED + 1))   # dry-run: what WOULD be scrubbed
+        fi
+    fi
+
     # Enumerate untracked, non-ignored files. -z because git QUOTES a path holding
     # a control character even under core.quotePath=false, and a quoted string
     # names no file on disk. core.quotePath=false additionally keeps non-ASCII

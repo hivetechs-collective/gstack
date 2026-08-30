@@ -62,8 +62,17 @@
 #   CLAUDE_PROJECTS_DIR (default ~/.claude/projects)
 #
 # EXIT CODES (contract — callers and tests depend on these)
-#   0  steered AND delivery verified
-#   5  steered but delivery UNVERIFIED (bookkeeping done, steer_verified:false).
+#   0  steered, delivery verified, AND the resumed session is PROCESS-LIVE
+#      (pid + pty-sock present in ~/.claude/daemon/roster.json) — OR liveness is
+#      indeterminate because no daemon roster exists (roster-less env: the steer
+#      falls back to delivery-only rather than downgrading with nothing to check).
+#   5  steered but NOT fully verified. TWO shapes, both distinguished in the
+#      respawn_history row (steer_verified = delivery-marker; process_live = liveness):
+#        (a) delivery UNVERIFIED — the marker never reached a transcript; OR
+#        (b) delivery verified but the resumed session is NOT process-live — the
+#            fix-respawn-steer-liveness case: a fake respawn wrote a fresh
+#            marker-bearing transcript then the process never ran / died. The
+#            lane still needs respawn; a marker is DELIVERY, not liveness.
 #      Attribution policy (W6): with exactly ONE marker-less new transcript the
 #      best guess is adopted; with MULTIPLE candidates adoption is REFUSED —
 #      worker_sid keeps the old sid and the history row records new_sid:"" with
@@ -115,6 +124,18 @@ if type pwt_governor_model >/dev/null 2>&1; then
         [ "$__steer_fallback_env_set" = "0" ] && FALLBACK_MODEL="$__steer_gov_int"
     fi
 fi
+# #1673 (Model Tiering v6 item 3): a RESUMED bg worker inherits no bypass grant, so it wedges at its
+# first Bash/Edit (`waiting` in the roster, forever) unless the resume passes --permission-mode. A
+# FRESH pwt-goal spawn works; only the steer/resume path died (reproduced 2026-08-30 00:26Z; eleven
+# mass-steers 2026-08-29 23:07Z did zero work). Default bypassPermissions — a bg fleet worker runs
+# unattended. One forward-only seam (PWT_STEER_PERMISSION_MODE); an unrecognized/empty value falls
+# back to bypassPermissions with ONE warning, so a steered lane can never wedge again over a typo.
+STEER_PERMISSION_MODE="${PWT_STEER_PERMISSION_MODE:-bypassPermissions}"
+case "$STEER_PERMISSION_MODE" in
+  bypassPermissions|acceptEdits|default|plan|auto) ;;
+  *) echo "pwt-steer: unrecognized PWT_STEER_PERMISSION_MODE='${STEER_PERMISSION_MODE}' — falling back to bypassPermissions" >&2
+     STEER_PERMISSION_MODE="bypassPermissions" ;;
+esac
 POLL_S="${PWT_STEER_POLL_S:-1}"
 
 usage() {
@@ -459,7 +480,7 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  would run:       $CLAUDE_BIN stop ${WORKER_SID:0:8}"
   echo "  resume-at-stage: ${M_STAGE:-<none>} → ${STAGE_DIRECTIVE:-full pipeline 0→8}"
   echo "  extra env:       ${EXTRA_ENV[@]+${EXTRA_ENV[@]}}"
-  echo "  would run:       env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 ${EXTRA_ENV[@]+${EXTRA_ENV[@]} }$CLAUDE_BIN --bg --resume $WORKER_SID --model $PRIMARY_MODEL --fallback-model $FALLBACK_MODEL <steer-text>"
+  echo "  would run:       env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 ${EXTRA_ENV[@]+${EXTRA_ENV[@]} }$CLAUDE_BIN --bg --resume $WORKER_SID --permission-mode $STEER_PERMISSION_MODE --model $PRIMARY_MODEL --fallback-model $FALLBACK_MODEL <steer-text>"
   echo "  steer-text:"
   printf '%s\n' "$STEER_TEXT" | sed 's/^/    | /'
   echo "  delivery marker: $MARKER"
@@ -554,6 +575,7 @@ RESUME_OUT="${TMPDIR:-/tmp}/pwt-steer-resume-$$.out"
     $STEER_NICE_PREFIX \
     "$CLAUDE_BIN" \
     --bg --resume "$WORKER_SID" \
+    --permission-mode "$STEER_PERMISSION_MODE" \
     --model "$PRIMARY_MODEL" --fallback-model "$FALLBACK_MODEL" \
     "$STEER_TEXT"
 ) </dev/null >"$RESUME_OUT" 2>&1
@@ -659,6 +681,54 @@ if [ -z "$NEW_SID" ] && [ "$REFUSED_ADOPT" != "1" ]; then
   exit 7
 fi
 
+# ─── (5b) PROCESS/PTY-SOCK LIVENESS — a marker proves DELIVERY, not that the
+# resumed session is RUNNING (fix-respawn-steer-liveness). A fake respawn writes
+# a fresh marker-bearing transcript then the process never runs / dies; gating
+# exit-0 on the marker alone reported that corpse as "delivery VERIFIED", and the
+# fresh transcript reset the watchdog's quiet clock so the dead lane looked alive
+# ~80min. Require the resumed sid to also be LIVE in the daemon roster (pid alive
+# + pty-sock present) via the ONE canonical bash entry point.
+#
+# Three-way verdict, NEVER collapsed (fail-open contract — a healthy resume must
+# not be reported unverified):
+#   live     → PROCESS_LIVE="1"  (verified: delivery + process)
+#   dead     → PROCESS_LIVE="0"  (CONFIRMED corpse: registered, pid/pty-sock gone
+#                                 → exit 5, the true fake-respawn signature)
+#   unknown  → PROCESS_LIVE=""   (INDETERMINATE: the resume may not be in the
+#                                 roster yet on a loaded host, or there is no
+#                                 usable roster — do NOT downgrade; the watchdog's
+#                                 dead-no-process rule is the authoritative corpse
+#                                 detector for a never-registered session)
+PROCESS_LIVE=""
+LIVENESS_BUDGET="${PWT_STEER_LIVENESS_TIMEOUT_S:-15}"
+case "$LIVENESS_BUDGET" in ""|*[!0-9]*) LIVENESS_BUDGET=15 ;; esac
+ROSTER_FILE="${SESSION_LIVENESS_ROSTER:-$HOME/.claude/daemon/roster.json}"
+# Source the canonical bash liveness lib (session_liveness_verdict) so this gate
+# and every other bash caller share exactly one roster-reading implementation.
+LIVENESS_LIB=""
+for __ll in \
+    "$CUR_ROOT/scripts/ops/lib/session-liveness.sh" \
+    "$MAIN_ROOT/scripts/ops/lib/session-liveness.sh" \
+    "$(dirname "$0")/../../scripts/ops/lib/session-liveness.sh"; do
+  [ -f "$__ll" ] && { LIVENESS_LIB="$__ll"; break; }
+done
+[ -n "$LIVENESS_LIB" ] && . "$LIVENESS_LIB"
+if [ "$VERIFIED" = "1" ] && [ -n "$NEW_SID" ] && [ -n "$LIVENESS_LIB" ]; then
+  __saw_dead=0
+  __le=0
+  while :; do
+    __v=$(session_liveness_verdict "$NEW_SID" "$ROSTER_FILE" 2>/dev/null)
+    if [ "$__v" = "live" ]; then PROCESS_LIVE="1"; break; fi
+    [ "$__v" = "dead" ] && __saw_dead=1
+    [ "$__le" -ge "$LIVENESS_BUDGET" ] && break
+    sleep "$POLL_S"
+    __le=$((__le + POLL_S))
+  done
+  # Only a CONFIRMED-dead roster entry downgrades; a run of `unknown` (never
+  # registered) stays indeterminate.
+  if [ "$PROCESS_LIVE" != "1" ] && [ "$__saw_dead" = "1" ]; then PROCESS_LIVE="0"; fi
+fi
+
 # ─── (6) BOOKKEEP — temp+rename writes only, BOTH state dirs ────────────────
 # Same dual-write set as __pwt_emit_goal_state (worker worktree + canonical
 # main), so every reader resolution path sees the new sid.
@@ -678,6 +748,9 @@ __steer_add_dir "$MAIN_ROOT/.claude/state"
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 VERJSON=false
 [ "$VERIFIED" = "1" ] && VERJSON=true
+PLJSON=null
+[ "$PROCESS_LIVE" = "1" ] && PLJSON=true
+[ "$PROCESS_LIVE" = "0" ] && PLJSON=false
 ROW_REASON="steer"
 [ "$REFUSED_ADOPT" = "1" ] && ROW_REASON="steer-refused-ambiguous"
 
@@ -694,11 +767,11 @@ for dir in $BOOK_DIRS; do
   fi
   tmp="$f.tmp.$$"
   jq --arg ns "$NEW_SID" --arg os "$WORKER_SID" --arg ts "$TS" \
-     --arg reason "$ROW_REASON" --argjson ver "$VERJSON" '
+     --arg reason "$ROW_REASON" --argjson ver "$VERJSON" --argjson pl "$PLJSON" '
       (if $ns != "" and $ns != (.worker_sid // "") then .worker_sid = $ns else . end)
       | .respawn_history = ((.respawn_history // []) + [{
             ts: $ts, old_sid: $os, new_sid: $ns,
-            reason: $reason, steer_verified: $ver
+            reason: $reason, steer_verified: $ver, process_live: $pl
         }])
   ' "$f" > "$tmp" 2>/dev/null
   if [ -s "$tmp" ] && jq -e . "$tmp" >/dev/null 2>&1; then
@@ -765,8 +838,15 @@ fi
 AWAIT_HELPER="$(dirname "$0")/plan-w-team-await-terminal.sh"
 [ -f "$AWAIT_HELPER" ] || AWAIT_HELPER="plan-w-team-await-terminal.sh"
 
-if [ "$VERIFIED" = "1" ]; then
-  echo "✓ pwt-steer: delivery VERIFIED in $NEW_TX (marker $MARKER)"
+if [ "$VERIFIED" = "1" ] && [ "$PROCESS_LIVE" = "0" ]; then
+  echo "⚠ pwt-steer: steered and delivery CONFIRMED, but the resumed session is NOT running —" >&2
+  echo "  no live process/pty-sock for $NEW_SID after ${LIVENESS_BUDGET}s. This is the fake-respawn" >&2
+  echo "  signature: a marker was written but the process never ran / died. Recorded" >&2
+  echo "  process_live:false — the lane is NOT healthy and still needs respawn." >&2
+elif [ "$VERIFIED" = "1" ] && [ "$PROCESS_LIVE" = "1" ]; then
+  echo "✓ pwt-steer: delivery VERIFIED and session LIVE (pid+pty-sock) in $NEW_TX (marker $MARKER)"
+elif [ "$VERIFIED" = "1" ]; then
+  echo "✓ pwt-steer: delivery VERIFIED in $NEW_TX (marker $MARKER) — process liveness INDETERMINATE (sid not yet in the daemon roster, or no usable roster); the watchdog will catch a true corpse"
 elif [ "$REFUSED_ADOPT" = "1" ]; then
   echo "⚠ pwt-steer: steered but UNATTRIBUTABLE — no marker in any of the $FALLBACK_N new transcripts after ${TIMEOUT_S}s" >&2
   echo "  worker_sid was NOT changed; identify the live session manually before re-arming the watcher:" >&2
@@ -823,5 +903,10 @@ if [ "${PWT_DISABLE_STEER_ONE_LEAD:-0}" != "1" ]; then
 fi
 
 [ "$DUP_LEAD" = "1" ] && exit 8
-[ "$VERIFIED" = "1" ] && exit 0
+# exit 0 = delivery verified AND (process-live OR liveness indeterminate).
+# A delivery-verified steer whose process is NOT live (PROCESS_LIVE=0) is the
+# fake respawn — report steered-unverified (exit 5), same class as a missing marker.
+if [ "$VERIFIED" = "1" ] && [ "$PROCESS_LIVE" != "0" ]; then
+  exit 0
+fi
 exit 5

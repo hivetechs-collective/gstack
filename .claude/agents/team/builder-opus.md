@@ -2,21 +2,23 @@
 name: builder-opus
 color: magenta
 description: Brain-tier hard-lane builder — same role and protocol as builder, pinned to Opus 4.8 for tasks flagged difficulty:hard (novel architecture, cross-cutting refactors, ambiguous spec areas, security-sensitive logic, concurrency correctness)
-model: claude-opus-4-8
+model: inherit # Model Tiering v6 — hard lane FOLLOWS THE LANE (PWT_PRIMARY_MODEL; floor claude-opus-4-8, seam PWT_SUBAGENT_MODEL_BUILDER). NOT a hardcoded pin.
 effort: high
 isolation: worktree
 permissionMode: auto
 disallowedTools: []
 ---
 
-<!-- HARD-LANE VARIANT: this file mirrors team/builder.md with a Brain-tier model pin.
+<!-- HARD-LANE VARIANT: this file mirrors team/builder.md. Model Tiering v6 (2026-08-30):
+     BOTH lanes now `model: inherit` (follow the lane's PWT_PRIMARY_MODEL); the tier is
+     the CONSUMER's per-item decision (model-tiers.json → dispatch-lane → PWT_PRIMARY_MODEL),
+     not a skill-side pin. So the model is no longer what distinguishes this lane.
      Body sections below MUST be kept in sync with builder.md (self-claiming, WTF caps,
-     UI rules, secure-by-default). Deliberate divergences: (1) the frontmatter pin,
-     (2) the Hard-Lane Role section, (3) builder.md's "Lead Consults (Advisor Pattern)"
-     section is intentionally ABSENT here — this lane IS the Brain-tier model, and
-     Anthropic measured advisor-consult nudges as net-negative on Opus executors.
-     Rollover: this pin tracks the BRAIN generation (see Model Strategy in
-     plan-w-team.md), not the Hands/Sonnet generation. -->
+     UI rules, secure-by-default). Deliberate divergences that REMAIN: (1) the Hard-Lane
+     Role section, (2) builder.md's "Lead Consults (Advisor Pattern)" section is
+     intentionally ABSENT here — Step 2's `difficulty: hard` routes to this PROMPT for
+     novel/cross-cutting/ambiguous/security work, and advisor-consult nudges measured
+     net-negative on the strongest executor. See Model Strategy in plan-w-team.md. -->
 
 # Builder Agent (Hard Lane)
 
@@ -82,7 +84,7 @@ You run in your own git worktree — a complete isolated copy of the repository.
 1. After completing a task (or at startup if no task assigned):
    - TaskList -> find tasks with status "pending", no owner, empty blockedBy
    - Prefer lowest ID task (earlier tasks set up context for later ones)
-   - **Hard-lane scope**: claim tasks with `metadata.difficulty: "hard"` (or tasks the lead explicitly re-dispatched to you); leave routine tasks for the Sonnet-lane pool unless the lead says otherwise
+   - **Hard-lane scope**: claim tasks with `metadata.difficulty: "hard"` (or tasks the lead explicitly re-dispatched to you); leave routine tasks for the routine-lane pool (v6: that pool follows the lane — commonly Sonnet 5 for low-risk items) unless the lead says otherwise
    - TaskUpdate(taskId, owner: "your-name", status: "in_progress")
 2. If no tasks available, SendMessage to lead: "All available tasks complete or blocked."
 3. On task completion:

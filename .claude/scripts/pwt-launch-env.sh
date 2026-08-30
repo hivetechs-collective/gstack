@@ -54,6 +54,14 @@ __pwt_build_launch_env() {   # $1 = AUTO_PUSH (0/1, default 0) → echoes LAUNCH
   # so =0 (hard off) and =1 (force on) reach bg workers; unset → worker resolves AUTO from the stage.
   [ -n "${PLAN_W_TEAM_SPEC_FANOUT:-}" ] && env_str="$env_str PLAN_W_TEAM_SPEC_FANOUT=${PLAN_W_TEAM_SPEC_FANOUT}"
 
+  # Context-cap forwarding (Model Tiering v6 item 2, 2026-08-30 burn audit): when the operator or
+  # lane sets CLAUDE_CODE_AUTO_COMPACT_WINDOW (documented knob; plain token count), carry it so the
+  # spawn, steer AND resume paths all compact at the SAME window. Without it, Opus 4.8 / Fable 5
+  # lanes compacted only at the 1M limit (185–640K contexts, 0 compactions; 53% of spend was
+  # cache-read of that history). Forward-only (like PLAN_W_TEAM_SPEC_FANOUT above): unset ⇒ the
+  # launch-env string is byte-identical, so the parity golden holds.
+  [ -n "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" ] && env_str="$env_str CLAUDE_CODE_AUTO_COMPACT_WINDOW=${CLAUDE_CODE_AUTO_COMPACT_WINDOW}"
+
   # PWT-SUP-YIELD (pwt-goal.sh:1953-1959): force SUPERVISOR_SESSION=0 so a worker can NEVER inherit
   # a supervisor marker (the evaluator lets a supervisor YIELD; a worker must block-to-terminal).
   env_str="$env_str PLAN_W_TEAM_SUPERVISOR_SESSION=0"

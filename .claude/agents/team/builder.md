@@ -2,7 +2,7 @@
 name: builder
 color: red
 description: Engineering agent that writes production code with automated validation
-model: claude-opus-4-8
+model: inherit # Model Tiering v6 — routine lane FOLLOWS THE LANE (PWT_PRIMARY_MODEL; floor claude-opus-4-8, seam PWT_SUBAGENT_MODEL_BUILDER). NOT a hardcoded pin.
 effort: high
 isolation: worktree
 permissionMode: auto

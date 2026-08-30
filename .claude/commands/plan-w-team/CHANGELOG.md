@@ -14,6 +14,131 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.21.0] — 2026-08-30 (Model Tiering v6 — item 5: per-lane credential seam in pwt-goal.sh) (7d6c36a)
+
+Item **5** — the final Model Tiering v6 change
+(`docs/directions/DIRECTION-model-tiering-v6-lane-mechanics-2026-08-30.md`), hand-implemented on top of
+2.20.0 (`da1922f`). **v6 is now complete** (items 1–5 all landed). This is the SUPPLY-side fix to the
+token-burn crisis: it lets each lane authenticate with its own account, retiring the daemon-rotation
+workaround (#1703) so parallel lanes can spread across several accounts instead of draining one.
+
+- **New seam: `pwt-goal.sh --lane-settings-json <file>` / `PWT_LANE_SETTINGS_JSON=<path>`** (flag wins
+  over env). The documented way to give a background session its own account is the lane directory's
+  `.claude/settings.local.json` `env` block — NOT the daemon's env. Because `claude --bg --worktree
+  <name>` creates the worktree and starts the session in one step, pwt-goal now **pre-creates** the
+  worktree via `git worktree add`, drops the operator-supplied file at
+  `<wt>/.claude/settings.local.json` **mode 0600**, then launches with `--worktree <name>`, which
+  **REUSES the already-registered worktree** — verified on CLI 2.1.251 with a bounded probe (claude
+  ADOPTS the existing path rather than colliding, disproving the earlier code-comment assumption). The
+  seam applies to every worker spawn path (`--launch`, `--worker-only`, `--supervisor-goal`), so the
+  shipyard's lane spawns get it.
+- **Fail closed, never leak.** If the seam is set but worktree isolation is off, if the file is
+  missing/empty/invalid-JSON, or if the pre-create or drop fails, the launch **ABORTS** (with the
+  worktree rolled back) rather than silently running the lane on the wrong (daemon-default) account.
+  The file's contents — an OAuth token — are never echoed to logs. Two testable helpers:
+  `__pwt_validate_lane_settings` (input validation) and `__pwt_inject_lane_settings` (0600 drop).
+- **Never committed.** `.claude/settings.local.json` is gitignored in consumers, so the ship gate and
+  every git op skip it. A new **credential guard** in `shared/untracked-hygiene.md` HARD-BLOCKS a
+  commit if a consumer's missing `.gitignore` line ever surfaces the token in the classification set.
+- **Deleted at lane end.** The credential dies with the worktree at land-time reclaim (whole-tree
+  removal), and is never captured by `preserve_then_reap` (which enumerates with `--exclude-standard`).
+  Defense-in-depth: `plan-w-team-worktree-untracked-sweep.sh` gains an explicit **credential scrub** —
+  a per-lane `settings.local.json` is reaped from any worktree that outlives its lane, EVEN THOUGH it
+  is gitignored (the scrub is an explicit `[ -f ]` check, not enumeration), behind the same in-use /
+  live-pid / newborn vetoes so a LIVE lane keeps its token.
+- **Tests:** new `pwt-goal-lane-settings.test.sh` (14 checks — validation, 0600 drop, content fidelity,
+  no-leak, flag-over-env, fail-closed guards) + two new cases in the sweep test corpus (credential
+  scrubbed when gitignored; in-use veto preserves it). Parity (P0) held — the seam is inert unless
+  `--lane-settings-json`/`PWT_LANE_SETTINGS_JSON` is passed, so an ungoverned run with neither set is
+  byte-identical.
+
+## [2.20.0] — 2026-08-30 (Model Tiering v6 — subagent tiers FOLLOW THE LANE + v6 doctrine in the manifest) (da1922f)
+
+Items **1 & 4** of the five Model Tiering v6 changes
+(`docs/directions/DIRECTION-model-tiering-v6-lane-mechanics-2026-08-30.md`), hand-implemented on top of
+2.19.0 (`275ae01`). The founder doctrine (2026-08-30): *"Fable 5 is the most complete model (xhigh +
+workflows); Opus 4.8 always does the job; Sonnet 5 is great; Haiku when the task needs less thought.
+Parallelism is speed. Opus 5 stays forbidden."* v6's architecture is a **split of responsibility**:
+the consumer's shipyard DECIDES the model per work item; `/plan-w-team` OBEYS the pins it is handed and
+carries no business rule of its own.
+
+- **Subagent tiers follow the lane** (item 1). The seven execution + spec/review agents — `builder`,
+  `builder-opus`, `silent-failure-hunter`, `test-gap-analyzer`, `security-gap-analyzer`,
+  `react-typescript-specialist`, `rust-backend-specialist` — flip their frontmatter from the v5
+  hardcoded `model: claude-opus-4-8` to **`model: inherit`**: they now run on the launching session's
+  model = the lane (`PWT_PRIMARY_MODEL` in autonomous runs). The consumer can land low-risk work on
+  Sonnet 5 and intelligent work on Opus 4.8 without the skill hardcoding either. `difficulty: hard`
+  now routes the PROMPT to `builder-opus`, not the model.
+- **The anti-lockout floor is now LOAD-BEARING** (it was a redundant guard under v5). `pwt-goal.sh` and
+  `pwt-steer.sh` keep pinning `PWT_PRIMARY_MODEL=claude-opus-4-8` (never Fable) at every spawn/resume
+  site, so an inheriting builder can never fan out on Fable (2026-07 lockout lesson). The skill **never
+  hardcodes Fable into a spawnable role**; the singleton verdict/supervisor roles (`evaluator`,
+  `validator`, `supervisor`) stay pinned at the Opus-4.8 floor, so the judge/supervisor sit at a stable
+  Brain floor and the escalation ladder degrades exactly one rung.
+- **Consumer-override seams** (item 1). `PWT_SUBAGENT_MODEL_BUILDER` (execution lane) and
+  `PWT_SUBAGENT_MODEL_MECHANICAL` (mechanical lane) let the shipyard override a subagent's model at
+  spawn. Both are **alias-validated**: only `sonnet`/`haiku` are honored — `opus` / `claude-opus-5*` /
+  `fable` / `inherit` / a full model ID are REFUSED, because the Agent-tool `model` param takes only
+  aliases and bare `opus` resolves to the FORBIDDEN Opus 5.
+- **v6 doctrine in the manifest** (item 4). `plan-w-team.md` Model Strategy gains the split-of-
+  responsibility intro, the two builder table rows rewritten to the follow-the-lane tier, a full v6
+  generation note, and a rewritten "control a subagent's model" mechanism + rollover checklist (most
+  execution agents now carry `model: inherit` and have NO literal pin to bump — a rollover is mostly a
+  spawn-site + floor edit). `03-execute.md` documents the builder-seam consumption at the spawn site;
+  `shared/agent-roster.md` states the per-agent v6 tier.
+- **P0 unchanged: ungoverned `/plan-w-team` stays byte-for-byte identical.** No spawn default changed
+  (the floor is still Opus 4.8); `model: inherit` means the subagent tracks the lane the launcher
+  already set. The flip changes only WHICH model a lane-following subagent runs on when the consumer
+  sets a non-default lane — never the ungoverned baseline.
+- **Corpus realigned to v6** (the same "corpus lags the doctrine" class that bit the v5 rollout):
+  rewrote `model-tiering-v5.bats` v5-1 (inherit lanes + Opus-4.8 verdict floor) and added v5-9 (the
+  PWT_SUBAGENT_MODEL_* seams are documented + stamped v6); `model-tiering-v2.bats` MT1/MT2 (builder +
+  builder-opus + specialists follow the lane); `opus48-uplift.bats` AC1 (floor set narrowed to
+  evaluator/validator/supervisor); `plugin-integration.bats` + the two gap-analyzer scenario tests
+  (opus-4-8 → inherit). The Opus-5-forbidden (v5-4/v5-6) and no-Fable-in-fan-out (v5-7) negative
+  guards are unchanged and still green.
+
+**Item 5** (per-lane credential seam) remains deferred to its own later run.
+
+## [2.19.0] — 2026-08-30 (Model Tiering v6 — burn-reducers: steered-lane #1673 permission-mode + shared compact window) (275ae01)
+
+Two of the five Model Tiering v6 changes the CleanRev shipyard asked for
+(`docs/directions/DIRECTION-model-tiering-v6-lane-mechanics-2026-08-30.md`, items 2 & 3),
+hand-implemented as the cheapest, highest-leverage token-burn reducers. Builds on 2.18.0 (`f66bab7`).
+**P0 unchanged: ungoverned `/plan-w-team` stays byte-for-byte identical** — both additions are
+forward-only (fire only when the operator/lane sets the knob), so the launch-env parity golden holds
+(`tests/skill/cases/governor-parity.bats` scrubs the two forward-only vars to assert the UNSET
+baseline). The other three v6 items (subagent tiers follow the lane, the v6 manifest doc, and the
+per-lane credential seam) remain their own later runs.
+
+- **#1673 — the steered-lane death fix** (`pwt-steer.sh`): the resume `exec` passed `--model` /
+  `--fallback-model` but **no `--permission-mode`**, so every RESUMED `claude --bg` worker started
+  with no bypass grant and wedged at its first Bash/Edit (`waiting` in the roster, forever, with
+  `/dev/null` stdin and no one to answer). A FRESH `pwt-goal` spawn worked; only the steer/resume
+  path died — the root cause of every dead steered lane (reproduced 2026-08-30 00:26Z; eleven
+  mass-steers 2026-08-29 23:07Z did zero work). The fix adds `--permission-mode` at the single
+  resume exec site (default **`bypassPermissions`** — a bg fleet worker runs unattended), the
+  dry-run `would run:` echo shows it, and `pwt-resume.sh` / `plan-w-team-land.sh` resume inherit it
+  because they route THROUGH `pwt-steer` (single site, not duplicated). Seam `PWT_STEER_PERMISSION_MODE`
+  (recognized modes `bypassPermissions|acceptEdits|default|plan|auto`); an unrecognized/empty value
+  falls back to `bypassPermissions` with **one warning** — a steered lane can never wedge again over
+  a typo. Regression: `pwt-steer.test.sh` T4k (argv is exactly 10 elements), T4y/T4z (default
+  bypassPermissions present), T5c (injection fixture still one argv, now argc 10), T23a–d (the seam).
+
+- **Shared compact window** (`pwt-launch-env.sh`): `__pwt_build_launch_env` now forwards
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (documented knob; plain token count) when the operator/lane
+  sets it — forward-only, exactly like `PLAN_W_TEAM_SPEC_FANOUT` — so the spawn, steer AND resume
+  paths all compact at the SAME window. Measured 2026-08-30: without it, Opus 4.8 / Fable 5 lanes
+  compacted only at the 1M limit (185–640K contexts, 0 compactions; **53% of spend was cache-read of
+  that uncompacted history**); the biggest single burn lever. The operator shell wrapper
+  (`.claude/shell/claude-pattern.zsh`) is updated in the same change to set
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000` for interactive sessions and drop the undocumented
+  `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (measured NOT to fire).
+
+- **Verification**: `pwt-steer.test.sh` 112/112, `governor-parity.bats` 14/14 (golden byte-identical
+  under the forward-only scrub), `model-tiering-v5.bats` 22/22 (resume still pins `claude-opus-4-8`;
+  no Opus 5 anywhere). Landed at `275ae01`.
+
 ## [2.18.0] — 2026-08-30 (Governor Contract phase 3 — C2 budget obedience, C6 given-spec, C7 coordination hints; CONTRACT COMPLETE)
 
 Phase 3, the FINAL phase of the Governor Contract — C1→C7 are all delivered (spec:

@@ -307,13 +307,19 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
      description: "Implement alert rule engine",
      subagent_type: "builder",   // ← REQUIRED: the lane from task metadata
      //   (`builder-opus` when Step 2 flagged `difficulty: hard`)
-     // Do NOT set `model:` here. The Agent tool's enum accepts only aliases
-     // (opus/sonnet/haiku) and would override the agent's frontmatter pin.
-     // Tier selection happens in the agent-definition file: builder.md carries the
-     // routine-lane (Sonnet) pin; tasks Step 2 flagged `difficulty: hard` arrive
-     // with agent_type "builder-opus" (Brain-tier pin) — dispatch them as-is.
-     // See the Model Strategy table in the skill manifest (plan-w-team.md) for the
-     // canonical tier→model-ID map.
+     // Model Tiering v6: builder / builder-opus carry `model: inherit`, so they
+     // FOLLOW THE LANE — this worker's model (PWT_PRIMARY_MODEL in an autonomous
+     // run = the consumer's per-item tier). Do NOT set `model:` here by default:
+     // the Agent enum accepts only aliases and the bare `opus` alias resolves to
+     // the FORBIDDEN Opus 5, so passing it would BOTH override the lane AND select
+     // a banned model. The ONLY sanctioned `model:` here is a VALIDATED seam —
+     //   if PWT_SUBAGENT_MODEL_BUILDER is set AND is exactly `sonnet` or `haiku`,
+     //   pass it (the consumer wants routine builders below the lane); ANY other
+     //   value (`opus`, `claude-opus-5*`, `fable`, `inherit`, a
+     //   full ID, empty) is REFUSED — omit `model:` and let the inherited lane
+     //   stand. `difficulty: hard` tasks arrive as agent_type "builder-opus" —
+     //   dispatch as-is; their model still follows the lane. See the Model Strategy
+     //   table + the v6 generation note in the skill manifest (plan-w-team.md).
      prompt: "You are rules-builder. Claim tasks from the pool and implement them.
 
      Read `.claude/commands/plan-w-team/shared/self-regulation.md` for WTF-likelihood

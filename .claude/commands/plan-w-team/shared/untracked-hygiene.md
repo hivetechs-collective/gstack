@@ -167,6 +167,21 @@ Default is N. Only `y` (or `yes`) proceeds with `rm`. Anything else → classify
 
 Extensions NOT in the guard list (`.png`, `.jpg`, `.log`, `.tmp`, `.pid`, `.lock`, `.cache`, `.tsbuildinfo`, `.pyc`, etc.) pass through `rm` without a second prompt because they're almost always safe to discard.
 
+## Per-lane credential guard (`.claude/settings.local.json`)
+
+`pwt-goal.sh --lane-settings-json` (v6 item 5) drops a `.claude/settings.local.json` into the lane worktree carrying an OAuth token in its `env` block, so each lane authenticates with its own account. That file is **gitignored in every consumer** (`.claude/settings.local.json` in `.gitignore`), so it should **never appear in the classification set at all** — `git ls-files --others --exclude-standard` excludes it.
+
+If it _does_ surface here, the consumer's `.gitignore` is missing the line, and the gate must treat it as a **HARD BLOCK — never COMMIT**:
+
+```
+✗ Cannot ship: .claude/settings.local.json is in the untracked set.
+  This is a per-lane OAuth credential and MUST NOT be committed.
+  Fix: add `.claude/settings.local.json` to .gitignore (then it leaves the set),
+  and confirm no earlier commit already tracked it (`git ls-files | grep settings.local`).
+```
+
+COMMIT is forbidden for this path regardless of the decision tree; the only valid outcomes are IGNORE (add the `.gitignore` line) or DISCARD (`rm` it — it is a stale lane credential). The credential is reaped with the worktree at land-time and scrubbed from any surviving worktree by `plan-w-team-worktree-untracked-sweep.sh`; the gate's job is only to guarantee it never enters git history.
+
 ## Worked Examples
 
 ### Example 1: parts repo, CLM pipeline (26 untracked)
