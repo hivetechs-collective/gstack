@@ -112,6 +112,78 @@ pwt_governor_get() {   # $1 = jq path (e.g. .liveness_cmd); empty when ungoverne
   jq -r "(${1}) // \"\"" "$mp" 2>/dev/null || echo ""
 }
 
+# ── C2 budget + model accessors (phase 3) ────────────────────────────────────────
+# All GOVERNED-ONLY + FAIL-OPEN, mirroring pwt_governor_get. bash 3.2 (case-based, no
+# declare -A). Every one is inert ungoverned: pwt_governor_get returns empty with no
+# manifest, so a caller reading these on an ungoverned host sees the pre-contract value.
+
+# Echo a validated NON-NEGATIVE INTEGER from .budget.<subkey>, else empty. A key that is
+# PRESENT but non-integer/negative (e.g. "8.5", "8GB") is treated as ABSENT and warns ONCE
+# — a governor whose cap silently did not take is the 2026-08-19 host-starvation class, so
+# it must be diagnosable rather than fail toward NO protection.
+pwt_governor_budget_int() {   # $1 = subkey (max_builders|ram_floor_gb|disk_min_gb|nice)
+  local raw; raw=$(pwt_governor_get ".budget.${1}")   # empty ungoverned OR key absent
+  [ -n "$raw" ] || { echo ""; return 0; }
+  case "$raw" in
+    *[!0-9]*) __pwt_gov_warn_once "budget.${1}='${raw}' is not a non-negative integer — ignoring (cap did not take)"; echo ""; return 0 ;;
+  esac
+  echo "$raw"
+}
+
+# Clamp a requested builder count to budget.max_builders. Echoes min(requested, cap).
+# When requested>cap it ALSO emits a NAMED refusal to stderr — the mechanical manifest
+# refusal of the excess. Ungoverned / absent cap / invalid / non-numeric requested ⇒
+# echoes requested UNCHANGED (parity).
+pwt_governor_clamp_builders() {   # $1 = requested
+  local req="${1:-}"
+  case "$req" in ""|*[!0-9]*) echo "$req"; return 0 ;; esac
+  local cap; cap=$(pwt_governor_budget_int max_builders)
+  [ -n "$cap" ] && [ "$cap" -gt 0 ] || { echo "$req"; return 0; }
+  if [ "$req" -gt "$cap" ]; then
+    printf '⚠ pwt-governor: builder count clamped %s→%s by budget.max_builders\n' "$req" "$cap" >&2
+    echo "$cap"
+  else
+    echo "$req"
+  fi
+}
+
+# Downward-only model guard. Per-tier EXACT-STRING ALLOW-LIST membership — NOT rank≤ceiling.
+# A capability-rank gate is blind to the reliability ban that keeps Fable out of the lead /
+# fan-out tiers: claude-fable-5 is a *downgrade* by capability yet models.intelligent:
+# claude-fable-5 is exactly the 2026-07 lockout. So the accessor emits ONLY a member of the
+# tier's allow-list or the tier's HARDCODED DEFAULT LITERAL — never claude-opus-5, the bare
+# `opus`/`opus-*` alias (CLI-resolved to newest Opus), `inherit`, an unknown, or a tier-raise.
+# Ungoverned ⇒ empty (the caller keeps its own default).
+#
+# ⚠ THE ALLOW-LIST IS BOUND TO tests/skill/cases/model-tiering-v5.bats (the FUNCTIONAL sweep,
+#   v5-8). A model generation rollover (v6) MUST update BOTH — the sweep fails loudly if this
+#   table and the doctrine drift apart (Model Tiering v5, skill 2.14.3: Opus 5 FORBIDDEN).
+pwt_governor_model() {   # $1 = tier (design|intelligent|mechanical)
+  local tier="${1:-}" default=""
+  case "$tier" in
+    design)      default="claude-fable-5" ;;
+    intelligent) default="claude-opus-4-8" ;;
+    mechanical)  default="claude-sonnet-5" ;;
+    *) echo ""; return 0 ;;
+  esac
+  pwt_governed || { echo ""; return 0; }
+  local ov; ov=$(pwt_governor_get ".models.${tier}")
+  ov=$(printf '%s' "$ov" | tr -d '[:space:]')   # trim before the exact-string match
+  [ -n "$ov" ] || { echo "$default"; return 0; }
+  local ok=0
+  case "$tier" in
+    design)      case "$ov" in claude-fable-5|claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
+    intelligent) case "$ov" in claude-opus-4-8|claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
+    mechanical)  case "$ov" in claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
+  esac
+  if [ "$ok" = "1" ]; then
+    echo "$ov"
+  else
+    printf '⚠ pwt-governor: models.%s=%s refused (forbidden/tier-raise/unknown) — using %s\n' "$tier" "$ov" "$default" >&2
+    echo "$default"
+  fi
+}
+
 # ── repo root (main checkout), for approver-dir scoping ──────────────────────────
 __pwt_gov_repo_root() {   # echoes the MAIN checkout root, or empty
   local sd; sd=$(__pwt_gov_state_dirs 2>/dev/null | head -n1)

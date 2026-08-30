@@ -90,6 +90,17 @@ scripts/board.sh comment "<feature-name>" "## Execution Started
 
 > The stage itself is mirrored automatically by `plan-w-team-surface-status.sh` at every stage end — these calls only add the strategy/builder/task detail the rollup can't infer. The rollup degrades gracefully if they are skipped (builder counts still come live from the fleet log).
 
+#### Governed builder cap (Governor Contract phase 3 — C2/R1)
+
+When governed with `.budget.max_builders`, the effective concurrency cap is **mechanically** clamped
+at the ONE chokepoint every dispatch pattern reads — `fleet-query.sh summary → max_concurrent` returns
+`min(observed, budget.max_builders)`. So **all three dispatch patterns bind to it**: Pattern C (the
+supervisor) obeys `max_concurrent` directly; Pattern A's initial fan-out and Pattern B's continuous
+loop spawn at most `effective_cap − running` per iteration, where `effective_cap` is that same clamped
+`max_concurrent`. Record the applied (clamped) count as the manifest `builder_count`; `pwt-goal.sh`
+has already recorded the governor's `max_builders`/floors/nice/models into `applied_budget` at spawn
+(surfaced by `pwt-status --json`). Ungoverned: `max_concurrent` is the observed peak, unchanged.
+
 ### Pre-flight Checks
 
 - Require clean working tree (`git status` must show no uncommitted changes). This ensures builder changes can be cleanly attributed. If dirty, route through the orchestrator for a stash/commit decision rather than blocking:

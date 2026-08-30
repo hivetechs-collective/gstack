@@ -100,8 +100,21 @@ MESSAGE_SET=0
 # bash 3.2: a plain indexed array is fine; associative arrays are not.
 EXTRA_ENV=()
 
+__steer_primary_env_set=0; [ -n "${PWT_PRIMARY_MODEL:-}" ] && __steer_primary_env_set=1
+__steer_fallback_env_set=0; [ -n "${PWT_FALLBACK_MODEL:-}" ] && __steer_fallback_env_set=1
 PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-4-8}"
 FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-opus-4-8}"
+# Governor Contract phase 3 (C2/R4): governed intelligent-tier override at resume (downward-only,
+# NEVER opus-5). An explicit env pin wins; empty ungoverned ⇒ the opus-4-8 default stands (parity).
+__steer_gov_lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/pwt-governor-lib.sh"
+[ -r "$__steer_gov_lib" ] && { . "$__steer_gov_lib" 2>/dev/null || true; }
+if type pwt_governor_model >/dev/null 2>&1; then
+    __steer_gov_int=$(pwt_governor_model intelligent)
+    if [ -n "$__steer_gov_int" ] && [ "$__steer_gov_int" != "claude-opus-4-8" ]; then
+        [ "$__steer_primary_env_set" = "0" ] && PRIMARY_MODEL="$__steer_gov_int"
+        [ "$__steer_fallback_env_set" = "0" ] && FALLBACK_MODEL="$__steer_gov_int"
+    fi
+fi
 POLL_S="${PWT_STEER_POLL_S:-1}"
 
 usage() {
@@ -524,6 +537,10 @@ if [ -r "$STEER_LAUNCH_LIB" ]; then
   __pwt_scrub_leak_env
   STEER_LAUNCH_ENV=$(__pwt_build_launch_env 0)
 fi
+# Governor Contract phase 3 (C2): governed nice prefix for the resume spawn (the resume path is
+# one of the three spawn sites). Definedness-guarded; empty ungoverned ⇒ byte-identical argv.
+# (No post-spawn renice here: the launch `exec`s, so there is no return to renice from.)
+if type __pwt_nice_prefix >/dev/null 2>&1; then STEER_NICE_PREFIX=$(__pwt_nice_prefix); else STEER_NICE_PREFIX=""; fi
 RESUME_OUT="${TMPDIR:-/tmp}/pwt-steer-resume-$$.out"
 (
   cd "$RESUME_CWD" 2>/dev/null || exit 127
@@ -534,6 +551,7 @@ RESUME_OUT="${TMPDIR:-/tmp}/pwt-steer-resume-$$.out"
   # (same idiom as pwt-goal.sh's `env $LAUNCH_ENV claude`).
   exec env $STEER_LAUNCH_ENV \
     ${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"} \
+    $STEER_NICE_PREFIX \
     "$CLAUDE_BIN" \
     --bg --resume "$WORKER_SID" \
     --model "$PRIMARY_MODEL" --fallback-model "$FALLBACK_MODEL" \

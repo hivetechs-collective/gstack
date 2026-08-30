@@ -14,6 +14,57 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.18.0] — 2026-08-30 (Governor Contract phase 3 — C2 budget obedience, C6 given-spec, C7 coordination hints; CONTRACT COMPLETE)
+
+Phase 3, the FINAL phase of the Governor Contract — C1→C7 are all delivered (spec:
+`docs/specs/governor-contract-phase-3-for-plan-w-team-the-final-phase-per-the-brief-c2-budge-9b3b572c.md`;
+brief: `docs/directions/DIRECTION-pwt-governor-contract-for-shipyard-2026-08-29.md` §C2/§C6/§C7).
+**P0 unchanged: ungoverned `/plan-w-team` stays byte-for-byte identical** — every new behaviour is
+governed-only or the ONE deliberately regenerated-once golden. Builds on 2.17.0 (`2038330`).
+
+- **C2 — budget obedience** (`pwt-governor-lib.sh` + gates + spawn sites): three governed-only,
+  fail-open accessors — `pwt_governor_budget_int` (warns once on a present-but-invalid key so a cap
+  that silently didn't take is diagnosable), `pwt_governor_clamp_builders` (named refusal of the
+  excess), and `pwt_governor_model` (the **downward-only** model guard: per-tier EXACT-STRING
+  allow-list membership, NOT rank≤ceiling — which would admit `claude-fable-5` into the intelligent/
+  lead tier, the 2026-07 lockout; never emits Opus 5 / bare `opus` / `inherit` / a tier-raise).
+  **Builder clamp (R1)** is wired into `plan-w-team-fleet-query.sh summary → max_concurrent`
+  (`min(observed, max_builders)`) — the ONE chokepoint the dispatch supervisor already obeys, binding
+  every dispatch pattern mechanically. **RAM/disk floors (R2, raise-only)** in `ram-budget.sh`/
+  `disk-budget.sh` OVERRIDE the computed action and surface a NAMED `governed_floor` refusal (exit 5) —
+  **this closes the open May-2026 disk-gate DIRECTION**. **Single-definition nice (R3)**:
+  `__pwt_nice_prefix` in `pwt-launch-env.sh` (outside `__pwt_build_launch_env`, so the launch-env golden
+  is byte-stable) at all four spawn branches + a best-effort post-spawn `renice` (bg-spare pool).
+  **Applied budget (R5)** recorded per apply-site in the manifest (rejected value → `null`) and
+  surfaced by `pwt-status --json` `budget`. Kill switches: `PWT_DISABLE_GOVERNED_FLOORS=1`,
+  `PWT_DISABLE_GOVERNED_NICE=1`.
+- **C6 — given-spec entry** (`pwt-goal.sh --spec <path>` → new `pwt-given-spec.sh`): validates a
+  governor-supplied spec (grounding-theater: regular non-symlink file ≥ `PWT_GIVEN_SPEC_MIN_BYTES`
+  (default 500); clean-slug basename; format/coverage freshness via `grounding-gate --phase review`),
+  records the TRUTHFUL freshness outcome (`pass`/`skipped:binary-absent`/`disabled:killswitch` — never a
+  false `pass`), installs it in-tree at `docs/specs/<slug>.md` with provenance appended to the COPY (no
+  out-of-tree write/TOCTOU) + a sidecar, pins the run slug via `__PWT_SLUG_OVERRIDE` at every derivation
+  site, and routes the worker into the router's `specd` path — **Step 5 adversarial re-verification
+  UNCHANGED**. `--spec`+`--brief` refused; new exit code `8` `PWT_SPEC_INVALID`; omitted `--spec` is
+  byte-identical. Governance-tagged surface.
+- **C7 — coordination hints** (`pwt-coordination-hints.sh`, governed-only): from one chokepoint,
+  annotates the run-local scope-lock with per-task `predicted_paths` (preserving the drift fields —
+  inert to Step-5/6 drift), records `coordination_hints` in the canonical-main manifest (surfaced by
+  `pwt-status --json`), and emits one `coordination-hint` event per task to the governor's `event_sink`.
+  Ungoverned: scope-lock byte-identical, no manifest field, no sink line, drift comparison untouched.
+  Kill switch: `PWT_DISABLE_COORDINATION_HINTS=1`.
+- **Docs + registrations**: `docs/operations/governor-contract.md` phase-3 section with the **C1→C7
+  delivery map + a known-residuals ledger** (the honest close); `shared/state-artifacts.md` registers
+  the given-spec sidecar; `shared/governance-tags.md` gains the model-policy invariant + a given-spec
+  row; `sync-to-project.sh` allowlists the two new scripts. The `pwt-status-json.golden` parity golden
+  was regenerated ONCE (reviewed diff: exactly the two additive `budget`/`coordination_hints` null
+  fields).
+- **Tests**: `governor-budget.bats` (clamp + fleet-query cap, RAM/disk floors via stub seams,
+  single-def nice, the FUNCTIONAL model-guard sweep, applied-budget + status); `governor-parity.bats`
+  (regenerated golden + the manifest-surface leak guard); `model-tiering-v5.bats` v5-8 (functional
+  accessor sweep) + `model-tiering-v3.bats` (`--exclude=pwt-governor-lib.sh`); `pwt-given-spec.test.sh`
+  and `pwt-coordination-hints.test.sh`.
+
 ## [2.17.0] — 2026-08-29 (Governor Contract phase 2 — C1 observability, C4 delegated approver, rotated-lead SUCCESS)
 
 Phase 2 of the Governor Contract (spec: `docs/specs/governor-contract-phase-2-c1-observability-c4-approver.md`;

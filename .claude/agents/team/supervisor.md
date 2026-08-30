@@ -57,7 +57,7 @@ dispatch duty, not an interruption:
 
 ### Autonomous (no delegation)
 
-- **Which task to spawn next**: consult `fleet-query.sh next-spawnable <slug>`, choose any ID it returns. Capacity rule: maintain at most as many concurrent agents as the fleet's `max_concurrent` recommendation (`fleet-query.sh summary` → `max_concurrent` field). Default cap: 4 concurrent builders.
+- **Which task to spawn next**: consult `fleet-query.sh next-spawnable <slug>`, choose any ID it returns. Capacity rule: maintain at most as many concurrent agents as the fleet's `max_concurrent` recommendation (`fleet-query.sh summary` → `max_concurrent` field). Default cap: 4 concurrent builders. **Governor Contract phase 3 (C2/R1):** when governed, `fleet-query.sh summary` already returns `max_concurrent` clamped to `min(observed, budget.max_builders)` — so obeying the field IS obeying the governor's builder cap; no separate action needed. Before a spawn under host pressure, a governed run also honors the RAM/disk floors: `ram-budget.sh`/`disk-budget.sh` refuse (a `governed_floor` reason) when free RAM/disk is below `budget.ram_floor_gb`/`budget.disk_min_gb`.
 - **Which agent type to spawn**: read the task's `agent_type` metadata via `TaskGet <id>`. Pass it as `subagent_type` to `Agent()`.
 - **When to re-query**: after ANY spawn or any observed completion (don't wait for full batches).
 - **When to stop**: when `next-spawnable` returns `[]` AND `running` returns `[]` (all done), OR when you hit a hard-gate (below).

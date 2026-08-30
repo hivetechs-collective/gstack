@@ -274,6 +274,34 @@ else
     action="REDUCE_PARALLEL"
 fi
 
+# ── Governor Contract phase 3 (C2): governed RAM floor (raise-only) ───────────
+# GOVERNED-ONLY + FAIL-OPEN. When a budget.ram_floor_gb is set and free RAM is below it,
+# OVERRIDE the computed action to a refusal the caller (pwt-goal PWT-RAM1) already turns
+# into exit 5, and surface a NAMED reason (governed_floor) both in JSON and on stderr.
+# Ungoverned / no floor / lib absent / kill-switched ⇒ untouched (byte-identical output).
+# Kill switch: PWT_DISABLE_GOVERNED_FLOORS=1.
+GOVERNED_FLOOR_JSON=""
+if [ "${PWT_DISABLE_GOVERNED_FLOORS:-0}" != "1" ]; then
+    __rb_lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/pwt-governor-lib.sh"
+    if [ -r "$__rb_lib" ]; then
+        # shellcheck disable=SC1090
+        . "$__rb_lib" 2>/dev/null || true
+        if command -v pwt_governor_budget_int >/dev/null 2>&1; then
+            __rb_floor=$(pwt_governor_budget_int ram_floor_gb)
+            if [ -n "$__rb_floor" ]; then
+                __rb_free_whole=$(( free_bytes / 1073741824 ))
+                if [ "$__rb_free_whole" -lt "$__rb_floor" ]; then
+                    action="AT_CAPACITY"
+                    GOVERNED_FLOOR_JSON=",
+  \"governed_floor\": \"ram_floor_gb=${__rb_floor}\""
+                    printf '⚠ pwt-governor: free RAM %sGB < budget.ram_floor_gb=%sGB — refusing spawn\n' \
+                        "$__rb_free_whole" "$__rb_floor" >&2
+                fi
+            fi
+        fi
+    fi
+fi
+
 cat <<EOF
 {
   "free_gb": ${free_gb},
@@ -283,6 +311,6 @@ cat <<EOF
   "estimated_session_cost_gb": ${SESSION_COST_GB},
   "safety_factor": ${SAFETY_FACTOR},
   "capacity_for_new_sessions": ${capacity},
-  "recommended_action": "${action}"
+  "recommended_action": "${action}"${GOVERNED_FLOOR_JSON}
 }
 EOF

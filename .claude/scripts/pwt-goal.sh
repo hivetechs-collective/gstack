@@ -401,6 +401,8 @@ TYPE="feature"
 PWT_TYPE_EXPLICIT=0  # 1 iff -t/--type was explicitly passed (Fix 5 — explicit type always wins over auto-classification)
 REQUEST=""
 BRIEF_PATH=""  # --brief <path>: written brief that grounds a deictic request (T2 §2a)
+SPEC_PATH=""   # --spec <path>: governor-supplied given-spec (Governor Contract phase 3, C6)
+__PWT_SLUG_OVERRIDE=""   # phase 3 C6: when set, __pwt_safe_slug returns it verbatim at EVERY site
 
 # ─── --resume-staleness-check (AC4 — bg-worker resume staleness self-exit) ───
 # The bg-session daemon auto-resumes persisted `claude --bg` workers on restart
@@ -538,6 +540,7 @@ while [ $# -gt 0 ]; do
         --no-auto-push) AUTO_PUSH=0; shift ;;
         -t|--type) TYPE="$2"; PWT_TYPE_EXPLICIT=1; shift 2 ;;
         --brief) BRIEF_PATH="$2"; shift 2 ;;
+        --spec) SPEC_PATH="$2"; shift 2 ;;
         --hours|--turns)
             echo "Note: $1 removed by design — /plan-w-team has no wall-clock or turn caps. Ignoring '$1 $2'." >&2
             shift 2 ;;
@@ -819,6 +822,14 @@ ORIGINAL_REQUEST="$REQUEST"
 #
 # See docs/specs/pwt-goal-safe-slug.md and docs/specs/supervisor-mirror-lifecycle.md.
 __pwt_safe_slug() {
+    # Governor Contract phase 3 (C6): a --spec run pins the slug to the spec basename. Honoring the
+    # override HERE means EVERY derivation site (SLUG_GUESS, the worktree name, the seed/manifest/
+    # children recomputes) resolves to the SAME spec-derived slug — closing the stranded-goal-state
+    # class where a basename slug at one site diverged from the request-derived slug at another.
+    if [ -n "${__PWT_SLUG_OVERRIDE:-}" ]; then
+        printf '%s\n' "$__PWT_SLUG_OVERRIDE"
+        return 0
+    fi
     local request="${1:-}"
     local body
     body=$(printf '%s' "$request" \
@@ -980,6 +991,42 @@ __pwt_init_manifest() {
     return 0
 }
 
+# Governor Contract phase 3 (C2/R5): record the APPLIED budget into the manifest, GOVERNED-ONLY.
+# Per Fable #5 each apply site records its OWN applied value: pwt-goal knows the actually-applied
+# nice (NICE_VAL — empty ⇒ null) and the resolved intelligent model (__PWT_APPLIED_MODEL — empty ⇒
+# null, i.e. no override took), plus the governor's floors + max_builders cap. The clamped builder
+# COUNT is recorded later by 03-execute/fleet-query. Ungoverned ⇒ this is a no-op (no applied_budget
+# key ⇒ pwt-status budget stays null ⇒ parity).
+__pwt_record_applied_budget() {
+    local state_dir="${1:-}" slug="${2:-}"
+    [ -z "$state_dir" ] || [ -z "$slug" ] && return 0
+    command -v pwt_governed >/dev/null 2>&1 || return 0
+    pwt_governed || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    local helper="$(dirname "$0")/pwt-manifest.sh"
+    [ -x "$helper" ] || return 0
+    local mb rf dm
+    mb=$(pwt_governor_budget_int max_builders)
+    rf=$(pwt_governor_budget_int ram_floor_gb)
+    dm=$(pwt_governor_budget_int disk_min_gb)
+    [ -z "$mb$rf$dm${NICE_VAL:-}${__PWT_APPLIED_MODEL:-}" ] && return 0   # nothing governed
+    local budget_json
+    budget_json=$(MB="$mb" RF="$rf" DM="$dm" NICE="${NICE_VAL:-}" MODEL="${__PWT_APPLIED_MODEL:-}" python3 - <<'PY'
+import json, os
+def i(e):
+    v=os.environ.get(e,"")
+    try: return int(v) if v!="" else None
+    except Exception: return None
+def s(e):
+    v=os.environ.get(e,""); return v if v else None
+print(json.dumps({"max_builders": i("MB"), "ram_floor_gb": i("RF"), "disk_min_gb": i("DM"),
+                  "nice": i("NICE"), "models": {"intelligent": s("MODEL")}}))
+PY
+) || return 0
+    PWT_MANIFEST_STATE_DIR="$state_dir" "$helper" set --slug "$slug" --applied-budget "$budget_json" >/dev/null 2>&1 || true
+    return 0
+}
+
 # Validate type
 case "$TYPE" in
     feature|refactor|bugfix|docs|eval) ;;
@@ -1048,6 +1095,47 @@ fi
 # receipt-ocr-waf-carveout), stranding every seeded goal-state at
 # terminal_state:null. __pwt_safe_slug is pure (same REQUEST → same slug), so
 # the later recomputes at the spawn paths are idempotent and intentionally kept.
+#
+# ── Governor Contract phase 3 (C6): given-spec entry ─────────────────────────
+# When --spec is supplied, validate+install it via the dedicated helper and PIN the run's slug
+# to the spec basename via __PWT_SLUG_OVERRIDE (honored inside __pwt_safe_slug at EVERY site).
+# The helper does the theater/path/freshness validation and exits 8 on refusal — which we
+# propagate. --spec + --brief are alternative grounding-supply mechanisms; refuse both together.
+__PWT_SPEC_DIRECTIVE=""
+if [ -n "$SPEC_PATH" ]; then
+    if [ -n "$BRIEF_PATH" ]; then
+        echo "✗ --spec and --brief are alternative grounding-supply mechanisms — pass only one." >&2
+        exit 8
+    fi
+    __gs_helper="$(dirname "$0")/pwt-given-spec.sh"
+    if [ ! -x "$__gs_helper" ]; then
+        echo "✗ --spec given but pwt-given-spec.sh is missing/not executable: $__gs_helper" >&2
+        exit 8
+    fi
+    __gs_gov=""
+    if [ -r "$(dirname "$0")/pwt-governor-lib.sh" ]; then
+        # shellcheck disable=SC1090
+        . "$(dirname "$0")/pwt-governor-lib.sh" 2>/dev/null || true
+        command -v pwt_governor_name >/dev/null 2>&1 && __gs_gov=$(pwt_governor_name 2>/dev/null)
+    fi
+    __gs_out=$("$__gs_helper" validate --spec "$SPEC_PATH" ${__gs_gov:+--governor "$__gs_gov"})
+    __gs_rc=$?
+    if [ "$__gs_rc" -ne 0 ]; then
+        exit "$__gs_rc"   # the helper already printed the loud PWT_SPEC_INVALID reason
+    fi
+    __PWT_SLUG_OVERRIDE=$(printf '%s\n' "$__gs_out" | grep -E '^slug=' | head -1 | sed -E 's/^slug=//')
+    __gs_freshness=$(printf '%s\n' "$__gs_out" | grep -E '^freshness=' | head -1 | sed -E 's/^freshness=//')
+    [ -n "$__PWT_SLUG_OVERRIDE" ] || { echo "✗ pwt-given-spec.sh returned no slug" >&2; exit 8; }
+    __PWT_SPEC_DIRECTIVE="
+A governor-supplied, freshness-validated spec is installed at docs/specs/${__PWT_SLUG_OVERRIDE}.md
+(freshness-gate=${__gs_freshness}; provenance recorded IN the spec + sidecar
+plan-w-team-given-spec-${__PWT_SLUG_OVERRIDE}.json). This is a GIVEN-SPEC run: enter the Run-State
+Router's specd path — do NOT re-author Step 0/1. If your fresh-baseRef worktree lacks
+docs/specs/${__PWT_SLUG_OVERRIDE}.md, materialize it from the source or the main checkout first.
+Re-run the Step-1 grounding freshness gate on it, then proceed Step 2→8. Step 5 adversarial
+re-verification applies UNCHANGED — a supplied spec gets the SAME scrutiny as an authored one."
+    echo "INFO: --spec accepted; slug=${__PWT_SLUG_OVERRIDE}, freshness=${__gs_freshness} — entering specd path" >&2
+fi
 SLUG_GUESS=$(__pwt_safe_slug "$ORIGINAL_REQUEST")
 
 # Mode-aware slug directive (review finding): only SPAWN modes (--launch /
@@ -1092,7 +1180,7 @@ __pwt_build_goal_text() {
     local req="$1"
     read -r -d '' GOAL_TEXT <<EOF_GOAL_TEXT || true
 /goal Use /plan-w-team to ${req}.
-Ground in repo docs first (GRD).${__PWT_BRIEF_DIRECTIVE}${__PWT_INTENT_DIRECTIVE}
+Ground in repo docs first (GRD).${__PWT_BRIEF_DIRECTIVE}${__PWT_SPEC_DIRECTIVE}${__PWT_INTENT_DIRECTIVE}
 SLUG for ALL run artifacts: ${SLUG_GUESS}
 ${__PWT_SLUG_DIRECTIVE}${__PWT_DONE_ROWS_DIRECTIVE}
 
@@ -1582,6 +1670,8 @@ fi
 #      worktree cap, and the missing-hash-tool fatal in the overflow path
 #   6  fair-share gate refusal
 #   7  PWT_CTX_DANGLING — this guard (deictic request, no resolvable brief)
+#   8  PWT_SPEC_INVALID — Governor Contract phase 3 (C6) --spec refusal (theater/path/slug/
+#      freshness, or --spec+--brief together). Raised by pwt-given-spec.sh and propagated here.
 #
 # NOTE for spec readers: docs/specs/bottom-line-loops-hardening.md says "exit 6"
 # for PWT_CTX_DANGLING. That text predates the fair-share gate, which took 6.
@@ -1720,8 +1810,11 @@ if [ "${PLAN_W_TEAM_DISABLE_RAM_GATE:-0}" != "1" ] \
                 BG_COUNT=$(printf '%s' "$RAM_JSON"  | grep -oE '"bg_session_count": *[0-9]+'  | head -1 | sed -E 's/.*: *//')
                 EST_COST=$(printf '%s' "$RAM_JSON"  | grep -oE '"estimated_session_cost_gb": *[0-9.]+' | head -1 | sed -E 's/.*: *//')
                 CAPACITY=$(printf '%s' "$RAM_JSON"  | grep -oE '"capacity_for_new_sessions": *[^,}]*' | head -1 | sed -E 's/.*: *//')
+                # Governor Contract phase 3 (C2): name the governed floor when it is the reason.
+                RAM_GOV_FLOOR=$(printf '%s' "$RAM_JSON" | grep -oE '"governed_floor": *"[^"]*"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+                RAM_GOV_SUFFIX=""; [ -n "$RAM_GOV_FLOOR" ] && RAM_GOV_SUFFIX=" (governed_floor: $RAM_GOV_FLOOR)"
                 cat >&2 <<RAM_GATE
-✗ RAM gate refused: $RAM_ACTION
+✗ RAM gate refused: $RAM_ACTION$RAM_GOV_SUFFIX
 
   free_gb=$FREE_GB
   bg_session_count=$BG_COUNT (each ~${EST_COST}GB)
@@ -1761,9 +1854,11 @@ if [ "${PLAN_W_TEAM_DISABLE_DISK_GATE:-0}" != "1" ] \
             DISK_FREE=$(printf '%s' "$DISK_JSON"   | grep -oE '"free_gb": *[^,}]*'                  | head -1 | sed -E 's/.*: *//')
             DISK_MINF=$(printf '%s' "$DISK_JSON"   | grep -oE '"min_free_gb": *[^,}]*'              | head -1 | sed -E 's/.*: *//')
             DISK_CAP=$(printf '%s' "$DISK_JSON"    | grep -oE '"capacity_for_new_worktrees": *[^,}]*' | head -1 | sed -E 's/.*: *//')
+            DISK_GOV_FLOOR=$(printf '%s' "$DISK_JSON" | grep -oE '"governed_floor": *"[^"]*"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+            DISK_GOV_SUFFIX=""; [ -n "$DISK_GOV_FLOOR" ] && DISK_GOV_SUFFIX=" (governed_floor: $DISK_GOV_FLOOR)"
             if [ "$DISK_ACTION" = "BLOCK" ] || [ "$DISK_ACTION" = "AT_CAPACITY" ]; then
                 cat >&2 <<DISK_GATE
-✗ Disk gate refused: $DISK_ACTION
+✗ Disk gate refused: $DISK_ACTION$DISK_GOV_SUFFIX
 
   free_gb=$DISK_FREE  min_free_gb=$DISK_MINF  capacity_for_new_worktrees=$DISK_CAP
 
@@ -1948,6 +2043,14 @@ if [ "$LAUNCH" = "1" ]; then
     __pwt_scrub_leak_env
     LAUNCH_ENV=$(__pwt_build_launch_env "$AUTO_PUSH")
 
+    # Governor Contract phase 3 (C2): source the governed-only accessor lib and compute the
+    # nice command prefix ONCE (definedness-guarded so the LAUNCH_ENV-less safety-net branch
+    # cannot crash if the lib failed to load). Empty ungoverned ⇒ every spawn argv below is
+    # byte-identical to pre-phase-3. NICE_VAL feeds the best-effort post-spawn renice fallback.
+    . "$(dirname "$0")/pwt-governor-lib.sh" 2>/dev/null || true
+    if type __pwt_nice_prefix >/dev/null 2>&1; then NICE_PREFIX=$(__pwt_nice_prefix); else NICE_PREFIX=""; fi
+    if type __pwt_governed_nice_value >/dev/null 2>&1; then NICE_VAL=$(__pwt_governed_nice_value); else NICE_VAL=""; fi
+
     # Model pinning for bg spawns (Model Tiering v4, skill 1.58.0):
     #   --model pins the PRIMARY explicitly so bg fleets NEVER silently inherit
     #   an expensive interactive session default (2026-07 incident: a Fable 5
@@ -1968,8 +2071,24 @@ if [ "$LAUNCH" = "1" ]; then
     #   lever, if degradation is ever needed, is settings.json fallbackModel.
     #   Override via PWT_PRIMARY_MODEL / PWT_FALLBACK_MODEL. Threaded into both
     #   bg spawn sites below (worker + supervisor).
+    # Governor Contract phase 3 (C2/R4): capture whether the operator explicitly pinned the
+    # model via env BEFORE the default resolves — an explicit env pin (dispatch-lane.sh) beats
+    # the governed models.intelligent override.
+    __pwt_primary_env_set=0; [ -n "${PWT_PRIMARY_MODEL:-}" ] && __pwt_primary_env_set=1
+    __pwt_fallback_env_set=0; [ -n "${PWT_FALLBACK_MODEL:-}" ] && __pwt_fallback_env_set=1
     PWT_PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-4-8}"
     PWT_FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-opus-4-8}"
+    # Governed intelligent-tier override (downward-only, NEVER opus-5 — see pwt_governor_model).
+    # Applied ONLY where the operator did not pin the env; empty ungoverned ⇒ the opus-4-8 default
+    # stands (parity). __PWT_APPLIED_MODEL records what actually took, for applied_budget.
+    __PWT_APPLIED_MODEL=""
+    if type pwt_governor_model >/dev/null 2>&1; then
+        __pwt_gov_int=$(pwt_governor_model intelligent)
+        if [ -n "$__pwt_gov_int" ] && [ "$__pwt_gov_int" != "claude-opus-4-8" ]; then
+            [ "$__pwt_primary_env_set" = "0" ] && { PWT_PRIMARY_MODEL="$__pwt_gov_int"; __PWT_APPLIED_MODEL="$__pwt_gov_int"; }
+            [ "$__pwt_fallback_env_set" = "0" ] && PWT_FALLBACK_MODEL="$__pwt_gov_int"
+        fi
+    fi
 
     # Resolve PROJECT_ROOT to the active worktree, not the main checkout.
     # When CLAUDE_PROJECT_DIR is inherited from a parent process, it can point
@@ -2127,13 +2246,13 @@ if [ "$LAUNCH" = "1" ]; then
     # instead of hanging the session forever. The MCP pre-decide above is the
     # capability-preserving primary fix; this is defense-in-depth.
     if [ -n "$LAUNCH_ENV" ]; then
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
+        env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
         LAUNCH_RC=$?
     else
         # Carries PWT_LEAN_STATUSLINE=1 too: this branch is a safety net, and a
         # safety net that drops the host-load protection would reintroduce the
         # exact failure it exists to survive.
-        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 PWT_LEAN_STATUSLINE=1 "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
+        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 PWT_LEAN_STATUSLINE=1 $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
         LAUNCH_RC=$?
     fi
 
@@ -2152,6 +2271,17 @@ if [ "$LAUNCH" = "1" ]; then
     fi
 
     echo "  worker session:     $WORKER_SID" >&2
+
+    # ─── C2 governed-nice fallback (Fable #2) ─────────────────────────────────
+    # A `--bg` launch may be serviced by the daemon's bg-spare pre-fork pool, so the
+    # `nice -n N` PREFIX above can end up nicing only the short-lived dispatch client while
+    # the adopted worker keeps default priority. Best-effort renice the ACTUAL worker by its
+    # session id. GOVERNED-ONLY: NICE_VAL is empty ungoverned ⇒ this whole block is a no-op
+    # (byte-identical). Never blocks — a failed pgrep/renice is swallowed.
+    if [ -n "${NICE_VAL:-}" ] && [ -n "$WORKER_SID" ] && command -v pgrep >/dev/null 2>&1; then
+        __pwt_wpid=$(pgrep -f "$WORKER_SID" 2>/dev/null | head -1 || echo "")
+        [ -n "$__pwt_wpid" ] && renice "$NICE_VAL" -p "$__pwt_wpid" >/dev/null 2>&1 || true
+    fi
 
     # ─── Compute SLUG once (used by sidecar + registry + supervisor mirror) ───
     # Slug derivation goes through __pwt_safe_slug so multi-line / long
@@ -2177,6 +2307,7 @@ if [ "$LAUNCH" = "1" ]; then
         fi
         __pwt_write_skill_version_sidecar "$PROJECT_ROOT/.claude/state" "$SLUG_GUESS" "$__PWT_SPAWN_LABEL"
         __pwt_init_manifest "$PROJECT_ROOT/.claude/state" "$SLUG_GUESS" "$WORKER_SID"
+        __pwt_record_applied_budget "$PROJECT_ROOT/.claude/state" "$SLUG_GUESS"
     fi
 
     # ─── Register claim in shared cross-repo registry (PWT-RAM2) ──────────────
@@ -2433,6 +2564,7 @@ EOF_GOAL_MIRROR
                 # Write the per-spawn skill-version sidecar alongside the mirror.
                 __pwt_write_skill_version_sidecar "$ORIGIN_STATE_DIR" "$SLUG_GUESS" "supervisor-goal"
                 __pwt_init_manifest "$ORIGIN_STATE_DIR" "$SLUG_GUESS" "${WORKER_SID:-}"
+                __pwt_record_applied_budget "$ORIGIN_STATE_DIR" "$SLUG_GUESS"
                 if [ "$ORIGIN_SOURCE" = "PWD" ]; then
                     echo "INFO: --supervisor-goal: using PWD as origin (git repo); origin goal-state: $ORIGIN_GOAL_FILE" >&2
                 else
@@ -2564,7 +2696,7 @@ SUPEOF
     # 2026-05-21: sid 0b5856d7 → 4bbb2cb8 → f2ec9cb9 → 7a4c658b cascade).
     SUP_OUT_FILE=$(mktemp -t pwt-goal-supervisor.XXXXXX 2>/dev/null || echo "")
     if [ -n "$SUP_OUT_FILE" ]; then
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
+        env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
         SUP_RC=$?
         SUPERVISOR_SID=""
         if [ -s "$SUP_OUT_FILE" ]; then
@@ -2578,7 +2710,7 @@ SUPEOF
         SUPERVISOR_SID=""
         SUP_RC=1
         echo "WARN: mktemp failed for supervisor; spawning anyway" >&2
-        env $LAUNCH_ENV "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" "$SUPERVISOR_BOOTSTRAP" >&2 || true
+        env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" "$SUPERVISOR_BOOTSTRAP" >&2 || true
     fi
 
     if [ -n "$SUPERVISOR_SID" ]; then

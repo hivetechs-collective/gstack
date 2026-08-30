@@ -385,8 +385,8 @@ For any task touching a **hot-path file** — defined as ANY of:
 
 Step 2 emits an additional **optional task slot** for `performance-testing-specialist` to author a benchmark. The slot is offered, not enforced: the lead can decline it for low-risk edits, accept it for performance-sensitive changes, or auto-skip when a benchmark already exists for the touched file.
 
-| Task  | Role                                            | Blocked by | Scope   | Agent                     | Required? |
-| ----- | ----------------------------------------------- | ---------- | ------- | ------------------------- | --------- |
+| Task  | Role                                            | Blocked by | Scope   | Agent                            | Required? |
+| ----- | ----------------------------------------------- | ---------- | ------- | -------------------------------- | --------- |
 | `N.p` | Author or extend a micro-benchmark for the file | (none)     | `TESTS` | `performance-testing-specialist` | optional  |
 
 **Heuristic detection** (Step 2 runs once per touched file):
@@ -501,6 +501,26 @@ cat > ".claude/state/plan-w-team-scope-lock-${SLUG}.json" <<EOF
   "acceptance_criteria_count": 0
 }
 EOF
+```
+
+### Coordination Hints (Governor Contract phase 3 — C7, GOVERNED-ONLY)
+
+**AFTER writing the (unchanged) scope-lock above**, and ONLY when governed, surface each task's
+**predicted touched-paths** so a 24/7 governor can detect cross-run file conflicts and order sibling
+merges. `/plan-w-team` itself never coordinates with other runs — this is hints, not coordination.
+
+Assemble the hints array from each task's `files_touched` metadata and hand it to the ONE chokepoint
+helper, which annotates the run-local scope-lock (`predicted_paths` per task — inert to the Step-5/6
+drift reader, which only reads `task_count`/`id`/`scope`), records `coordination_hints` in the
+canonical-main manifest (surfaced by `pwt-status --json`), and emits one `coordination-hint` event
+per task to the governor's `event_sink`:
+
+```bash
+# GOVERNED-ONLY + FAIL-OPEN. Ungoverned the helper is a NO-OP: the scope-lock stays byte-identical,
+# no manifest field, no sink line (parity). Kill switch: PWT_DISABLE_COORDINATION_HINTS=1.
+# Build HINTS from the task breakdown's files_touched metadata:
+#   HINTS='[{"task_id":"1","predicted_paths":["src/a.ts","src/b.ts"]}, ...]'
+.claude/scripts/pwt-coordination-hints.sh emit --slug "$SLUG" --hints "$HINTS" || true
 ```
 
 **What the lock does**:

@@ -89,6 +89,30 @@ else
     MIN_FREE="$MIN_FREE_GB"; COST="$COST_GB"
 fi
 
+# ── Governor Contract phase 3 (C2): governed disk floor (raise-only) ──────────
+# GOVERNED-ONLY + FAIL-OPEN. Raise MIN_FREE to max(MIN_FREE, budget.disk_min_gb) so the
+# existing BELOW_FLOOR/BLOCK compare (and the capacity math, both read MIN_FREE) tighten
+# automatically; the caller (pwt-goal PWT-DISK1) already turns BLOCK into exit 5. Ungoverned
+# / no floor / lib absent / kill-switched ⇒ MIN_FREE untouched (byte-identical output).
+# Kill switch: PWT_DISABLE_GOVERNED_FLOORS=1.
+DB_GOV_FLOOR=""
+if [ "${PWT_DISABLE_GOVERNED_FLOORS:-0}" != "1" ]; then
+    __db_lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/pwt-governor-lib.sh"
+    if [ -r "$__db_lib" ]; then
+        # shellcheck disable=SC1090
+        . "$__db_lib" 2>/dev/null || true
+        if command -v pwt_governor_budget_int >/dev/null 2>&1; then
+            __db_floor=$(pwt_governor_budget_int disk_min_gb)
+            if [ -n "$__db_floor" ]; then
+                __db_raise=$(awk -v m="$MIN_FREE" -v f="$__db_floor" 'BEGIN{print (f>m)?1:0}')
+                if [ "$__db_raise" = "1" ]; then
+                    MIN_FREE="$__db_floor"; DB_GOV_FLOOR="$__db_floor"
+                fi
+            fi
+        fi
+    fi
+fi
+
 # ── read df (1K blocks) ───────────────────────────────────────────────────────
 if [ -n "${DISK_BUDGET_STUB_DF:-}" ]; then
     DF_OUT="$(cat "$DISK_BUDGET_STUB_DF" 2>/dev/null)" || { emit_fail_open "stub_df_unreadable"; exit 0; }
@@ -141,6 +165,18 @@ else
     ACTION="AT_CAPACITY"
 fi
 
+# Governor Contract phase 3 (C2): name the governed disk floor when it is the block reason.
+GOVERNED_FLOOR_JSON=""
+if [ -n "$DB_GOV_FLOOR" ]; then
+    __db_below_gov=$(awk -v f="$FREE_GB" -v m="$DB_GOV_FLOOR" 'BEGIN{print (f<m)?1:0}')
+    if [ "$__db_below_gov" = "1" ]; then
+        GOVERNED_FLOOR_JSON=",
+  \"governed_floor\": \"disk_min_gb=${DB_GOV_FLOOR}\""
+        printf '⚠ pwt-governor: free disk %sGB < budget.disk_min_gb=%sGB — refusing spawn\n' \
+            "$FREE_GB" "$DB_GOV_FLOOR" >&2
+    fi
+fi
+
 cat <<EOF
 {
   "free_gb": ${FREE_GB},
@@ -151,6 +187,6 @@ cat <<EOF
   "est_worktree_cost_gb": ${COST},
   "capacity_for_new_worktrees": ${CAPACITY},
   "max_pct_advisory": ${MAX_PCT},
-  "recommended_action": "${ACTION}"
+  "recommended_action": "${ACTION}"${GOVERNED_FLOOR_JSON}
 }
 EOF

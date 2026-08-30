@@ -214,6 +214,19 @@ case "$SUBCOMMAND" in
                  max: ([.max, (.cur + $e.delta)] | max)})
             | .max
         ')
+        # Governor Contract phase 3 (C2/R1): clamp the OBSERVED peak to budget.max_builders.
+        # This is the mechanical chokepoint the dispatch supervisor already obeys (supervisor.md:60
+        # reads summary.max_concurrent), so folding the clamp here binds every dispatch pattern.
+        # GOVERNED-ONLY + FAIL-OPEN; SILENT in this observability query (the named refusal belongs
+        # at the spawn decision, not on every status poll — hence 2>/dev/null).
+        __fq_lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/pwt-governor-lib.sh"
+        if [ -r "$__fq_lib" ]; then
+            # shellcheck disable=SC1090
+            . "$__fq_lib" 2>/dev/null || true
+            if command -v pwt_governor_clamp_builders >/dev/null 2>&1; then
+                MAX_CONCURRENT=$(pwt_governor_clamp_builders "$MAX_CONCURRENT" 2>/dev/null)
+            fi
+        fi
         jq -n --argjson sp "$SPAWNED" --argjson co "$COMPLETED" \
               --argjson fa "$FAILED" --argjson ru "$RUNNING" --argjson mc "$MAX_CONCURRENT" \
             '{spawned: $sp, completed: $co, failed: $fa, running: $ru, max_concurrent: $mc}'

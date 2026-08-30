@@ -21,6 +21,11 @@
 # PWT_FALLBACK_MODEL are passed as separate `--model`/`--fallback-model` FLAGS, never inside
 # LAUNCH_ENV. Callers set/pass those themselves.
 
+# Captured at SOURCE time so __pwt_nice_prefix can self-source the governor lib (same dir)
+# when a caller has not already sourced it. A plain var assignment — never touches
+# __pwt_build_launch_env, so the launch-env parity golden is unaffected.
+__PWT_LAUNCH_ENV_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
+
 __pwt_scrub_leak_env() {
   # PWT-CTX worker env hygiene (pwt-goal.sh:1901-1916): the deictic escape hatch + the Fable-consult
   # force are for THIS invocation only. `env $LAUNCH_ENV claude` inherits our environment, so an
@@ -58,4 +63,38 @@ __pwt_build_launch_env() {   # $1 = AUTO_PUSH (0/1, default 0) → echoes LAUNCH
   env_str="$env_str PWT_LEAN_STATUSLINE=1"
 
   printf '%s' "$env_str"
+}
+
+# __pwt_nice_prefix — the ONE definition of the C2 governed-nice command prefix (phase 3).
+# Echoes `nice -n <N>` when GOVERNED and .budget.nice is an integer in 1..19, else NOTHING.
+# PURE (echoes only) so callers can capture it via $(…) and prepend it before `claude`.
+# GOVERNED-ONLY + FAIL-OPEN: ungoverned / no nice key / invalid / kill-switched ⇒ empty
+# prefix ⇒ the spawn argv is byte-identical to pre-phase-3 (parity). It is DELIBERATELY
+# NOT part of __pwt_build_launch_env: nice is a command prefix, not an env var, and folding
+# it into the LAUNCH_ENV string would (a) perturb launch-env-autopush.golden and (b) miss the
+# LAUNCH_ENV-less safety-net spawn branch entirely. Kill switch: PWT_DISABLE_GOVERNED_NICE=1.
+#
+# NOTE (Fable #2): a `--bg` launch may be serviced by the daemon's bg-spare pre-fork pool, so
+# this prefix can end up nicing only the short-lived dispatch client. Callers therefore ALSO
+# best-effort `renice <N> -p <worker-pid>` after the spawn (see __pwt_governed_nice_value).
+__pwt_nice_prefix() {
+  local n; n=$(__pwt_governed_nice_value) || return 0
+  [ -n "$n" ] || return 0
+  printf 'nice -n %s' "$n"
+}
+
+# __pwt_governed_nice_value — echoes the validated governed nice value (1..19) or nothing.
+# Shared by __pwt_nice_prefix (the spawn prefix) and the caller's post-spawn renice fallback.
+__pwt_governed_nice_value() {
+  [ "${PWT_DISABLE_GOVERNED_NICE:-0}" = "1" ] && return 0
+  if ! command -v pwt_governor_budget_int >/dev/null 2>&1; then
+    [ -n "${__PWT_LAUNCH_ENV_DIR:-}" ] && [ -r "${__PWT_LAUNCH_ENV_DIR}/pwt-governor-lib.sh" ] \
+      && . "${__PWT_LAUNCH_ENV_DIR}/pwt-governor-lib.sh" 2>/dev/null
+    command -v pwt_governor_budget_int >/dev/null 2>&1 || return 0
+  fi
+  local n; n=$(pwt_governor_budget_int nice)
+  [ -n "$n" ] || return 0
+  case "$n" in *[!0-9]*) return 0 ;; esac
+  [ "$n" -ge 1 ] && [ "$n" -le 19 ] || return 0
+  printf '%s' "$n"
 }

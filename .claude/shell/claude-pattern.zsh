@@ -55,11 +55,11 @@ claude() {
   if command git rev-parse --show-toplevel >/dev/null 2>&1; then
     export CLAUDE_CODE_TASK_LIST_ID="$(basename "$(command git rev-parse --show-toplevel)")"
   fi
-  : "${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:=25}"
+  unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE   # REMOVED 2026-08-30: undocumented; stacked on AUTO_COMPACT_WINDOW it compacted at ~25% of the window (62K) and thrashed every new session
   : "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:=250000}"   # documented knob (tokens): compact interactive sessions at ~250K instead of the 1M limit (2026-08-30 burn audit)
   export CLAUDE_CODE_AUTO_COMPACT_WINDOW
   : "${BASH_DEFAULT_TIMEOUT_MS:=300000}"
-  export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE BASH_DEFAULT_TIMEOUT_MS
+  export BASH_DEFAULT_TIMEOUT_MS
   # Restore built-in Grep/Glob tools (removed by default since CC 2.1.216;
   # listing them in --allowedTools flips the internal searchToolsOptIn).
   # Only inject on session launches — the variadic flag would swallow

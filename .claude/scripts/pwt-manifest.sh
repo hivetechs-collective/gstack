@@ -108,6 +108,7 @@ SUB="${1:-}"
 SLUG=""; RUN_SID=""; WORKTREE=""; STRATEGY=""; STAGE=""; BUILDERS=""
 JUSTIFICATION=""; DIFFICULTY_MIX=""; BASE_SHA=""
 TERMINAL=""; TERMINAL_REASON=""; TASK_ID=""; TASK_STATUS=""; TASK_OWNER=""
+APPLIED_BUDGET=""; COORD_HINTS=""   # phase 3: governed applied-budget + coordination-hints (JSON objects)
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -118,6 +119,8 @@ while [ $# -gt 0 ]; do
         --justification)   JUSTIFICATION="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --difficulty-mix)  DIFFICULTY_MIX="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --base-sha)        BASE_SHA="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --applied-budget)  APPLIED_BUDGET="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+        --coordination-hints) COORD_HINTS="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --stage)           STAGE="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --builders)        BUILDERS="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
         --terminal)        TERMINAL="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
@@ -226,6 +229,7 @@ __build_patch() {
     SLUG="$SLUG" RUN_SID="$RUN_SID" WORKTREE="$WORKTREE" STRATEGY="$STRATEGY" \
     STAGE="$STAGE" BUILDERS="$BUILDERS" TERMINAL="$TERMINAL" TREASON="$TERMINAL_REASON" \
     JUSTIFICATION="$JUSTIFICATION" DIFFICULTY_MIX="$DIFFICULTY_MIX" BASE_SHA="$BASE_SHA" \
+    APPLIED_BUDGET="$APPLIED_BUDGET" COORD_HINTS="$COORD_HINTS" \
     python3 - <<'PY'
 import json, os
 p = {}
@@ -247,6 +251,16 @@ put("current_stage", "STAGE")
 put("builder_count", "BUILDERS", "int")
 put("terminal_state", "TERMINAL")
 put("terminal_reason", "TREASON")
+# phase 3 (C2/C7): governed JSON-object fields. Parse with json.loads inside a try —
+# a malformed value is SKIPPED (per the error map), never crashes the writer. The
+# scalar patch loop in __apply stores a dict/list value verbatim.
+for _k, _env in (("applied_budget", "APPLIED_BUDGET"), ("coordination_hints", "COORD_HINTS")):
+    _v = os.environ.get(_env, "")
+    if _v:
+        try:
+            p[_k] = json.loads(_v)
+        except Exception:
+            pass
 print(json.dumps(p))
 PY
 }

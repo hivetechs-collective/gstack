@@ -320,6 +320,8 @@ if [ "$MODE" = "detail" ]; then
               resources: $res,
               last_event_at: (if $last=="" then ($man.updated_at // null) else $last end),
               landed: $landed,
+              budget: ($man.applied_budget // null),
+              coordination_hints: ($man.coordination_hints // null),
               manifest: $man,
               fleet: $f,
               sessions: $a
