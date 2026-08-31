@@ -375,6 +375,13 @@ Options:
                        Env equivalent: PWT_LANE_SETTINGS_JSON=<path> (flag wins).
                        The file is gitignored (never committed) and reaped with
                        the worktree at land; never printed to logs.
+                       AUTO-SOURCE (KI-1): with no explicit file/env, if
+                       PWT_LANE_SETTINGS_RESOLVER=<executable> is set, the bg spawn
+                       calls it as `<resolver> <lane-slug> <worktree-name>` and uses
+                       the settings.local.json path it prints — so the default
+                       autonomous run no longer inherits the daemon's startup
+                       account. Repo-specific; fail-closed if the resolver errors.
+                       Kill switch: PWT_DISABLE_LANE_SETTINGS_RESOLVER=1.
   -h, --help           Show this help
 
 Examples:
@@ -417,6 +424,14 @@ SPEC_PATH=""   # --spec <path>: governor-supplied given-spec (Governor Contract 
 # call, so each lane authenticates with its own account (v6 item 5). Env is the
 # default; the flag overrides it.
 LANE_SETTINGS_JSON="${PWT_LANE_SETTINGS_JSON:-}"
+# PWT_LANE_SETTINGS_RESOLVER=<executable> (KI-1): when set AND no explicit
+# --lane-settings-json / PWT_LANE_SETTINGS_JSON was given, the bg-spawn path calls
+# it as `<resolver> <lane-slug> <worktree-name>` to AUTO-SOURCE this lane's own
+# settings.local.json (path printed on stdout). This is the durable KI-1 fix: the
+# default autonomous `--bg` spawn no longer inherits the daemon's startup account.
+# The resolver is repo-specific; the generic skill only invokes it and never
+# handles a token. Fail-closed — a configured resolver that errors aborts the
+# spawn. Kill switch: PWT_DISABLE_LANE_SETTINGS_RESOLVER=1. See the spawn path.
 __PWT_SLUG_OVERRIDE=""   # phase 3 C6: when set, __pwt_safe_slug returns it verbatim at EVERY site
 
 # ─── --resume-staleness-check (AC4 — bg-worker resume staleness self-exit) ───
@@ -562,7 +577,29 @@ while [ $# -gt 0 ]; do
             shift 2 ;;
         --) shift; REQUEST="$*"; break ;;
         -*) echo "Unknown option: $1" >&2; usage; exit 1 ;;
-        *) REQUEST="$*"; break ;;
+        *)
+            # KI-2: accept the positional goal as $1, then GUARD the remaining argv.
+            # Before this fix, `REQUEST="$*"; break` swallowed a trailing flag
+            # (e.g. `pwt-goal.sh "<goal>" --worker-only`) into REQUEST verbatim —
+            # LAUNCH/WORKER_ONLY stayed 0 and the script silently degraded to
+            # print-for-manual-paste mode with NO spawn and NO error. Now: an
+            # option-shaped trailing token (starts with '-') is a misplacement →
+            # loud error + exit 2, mirroring the outer `-*)` arm; every other
+            # trailing word is appended so an UNQUOTED multi-word goal still
+            # assembles. An operator who genuinely needs a goal that begins with
+            # '-' terminates option parsing with '--' (handled by the arm above).
+            REQUEST="$1"; shift
+            while [ $# -gt 0 ]; do
+                case "$1" in
+                    -*)
+                        echo "Error: option-shaped argument '$1' appeared AFTER the goal; flags after the positional goal are NOT parsed (KI-2)." >&2
+                        echo "       Put flags BEFORE the goal:   pwt-goal.sh --worker-only \"<goal>\"" >&2
+                        echo "       Or end options with '--':    pwt-goal.sh --worker-only -- \"<goal>\"" >&2
+                        exit 2 ;;
+                    *) REQUEST="$REQUEST $1"; shift ;;
+                esac
+            done
+            break ;;
     esac
 done
 
@@ -1339,6 +1376,51 @@ fi
 # goal text.
 __PWT_BRIEF_DIRECTIVE=""
 
+# KI-5 (v2.24.0): the push-ack halt line is MODE-DEPENDENT — do not advertise a halt
+# the run won't take. Every autonomous spawn (--launch / --worker-only /
+# --supervisor-goal / --auto-push) sets PLAN_W_TEAM_AUTO_APPROVE_PUSH=1, so its
+# push-ack pause AUTO-APPROVES and the run pushes to remote + lands without pausing —
+# listing push-ack as a halt there is false and alarms operators (the KI-5 complaint).
+# Only a bare /goal paste (AUTO_PUSH=0) actually pauses at push. secret-scan-allow and
+# scope-unlock-for-drift halt in BOTH modes; ONLY push-ack is auto-approved. The
+# AUTO_PUSH=0 branch is kept BYTE-IDENTICAL to the historical block (the byte-identical
+# golden guard lives in pwt-goal-intent.test.sh).
+if [ "${AUTO_PUSH:-0}" = "1" ]; then
+    # KI-8 (v2.30.0): the AUTO_PUSH=1 modes (--worker-only / --launch /
+    # --supervisor-goal / --auto-push) are the UNATTENDED ones — and --worker-only,
+    # now the primary autonomous mode, has NO bg supervisor to relay a pause. A
+    # non-push halt (secret-scan-allow / scope-unlock-for-drift / 3× low-confidence)
+    # therefore surfaces only to the /goal daemon's pending-question state and the
+    # goal-state file — a SILENT dead-end for an operator who is not watching. So the
+    # halt directive here instructs the worker to fire a best-effort operator alert
+    # BEFORE pausing. This lives in the AUTO_PUSH=1 branch ONLY: a bare /goal paste
+    # (AUTO_PUSH=0) is attended, keeps the byte-identical historical block, and needs
+    # no notify (the golden guard in pwt-goal-intent.test.sh asserts that).
+    __PWT_PUSH_HALT_DIRECTIVE="Push is AUTO-APPROVED for this autonomous run (auto-push mode is armed):
+the push-ack pause site does NOT halt — the run pushes to remote and lands on its own.
+
+Halt and surface to user when ANY of:
+  - secret-scan-allow pause site reached (security allowlist edit)
+  - scope-unlock-for-drift pause site reached (mid-flight scope change)
+  - 3 consecutive supervisor decisions log confidence=low (PWT-T4 escalation)
+
+When you REACH any halt above, FIRST fire a best-effort operator alert — this is an
+unattended run with no bg supervisor to relay the pause, so a silent halt is a dead
+end. Prefer the PushNotification tool if it is available; otherwise emit a local
+desktop notification (macOS osascript display-notification, else notify-send) naming
+the halt reason, wrapped so a missing channel never fails the run (append || true).
+THEN pause and surface to the user."
+    # Compact restatement for the directive-overflow pointer (push-ack omitted).
+    __PWT_HALT_INLINE="secret-scan-allow, scope-unlock-for-drift, 3-consecutive low-confidence; push-ack auto-approved"
+else
+    __PWT_PUSH_HALT_DIRECTIVE="Halt and surface to user when ANY of:
+  - push-ack pause site reached (irreversible push to remote)
+  - secret-scan-allow pause site reached (security allowlist edit)
+  - scope-unlock-for-drift pause site reached (mid-flight scope change)
+  - 3 consecutive supervisor decisions log confidence=low (PWT-T4 escalation)"
+    __PWT_HALT_INLINE="push-ack, secret-scan-allow, scope-unlock-for-drift, 3-consecutive low-confidence"
+fi
+
 __pwt_build_goal_text() {
     local req="$1"
     read -r -d '' GOAL_TEXT <<EOF_GOAL_TEXT || true
@@ -1350,11 +1432,7 @@ ${__PWT_SLUG_DIRECTIVE}${__PWT_DONE_ROWS_DIRECTIVE}
 Pipeline is complete when ALL of:
 ${DONE_CRITERIA}${EXTRA_DONE}
 
-Halt and surface to user when ANY of:
-  - push-ack pause site reached (irreversible push to remote)
-  - secret-scan-allow pause site reached (security allowlist edit)
-  - scope-unlock-for-drift pause site reached (mid-flight scope change)
-  - 3 consecutive supervisor decisions log confidence=low (PWT-T4 escalation)
+${__PWT_PUSH_HALT_DIRECTIVE}
 
 There is no wall-clock or turn cap by design: keep working until one of the
 ALL-of completion conditions OR one of the halt conditions above fires.
@@ -1414,7 +1492,7 @@ if [ "$GOAL_BYTES" -gt "$OVERFLOW_THRESHOLD" ]; then
     fi
 
     # Replace REQUEST with the pointer text and rebuild GOAL_TEXT.
-    REQUEST="Read full directive at ${__pwt_overflow_file} and execute it as a /plan-w-team run with standard halt conditions (push-ack, secret-scan-allow, scope-unlock-for-drift, 3-consecutive low-confidence). Done conditions per the directive file."
+    REQUEST="Read full directive at ${__pwt_overflow_file} and execute it as a /plan-w-team run with standard halt conditions (${__PWT_HALT_INLINE}). Done conditions per the directive file."
     __pwt_build_goal_text "$REQUEST"
     GOAL_BYTES=${#GOAL_TEXT}
 
@@ -1532,7 +1610,17 @@ fi
 # PLAN_W_TEAM_OPERATOR_FORCE_SPAWN=1 is required (see the C6 $_PWT_BYPASS block).
 # Use only if you've manually confirmed the hook's prior spawn is dead/stopped.
 if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; } && [ "$_PWT_BYPASS" != "1" ]; then
-    GUARD_PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-${PWT_PROJECT_ROOT_OVERRIDE:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
+    # PWT_PROJECT_ROOT_OVERRIDE takes precedence over CLAUDE_PROJECT_DIR — matching
+    # every other root-resolution site in this script (RSC_PRIMARY:478, __pwt root
+    # helper:905, WT_ROOT:2109, PROJECT_ROOT:2312). The DS1 guard scans this dir for
+    # hook-spawn flags and live goal-states; an inverted precedence here made the
+    # guard read the REAL repo's state dir whenever CLAUDE_PROJECT_DIR was set (as
+    # tests/skill/run.sh Phase 2 does), so stale flags in the real dir triggered extra
+    # `claude agents --json` liveness probes that corrupted sandbox-isolated spawn
+    # tests (heredoc-size in-suite counter inflation). The override is test-only and
+    # unset in production, so real-run behavior (fall through to CLAUDE_PROJECT_DIR) is
+    # unchanged; this only restores sandbox isolation when the override IS set.
+    GUARD_PROJECT_ROOT="${PWT_PROJECT_ROOT_OVERRIDE:-${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}}"
     GUARD_DIR="$GUARD_PROJECT_ROOT/.claude/state"
 
     # ── F3 audit trail (2026-08-18 cleanscale incident): every PWT-DS1 verdict —
@@ -2400,6 +2488,93 @@ if [ "$LAUNCH" = "1" ]; then
         WT_FLAG="--worktree ${WT_NAME:0:60}"
     fi
 
+    # ─── KI-7 (v2.29.0): warn when a worktree-consumed gating hook is UNCOMMITTED ──
+    # `git worktree add … HEAD` checks out the COMMITTED HEAD, so the spawned worker
+    # runs the WORKTREE's copy of every gating hook — never the working-tree copy in
+    # the main checkout. An operator who edits a gating hook (e.g. arms the F7
+    # completeness gate in plan-w-team-goal-evaluator.sh) but has NOT committed it
+    # gets the OLD hook inside the worktree, and the change silently no-ops (the KI-7
+    # failure: an "armed" gate that never fires). The specific F7 evaluator case is
+    # already closed — its gate logic landed COMMITTED at 2c650c7 — but ANY
+    # uncommitted edit to a worktree-run gating hook has the same blind spot, so warn
+    # LOUDLY at spawn time. Advisory only (never aborts): the operator may have
+    # committed on another branch, or want HEAD's copy deliberately. Fail-open SILENT
+    # when git is unavailable / the root is not a repo, so test sandboxes and
+    # non-git checkouts never false-fire. Kill switch:
+    # PWT_DISABLE_WORKTREE_HOOK_DIRTY_WARN=1.
+    if [ -n "$WT_FLAG" ] && [ "${PWT_DISABLE_WORKTREE_HOOK_DIRTY_WARN:-0}" != "1" ]; then
+        __k7_root="$(__pwt_main_repo_root)"
+        if [ -n "$__k7_root" ] && git -C "$__k7_root" rev-parse --git-dir >/dev/null 2>&1; then
+            __k7_dirty=""
+            for __k7_hook in \
+                .claude/hooks/plan-w-team-goal-evaluator.sh \
+                .claude/hooks/plan-w-team-lane-guard.sh \
+                .claude/hooks/plan-w-team-lane-context.sh; do
+                # Non-empty porcelain ⇒ the on-disk hook differs from HEAD (modified,
+                # staged-not-committed, or untracked) → the fresh worktree won't get it.
+                if [ -n "$(git -C "$__k7_root" status --porcelain -- "$__k7_hook" 2>/dev/null)" ]; then
+                    __k7_dirty="$__k7_dirty $__k7_hook"
+                fi
+            done
+            if [ -n "$__k7_dirty" ]; then
+                echo "" >&2
+                echo "⚠ KI-7 WORKTREE HOOK DRIFT — a gating hook is UNCOMMITTED in the main checkout:" >&2
+                for __k7_h in $__k7_dirty; do echo "     • $__k7_h" >&2; done
+                echo "  The worker runs in a fresh worktree checked out from HEAD, so it uses HEAD's" >&2
+                echo "  COMMITTED copy of these hooks — your uncommitted edits will NOT take effect in" >&2
+                echo "  this run (an 'armed' gate can silently no-op). Commit the hook(s) BEFORE" >&2
+                echo "  launching if this run must honor them. (Silence: PWT_DISABLE_WORKTREE_HOOK_DIRTY_WARN=1)" >&2
+                echo "" >&2
+            fi
+        fi
+    fi
+
+    # ─── KI-1 (v2.23.0): auto-source this lane's credential from a POOL resolver ──
+    # Closes KI-1 (bg daemon pins every --bg worker to its startup account). When no
+    # explicit --lane-settings-json / PWT_LANE_SETTINGS_JSON was given but a
+    # repo-specific resolver is configured, call it to obtain THIS lane's own
+    # settings.local.json, so the DEFAULT autonomous spawn authenticates with its own
+    # account from the first API call instead of inheriting the daemon's.
+    #
+    # WORKS IN ANY REPO: the resolver is opt-in. Unset (a friend's checkout, generic
+    # use) → this whole block is a no-op and the legacy daemon-account behaviour is
+    # byte-for-byte unchanged. The GENERIC SKILL ONLY INVOKES THE RESOLVER AND NEVER
+    # HANDLES A TOKEN — all account/token logic lives in the repo's resolver (e.g.
+    # cleanscale's separate multi-account manager).
+    #
+    # Contract: an executable, called as `<resolver> <lane-slug> <worktree-name>`,
+    # printing ONE absolute path to a settings.local.json on stdout, exit 0.
+    # FAIL CLOSED (the point of KI-1): a configured resolver that errors, is not
+    # executable, or prints nothing ABORTS the spawn — we NEVER silently fall back to
+    # the daemon account. Kill switch: PWT_DISABLE_LANE_SETTINGS_RESOLVER=1. The
+    # resolved path feeds straight into the item-5 validate+inject block below.
+    if [ -z "$LANE_SETTINGS_JSON" ] \
+       && [ -n "${PWT_LANE_SETTINGS_RESOLVER:-}" ] \
+       && [ "${PWT_DISABLE_LANE_SETTINGS_RESOLVER:-0}" != "1" ]; then
+        if [ -z "$WT_FLAG" ]; then
+            echo "FATAL: PWT_LANE_SETTINGS_RESOLVER is configured but worktree isolation is" >&2
+            echo "       disabled (PWT_DISABLE_WORKER_WORKTREE=1); refusing to spawn a lane with" >&2
+            echo "       no per-lane credential on the daemon-default account (KI-1)." >&2
+            exit 1
+        fi
+        LANE_SLUG="${WT_NAME#pwt-}"
+        __LANE_RESOLVED="$("$PWT_LANE_SETTINGS_RESOLVER" "$LANE_SLUG" "${WT_NAME:0:60}")"
+        __LANE_RC=$?
+        if [ "$__LANE_RC" -ne 0 ]; then
+            echo "FATAL: PWT_LANE_SETTINGS_RESOLVER exited $__LANE_RC for lane '$LANE_SLUG';" >&2
+            echo "       refusing to spawn on the daemon-default account (KI-1 fail-closed)." >&2
+            exit 1
+        fi
+        __LANE_RESOLVED="${__LANE_RESOLVED%%$'\n'*}"
+        if [ -z "$__LANE_RESOLVED" ]; then
+            echo "FATAL: PWT_LANE_SETTINGS_RESOLVER returned no path for lane '$LANE_SLUG';" >&2
+            echo "       refusing to spawn on the daemon-default account (KI-1 fail-closed)." >&2
+            exit 1
+        fi
+        LANE_SETTINGS_JSON="$__LANE_RESOLVED"
+        echo "  lane credential:    auto-sourced via PWT_LANE_SETTINGS_RESOLVER (lane '$LANE_SLUG'; source path not logged)" >&2
+    fi
+
     # ─── item 5 (v6): drop the per-lane credential BEFORE the worker starts ─────
     # When --lane-settings-json / PWT_LANE_SETTINGS_JSON is set, PRE-CREATE the
     # worktree here and drop the operator's settings.local.json (mode 0600) into
@@ -2651,6 +2826,11 @@ if [ "$LAUNCH" = "1" ]; then
             # compaction when the prose role contract does not. Empty when the
             # origin SID is unknowable (fail-open: guard falls back to
             # pwt-launches.jsonl lineage / the bg-supervisor env flag).
+            # auto_push (KI-4, 2026-08-31): persist the launch-time push posture
+            # ($AUTO_PUSH, 0/1) so a later `pwt-steer` resume can restore
+            # PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 instead of silently dropping it and
+            # dead-ending at the push-ack pause. Read back in pwt-steer.sh and fed
+            # to the SAME shared __pwt_build_launch_env builder.
             jq -n \
                 --arg slug "$SLUG_GUESS" \
                 --arg started_at "$SEED_NOW_ISO" \
@@ -2658,12 +2838,13 @@ if [ "$LAUNCH" = "1" ]; then
                 --arg supervisor_sid "${USER_SID:-}" \
                 --arg skill_version "$SKILL_VERSION" \
                 --arg skill_commit_sha "$SKILL_COMMIT_SHA" \
+                --argjson auto_push "${AUTO_PUSH:-0}" \
                 --argjson criteria "$__PWT_DONE_ROWS_JSON" \
-                '{slug:$slug, started_at:$started_at, terminal_state:null, terminal_reason:null, worker_sid:$worker_sid, supervisor_sid:$supervisor_sid, skill_version:$skill_version, skill_commit_sha:$skill_commit_sha, feature_specific_done_criteria:$criteria}' \
+                '{slug:$slug, started_at:$started_at, terminal_state:null, terminal_reason:null, worker_sid:$worker_sid, supervisor_sid:$supervisor_sid, skill_version:$skill_version, skill_commit_sha:$skill_commit_sha, auto_push:$auto_push, feature_specific_done_criteria:$criteria}' \
                 > "$file" 2>/dev/null || true
         else
-            printf '{"slug":"%s","started_at":"%s","terminal_state":null,"terminal_reason":null,"worker_sid":"%s","supervisor_sid":"%s","skill_version":"%s","skill_commit_sha":"%s","feature_specific_done_criteria":[]}\n' \
-                "$SLUG_GUESS" "$SEED_NOW_ISO" "$WORKER_SID" "${USER_SID:-}" "$SKILL_VERSION" "$SKILL_COMMIT_SHA" \
+            printf '{"slug":"%s","started_at":"%s","terminal_state":null,"terminal_reason":null,"worker_sid":"%s","supervisor_sid":"%s","skill_version":"%s","skill_commit_sha":"%s","auto_push":%s,"feature_specific_done_criteria":[]}\n' \
+                "$SLUG_GUESS" "$SEED_NOW_ISO" "$WORKER_SID" "${USER_SID:-}" "$SKILL_VERSION" "$SKILL_COMMIT_SHA" "${AUTO_PUSH:-0}" \
                 > "$file" 2>/dev/null || true
         fi
         [ -f "$file" ] && echo "  goal-state seed:    $file  (anti-skip anchor active)" >&2
@@ -2773,6 +2954,7 @@ if [ "$LAUNCH" = "1" ]; then
   "supervisor_goal_mirror": true,
   "skill_version": "${SKILL_VERSION}",
   "skill_commit_sha": "${SKILL_COMMIT_SHA}",
+  "auto_push": ${AUTO_PUSH:-0},
   "feature_specific_done_criteria": []
 }
 EOF_GOAL_MIRROR

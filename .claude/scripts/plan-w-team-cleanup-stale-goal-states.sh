@@ -8,44 +8,76 @@
 #   `"SUCCESS"`. These SHOULD have been deleted by `07-retro.md` §8j-quater on
 #   `RETRO_SUCCESS=1`, but pre-409e265 runs persist on disk as dead weight.
 #
-# PASS 2 — provably-orphaned NON-terminal family GC (prong B, 2026-06-10).
+# PASS 2 — provably-orphaned FULL per-run family GC (prong B 2026-06-10; the
+#   FULL-family + headless extension is 2026-08-29, followups row 18 / SA-4).
 #   The SUCCESS-only pass left non-terminal orphans — and their sibling run-state
-#   family (manifest, skill-version, spawned-children, stage-events) — on disk
-#   FOREVER (open follow-up cleanup-eval SA-4). Worse, a non-terminal goal leftover
-#   DID block the goal-evaluator (the earlier header claim that it "doesn't block …
-#   naturally skips terminated ones" was FALSE for NON-terminal files — that is
-#   exactly the prong-A evaluator bug). PASS 2 reaps a `terminal_state=null` family
-#   ONLY when it is provably an orphan: worker DEAD (its worker_sid/run_sid is not
-#   among live `claude` sessions, via pwt-live-session-sids.sh) AND aged beyond
-#   PWT_GOAL_STALE_HOURS (default 24). Fail-CLOSED: if liveness can't be proven
-#   (`__QUERY_FAILED__`) nothing is reaped. Kill switch
-#   PLAN_W_TEAM_DISABLE_ORPHAN_GC=1 → PASS 2 is skipped (janitor stays SUCCESS-only).
+#   family — on disk FOREVER. Prong B (2026-06-10) began reaping a provably-orphaned
+#   `terminal_state=null` family, but only a FIVE-prefix subset (goal, manifest,
+#   skill-version, spawned-children, stage-events), so every reap BEHEADED its own
+#   family: it deleted the goal+manifest anchors while leaving the OTHER ~42 per-run
+#   classes on disk with no discovery anchor ("headless"). SA-4's larger half (row 18)
+#   closes this: PASS 2 now reaps the COMPLETE per-run family (the 47 `$SLUG`-keyed
+#   `plan-w-team-*` registry classes + `supervisor-progress-<slug>.json`) and adds a
+#   HEADLESS arm that reaps aged families whose control state (goal AND manifest AND
+#   workflow-lock) is already gone — no live run can lack all three, so their absence
+#   is structural proof of orphanhood.
+#
+#   Two safe reap classifications, BOTH keyed on the GOAL file (the manifest's
+#   `terminal_state` is null in production — `pwt-manifest.sh` only sets it via an
+#   env-passthrough no caller passes — so it is used ONLY for run_sid + age):
+#     (i)  ANCHORED NULL-ORPHAN — a goal/manifest/workflow-lock exists, the goal's
+#          terminal_state is null, the family is aged ≥ PWT_GOAL_STALE_HOURS (24),
+#          and the owner SID is provably DEAD (fail-CLOSED on __QUERY_FAILED__ /
+#          no-SID / live SID). This is prong B's predicate, reused verbatim.
+#     (ii) HEADLESS — NO goal AND NO manifest AND NO `workflow-<slug>.lock` dir, and
+#          the family is aged beyond the MUCH more conservative PWT_HEADLESS_STALE_HOURS
+#          (default 168h / 7 days). No SID exists to query liveness, so this arm has no
+#          per-run liveness check; the long age gate is its backstop. The absence of all
+#          three control artifacts is STRONG (not absolute) evidence of orphanhood: a
+#          live autonomous /goal or --launch run is always goal-anchored, and any run
+#          past Step 3 is manifest-anchored — but an INTERACTIVE run paused in Steps 0-2
+#          with PLAN_W_TEAM_DISABLE_GOAL=1 can transiently hold none (its workflow-lock
+#          is released by the pre-flight EXIT trap, its manifest is not written until
+#          Step 3). The 7-day gate closes that window: a family untouched for a week
+#          cannot be a session doing active work (a live run touches its artifacts), and
+#          the only members at risk are RECOVERABLE early-planning artifacts (scope-lock,
+#          ac-snapshot), never committed work.
+#
+#   COLLISION SAFETY (delete blast radius). Reaping is file-driven with
+#   longest-reap-prefix-wins attribution + an explicit GLOBAL denylist + a slug
+#   charset guard, because the naive `<prefix><slug>.*` glob is NOT collision-proof:
+#   reap prefixes nest (`plan-w-team-retro-` ⊂ `plan-w-team-retro-capture-`), so a
+#   poison slug `capture-history` under `plan-w-team-retro-` would glob — and delete —
+#   the durable global `plan-w-team-retro-capture-history.jsonl`. Longest-prefix-wins
+#   attributes that file to its TRUE class (`retro-capture-`, slug `history`), and the
+#   denylist subtracts it outright. Only slugs matching `^[A-Za-z0-9_-]+$` are reapable.
 #
 # PRESERVED states (signal worth keeping for inspection — NEVER reaped by either
-# pass, regardless of age):
-#   - USER_ESCALATION_HALT       — hard-gate pause site needs user attention
-#   - LOW_CONFIDENCE_STREAK      — supervisor escalation needs investigation
-#   - DEAD                       — worker died unexpectedly (already recorded)
-#   - API_HALT                   — transient API/socket halt (supervisor may resume)
-# REAPED states:
-#   - SUCCESS  (pass 1)          — retro completed, file should already be gone
-#   - null     (pass 2)          — ONLY when worker-dead AND aged (provable orphan)
+# pass, regardless of age): any goal whose terminal_state is present, non-null and
+# NOT SUCCESS — USER_ESCALATION_HALT, LOW_CONFIDENCE_STREAK, DEAD, API_HALT,
+# EARLY_EXIT, and any UNKNOWN future value (preserve-by-default, a deliberate choice).
+# REAPED:
+#   - SUCCESS  (pass 1)          — retro completed, goal file should already be gone
+#   - null     (pass 2, anchored)— ONLY when worker-dead AND aged (provable orphan)
+#   - headless (pass 2)          — no goal/manifest/workflow-lock AND aged
 #
 # Usage:
 #   plan-w-team-cleanup-stale-goal-states.sh                    # silent unless removals
 #   plan-w-team-cleanup-stale-goal-states.sh --verbose          # log every action
 #   plan-w-team-cleanup-stale-goal-states.sh --quiet            # suppress even the summary
 #   plan-w-team-cleanup-stale-goal-states.sh --dry-run          # list, don't delete
+#   plan-w-team-cleanup-stale-goal-states.sh --list-reap-prefixes    # print the per-slug reap prefixes (parity test)
+#   plan-w-team-cleanup-stale-goal-states.sh --list-global-denylist  # print the never-reap globals (parity test)
 #   STATE_DIR=/path/to/state plan-w-team-cleanup-stale-goal-states.sh   # override
-#   PWT_GOAL_STALE_HOURS=<n>     orphan age threshold (default 24)
-#   PLAN_W_TEAM_DISABLE_ORPHAN_GC=1   skip pass 2 (SUCCESS-only behavior)
+#   PWT_GOAL_STALE_HOURS=<n>       anchored null-orphan age threshold (default 24)
+#   PWT_HEADLESS_STALE_HOURS=<n>   headless-family age threshold (default 168 = 7 days)
+#   PLAN_W_TEAM_DISABLE_ORPHAN_GC=1   skip pass 2 (SUCCESS-goal-only behavior)
 #
 # This is the SINGLE stale-goal-state janitor (reconciled 2026-06-08): both
 # session-start (no args) and 07-retro.md (--quiet) call it. Pass 1 only ever
-# removes terminal_state=SUCCESS; pass 2 only ever removes a provably-orphaned
-# non-terminal family — so neither caller can delete a goal-state another LIVE run
-# left for inspection. (Replaces the second all-terminal cleaner
-# plan-w-team-cleanup-stale-goals.sh, removed in the same 2026-06-08 change.)
+# removes terminal_state=SUCCESS goals; pass 2 only ever removes a provably-orphaned
+# or headless family — so neither caller can delete a goal-state another LIVE run
+# left for inspection.
 #
 # Exit code: always 0 (best-effort; never block session start)
 
@@ -55,12 +87,15 @@ STATE_DIR="${STATE_DIR:-${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." 2>/de
 VERBOSE=0
 DRY_RUN=0
 QUIET=0
+LIST_MODE=""
 
 for arg in "$@"; do
     case "$arg" in
         --verbose|-v) VERBOSE=1 ;;
         --quiet|-q) QUIET=1 ;;
         --dry-run|-n) DRY_RUN=1 ;;
+        --list-reap-prefixes) LIST_MODE="reap-prefixes" ;;
+        --list-global-denylist) LIST_MODE="global-denylist" ;;
         --help|-h)
             sed -nE 's/^# ?//; 1,/^$/p' "$0" | head -40
             exit 0
@@ -68,6 +103,107 @@ for arg in "$@"; do
         *) ;;  # ignore unknown args (best-effort caller)
     esac
 done
+
+# ── PER-SLUG reap prefixes ────────────────────────────────────────────────────
+# The complete per-run artifact family. The `plan-w-team-*` members are EXACTLY the
+# 47 `$SLUG`-keyed classes in `shared/state-artifacts.md` (pinned by
+# plan-w-team-cleanup-registry-parity.test.sh — drift in either direction fails).
+# `supervisor-progress-` is the ONE sanctioned non-`plan-w-team-` extra (slug-keyed
+# per-run anti-park snapshot, written by supervisor-progress-check.sh). Kept as an
+# EXPLICIT list (never derived from the registry at runtime) so a doc file can never
+# become a delete-capability input; the test guards parity instead.
+PER_SLUG_REAP_PREFIXES="\
+plan-w-team-goal- \
+plan-w-team-manifest- \
+plan-w-team-skill-version- \
+plan-w-team-spawned-children- \
+plan-w-team-stage-events- \
+plan-w-team-untracked-baseline- \
+plan-w-team-ac-snapshot- \
+plan-w-team-scope-lock- \
+plan-w-team-scope-unlock- \
+plan-w-team-retro- \
+plan-w-team-retro-capture- \
+plan-w-team-autofix- \
+plan-w-team-review-findings- \
+plan-w-team-ack- \
+plan-w-team-secret-scan-allow- \
+plan-w-team-workflow- \
+plan-w-team-postship- \
+plan-w-team-coupling- \
+plan-w-team-coupling-ack- \
+plan-w-team-fleet- \
+plan-w-team-fleet-intent- \
+plan-w-team-supervisor-actions- \
+plan-w-team-orchestrator-decisions- \
+plan-w-team-spec-fanout- \
+plan-w-team-project-version- \
+plan-w-team-project-version-baseline- \
+plan-w-team-test-baseline- \
+plan-w-team-regression-waiver- \
+plan-w-team-sync-confirm- \
+plan-w-team-deep-audit- \
+plan-w-team-completion- \
+plan-w-team-empty-ship-attempts- \
+plan-w-team-fable-ledger- \
+plan-w-team-ship-verdict- \
+plan-w-team-landed- \
+plan-w-team-test-green- \
+plan-w-team-content-signal-suspects- \
+plan-w-team-bypass- \
+plan-w-team-pass1-synthesis- \
+plan-w-team-test-output- \
+plan-w-team-docs-waived- \
+plan-w-team-credwall- \
+plan-w-team-abstraction-claims- \
+plan-w-team-lane-release- \
+plan-w-team-stall- \
+plan-w-team-stall-events- \
+plan-w-team-host-distress- \
+plan-w-team-liveness- \
+supervisor-progress-"
+
+# ── GLOBAL denylist ───────────────────────────────────────────────────────────
+# Durable / cross-run / differently-keyed `.claude/state/plan-w-team-*` files that
+# MUST NEVER be reaped. Most do not begin with any reap prefix and are auto-skipped
+# by __longest_reap_prefix; `plan-w-team-retro-capture-history.jsonl` is the ONE that
+# shares a reap-prefix stem (`plan-w-team-retro-capture-`), so denylisting it is the
+# load-bearing safety entry. The keyed globals (friction-ack / hook-spawn / directive /
+# status) are matched by pattern. plan-w-team-cleanup-registry-parity.test.sh asserts
+# every registry global that begins with a reap prefix is covered here.
+GLOBAL_DENYLIST_LITERALS="\
+plan-w-team-retro-capture-history.jsonl \
+plan-w-team-recursive-followups.jsonl \
+plan-w-team-friction-log.jsonl \
+plan-w-team-friction-log.lock \
+plan-w-team-push.lock \
+plan-w-team-land-audit.jsonl \
+plan-w-team-run-state-audit.jsonl \
+plan-w-team-lane-guard-audit.jsonl \
+plan-w-team-ds1-audit.jsonl \
+plan-w-team-test-green.lock"
+
+__in_global_denylist() {  # $1=basename → 0 if a never-reap global
+    local base="$1" g
+    for g in $GLOBAL_DENYLIST_LITERALS; do
+        [ "$base" = "$g" ] && return 0
+    done
+    case "$base" in
+        plan-w-team-friction-ack-*|plan-w-team-hook-spawn-*|plan-w-team-directive-*|plan-w-team-status-*) return 0 ;;
+    esac
+    return 1
+}
+
+# Debug subcommands (static — safe without a state dir; consumed by the parity test).
+if [ "$LIST_MODE" = "reap-prefixes" ]; then
+    for p in $PER_SLUG_REAP_PREFIXES; do printf '%s\n' "$p"; done
+    exit 0
+fi
+if [ "$LIST_MODE" = "global-denylist" ]; then
+    for g in $GLOBAL_DENYLIST_LITERALS; do printf '%s\n' "$g"; done
+    printf '%s\n' "plan-w-team-friction-ack-*" "plan-w-team-hook-spawn-*" "plan-w-team-directive-*" "plan-w-team-status-*"
+    exit 0
+fi
 
 [ -d "$STATE_DIR" ] || exit 0
 
@@ -100,8 +236,70 @@ __json_str_field() {  # $1=file $2=key → string value ("" if absent)
 }
 __mtime_of() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo ""; }
 
+# ── collision-proof attribution + reaping helpers (row 18) ────────────────────
+__longest_reap_prefix() {  # $1=basename → the LONGEST reap prefix it starts with ("")
+    local base="$1" best="" p
+    for p in $PER_SLUG_REAP_PREFIXES; do
+        case "$base" in
+            "$p"*) [ "${#p}" -gt "${#best}" ] && best="$p" ;;
+        esac
+    done
+    printf '%s' "$best"
+}
+
+# __slug_of_file: echo the slug a state file belongs to, or "" if it is a global /
+# unmanaged / charset-invalid file. Longest-prefix-wins + denylist + charset guard —
+# the single attribution point shared by discovery, age, and reap so they cannot
+# disagree.
+__slug_of_file() {  # $1=basename → slug ("" = not a reapable per-slug file)
+    local base="$1" p rest slug
+    __in_global_denylist "$base" && { printf ''; return; }
+    p="$(__longest_reap_prefix "$base")"
+    [ -z "$p" ] && { printf ''; return; }
+    rest="${base#"$p"}"
+    slug="$rest"
+    case "$rest" in *.*) slug="${rest%.*}" ;; esac   # strip one trailing extension
+    case "$slug" in
+        ""|*[!A-Za-z0-9_-]*) printf ''; return ;;    # charset guard (no dots/metachars)
+    esac
+    printf '%s' "$slug"
+}
+
+__family_newest_mtime() {  # $1=slug → newest mtime across its family (-1 unreadable, 0 none)
+    local slug="$1" f base newest=0 m
+    for f in "$STATE_DIR"/*; do
+        [ -e "$f" ] || continue
+        base="$(basename "$f")"
+        [ "$(__slug_of_file "$base")" = "$slug" ] || continue
+        m="$(__mtime_of "$f")"
+        [ -n "$m" ] || { echo "-1"; return; }
+        [ "$m" -gt "$newest" ] 2>/dev/null && newest="$m"
+    done
+    echo "$newest"
+}
+
+REAPED_FILES=0
+REAPED_FAMILIES=0
+__reap_family() {  # $1=slug (already charset-validated + confirmed reapable)
+    local slug="$1" f base
+    for f in "$STATE_DIR"/*; do
+        [ -e "$f" ] || continue
+        base="$(basename "$f")"
+        [ "$(__slug_of_file "$base")" = "$slug" ] || continue
+        if [ "$DRY_RUN" = "1" ]; then
+            echo "[dry-run] would remove $f (orphan/headless family $slug)"
+        else
+            if [ -d "$f" ]; then rm -rf "$f" 2>/dev/null; else rm -f "$f" 2>/dev/null; fi
+            REAPED_FILES=$((REAPED_FILES + 1))
+            [ "$VERBOSE" = "1" ] && echo "removed $f (family $slug)"
+        fi
+    done
+    [ "$DRY_RUN" = "1" ] || REAPED_FAMILIES=$((REAPED_FAMILIES + 1))
+}
+
 REMOVED=0
 
+# ── PASS 1: SUCCESS goal-state removal (UNCHANGED) ────────────────────────────
 # bash 3.2 + nullglob-safe iteration
 for f in "$STATE_DIR"/plan-w-team-goal-*.json; do
     [ -f "$f" ] || continue
@@ -147,73 +345,92 @@ for f in "$STATE_DIR"/plan-w-team-goal-*.json; do
     fi
 done
 
-# ── PASS 2: provably-orphaned non-terminal family GC (prong B) ───────────────
-# Reap a `terminal_state=null` goal/family ONLY when its worker is provably DEAD
-# (owner SID not among live claude sessions) AND it is aged beyond
-# PWT_GOAL_STALE_HOURS. Escalation/DEAD/API_HALT are preserved by the null-only
-# gate. Fail-CLOSED on a failed liveness query. Skipped entirely under
-# PLAN_W_TEAM_DISABLE_ORPHAN_GC=1.
-ORPHANS_REAPED=0
-# All five canonical per-run families (shared/state-artifacts.md). goal+manifest
-# drive slug discovery; all five are reaped together once a slug is judged orphan.
-FAMILY_PREFIXES="plan-w-team-goal- plan-w-team-manifest- plan-w-team-skill-version- plan-w-team-spawned-children- plan-w-team-stage-events-"
-
+# ── PASS 2: provably-orphaned / headless FULL-family GC (row 18) ──────────────
+# Skipped entirely under PLAN_W_TEAM_DISABLE_ORPHAN_GC=1 (janitor stays SUCCESS-only).
 if [ "${PLAN_W_TEAM_DISABLE_ORPHAN_GC:-}" != "1" ]; then
-    # 1) Discover candidate slugs from goal-*.json and manifest-*.json (so a
-    #    goal-less orphan family — e.g. a <1.29.0 worker-only run — is still caught).
+    MAX_AGE=$(( ${PWT_GOAL_STALE_HOURS:-24} * 3600 ))
+    # Headless families carry NO SID to prove death, so they get a far more conservative
+    # age gate than anchored orphans (Q4, security review 2026-08-29).
+    HEADLESS_MAX_AGE=$(( ${PWT_HEADLESS_STALE_HOURS:-168} * 3600 ))
+    NOW=$(date -u +%s)
+
+    # 1) Discover candidate slugs (longest-prefix-wins attribution, denylist + charset).
     CAND_SLUGS=""
-    for f in "$STATE_DIR"/plan-w-team-goal-*.json "$STATE_DIR"/plan-w-team-manifest-*.json; do
-        [ -f "$f" ] || continue
-        base="$(basename "$f")"; slug="$base"
-        slug="${slug#plan-w-team-goal-}"; slug="${slug#plan-w-team-manifest-}"
-        slug="${slug%.json}"
+    for f in "$STATE_DIR"/*; do
+        [ -e "$f" ] || continue
+        slug="$(__slug_of_file "$(basename "$f")")"
+        [ -n "$slug" ] || continue
         CAND_SLUGS="$CAND_SLUGS
 $slug"
     done
     CAND_SLUGS="$(printf '%s\n' "$CAND_SLUGS" | grep -v '^$' | sort -u)"
 
-    # 2) Pre-filter to NON-terminal + AGED candidates (query liveness only if any
-    #    survive — zero cost on a clean state dir). Emit "slug<SPACE>sid,sid".
-    MAX_AGE=$(( ${PWT_GOAL_STALE_HOURS:-24} * 3600 ))
-    NOW=$(date -u +%s)
-    REAP_CANDIDATES=""
+    # 2) Classify each candidate → PRESERVE / HEADLESS (age-only) / NULL (liveness).
+    HEADLESS_CAND=""
+    NULL_CAND=""      # "slug<SPACE>sid,sid" lines
     while IFS= read -r slug; do
         [ -z "$slug" ] && continue
+        newest="$(__family_newest_mtime "$slug")"
+        [ "$newest" -le 0 ] 2>/dev/null && continue          # unreadable / none → keep
+        age=$(( NOW - newest ))
+        [ "$age" -lt "$MAX_AGE" ] 2>/dev/null && continue    # fresh → keep (protects live + just-finished)
+
         gf="$STATE_DIR/plan-w-team-goal-${slug}.json"
         mf="$STATE_DIR/plan-w-team-manifest-${slug}.json"
-        st=""
-        [ -f "$gf" ] && st="$(__terminal_state_of "$gf")"
-        [ -z "$st" ] && [ -f "$mf" ] && st="$(__terminal_state_of "$mf")"
-        [ -n "$st" ] && continue   # any terminal_state (SUCCESS/escalation/DEAD/API_HALT) → keep
-        # Age = NEWEST mtime across the family (a recently-touched member = maybe alive).
-        newest=0
-        for pref in $FAMILY_PREFIXES; do
-            for ext in json jsonl; do
-                ff="$STATE_DIR/${pref}${slug}.${ext}"
-                [ -f "$ff" ] || continue
-                m="$(__mtime_of "$ff")"
-                [ -n "$m" ] || { newest=-1; break; }
-                [ "$m" -gt "$newest" ] 2>/dev/null && newest="$m"
-            done
-            [ "$newest" -lt 0 ] && break
-        done
-        [ "$newest" -le 0 ] 2>/dev/null && continue   # unreadable / no files → keep (fail-safe)
-        age=$(( NOW - newest ))
-        [ "$age" -lt "$MAX_AGE" ] 2>/dev/null && continue   # recent → keep
-        # Owner SIDs: worker_sid (goal) + run_sid (manifest).
-        sids=""
-        [ -f "$gf" ] && { w="$(__json_str_field "$gf" worker_sid)"; [ -n "$w" ] && sids="$sids $w"; }
-        [ -f "$mf" ] && { r="$(__json_str_field "$mf" run_sid)"; [ -n "$r" ] && sids="$sids $r"; }
+        wl="$STATE_DIR/plan-w-team-workflow-${slug}.lock"
+
+        if [ -f "$gf" ]; then
+            term="$(__terminal_state_of "$gf")"
+            if [ -n "$term" ] && [ "$term" != "SUCCESS" ]; then
+                [ "$VERBOSE" = "1" ] && echo "kept family $slug (preserved terminal_state=$term)"
+                continue                                     # escalation/DEAD/API_HALT/EARLY_EXIT/unknown
+            fi
+            # null (or SUCCESS, which PASS 1 already removed) → anchored null-orphan path.
+            sids=""
+            w="$(__json_str_field "$gf" worker_sid)"; [ -n "$w" ] && sids="$sids $w"
+            [ -f "$mf" ] && { r="$(__json_str_field "$mf" run_sid)"; [ -n "$r" ] && sids="$sids $r"; }
+        elif [ -f "$mf" ] || [ -d "$wl" ]; then
+            # No goal, but control state (manifest/workflow-lock) exists → null-orphan via run_sid.
+            sids=""
+            [ -f "$mf" ] && { r="$(__json_str_field "$mf" run_sid)"; [ -n "$r" ] && sids="$sids $r"; }
+        else
+            # HEADLESS: no goal, no manifest, no workflow-lock dir. No SID to prove death,
+            # so require the much longer HEADLESS_MAX_AGE — a family untouched for 7 days
+            # cannot be a live session doing work (Q4 fix; see the header).
+            if [ "$age" -lt "$HEADLESS_MAX_AGE" ] 2>/dev/null; then
+                [ "$VERBOSE" = "1" ] && echo "kept family $slug (headless but younger than PWT_HEADLESS_STALE_HOURS)"
+                continue
+            fi
+            HEADLESS_CAND="$HEADLESS_CAND
+$slug"
+            continue
+        fi
+
         sids="$(printf '%s' "$sids" | tr ' ' '\n' | grep -v '^$' | paste -sd, - 2>/dev/null || true)"
-        REAP_CANDIDATES="$REAP_CANDIDATES
+        if [ -z "$sids" ]; then
+            # No owner SID → cannot prove dead → fail-CLOSED keep (protects a live
+            # in-session run that wrote a goal with no worker_sid).
+            [ "$VERBOSE" = "1" ] && echo "kept family $slug (no owner SID → fail-closed)"
+            continue
+        fi
+        NULL_CAND="$NULL_CAND
 ${slug} ${sids}"
     done <<EOF
 $CAND_SLUGS
 EOF
-    REAP_CANDIDATES="$(printf '%s\n' "$REAP_CANDIDATES" | grep -v '^[[:space:]]*$')"
 
-    # 3) Query live SIDs ONCE (fail-CLOSED), then reap dead+aged orphans.
-    if [ -n "$REAP_CANDIDATES" ]; then
+    # 3) Reap HEADLESS families — aged is sufficient (no live run lacks all control state).
+    while IFS= read -r slug; do
+        [ -z "$slug" ] && continue
+        [ "$VERBOSE" = "1" ] && echo "reaping HEADLESS family $slug (no goal/manifest/workflow-lock, aged)"
+        __reap_family "$slug"
+    done <<EOF
+$(printf '%s\n' "$HEADLESS_CAND" | grep -v '^[[:space:]]*$')
+EOF
+
+    # 4) Reap ANCHORED NULL-ORPHANS — query live SIDs ONCE (fail-CLOSED), reap dead ones.
+    NULL_CAND="$(printf '%s\n' "$NULL_CAND" | grep -v '^[[:space:]]*$')"
+    if [ -n "$NULL_CAND" ]; then
         SIDS_HELPER="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/pwt-live-session-sids.sh"
         QUERY_OK=1
         LIVE_SIDS=""
@@ -229,15 +446,8 @@ EOF
             while IFS= read -r line; do
                 [ -z "$line" ] && continue
                 slug="${line%% *}"; sids="${line#* }"
-                [ "$sids" = "$line" ] && sids=""   # no SID present
-                # No owner SID at all → the worker is UNIDENTIFIABLE, so we cannot
-                # prove it is dead. Fail-CLOSED (keep): a long-running in-session
-                # /plan-w-team writes a goal with no worker_sid, and reaping it would
-                # delete a possibly-live run's state. "provably dead" REQUIRES a SID.
-                if [ -z "$sids" ]; then
-                    [ "$VERBOSE" = "1" ] && echo "kept family $slug (no owner SID → cannot prove dead, fail-closed)"
-                    continue
-                fi
+                [ "$sids" = "$line" ] && sids=""
+                [ -z "$sids" ] && continue
                 alive=0
                 OLD_IFS="$IFS"; IFS=','
                 for s in $sids; do
@@ -250,31 +460,20 @@ EOF
                     [ "$VERBOSE" = "1" ] && echo "kept family $slug (worker live)"
                     continue
                 fi
-                # Provable orphan: null + aged + worker dead → reap the whole family.
-                for pref in $FAMILY_PREFIXES; do
-                    for ext in json jsonl; do
-                        ff="$STATE_DIR/${pref}${slug}.${ext}"
-                        [ -f "$ff" ] || continue
-                        if [ "$DRY_RUN" = "1" ]; then
-                            echo "[dry-run] would remove $ff (orphaned non-terminal family: worker dead + aged ≥ ${PWT_GOAL_STALE_HOURS:-24}h)"
-                        else
-                            rm -f "$ff" 2>/dev/null && ORPHANS_REAPED=$((ORPHANS_REAPED + 1))
-                            [ "$VERBOSE" = "1" ] && echo "removed $ff (orphan family $slug)"
-                        fi
-                    done
-                done
+                [ "$VERBOSE" = "1" ] && echo "reaping ANCHORED null-orphan family $slug (worker dead + aged)"
+                __reap_family "$slug"
             done <<EOF
-$REAP_CANDIDATES
+$NULL_CAND
 EOF
         elif [ "$VERBOSE" = "1" ]; then
-            echo "orphan-GC: liveness query failed/absent → fail-CLOSED, reaped nothing"
+            echo "orphan-GC: liveness query failed/absent → fail-CLOSED, reaped nothing from null path"
         fi
     fi
 fi
 
 if [ "$DRY_RUN" != "1" ] && [ "$QUIET" != "1" ]; then
     [ "$REMOVED" -gt 0 ] && echo "🧹 cleaned $REMOVED stale SUCCESS goal-state file(s)"
-    [ "$ORPHANS_REAPED" -gt 0 ] && echo "🧹 reaped $ORPHANS_REAPED orphaned non-terminal run-state file(s)"
+    [ "$REAPED_FILES" -gt 0 ] && echo "🧹 reaped $REAPED_FILES file(s) across $REAPED_FAMILIES orphaned/headless run-state family(ies)"
 fi
 
 exit 0

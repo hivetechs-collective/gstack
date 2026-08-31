@@ -532,6 +532,13 @@ BUILDER_RE="${SEP}(make|gradle|gradlew|\./gradlew|mvn|\./mvnw|xcodebuild|cargo|n
 GO_BUILD_RE="${SEP}go[[:space:]]+(build|run|test|install|get|generate)([[:space:]]|$)"
 SKILL_SUITE_RE="tests/skill/run(-scenarios)?\.sh"
 MUTATOR_RE="${SEP}(rm|mv|cp|ln|truncate|dd|rsync|shred|unlink|install)([[:space:]]|$)"
+# KI-6 (v2.25.0): copy-family verbs (cp/rsync/ln/install) only WRITE their
+# DESTINATION operand — a source inside the repo is a READ. Destructive verbs
+# (rm/mv/truncate/dd/shred/unlink) mutate EVERY operand (mv deletes its source).
+# The mutator token-check uses this split to skip in-repo SOURCE operands of a
+# PURE copy-family command; see the mutator block for the fail-safe conditions.
+COPY_FAMILY_RE="${SEP}(cp|rsync|ln|install)([[:space:]]|$)"
+DESTRUCTIVE_MUTATOR_RE="${SEP}(rm|mv|truncate|dd|shred|unlink)([[:space:]]|$)"
 EXEC_MUTATOR_RE="-(exec|execdir)[[:space:]]+(rm|mv|cp)([[:space:]]|;)|xargs([[:space:]]+-[^[:space:]]+)*[[:space:]]+(rm|mv|cp)([[:space:]]|$)"
 # ${SEP}-anchored like its siblings (D8, 2026-08-29): the literal words "sed -i"
 # inside a quoted string argument are prose, not a command — only a real in-place
@@ -956,9 +963,37 @@ EOF_WTREDIR
                 # silent pass. One in-repo target still denies the whole call.
                 DENIED=0
                 RESOLVED_OUT=0
+                # KI-6: a PURE copy-family command only WRITES its destination, so a
+                # source operand inside the repo is a READ and must not deny (the
+                # "rsync"/"cp $REPO/src /tmp" false-positive). Relax ONLY the
+                # provably-safe shape — a lone copy-family verb with NO destructive
+                # verb, NO -t/--target-directory, and NO command separator / pipe /
+                # substitution — where the destination is unambiguously the FINAL
+                # operand. EVERY other shape (destructive verb, the -t target-dir
+                # form, any chain/pipe/subshell, find|xargs -exec) keeps the
+                # all-operand check, so copying INTO the repo still denies and no
+                # chain can hide a repo write behind an outside final token.
+                COPY_ONLY=0
+                COPY_DEST=""
+                if printf '%s' "$CMD_SCAN" | grep -qE "$COPY_FAMILY_RE" \
+                   && ! printf '%s' "$CMD_SCAN" | grep -qE "$DESTRUCTIVE_MUTATOR_RE" \
+                   && ! printf '%s' "$CMD_SCAN" | grep -qE "(^|[[:space:]])(-t|--target-directory)([[:space:]=]|$)" \
+                   && ! printf '%s' "$CMD_SCAN" | grep -qE '[;&|]|\$\(|`'; then
+                    COPY_ONLY=1
+                    while IFS= read -r TOK; do
+                        [ -n "$TOK" ] || continue
+                        case "$TOK" in -*) continue ;; esac
+                        COPY_DEST="$TOK"
+                    done <<EOF_DEST
+$(printf '%s' "$CMD_SCAN" | tr ' ' '\n' | grep -vE '^(sudo|rm|mv|cp|ln|truncate|dd|rsync|shred|unlink|install|xargs|find)$' | head -40)
+EOF_DEST
+                fi
                 while IFS= read -r TOK; do
                     [ -n "$TOK" ] || continue
                     case "$TOK" in -*) continue ;; esac
+                    # KI-6: for a pure copy-family command, skip source operands —
+                    # only the destination (final operand) is a write target.
+                    if [ "$COPY_ONLY" = "1" ] && [ "$TOK" != "$COPY_DEST" ]; then continue; fi
                     if __bash_target_denied "$TOK" "$SLUG"; then DENIED=1; break; fi
                     case "$TOK" in
                         ''|*'$'*|*'`'*) : ;;   # unresolvable — proves nothing

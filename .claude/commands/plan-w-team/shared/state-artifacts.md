@@ -100,6 +100,21 @@ Prevent the "write-only by accident" defect class: artifacts whose writer is wir
 | `<approver.dir>/<slug>.<gate>.decision.json` | `-` | `\.decision\.json` (in `pwt-approver.sh`) | handoff | Governor Contract phase 2 (C4) EXTERNAL-INPUT governor decision `{decision,by,reason,ts,grant_ref}`. **No pipeline writer** — authored out-of-band by the GOVERNOR, exactly like `plan-w-team-lane-release-<slug>.json`; the lane guard denies BOTH the worker and the bound supervisor writing it (structural self-approval prevention). Reader: `pwt-approver.sh consume`. `<approver.dir>` is governor-configured, refused if git-tracked or escaping the repo; NOT `plan-w-team-*` prefixed → documentation-only. GOVERNED-ONLY. |
 | `.claude/state/plan-w-team-given-spec-$SLUG.json` | `plan-w-team-given-spec-` | - | audit-trail | Governor Contract phase 3 (C6) given-spec provenance sidecar `{slug, source, governor, freshness_gate, installed, validated_at}`. Writer: `pwt-given-spec.sh` (`jq -cn --arg`, best-effort) after it validates + installs a governor-supplied spec at `docs/specs/<slug>.md`. `freshness_gate` is the TRUTHFUL outcome `pass`/`skipped:binary-absent`/`disabled:killswitch` — never a false `pass`. No code reader — human/governor forensic provenance record (the human-readable provenance also lives IN the spec artifact). Written to the checkout `pwt-given-spec.sh` runs in; the sidecar surfaces the supply provenance to the Step-5 reviewer. Not per-run-cleaned by design (provenance trail). GOVERNED context but written whenever `--spec` is passed (an operator option too). |
 
+## Non-`plan-w-team-` per-run state (reaped, not checker-scanned)
+
+One slug-keyed per-run artifact lives OUTSIDE this registry's `plan-w-team-*` naming
+scope and is therefore documented here as a note rather than as a `symmetry-check.sh`
+table row (a cross-scope row would expand the checker's parse surface):
+
+- **`.claude/state/supervisor-progress-<slug>.json`** — PWT-ANTIPARK per-run supervisor
+  progress snapshot. Writer: `supervisor-progress-check.sh --slug`. Reader: the goal
+  evaluator's `__antipark_state` (`plan-w-team-goal-evaluator.sh`) + `shared/self-regulation.md`.
+  Per-run; slug-keyed. It is the ONE sanctioned non-`plan-w-team-` entry in the stale-state
+  janitor's per-slug reap set (`plan-w-team-cleanup-stale-goal-states.sh` — `PER_SLUG_REAP_PREFIXES`
+  carries `supervisor-progress-`, and `plan-w-team-cleanup-registry-parity.test.sh` excludes it
+  from the registry-parity comparison as the documented exception). It is reaped with the rest
+  of a provably-orphaned / headless family, so it no longer accumulates (SA-4, row 18).
+
 ## Claude Code interactions (2.1.139+)
 
 - **`claude project purge [path]`** removes all `.claude/state/plan-w-team-*` artifacts including in-flight baselines, scope-locks, AC snapshots, and retros. Treat purge mid-feature as equivalent to abandoning the SLUG — the workflow lock dir is removed but the workflow itself cannot detect this. If a user purges mid-run, instruct them to start a new SLUG rather than resume.

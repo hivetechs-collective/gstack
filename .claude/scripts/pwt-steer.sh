@@ -335,6 +335,40 @@ fi
 [ -n "$WORKER_SID" ] || refuse \
   "no worker session id: --worker-sid not given and $GOAL_FILE carries no .worker_sid"
 
+# ── KI-3 — auto-resolve an 8-char bg HANDLE to the full session UUID ──────────
+# `claude --bg` prints an 8-char process HANDLE ("backgrounded · aabbccdd") and a
+# goal-state seeded at spawn carries exactly that handle; `--resume` needs the
+# 36-char UUID. Rather than dead-end at the W6 refuse below (the confusion class
+# that stranded 2-of-3 field attempts), resolve handle→UUID from the live session
+# registry: a UNIQUE bg session whose sessionId starts with the handle IS the
+# worker. Fail-OPEN — 0 or >1 matches, an unqueryable/flaky registry, or a value
+# that is not an 8-hex handle all leave WORKER_SID untouched so the W6 refuse
+# still fires (a steer must never resume a stranger). Uses claude-agents-extended.sh
+# so its CLAUDE_AGENTS_RAW seam makes this testable without a live registry.
+# Kill switch: PWT_DISABLE_STEER_SID_RESOLVE=1.
+if ! __steer_is_uuid "$WORKER_SID" \
+   && [ "${PWT_DISABLE_STEER_SID_RESOLVE:-0}" != "1" ] \
+   && printf '%s' "$WORKER_SID" | grep -Eq '^[0-9a-f]{8}$'; then
+  __steer_ext="$(dirname "$0")/claude-agents-extended.sh"
+  if [ -x "$__steer_ext" ]; then
+    __steer_reg=$(CLAUDE_AGENTS_RETRY="${CLAUDE_AGENTS_RETRY:-3}" "$__steer_ext" --json --bg-only 2>/dev/null || echo "")
+  else
+    __steer_reg=$("$(__steer_locate_claude)" agents --json 2>/dev/null || echo "")
+  fi
+  if printf '%s' "$__steer_reg" | jq -e 'type=="array"' >/dev/null 2>&1; then
+    __steer_hits=$(printf '%s' "$__steer_reg" | jq -r --arg h "$WORKER_SID" '
+      [ .[]? | ((.sessionId // .session_id) // "") | select(startswith($h)) ] | unique | .[]?' 2>/dev/null)
+    __steer_n=$(printf '%s\n' "$__steer_hits" | grep -c . 2>/dev/null || echo 0)
+    if [ "${__steer_n:-0}" -eq 1 ]; then
+      __steer_full=$(printf '%s\n' "$__steer_hits" | head -1)
+      if __steer_is_uuid "$__steer_full"; then
+        echo "pwt-steer: resolved bg handle '$WORKER_SID' → full session UUID '$__steer_full' (KI-3)" >&2
+        WORKER_SID="$__steer_full"
+      fi
+    fi
+  fi
+fi
+
 # W6 — the confusion class that cost 2-of-3 field attempts. `claude --bg` PRINTS
 # an 8-char process HANDLE ("backgrounded · aabbccdd"); `--resume` needs the
 # 36-char session UUID. A handle strands the resume at a picker while the process
@@ -471,6 +505,36 @@ __steer_marker_in() { [ -n "${1:-}" ] && [ -f "$1" ] && grep -qF -- "$MARKER" "$
 
 CLAUDE_BIN=$(__steer_locate_claude)
 
+# ─── Launch environment for the resume (BRIEF §5, AC4 + KI-4) ────────────────
+# Regain the FULL launch environment a fresh spawn gets: source the ONE shared builder
+# (pwt-launch-env.sh) so a resumed worker keeps the stop-hook-cap raise, workflow-disable, lean
+# statusline and supervisor=0 — not just the recursion guard it used to carry. Built HERE (before
+# the dry-run branch) so `--dry-run` prints the REAL resume env, not a stale literal.
+#
+# KI-4: restore the launch-time PUSH posture the ORIGINAL spawn had. steer used to hardcode
+# auto_push=0 here, so a resumed lane silently LOST PLAN_W_TEAM_AUTO_APPROVE_PUSH=1 and dead-ended
+# at the push-ack pause (waited on a human that never comes). The spawn now persists `.auto_push`
+# in the goal-state; read it back and feed the SAME shared builder. Kill switch:
+# PWT_DISABLE_STEER_AUTOPUSH_RESTORE=1. Operator --env (EXTRA_ENV) is still appended AFTER, so an
+# explicit --env override (e.g. land.sh's PLAN_W_TEAM_AUTO_APPROVE_PUSH=1) always wins.
+STEER_AUTO_PUSH=0
+if [ "${PWT_DISABLE_STEER_AUTOPUSH_RESTORE:-0}" != "1" ]; then
+  __steer_ap=$(jq -r '.auto_push // 0' "$GOAL_FILE" 2>/dev/null || echo 0)
+  case "$__steer_ap" in 1|true) STEER_AUTO_PUSH=1 ;; *) STEER_AUTO_PUSH=0 ;; esac
+fi
+STEER_LAUNCH_LIB="$MAIN_ROOT/.claude/scripts/pwt-launch-env.sh"
+STEER_LAUNCH_ENV="PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1"
+if [ -r "$STEER_LAUNCH_LIB" ]; then
+  # shellcheck disable=SC1090
+  . "$STEER_LAUNCH_LIB"
+  __pwt_scrub_leak_env
+  STEER_LAUNCH_ENV=$(__pwt_build_launch_env "$STEER_AUTO_PUSH")
+elif [ "$STEER_AUTO_PUSH" = "1" ]; then
+  # Fallback (launch-env lib unreadable): still restore the push posture so KI-4 holds even in the
+  # degraded path where the shared builder can't be sourced.
+  STEER_LAUNCH_ENV="$STEER_LAUNCH_ENV PLAN_W_TEAM_AUTO_APPROVE_PUSH=1"
+fi
+
 if [ "$DRY_RUN" = "1" ]; then
   echo "pwt-steer: dry-run — validations passed, nothing mutated"
   echo "  slug:            $SLUG"
@@ -480,7 +544,8 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  would run:       $CLAUDE_BIN stop ${WORKER_SID:0:8}"
   echo "  resume-at-stage: ${M_STAGE:-<none>} → ${STAGE_DIRECTIVE:-full pipeline 0→8}"
   echo "  extra env:       ${EXTRA_ENV[@]+${EXTRA_ENV[@]}}"
-  echo "  would run:       env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 ${EXTRA_ENV[@]+${EXTRA_ENV[@]} }$CLAUDE_BIN --bg --resume $WORKER_SID --permission-mode $STEER_PERMISSION_MODE --model $PRIMARY_MODEL --fallback-model $FALLBACK_MODEL <steer-text>"
+  echo "  auto-push:       ${STEER_AUTO_PUSH} (from goal-state .auto_push; kill switch PWT_DISABLE_STEER_AUTOPUSH_RESTORE=1)"
+  echo "  would run:       env $STEER_LAUNCH_ENV ${EXTRA_ENV[@]+${EXTRA_ENV[@]} }$CLAUDE_BIN --bg --resume $WORKER_SID --permission-mode $STEER_PERMISSION_MODE --model $PRIMARY_MODEL --fallback-model $FALLBACK_MODEL <steer-text>"
   echo "  steer-text:"
   printf '%s\n' "$STEER_TEXT" | sed 's/^/    | /'
   echo "  delivery marker: $MARKER"
@@ -546,18 +611,9 @@ fi
 # straight to execve, so quotes/backslashes/`$`/`;`/globs in the operator's
 # message can never be re-parsed by a shell.
 #
-# Regain the FULL launch environment a fresh spawn gets (BRIEF §5, AC4): source the ONE shared
-# builder (pwt-launch-env.sh) so a resumed worker keeps the stop-hook-cap raise, workflow-disable,
-# lean statusline and supervisor=0 — not just the recursion guard it used to carry. Operator --env
-# (EXTRA_ENV) is appended AFTER, so it still overrides (e.g. land.sh's PLAN_W_TEAM_AUTO_APPROVE_PUSH=1).
-STEER_LAUNCH_LIB="$MAIN_ROOT/.claude/scripts/pwt-launch-env.sh"
-STEER_LAUNCH_ENV="PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1"
-if [ -r "$STEER_LAUNCH_LIB" ]; then
-  # shellcheck disable=SC1090
-  . "$STEER_LAUNCH_LIB"
-  __pwt_scrub_leak_env
-  STEER_LAUNCH_ENV=$(__pwt_build_launch_env 0)
-fi
+# $STEER_LAUNCH_ENV (the FULL launch environment a fresh spawn gets, incl. the KI-4 auto-push
+# restore) was built ABOVE — before the dry-run branch — so `--dry-run` prints the real resume
+# env. Operator --env (EXTRA_ENV) is appended AFTER, so it still overrides.
 # Governor Contract phase 3 (C2): governed nice prefix for the resume spawn (the resume path is
 # one of the three spawn sites). Definedness-guarded; empty ungoverned ⇒ byte-identical argv.
 # (No post-spawn renice here: the launch `exec`s, so there is no return to renice from.)

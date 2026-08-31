@@ -14,6 +14,281 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.31.0] — 2026-08-31 (KI-8 — unattended non-push halts fire a proactive operator alert) (b609e87)
+
+Closes **KI-8** (KNOWN_ISSUES): a `--worker-only` (or bare `/goal`) run that hit a NON-push halt
+(`secret-scan-allow`, `scope-unlock-for-drift`, or a 3-consecutive-low-confidence escalation) had NO
+proactive operator signal — the halt surfaced only to the `/goal` daemon's pending-question state and
+`terminal_state` in the goal-state file. `--worker-only` is now the primary autonomous mode and has
+NO bg supervisor, so for an unattended run that was a silent dead-end. The only proactive notify
+(macOS `osascript`) lived exclusively in the legacy `--launch` bg-supervisor path. KI-5 removed the
+push-ack halt from auto-push mode (it auto-approves); this closes the residual for the halts that
+legitimately DO pause.
+
+**Fix — worker-side halt-notify directive (`pwt-goal.sh`):** the `AUTO_PUSH=1` branch of
+`__PWT_PUSH_HALT_DIRECTIVE` now instructs the worker, upon reaching ANY halt, to FIRST fire a
+best-effort operator alert before pausing — preferring the `PushNotification` tool, else a local
+desktop notification (macOS `osascript` display-notification, else `notify-send`) naming the halt
+reason, wrapped so a missing channel never fails the run (`|| true`). This reaches exactly the
+unattended modes: `--worker-only` / `--launch` / `--supervisor-goal` / `--auto-push` all arm
+`AUTO_PUSH=1`.
+
+- **AUTO_PUSH=0 (bare `/goal`) is byte-identical** to the historical block — an attended paste needs
+  no proactive notify, and the K4/K5 golden guard stays green (extended by K7).
+- Prompt-directive design, mirroring the established pattern (the legacy supervisor bootstrap already
+  instructs an `osascript` notify): the halt occurs *inside* the worker's `/goal` session after
+  `pwt-goal.sh` has exited, so the launcher cannot fire the alert itself — it must instruct the worker.
+- No change to push authority (push stays a user-owned grant) or to any halt condition.
+
+Tests: `pwt-goal-intent.test.sh` K6 (--auto-push carries the operator-alert directive) + K7 (bare
+omits it), EXPECTED_PASS 35 → 37; K1–K5 unchanged.
+
+## [2.30.1] — 2026-08-31 (KI-7 — warn when a worktree-consumed gating hook is uncommitted) (5031e8f)
+
+Closes **KI-7** (KNOWN_ISSUES): an "armed" gating hook was silently IGNORED in a fresh worktree.
+`git worktree add … HEAD` checks out the **committed** HEAD, so the spawned bg worker runs the
+WORKTREE's copy of every gating hook — never the working-tree copy in the main checkout. An operator
+who edited a gating hook (e.g. armed the F7 completeness gate in `plan-w-team-goal-evaluator.sh`) but
+had NOT committed it got the OLD hook inside the worktree, and the change silently no-opped (an armed
+gate that never fires).
+
+**Fix — spawn-time drift warning (`pwt-goal.sh`):** right after the `--worktree` flag is decided, and
+only when worktree isolation is active, the launcher checks whether any worktree-consumed gating hook
+(`plan-w-team-goal-evaluator.sh`, `plan-w-team-lane-guard.sh`, `plan-w-team-lane-context.sh`) differs
+from HEAD in the main checkout (`git status --porcelain` non-empty ⇒ modified, staged-not-committed,
+or untracked). If any do, it prints a LOUD warning naming each dirty hook and explaining that the
+worker will use HEAD's committed copy, so the uncommitted edits will NOT take effect this run.
+
+- **Advisory only — never aborts.** The operator may have committed on another branch or want HEAD's
+  copy deliberately; the warning informs, it does not gate.
+- **Fail-open SILENT** when the resolved root is not a git repo / git is unavailable, so test
+  sandboxes and non-git checkouts never false-fire.
+- The specific F7-evaluator case that surfaced KI-7 is **already closed** — its completeness-gate
+  logic landed COMMITTED at `2c650c7` (v2.22.0). This fix generalizes the lesson to ANY worktree-run
+  gating hook so the blind spot cannot recur silently.
+- Kill switch: `PWT_DISABLE_WORKTREE_HOOK_DIRTY_WARN=1`.
+
+Tests: `pwt-goal-worktree-hook-dirty.test.sh` (9/9) — clean baseline (no warn, spawn reached), dirty
+evaluator (warns + names it), two dirty (both listed), untracked/staged-deletion drift (warns),
+kill switch (silenced), non-git root (fail-open silent, spawn still succeeds).
+
+## [2.29.0] — 2026-08-31 (Full per-run orphan broom — SA-4, followups row 18)
+
+**Resolves recursive-followup row 18 `[cleanup-eval-2026-06-08] SA-4 (MEDIUM, deferred)`** —
+the stale-state janitor's larger deferred half. Prong B reaped a provable orphan's family but
+only a FIVE-prefix subset, so every reap BEHEADED its own family: it deleted the goal+manifest
+anchors while leaving the other ~40 per-run classes on disk with no discovery anchor
+("headless"). Spec:
+`docs/specs/resolve-recursive-followup-row-18-cleanup-eval-2026-06-08-sa-4-medium-deferred-t-9c624d36.md`
+(AC1–AC10).
+
+> **Re-base note:** this fix originally shipped on a side branch as `2.21.0` (commit `6b15ac6`);
+> that label collided with the shipped `2.21.0` credential-seam release when the branch was
+> re-based onto current main (`2.28.0` / `3bf2a0c` at the time of landing), so it was renumbered
+> `2.29.0` with a fresh version bump. The janitor script is byte-identical to the merge-base, so
+> the rewrite applied cleanly; only `VERSION`/`CHANGELOG`/`.sync-version` needed collision
+> resolution.
+
+- **`plan-w-team-cleanup-stale-goal-states.sh` — PASS 2 rewritten to reap the COMPLETE
+  per-run family**: `PER_SLUG_REAP_PREFIXES` now enumerates all the `$SLUG`-keyed
+  `plan-w-team-*` artifact classes (goal, manifest, stage-events, directive, pwt-brief,
+  workflow-lock, liveness, retro, retro-capture, …) plus `supervisor-progress-<slug>`, so a
+  provably-orphaned non-terminal family is reaped WHOLE instead of decapitated. PASS 1
+  (SUCCESS goal-state immediate delete) is unchanged.
+- **Collision-safe prefix matching**: reap prefixes nest
+  (`plan-w-team-retro-` ⊂ `plan-w-team-retro-capture-`), so a naive prefix loop would let a
+  short prefix swallow a longer sibling's files. `__slug_of_file` resolves each file to its
+  slug by **longest-prefix-wins**, a `GLOBAL_DENYLIST` protects the non-per-run classes
+  (Governor `plan-w-team-approver-audit-`, `plan-w-team-given-spec-`, the run registry, and
+  cross-run singletons), a `^[A-Za-z0-9_-]+$` slug charset guard rejects anything unexpected,
+  and `.lock` directories are removed with a dir-safe `rm -rf`.
+- **Registry-parity drift guard** (new): `--list-reap-prefixes` prints the janitor's reap set,
+  and `plan-w-team-cleanup-registry-parity.test.sh` asserts it EXACTLY equals the `$SLUG`-keyed
+  classes documented in the State Artifact Registry (`shared/state-artifacts.md`), minus the
+  registry's non-reap exemption set. Adding a per-run artifact class without teaching the
+  janitor now fails a test instead of silently leaking.
+- **Structural orphan proof preserved**: a family is reaped only when it is "headless" (no
+  goal/manifest/workflow-lock anchor) AND aged past `PWT_GOAL_STALE_HOURS`. No live-run family
+  is ever touched.
+- Docs: `shared/state-artifacts.md` documents the new artifact classes (incl.
+  `supervisor-progress-<slug>`); `shared/governance-tags.md` registers the janitor as a
+  one-way-door surface (every diff forces a Step-5 security review);
+  `plan-w-team-cleanup-orphan-families.test.sh` gains extended corpus coverage;
+  `sync-to-project.sh` allowlists both new tests.
+- Kill switch: `PLAN_W_TEAM_DISABLE_ORPHAN_GC=1`.
+
+## [2.28.0] — 2026-08-31 (KI-4 — resume restores the launch-time auto-push posture) (e5f15e4)
+
+Closes **KI-4** (KNOWN_ISSUES): a resumed lane silently LOST `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` and
+dead-ended at the push-ack pause (waited on a human who never comes). `pwt-steer.sh` rebuilt the
+resume launch env with a **hardcoded** `__pwt_build_launch_env 0`, so the push posture the original
+autonomous spawn was granted (`--worker-only`/`--launch`/`--supervisor-goal`/`--auto-push` all set
+`AUTO_PUSH=1`) never reached the resumed worker unless the operator hand-passed
+`--env PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` on every steer.
+
+**Fix — persist the posture, restore it automatically (reuse-first):**
+
+- **Writer (`pwt-goal.sh`):** the goal-state seed now records `auto_push` (0/1 = `$AUTO_PUSH`) at all
+  three seed sites (the jq writer, the no-jq printf fallback, and the supervisor-goal mirror
+  heredoc). Additive field — every existing reader accesses named fields, so nothing else changes;
+  no seed golden or key-set lock exists to perturb.
+- **Steer (`pwt-steer.sh`):** the resume reads `.auto_push` back from the goal-state and feeds the
+  **same** shared `__pwt_build_launch_env` builder (`__pwt_build_launch_env "$STEER_AUTO_PUSH"`)
+  instead of the hardcoded `0`. A fallback arm restores the push var even when the launch-env lib is
+  unreadable. Kill switch: `PWT_DISABLE_STEER_AUTOPUSH_RESTORE=1`. Operator `--env` is still appended
+  AFTER, so an explicit override (e.g. `land.sh resume`'s hardcoded `--env AUTO_APPROVE_PUSH=1`)
+  always wins — no conflict with the land path.
+- The launch-env build was hoisted **above** the `--dry-run` branch so `--dry-run` now prints the
+  REAL resume env (it previously printed a stale hardcoded literal), which is also the KI-4 test seam.
+
+`__pwt_build_launch_env` itself is unchanged, so the `launch-env-autopush.golden` parity holds; the
+K1–K5 prompt golden is byte-identical. `pwt-resume.sh` delegates through `land.sh` → `pwt-steer`, so
+it inherits the fix with no parallel change. Tests: `pwt-steer.test.sh` T25a–e (124/124);
+`pwt-goal-worker-only.test.sh` KI-4 seed cases (12/12); prompt golden 35/35; seed-reclaim 28/28.
+
+## [2.27.0] — 2026-08-31 (KI-3 — pwt-steer auto-resolves an 8-char bg handle to the full session UUID) (42c666d)
+
+Closes **KI-3** (KNOWN_ISSUES): `pwt-steer.sh` read the worker session id from the goal-state, but a
+`--bg` spawn only prints (and the seed only persists) the 8-char process HANDLE (`backgrounded · aabbccdd`).
+`--resume` requires the 36-char session UUID, so steer dead-ended at the W6 refuse ("'<handle>' is not a
+full session UUID") — the worker was alive and `working`, but you could not steer or resume it without
+hand-resolving the UUID from `claude agents --json`. This stranded 2-of-3 field resume attempts.
+
+- **Handle→UUID auto-resolve** (`.claude/scripts/pwt-steer.sh`, before the W6 refuse). When the worker
+  sid is an 8-hex handle (not a UUID), steer queries the live session registry via
+  `claude-agents-extended.sh --json --bg-only` and upgrades to a UNIQUE bg session whose `sessionId`
+  starts with the handle.
+- **Fail-open, never resume a stranger.** 0 or >1 matches, an unqueryable/flaky registry, or a value that
+  is not an 8-hex handle all leave the sid untouched, so the W6 refuse still fires. Only an unambiguous
+  single match upgrades. Kill switch: `PWT_DISABLE_STEER_SID_RESOLVE=1`.
+- **Testable seam.** Uses the wrapper's `CLAUDE_AGENTS_RAW` seam, so the resolve is driven
+  deterministically without a live registry.
+- **Scope note (writer-side deliberately NOT changed).** KNOWN_ISSUES also floated "goal-state should
+  persist the full UUID." That would add a registry round-trip to *every* spawn's hot path and break 6+
+  pwt-goal tests that assert exact `claude` call numbering — for zero correctness gain once steer
+  auto-resolves. The steer-side resolve makes every handle-bearing goal-state (including all existing
+  ones) resumable, so the writer-side persistence is redundant and was left out.
+- **Tests**: `pwt-steer.test.sh` gains T24a–d (unique-match resolve, resolved UUID in the plan, no-match
+  fail-open refuse, kill-switch refuse); T2 reconciled to pin an empty registry so the handle-refusal case
+  tests the fail-open path. 116/116 (was 112).
+
+## [2.26.0] — 2026-08-31 (KI-2 — a flag after the positional goal fails loud instead of silently degrading) (c4cf003)
+
+Closes **KI-2** (KNOWN_ISSUES): `pwt-goal.sh "<goal>" --worker-only` (flag AFTER the goal) printed the
+assembled `/goal` prompt and exited 0 with NO spawn — no worktree, no worker, no error. The arg-parse
+`*)` arm did `REQUEST="$*"; break`, swallowing the trailing `--worker-only` into the request string;
+`LAUNCH`/`WORKER_ONLY` stayed 0 and the script silently degraded to print-for-manual-paste mode. An
+operator running an autonomous lane got a paste-me blob and a dead terminal instead of a running worker.
+
+- **Guarded positional parse** (`.claude/scripts/pwt-goal.sh`). The `*)` arm now takes `$1` as the goal
+  head, then scans the REMAINING argv: an option-shaped trailing token (starts with `-`) is a
+  misplacement → loud error naming the offending token + guidance (put flags before the goal, or end
+  options with `--`) + **exit 2**, mirroring the outer `-*)` unknown-option arm. Every other trailing
+  word is appended, so an UNQUOTED multi-word goal (`--worker-only ship the thing`) still assembles.
+- **Escape hatch preserved.** A goal that legitimately begins with `-` still works via `--`
+  (`pwt-goal.sh --worker-only -- "-weird goal"`), handled by the `--)` arm above the positional arm.
+  A goal with a flag-like substring INSIDE its quotes is a single argv element — no separate trailing
+  token — so it is untouched.
+- **Loud-not-silent.** exit 2 is distinct from the pre-goal unknown-option exit 1, so a caller can tell
+  "you put a flag after the goal" apart from "unknown flag before the goal." No behaviour change for the
+  correct flags-first invocation.
+- **Tests**: `.claude/scripts/pwt-goal-worker-only.test.sh` gains 4 KI-2 cases — trailing flag exits 2,
+  no spawn on rejection, stderr carries the misplacement guidance, and an unquoted multi-word goal still
+  spawns (1 call, exit 0). 10/10 (was 6). Golden K1–K5 (`pwt-goal-intent.test.sh`) and heredoc-size stay
+  green (flags-first path unchanged).
+
+## [2.25.0] — 2026-08-30 (KI-6 — lane guard stops false-positiving on copy-family SOURCE operands) (fc76720)
+
+Closes **KI-6** (KNOWN_ISSUES): the PreToolUse lane-guard (PWT-LANE1) classified `cp`/`rsync`/`ln`/`install`
+as "mutators" and denied the call if ANY operand resolved inside the lane repo — including the SOURCE. A
+bound supervisor's legitimate `cp $REPO/src/x /tmp/…` or `rsync $REPO/ /tmp/backup/` was blocked, forcing
+operators to prefix `PLAN_W_TEAM_DISABLE_LANE_GUARD=1` (disabling the whole guard) to copy anything OUT of
+the repo. A copy-family verb only WRITES its destination; a source under the repo is a read.
+
+- **Copy-family / destructive split** (`.claude/hooks/plan-w-team-lane-guard.sh`). New `COPY_FAMILY_RE`
+  (`cp|rsync|ln|install`) and `DESTRUCTIVE_MUTATOR_RE` (`rm|mv|truncate|dd|shred|unlink`) beside the
+  existing `MUTATOR_RE` (unchanged — still the trigger). The mutator token-check now relaxes for a PURE
+  copy-family command, checking ONLY the destination (final) operand and skipping in-repo sources.
+- **Deliberately narrow relaxation.** It applies ONLY when the command matches a copy-family verb AND has
+  NO destructive verb AND NO `-t`/`--target-directory` form AND NO command separator / pipe / substitution
+  (`[;&|]`, `$(`, backtick). Every other shape — a destructive verb (`mv` deletes its source), the `-t`
+  target-directory form (dest is not the final operand), or any chain/pipe/subshell — reverts to the strict
+  all-operand check, so copying INTO the repo still DENIES, including a repo write hidden behind an
+  out-of-repo FINAL token. `COPY_ONLY=0` behaviour is byte-identical to the prior guard.
+- **Security-property preserved.** `cp /tmp/evil $REPO/src` (dest in repo), `cp -t $REPO/src …` (in-repo
+  target dir), `cp /tmp/x $REPO/dst && …` (chained), and every `mv` from the repo still DENY. The existing
+  D10 protected-artifact denials (`cp … ship-verdict.json`, release memo) are unchanged.
+- **Tests**: `tests/skill/cases/plan-w-team-lane-guard.bats` gains 7 KI-6 twins (75–81) — cp/rsync
+  source-out ALLOW + audited, cp/rsync dest-in DENY, the separator-smuggling DENY, the `-t` DENY, and the
+  mv-still-denies witness. 81/81 (was 74). Lane-guard is a governance-tagged one-way-door surface.
+
+Also in this version — two `pwt-goal.sh` correctness fixes surfaced while greening the suite for KI-6:
+
+- **KI-5 follow-up (halt-directive wording).** The v2.24.0 auto-push halt directive embedded the literal
+  `PLAN_W_TEAM_AUTO_APPROVE_PUSH=1` token in the emitted supervisor goal text. That leaked into the `--bg`
+  argv and inflated `plan-w-team-route-prompt-supervisor-env.test.sh`'s occurrence count (2 launch-env
+  copies + 1 goal-text literal = 3, the test asserts 2). Reworded to "(auto-push mode is armed)" — behavior-
+  neutral, and the KI-5 golden assertions (`Push is AUTO-APPROVED for this autonomous run`) are preserved.
+- **DS1 guard root-resolution precedence.** `GUARD_PROJECT_ROOT` resolved `CLAUDE_PROJECT_DIR` BEFORE
+  `PWT_PROJECT_ROOT_OVERRIDE` — the inverse of every other root-resolution site (RSC_PRIMARY, the `__pwt`
+  root helper, WT_ROOT, PROJECT_ROOT). With `CLAUDE_PROJECT_DIR` set (as `tests/skill/run.sh` Phase 2 does),
+  the PWT-DS1 double-spawn guard scanned the REAL repo's state dir instead of a test sandbox, so stale
+  `hook-spawn-*.flag` files there triggered extra `claude agents --json` liveness probes that corrupted the
+  spawn-counter in sandbox-isolated tests (`pwt-goal-heredoc-size.test.sh` failed in-suite, passed
+  standalone). Swapped to `PWT_PROJECT_ROOT_OVERRIDE` first. Production is unaffected (the override is
+  test-only and unset in real runs — the fall-through to `CLAUDE_PROJECT_DIR` is unchanged); this only
+  restores sandbox isolation when the override IS set.
+
+## [2.24.0] — 2026-08-30 (KI-5 — push-ack halt contract is mode-conditional, stops alarming operators) (96f7475)
+
+Closes **KI-5** (KNOWN_ISSUES): the `/goal` text printed a FIXED "Halt and surface to user … push-ack
+pause site (irreversible push to remote)" block regardless of mode. But every autonomous spawn
+(`--launch` / `--worker-only` / `--supervisor-goal` / `--auto-push`) already sets
+`PLAN_W_TEAM_AUTO_APPROVE_PUSH=1`, so its push-ack pause AUTO-APPROVES and the run pushes + lands without
+pausing — the run was advertising a halt it would never take, which reads to operators as "it will wait
+on me." Only a bare `/goal` paste (`AUTO_PUSH=0`) actually pauses at push.
+
+- **Mode-conditional halt contract** (`pwt-goal.sh`, `__pwt_build_goal_text`). New `AUTO_PUSH`-gated
+  `__PWT_PUSH_HALT_DIRECTIVE`: under auto-push the goal text states push AUTO-APPROVES (no halt) and lists
+  only the genuine halts (secret-scan-allow, scope-unlock-for-drift, 3-consecutive low-confidence); a bare
+  paste keeps the push-ack halt line because it truly pauses there. `secret-scan-allow` and
+  `scope-unlock-for-drift` halt in BOTH modes — only push-ack is auto-approved. The directive-overflow
+  pointer text (`__PWT_HALT_INLINE`) is mode-aware too.
+- **Byte-identical for `AUTO_PUSH=0`**: the bare-paste branch reproduces the historical block verbatim, so
+  the byte-identical golden guard in `pwt-goal-intent.test.sh` (and the overflow test) stay green.
+  Auto-push is confirmed ALREADY the default for every spawn mode — this corrects the *contract* to match,
+  it does not change push authority (push stays a user-owned grant).
+- **Tests**: `pwt-goal-intent.test.sh` gains K1–K5 (auto-push omits the push-ack halt + states
+  auto-approval + keeps the both-mode halts; bare keeps push-ack + never claims auto-approve), 35/35.
+
+## [2.23.0] — 2026-08-30 (KI-1 — per-lane credential resolver seam kills the bg-daemon account pin) (ec27949)
+
+Closes **KI-1** (KNOWN_ISSUES): the bg-session daemon reads auth ONCE at startup, so every `--bg`
+worker inherits whatever account the daemon started under and dies 15–23 min in when that token goes
+stale (looks like a stall — session `waiting`, zero writes, `terminal_state` null). The v6 item-5 seam
+(`--lane-settings-json` / `PWT_LANE_SETTINGS_JSON`) already let an OPERATOR hand each lane its own
+credential, but the DEFAULT autonomous spawn still fell back to the daemon account. This wires an
+optional per-lane credential SOURCE into the default spawn path.
+
+- **New env `PWT_LANE_SETTINGS_RESOLVER=<executable>`** (`.claude/scripts/pwt-goal.sh`). When set AND no
+  explicit `--lane-settings-json` / `PWT_LANE_SETTINGS_JSON` was given, the bg-spawn path calls it as
+  `<resolver> <lane-slug> <worktree-name>` and uses the `settings.local.json` path it prints on stdout —
+  so the lane authenticates with its own account from the first API call instead of the daemon's. The
+  resolved path feeds straight into the existing item-5 validate+inject block (0600 drop, contents never
+  logged).
+- **Works in ANY repo — opt-in / byte-for-byte no-op when unset.** A friend's checkout or generic use
+  sees no `PWT_LANE_SETTINGS_RESOLVER`, so this whole block is skipped and the legacy daemon-account
+  behaviour is unchanged. **The generic skill only INVOKES the resolver and never handles a token** —
+  all account/token logic lives in the consuming repo's resolver (e.g. a separate multi-account manager).
+- **Fail-CLOSED** (the whole point of KI-1): a configured resolver that errors, is not executable, or
+  prints nothing ABORTS the spawn — we never silently fall back to the daemon account. Also fails closed
+  when worktree isolation is disabled (`PWT_DISABLE_WORKER_WORKTREE=1`) since there is no lane worktree to
+  drop the credential into. Kill switch: `PWT_DISABLE_LANE_SETTINGS_RESOLVER=1`.
+- **Tests**: `.claude/scripts/pwt-goal-lane-settings.test.sh` gains E3 (auto-source drops a 0600
+  credential + passes the lane slug + spawns with `--worktree`), E4/E4b (resolver error / empty output
+  both abort with no spawn), and E5 (unconfigured → normal spawn, legacy path unchanged). 31/31 pass; the
+  full 19-file pwt-goal corpus stays green.
+
 ## [2.22.0] — 2026-08-30 (Completeness Gate (F7) — kills the enumerated-universe SCOPE-COLLAPSE) (2c650c7)
 
 Closes the SCOPE-COLLAPSE defect (field incident 2026-08-30, cleanscale BDD-gap campaign): a goal to
