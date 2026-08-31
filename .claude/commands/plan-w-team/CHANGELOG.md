@@ -14,6 +14,71 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.34.0] — 2026-08-31 (Multi-account onboarding automation — portable `secrets.env` source, guided `setup`, and interactive-session rotation) (d0c6128)
+
+Closes the onboarding-friction gap in 2.33.0: registering accounts still meant a manual
+`claude setup-token | add-account` loop, one account at a time — even when the operator
+**already** had Max-account OAuth tokens saved on the machine. This release makes onboarding a
+single command (`accounts.sh setup`), reads the operator's canonical token store, scaffolds one
+for a fresh operator, and puts **interactive `claude` sessions on the same rotation as the fleet**.
+
+- **New `import` subcommand** + **new module `accounts/import_stores.py`** (reuses
+  `registry.upsert_account` for storage and `probe.probe_usage` for validation — no storage
+  or validation logic is re-implemented). One command **discovers, validates, dedupes, and
+  bulk-registers** tokens already saved on the machine, then flips `multi_account_enabled` on.
+- **Canonical `secrets.env` source (portable, business-agnostic).** `import`/`setup` read
+  `CLAUDE_MAX_SETUP_TOKEN_<LABEL>=sk-ant-…` lines (the `make secrets-set` convention) from a
+  0600 env file — the **primary** store, scanned FIRST. The `<LABEL>` is the key suffix
+  (lower-cased) and is authoritative identity, so a row registers on the **label alone**; a
+  paired `CLAUDE_MAX_EMAIL_<LABEL>` is optional annotation. `ACCOUNT_FAILOVER_ORDER` is
+  surfaced as a note. Empty slots and non-`sk-ant` values are skipped (never stored). Nothing
+  consumer-specific is baked in: default search paths are neutral + auto-detected
+  (`~/.config/claude-pwt/secrets.env`, then `~/.config/cleanrev/secrets.env`), and
+  **`$PWT_SECRETS_ENV`** (`:`-separated) overrides them entirely. The parser is tolerant
+  (`export `, quotes, comments) and **never sources the file** (no shell eval).
+- **Scaffold for a fresh operator** (`scaffold_secrets_env`). An operator with no store gets a
+  0600 template created for them (documented key convention + `claude setup-token` fill
+  instructions) — created at OUR neutral path, **never** fabricated on top of existing data, and
+  it **never overwrites**. This is the "build and configure one for them" path shared-skill
+  users hit on their first `setup`.
+- **New guided `setup` (alias `authorize`) + read-only `check`.** `setup` scaffolds a
+  `secrets.env` if none exists, then imports every filled token — the discoverable entry point a
+  new operator (or `/plan-w-team` onboarding) is pointed to. `check` shows what WOULD import
+  (dry-run, stores nothing) plus the live status table.
+- **Interactive-session rotation** — **new module `accounts/session_cred.py`** + `launch` /
+  `which-account` subcommands. `accounts.sh launch [-- <cmd>]` resolves the SAME
+  registry→probe→selector account the fleet would pick and `os.execvpe`s the command (default
+  `claude`) with the token in the child **environment only**. `os.execvpe` resolves via PATH at
+  the syscall level, so a `claude` shell-rc wrapper can shadow the binary **without recursing** —
+  every foreground session then rides the identical rotation. Dormant / loose-perms / all-hot ⇒
+  exec **unchanged** (ambient login); routing is opt-in and never blocks foreground work.
+  `which-account` prints only the label a session would run as.
+- **Honest boundaries.** Fully-identified rows register automatically. A bare token file has
+  no email, so `import` reports the exact `add-account --token-file …` line rather than
+  guessing an identity. An account with **no saved token anywhere** still needs the one-time
+  human mint (A2–A3) — no automation invents a credential that was never minted.
+- **Security parity with the add path.** Tokens are read from `0600` files into memory only;
+  never printed, logged, or placed on argv; the returned result structure carries
+  label/email/source/**fingerprint** (SHA-256 prefix), never a value. `launch` hands the token
+  to the child via env only (never argv/stdout); only the non-secret label + a reason reach
+  stderr. Dedupe is by full fingerprint (idempotent re-runs). Each new token is validated by one
+  probe before storage (`--no-validate` is an explicit offline escape hatch; `--dry-run` /
+  `check` probe/store nothing). The registry's loose-perms / symlink refusal is inherited
+  unchanged.
+- **Flags:** `import`: `--dry-run`, `--no-validate`, `--no-enable`, `--source PATH`; `setup`:
+  `--no-validate`, `--no-enable`; `launch`: `--pinned L`, `--which`, `-- <cmd…>`.
+- **Coverage:** 18 accounts bats cases across the new surface in
+  `tests/skill/cases/pwt-accounts.bats` — AC9 (6: validate+store+enable, idempotent re-run,
+  invalid-token rejection, partial bare-file reporting, CLI `--dry-run` / `--no-validate`,
+  loose-perms refusal), AC10 (7: secrets.env label-authoritative discovery + empty/non-`sk-ant`
+  skips + failover note, offline `run_import`, `$PWT_SECRETS_ENV` override, scaffold 0600 +
+  no-overwrite, `setup` scaffold-when-empty, `setup` import+enable+idempotent, read-only
+  `check`), AC11 (5: dormant→ambient resolve, chosen-label+token in-process, `which-account`,
+  `launch` env-injection + token-safety, dormant `launch` execs unchanged). The sentinel-leak
+  proofs extend to every new surface. **Full accounts suite: 46/46 green.** Operations doc
+  `docs/operations/pwt-multi-account-onboarding-and-phase2.md` gains the `secrets.env` / `setup`
+  / interactive-`launch` sections and the `claude` shell-wrapper recipe.
+
 ## [2.33.0] — 2026-08-31 (Multi-Anthropic-account awareness & management — local-first + a Phase-2 coordination seam) (68fa07a)
 
 Adds skill-owned, machine-global, **local-first** multi-account routing to `/plan-w-team`. When an

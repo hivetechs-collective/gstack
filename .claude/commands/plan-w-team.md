@@ -338,19 +338,49 @@ here and from pwt-goal derivation ONLY — **never** from the route hook
 
 The user does NOT need to remember flags. Infer intent from natural language and route accordingly:
 
-| User says something like...                           | Route to                |
-| ----------------------------------------------------- | ----------------------- |
-| "Add alerting system with email notifications"        | Full lifecycle (0-8)    |
-| "Review the auth module I just finished"              | Steps 5-8 (review+ship) |
-| "Deep review of my changes, don't ship yet"           | Step 5 only (review)    |
-| "Ship what's on this branch"                          | Steps 5-8 (review+ship) |
-| "How did that feature go? What are the metrics?"      | Step 8 only (retro)     |
-| "Pick up where we left off on the alerting work"      | Resume (3-4 then 5-8)   |
-| "Just update the docs and changelog for this release" | Steps 7-8 (post-ship)   |
+| User says something like...                           | Route to                   |
+| ----------------------------------------------------- | -------------------------- |
+| "Add alerting system with email notifications"        | Full lifecycle (0-8)       |
+| "Review the auth module I just finished"              | Steps 5-8 (review+ship)    |
+| "Deep review of my changes, don't ship yet"           | Step 5 only (review)       |
+| "Ship what's on this branch"                          | Steps 5-8 (review+ship)    |
+| "How did that feature go? What are the metrics?"      | Step 8 only (retro)        |
+| "Pick up where we left off on the alerting work"      | Resume (3-4 then 5-8)      |
+| "Just update the docs and changelog for this release" | Steps 7-8 (post-ship)      |
+| "Configure / check / authorize my Anthropic accounts" | Account Management (below) |
 
 When ambiguous, ask. When clear, just start the right step — no flag needed.
 
 Explicit flags (`--ship-only`, `--retro`, `--resume`) still work as shortcuts.
+
+## Account Management (multi-account onboarding) — in-session admin, NOT a pipeline run
+
+When the user asks the skill to **configure / set up / authorize / check their Anthropic (Claude
+Max) accounts** — e.g. "configure my anthropic accounts", "check accounts", "authorize", "set up
+account rotation", "which account am I on" — this is a **fast in-session admin action**, not a
+build. Do NOT run the 8-stage pipeline and do NOT spawn a `--worker-only` fleet. Run the account
+CLI directly and report the result:
+
+| User intent                                 | Run (in-session)                                                      |
+| ------------------------------------------- | --------------------------------------------------------------------- |
+| Configure / set up / **authorize** accounts | `.claude/commands/plan-w-team/accounts/accounts.sh setup`             |
+| **Check** accounts (read-only preview)      | `.claude/commands/plan-w-team/accounts/accounts.sh check`             |
+| Show live usage table                       | `.claude/commands/plan-w-team/accounts/accounts.sh status`            |
+| Start `claude` on the optimal account       | `.claude/commands/plan-w-team/accounts/accounts.sh launch [-- <cmd>]` |
+| Which account would a session use           | `.claude/commands/plan-w-team/accounts/accounts.sh which-account`     |
+
+`setup` (alias `authorize`) is the **entry point for a new operator**: it scaffolds a `0600`
+`secrets.env` token store if none exists (documenting how to fill each slot with `claude
+setup-token`), then discovers + validates + bulk-registers every saved token — from the canonical
+`CLAUDE_MAX_SETUP_TOKEN_<LABEL>` env source (default `~/.config/claude-pwt/secrets.env`, override
+`$PWT_SECRETS_ENV`) and the other known local stores. It is idempotent, portable (nothing
+business-specific baked in), and safe to re-run after filling more slots. With 0–1 active
+accounts the whole feature stays dormant (byte-for-byte the single-account behavior). Full
+operator procedure: [`docs/operations/pwt-multi-account-onboarding-and-phase2.md`](../../docs/operations/pwt-multi-account-onboarding-and-phase2.md).
+
+**Never mint a token from inside a Claude session** (the `!`-prefix shell prints it into tool
+output) — `accounts.sh` refuses to mint when `CLAUDECODE` is set. Minting is the operator's job
+on a real terminal; the skill only registers tokens that already exist.
 
 ## Scope Mode
 

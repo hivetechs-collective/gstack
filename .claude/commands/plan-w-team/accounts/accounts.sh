@@ -57,6 +57,28 @@ Subcommands:
         --token-file PATH      read the token from the first line of PATH
         (interactive TTY only) mint via 'claude setup-token'
                                — REFUSED when CLAUDECODE is set
+  setup [--no-validate] [--no-enable]     (alias: authorize)
+      GUIDED onboarding. Scaffolds a secrets.env (0600) if you have none, then
+      imports every saved token from it and the other known stores. Re-run any time
+      after filling more slots. This is the entry point for a new operator.
+  check                                   read-only: what WOULD import + live status
+  import [--source PATH]... [--dry-run] [--no-validate] [--no-enable]
+      Discover + bulk-register tokens you ALREADY have saved (no re-minting).
+      Scans, by default (first match wins per token, deduped by fingerprint):
+        secrets.env  CLAUDE_MAX_SETUP_TOKEN_<LABEL>= lines — the canonical store;
+                     searched at $PWT_SECRETS_ENV (: -separated) else
+                     ~/.config/claude-pwt/secrets.env, ~/.config/cleanrev/secrets.env
+        ~/.config/cleanrev/claude-accounts.json   (label+email+token rows)
+        ~/.helm/tokens/*.token                     (bare token files)
+      Each new token is validated by one probe before it is stored (dedupe is by
+      fingerprint, so re-running is idempotent). --dry-run reports without storing;
+      --no-validate stores offline without a probe; --no-enable skips the flip.
+  launch [--pinned L] [-- <cmd...>]       (default cmd: claude)
+      Start an interactive session on the SAME optimal account the fleet would pick,
+      handing the token to the child via env only (never argv/stdout). Dormant/loose
+      registry ⇒ launches unchanged (ambient login). Shadow `claude` in your shell
+      rc to make every session ride the rotation (see docs).
+  which-account [--pinned L]              print the label a session WOULD run as
   remove-account     --label L            drop an account row entirely
   deactivate-account --label L            mark active=false
   activate-account   --label L            mark active=true
@@ -239,6 +261,24 @@ if already and flag == "keep":
 else:
     print("onboarding recorded (answered=%s, multi-account %s)" % (ans, en))
 sys.exit(0)
+PYEOF
+
+IFS= read -r -d '' PY_IMPORT <<'PYEOF' || true
+import sys
+import import_stores
+sys.exit(import_stores.main(sys.argv[1:]))
+PYEOF
+
+IFS= read -r -d '' PY_SETUP <<'PYEOF' || true
+import sys
+import import_stores
+sys.exit(import_stores.setup_main(sys.argv[1:]))
+PYEOF
+
+IFS= read -r -d '' PY_LAUNCH <<'PYEOF' || true
+import sys
+import session_cred
+sys.exit(session_cred.main(sys.argv[1:]))
 PYEOF
 
 IFS= read -r -d '' PY_STATUS <<'PYEOF' || true
@@ -504,6 +544,74 @@ cmd_status() {
   return 0
 }
 
+cmd_import() {
+  # Discover + bulk-register pre-existing saved tokens. All flag parsing and the
+  # discover/validate/store logic live in import_stores.py (testable in isolation);
+  # this wrapper only enforces the perms gate + python availability, then delegates.
+  require_perms_ok
+  require_python
+  local rc=0
+  acct_py "$PY_IMPORT" "$@" || rc=$?
+  return "$rc"
+}
+
+cmd_setup() {
+  # Guided onboarding entry point: scaffold a secrets.env if the operator has
+  # none, then import every saved token from it (and the other known stores). All
+  # logic lives in import_stores.setup_main; this wrapper only gates perms/python.
+  require_perms_ok
+  require_python
+  local rc=0
+  acct_py "$PY_SETUP" "$@" || rc=$?
+  return "$rc"
+}
+
+cmd_check() {
+  # Read-only: show what WOULD be imported (dry-run, nothing stored) + live status.
+  require_perms_ok
+  require_python
+  printf '%s\n' "== accounts discovery (dry-run — nothing stored) =="
+  acct_py "$PY_IMPORT" --dry-run "$@" || true
+  printf '\n%s\n' "== current account status =="
+  cmd_status
+  return 0
+}
+
+# Fallback used by cmd_launch ONLY when python3 is unavailable: peel our own flags
+# and exec the command unchanged (ambient login) so a missing python never blocks a
+# foreground session. Default command is `claude`.
+_launch_fallback_no_python() {
+  local which=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --pinned) shift 2 ;;
+      --which)  which=1; shift ;;
+      --)       shift; break ;;
+      -*)       shift ;;
+      *)        break ;;
+    esac
+  done
+  if [ "$which" = "1" ]; then printf '%s\n' "(ambient)"; return 0; fi
+  [ $# -gt 0 ] || set -- claude
+  err "python3 unavailable — launching '$1' on ambient login"
+  exec "$@"
+}
+
+cmd_launch() {
+  case "${1:-}" in -h|--help) usage; return 0 ;; esac
+  # NOTE: no require_perms_ok here — a loose/absent registry must NOT block a
+  # foreground session; session_cred falls back to ambient (loudly) and still execs.
+  PYBIN="$(pwt_acct_python)"
+  if [ -z "$PYBIN" ]; then
+    _launch_fallback_no_python "$@"
+    return $?
+  fi
+  # session_cred.main parses --pinned/--which/-- <cmd...>, selects the optimal
+  # account, and execs the command with the token in its ENV only (never argv).
+  acct_py "$PY_LAUNCH" "$@"
+  return $?
+}
+
 cmd_onboard() {
   local opt_enable=0 opt_disable=0
   while [ $# -gt 0 ]; do
@@ -551,6 +659,11 @@ main() {
   local sub="$1"; shift
   case "$sub" in
     add-account)        cmd_add "$@" ;;
+    import)             cmd_import "$@" ;;
+    setup|authorize)    cmd_setup "$@" ;;
+    check)              cmd_check "$@" ;;
+    launch)             cmd_launch "$@" ;;
+    which-account)      cmd_launch --which "$@" ;;
     remove-account)     cmd_simple_label remove "$@" ;;
     deactivate-account) cmd_simple_label deactivate "$@" ;;
     activate-account)   cmd_simple_label activate "$@" ;;
