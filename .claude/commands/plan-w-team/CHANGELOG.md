@@ -14,6 +14,33 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.22.0] — 2026-08-30 (Completeness Gate (F7) — kills the enumerated-universe SCOPE-COLLAPSE) (2c650c7)
+
+Closes the SCOPE-COLLAPSE defect (field incident 2026-08-30, cleanscale BDD-gap campaign): a goal to
+"create 1 BDD test for **each** of 359 coverage-manifest gaps" reached `terminal_state: SUCCESS` after
+covering **19**, then emitted `retro-complete` as if the whole set were done. Root cause: the
+`feature_specific_done_criteria` AND-check measures completion against the criteria array's OWN length,
+and that array is derived mechanically from whatever `AC<N>:` lines Step 1 authored — so a contract
+written for the first CHUNK becomes both the contract and the pass bar. Nothing bound the full universe.
+
+- **New opt-in goal-state field `completeness_gate`** (`{label, file, jq|grep_count, max_remaining}`).
+  When present, the `/goal` evaluator (`plan-w-team-goal-evaluator.sh`, **F7**) re-measures the REMAINING
+  count from the source of truth live at every terminal anchor and VETOES SUCCESS while remaining exceeds
+  `max_remaining`. It is a **final veto** — placed after the Bug-B backstop and the F6 landing gate — so a
+  run with items still remaining cannot resolve SUCCESS regardless of ship-verdict or landing artifact.
+  The block reason instructs the pipeline to break the remaining items into the next wave (Step 2) and
+  re-emit retro-complete, so one run iterates to full coverage instead of stopping at chunk one.
+- **Fail-CLOSED**: a present-but-unmeasurable gate (missing file, malformed spec, non-integer measure)
+  BLOCKS — a gate whose whole job is preventing false-green must never pass when it cannot see the truth.
+- **OPT-IN / backward compatible**: engages ONLY on positive presence of the field; every existing goal
+  keeps byte-for-byte behaviour. Kill switch: `PWT_DISABLE_COMPLETENESS_GATE=1`.
+- **Population**: `01-specification.md` **§1.6** writes the gate for "for each `<enumerable set>`" goals
+  (with the exact jq); `07-retro.md` gains a proactive precondition check so the worker loops before
+  wasting a terminal attempt. Schema documented in `shared/goal-conditions.md` → "Completeness Gate (F7)".
+- **Tests**: new `.claude/scripts/plan-w-team-goal-evaluator-completeness-gate.test.sh` (10 assertions:
+  remaining>0 blocks, remaining==0 succeeds, missing-file/malformed fail-closed, grep_count variant, kill
+  switch, absent-field back-compat). Existing evaluator suite (60 assertions) unchanged and green.
+
 ## [2.21.0] — 2026-08-30 (Model Tiering v6 — item 5: per-lane credential seam in pwt-goal.sh) (7d6c36a)
 
 Item **5** — the final Model Tiering v6 change

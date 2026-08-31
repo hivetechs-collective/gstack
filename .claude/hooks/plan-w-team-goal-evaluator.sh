@@ -1037,6 +1037,91 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
         fi
     fi
 
+    # F7 — COMPLETENESS GATE (scope-collapse fix, 2026-08-30).
+    # A "for each <enumerated set>" goal (e.g. "1 BDD test for EACH of the 359
+    # coverage-manifest gaps") could reach SUCCESS after covering ONE CHUNK: the
+    # AC AND-check above measures MET_COUNT against the LENGTH OF THE
+    # feature_specific_done_criteria ARRAY ITSELF, and that array is derived
+    # mechanically from whatever AC<N>: lines Step 1 happened to write. Nothing
+    # bound the FULL universe, so 19 ACs → 19/19 → SUCCESS while 340 gaps
+    # remained (2026-08-30 BDD-gap campaign). For an enumerated-universe goal the
+    # AC contract cannot be the sole bar — the remaining count must be
+    # RE-MEASURED from the source of truth at terminal time.
+    #
+    # OPT-IN: only a goal-state carrying completeness_gate engages this, so every
+    # existing goal keeps today's behaviour byte-for-byte. When present it is a
+    # FINAL VETO — placed after the Bug-B backstop and the F6 landing gate,
+    # because a run with items still remaining is NOT done no matter what
+    # ship-verdict or landing artifact exists.
+    #
+    # Contract (goal-state):
+    #   "completeness_gate": {
+    #     "label": "<human label>",
+    #     "file":  "<repo-relative path to the SSoT>",
+    #     "jq":    "<jq expr printing the REMAINING count>",     // or:
+    #     "grep_count": "<regex; remaining = count of matching lines>",
+    #     "max_remaining": 0
+    #   }
+    # Measured against the run's own working tree (manifest worktree_path →
+    # PROJECT_ROOT → PWD), so it reflects the run's committed progress. It runs
+    # after the landing gate, so for a landed run the working tree carries every
+    # merged wave. Fail-CLOSED: a present-but-unmeasurable gate BLOCKS — a gate
+    # whose whole job is preventing false-green must never pass when it cannot
+    # see the truth. Kill switch: PWT_DISABLE_COMPLETENESS_GATE=1.
+    if [ "$TERMINAL" = "SUCCESS" ] && [ "${PWT_DISABLE_COMPLETENESS_GATE:-0}" != "1" ]; then
+        CG=$(jq -c '.completeness_gate // empty' "$GOAL_FILE" 2>/dev/null || echo "")
+        if [ -n "$CG" ] && [ "$CG" != "null" ]; then
+            CG_LABEL=$(echo "$CG" | jq -r '.label // "enumerated universe"' 2>/dev/null)
+            CG_FILE=$(echo "$CG" | jq -r '.file // ""' 2>/dev/null)
+            CG_JQ=$(echo "$CG" | jq -r '.jq // ""' 2>/dev/null)
+            CG_GREP=$(echo "$CG" | jq -r '.grep_count // ""' 2>/dev/null)
+            CG_MAX=$(echo "$CG" | jq -r '.max_remaining // 0' 2>/dev/null)
+            printf '%s' "${CG_MAX:-}" | grep -qE '^[0-9]+$' || CG_MAX=0
+
+            # Resolve the SSoT file against the run's working tree.
+            CG_WT=""
+            for CG_MAN in "$(dirname "$GOAL_FILE")/plan-w-team-manifest-${SLUG}.json" \
+                          "${MAIN_STATE_DIR:-}/plan-w-team-manifest-${SLUG}.json"; do
+                [ -f "$CG_MAN" ] || continue
+                CG_WT=$(jq -r '.worktree_path // ""' "$CG_MAN" 2>/dev/null || echo "")
+                [ -n "$CG_WT" ] && break
+            done
+            CG_PATH=""
+            for CG_BASE in "$CG_WT" "$PROJECT_ROOT" "$PWD"; do
+                [ -n "$CG_BASE" ] || continue
+                if [ -f "$CG_BASE/$CG_FILE" ]; then CG_PATH="$CG_BASE/$CG_FILE"; break; fi
+            done
+
+            CG_BLOCK=""
+            if [ -z "$CG_FILE" ] || { [ -z "$CG_JQ" ] && [ -z "$CG_GREP" ]; }; then
+                CG_BLOCK="completeness_gate is malformed (needs .file and one of .jq/.grep_count)"
+            elif [ -z "$CG_PATH" ]; then
+                CG_BLOCK="completeness_gate source file '${CG_FILE}' not found in the run's working tree (looked under worktree_path, PROJECT_ROOT and PWD)"
+            else
+                if [ -n "$CG_JQ" ]; then
+                    CG_REMAIN=$(jq -r "$CG_JQ" "$CG_PATH" 2>/dev/null)
+                else
+                    CG_REMAIN=$(grep -Ec "$CG_GREP" "$CG_PATH" 2>/dev/null)
+                fi
+                if ! printf '%s' "${CG_REMAIN:-}" | grep -qE '^[0-9]+$'; then
+                    CG_BLOCK="completeness_gate measure did not return an integer (file=${CG_FILE}); the jq/grep_count expression is wrong or the file shape changed"
+                elif [ "$CG_REMAIN" -gt "$CG_MAX" ] 2>/dev/null; then
+                    CG_BLOCK="${CG_REMAIN} of the enumerated set still remaining (${CG_LABEL}; allowed max ${CG_MAX}), measured live from ${CG_FILE}"
+                fi
+            fi
+
+            if [ -n "$CG_BLOCK" ]; then
+                TERMINAL=""
+                REASON=""
+                CRITERIA_BLOCK_REASON="SUCCESS anchors present but the enumerated-universe COMPLETENESS GATE is unmet: ${CG_BLOCK}. This goal covers a FULL set, not one chunk — do NOT emit retro-complete until every item is covered. Continue the pipeline: break the REMAINING items into the next wave (Step 2 task-breakdown), execute and ship them, then re-emit retro-complete. Kill switch: PWT_DISABLE_COMPLETENESS_GATE=1."
+                echo "[goal-evaluator] SLUG=$SLUG completeness-gate: withholding SUCCESS — ${CG_BLOCK}" >&2
+                dbg "SLUG=$SLUG F7 completeness-gate withheld SUCCESS — ${CG_BLOCK}"
+            else
+                dbg "SLUG=$SLUG F7 completeness-gate PASSED: ${CG_LABEL} remaining<=${CG_MAX}"
+            fi
+        fi
+    fi
+
     if [ -z "$TERMINAL" ]; then
         dbg "(1) SUCCESS not matched: needed stage=retro-complete + workflow_lock=done + slug=$SLUG colocated on one decoded line"
     fi

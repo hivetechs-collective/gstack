@@ -968,12 +968,30 @@ __pwt_inject_lane_settings() {
 #
 # Both values gracefully degrade to "unknown" if their source is missing.
 __pwt_resolve_skill_version() {
-    local version_file="$(dirname "$0")/../commands/plan-w-team/VERSION"
-    if [ -f "$version_file" ]; then
-        head -1 "$version_file" 2>/dev/null | tr -d '[:space:]' || echo "unknown"
+    # PWT_VERSION_FILE_OVERRIDE is a test-only seam; production always resolves
+    # the VERSION next to this script.
+    local version_file="${PWT_VERSION_FILE_OVERRIDE:-$(dirname "$0")/../commands/plan-w-team/VERSION}"
+    if [ ! -f "$version_file" ]; then
+        echo "unknown"
+        return 0
+    fi
+    local raw
+    raw=$(head -1 "$version_file" 2>/dev/null | tr -d '[:space:]')
+    # LAYER A (fix-pwt-conflict-detached, 2026-08-27): a merge-conflicted VERSION
+    # file's first line is the conflict marker '<<<<<<< HEAD' → '<<<<<<<HEAD'
+    # after whitespace strip. The old `head -1 | tr || echo unknown` NEVER
+    # degraded (tr does not fail on garbage), so the marker leaked into
+    # skill_version and thus into every goal-state JSON + sidecar this run wrote.
+    # Only a clean MAJOR.MINOR.PATCH semver is a valid version; anything else
+    # (conflict marker, empty, garbage) degrades to "unknown" rather than
+    # poisoning downstream artifacts. This is defense-in-depth: even if the
+    # PWT-CONFLICT1 dispatch gate is disabled, no marker can reach a goal file.
+    if printf '%s' "$raw" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        printf '%s\n' "$raw"
     else
         echo "unknown"
     fi
+    return 0
 }
 
 __pwt_resolve_skill_commit_sha() {
@@ -984,6 +1002,87 @@ __pwt_resolve_skill_commit_sha() {
     else
         echo "unknown"
     fi
+}
+
+# ─── CONFLICTED-TREE DETECTION (PWT-CONFLICT1) ──────────────────────────────
+# Decides whether the checkout that would produce this run's skill artifacts is
+# mid-merge-conflict. The skill VERSION/CHANGELOG/stage files are read from the
+# script's OWN repo at dispatch time, so a conflict THERE — not in $PWD — is the
+# hazard (fix-pwt-conflict-detached, 2026-08-27: a UU conflict in
+# .claude/commands/plan-w-team/VERSION leaked '<<<<<<<HEAD' into every goal file).
+#
+# Two independent signals, checked in order; the FIRST hit wins:
+#   (1) git reports unmerged index entries (diff --diff-filter=U) — the
+#       authoritative "tree is mid-conflict" signal.
+#   (2) the skill VERSION file contains a git conflict-marker line — a
+#       belt-and-suspenders check on the exact file whose corruption caused the
+#       incident, in case (1) is somehow unavailable.
+#
+# Args: $1 = repo dir to inspect (optional; defaults to the script's git
+#            toplevel). The arg exists so tests can point at a fixture repo.
+# Output: a reason token on its own first line ("unmerged-paths" or
+#         "version-conflict-marker") plus offending paths, OR nothing when the
+#         tree is clean. Always returns 0 — the CALLER decides fatality.
+# Fail-OPEN: a non-git dir / missing git resolves to "" (clean) so non-repo and
+#            unit-test usage is never blocked.
+__pwt_detect_tree_conflict() {
+    local repo_dir="${1:-}"
+    if [ -z "$repo_dir" ]; then
+        repo_dir=$(cd "$(dirname "$0")" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || echo "")
+    fi
+    [ -n "$repo_dir" ] || return 0
+    [ -d "$repo_dir/.git" ] || git -C "$repo_dir" rev-parse --git-dir >/dev/null 2>&1 || return 0
+    # (1) unmerged index entries — the definitive conflict signal.
+    local unmerged
+    unmerged=$(git -C "$repo_dir" diff --name-only --diff-filter=U 2>/dev/null | head -20)
+    if [ -n "$unmerged" ]; then
+        printf 'unmerged-paths\n%s\n' "$unmerged"
+        return 0
+    fi
+    # (2) conflict markers in the skill VERSION file (belt-and-suspenders).
+    local vf="$repo_dir/.claude/commands/plan-w-team/VERSION"
+    if [ -f "$vf" ] && grep -qE '^(<<<<<<<|=======|>>>>>>>)' "$vf" 2>/dev/null; then
+        printf 'version-conflict-marker\n%s\n' "$vf"
+        return 0
+    fi
+    return 0
+}
+
+# ─── CONFLICTED-TREE DISPATCH GATE (PWT-CONFLICT1) ──────────────────────────
+# Fail-closed wrapper around __pwt_detect_tree_conflict, called as the FIRST
+# spawn gate on the --launch / --worker-only / --supervisor-goal paths. Refuses
+# to hand a worker a broken tree.
+#
+# Args: $1 = repo dir to inspect (optional; forwarded to the detector).
+# Return: 0 = clear to dispatch (clean tree, or gate disabled via env)
+#         8 = refuse (conflicted tree); an actionable refusal is printed to stderr.
+# Override: PLAN_W_TEAM_DISABLE_CONFLICT_GATE=1 (documented escape hatch, mirrors
+#           the RAM/DISK gate override pattern; use only after manually
+#           confirming the tree is clean).
+__pwt_conflict_gate() {
+    [ "${PLAN_W_TEAM_DISABLE_CONFLICT_GATE:-0}" = "1" ] && return 0
+    local reason
+    reason=$(__pwt_detect_tree_conflict "${1:-}")
+    [ -n "$reason" ] || return 0
+    cat >&2 <<CONFLICT_GATE
+✗ Dispatch refused: conflicted tree (PWT-CONFLICT1, exit 8)
+
+  $reason
+
+  The checkout that would produce this run's goal-state + skill-version
+  artifacts is mid-merge-conflict. Dispatching now leaks conflict markers into
+  skill_version and every goal file (fix-pwt-conflict-detached, 2026-08-27) and
+  hands the worker a broken tree. Refusing is cheaper than that run.
+
+  Fix — resolve the conflict in this checkout, then re-run:
+    git -C <repo> status
+    git -C <repo> diff --diff-filter=U        # list the unmerged files
+    # resolve them, then: git add -A && git commit   (or: git merge --abort)
+
+  Override (only after manually confirming the tree is clean):
+    PLAN_W_TEAM_DISABLE_CONFLICT_GATE=1
+CONFLICT_GATE
+    return 8
 }
 
 # Cached at process start so every write within this invocation uses the same
@@ -1401,6 +1500,14 @@ if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-0}" = "1" ] \
   worker c00b9887's --launch call producing 8cf9b873 + 752e86c4.
 CASCADE_GUARD
     exit 4
+fi
+
+# ─── CONFLICTED-TREE DISPATCH GATE (PWT-CONFLICT1) ──────────────────────────
+# FIRST spawn gate: refuse to dispatch from a checkout that is mid-merge-conflict
+# (fix-pwt-conflict-detached, 2026-08-27). Runs before any other spawn work so a
+# broken tree costs nothing. See __pwt_conflict_gate / __pwt_detect_tree_conflict.
+if { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
+    __pwt_conflict_gate "" || exit $?
 fi
 
 # ─── DETERMINISTIC DOUBLE-SPAWN GUARD (PWT-DS1) ─────────────────────────────

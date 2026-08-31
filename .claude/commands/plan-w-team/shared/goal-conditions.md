@@ -432,6 +432,63 @@ A goal state file without `feature_specific_done_criteria` (or with `feature_spe
 - **Spec has no AC entries** → derivation injects empty array, evaluator falls back to T5b generic-only SUCCESS.
 - **Criterion never matches** (real bug in pipeline or wrong pattern) → pipeline keeps running; eventually surfaces via `LOW_CONFIDENCE_STREAK` (supervisor noticing repeated failure) or via user interrupt. There is no time-based escape — the user is the final stop.
 
+## Completeness Gate (F7) — enumerated-universe goals (2026-08-30)
+
+The goal state file optionally carries a `completeness_gate` object for goals of
+the form *"one deliverable for EACH item in an enumerable set"*. It closes the
+SCOPE-COLLAPSE defect: the `feature_specific_done_criteria` AND-check measures
+completion against the criteria array's OWN length, so a contract authored for
+only the first chunk (e.g. 19 of 359 gaps) awards SUCCESS at chunk-done. The
+gate re-measures the REMAINING count from the source of truth at terminal time
+and vetoes SUCCESS while any remain.
+
+### Schema
+
+```jsonc
+{
+  "completeness_gate": {
+    "label": "BDD coverage-manifest GAP+PARTIAL entries", // human label for the block reason
+    "file":  "tests/bdd/coverage-manifest.json",          // repo-relative path to the SSoT
+    "jq":    "[.entries[] | select(.realDataStatus==\"GAP\" or .realDataStatus==\"PARTIAL\")] | length",
+    // OR, for a text SSoT instead of .jq:
+    // "grep_count": "@wip",                               // remaining = count of matching lines
+    "max_remaining": 0                                     // allowed leftover (default 0)
+  }
+}
+```
+
+| Field           | Type   | Required | Purpose                                                                       |
+| --------------- | ------ | -------- | ---------------------------------------------------------------------------- |
+| `label`         | string | no       | Human label used in the block reason. Defaults to "enumerated universe".      |
+| `file`          | string | yes      | Repo-relative path to the SSoT, resolved against worktree_path → PROJECT_ROOT → PWD. |
+| `jq`            | string | one of   | jq expression printing the REMAINING count (JSON SSoT).                       |
+| `grep_count`    | string | jq/grep  | Regex; remaining = count of matching lines (text SSoT). Use exactly one of jq/grep_count. |
+| `max_remaining` | number | no       | SUCCESS is allowed only when remaining ≤ this. Defaults to 0.                 |
+
+### Evaluator semantics (final veto)
+
+Enforced in `plan-w-team-goal-evaluator.sh` (F7), AFTER the Bug-B backstop and
+the F6 landing gate — so it overrides both. When `TERMINAL="SUCCESS"` is
+provisionally set and a `completeness_gate` is present:
+
+1. Resolve `file` against the run's working tree.
+2. Run `jq` (or `grep_count`) to get the remaining count, live.
+3. If remaining > `max_remaining` → clear SUCCESS and block with a reason citing
+   the count, instructing the pipeline to break the remaining items into the next
+   wave (Step 2) and re-emit retro-complete.
+
+**Fail-CLOSED**: a present-but-unmeasurable gate (missing file, malformed spec,
+non-integer measure) BLOCKS — a gate whose whole job is preventing false-green
+must never pass when it cannot see the truth.
+
+### Backward compatibility
+
+A goal state file without `completeness_gate` behaves identically to before —
+this gate engages ONLY on positive presence of the field. Kill switch:
+`PWT_DISABLE_COMPLETENESS_GATE=1`. Populated by `01-specification.md` §1.6.
+
+Regression coverage: `.claude/scripts/plan-w-team-goal-evaluator-completeness-gate.test.sh`.
+
 ## Chain Continuation — `next_batch_spec` (2026-05-22)
 
 Spec: `docs/specs/supervisor-protocol-autonomy.md`

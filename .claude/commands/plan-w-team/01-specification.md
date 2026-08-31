@@ -645,6 +645,58 @@ fi
 
 **Schema reference**: `shared/goal-conditions.md` documents the `feature_specific_done_criteria` array field and the AND-check semantics.
 
+## §1.6. Completeness Gate for "for each `<enumerable set>`" goals (SCOPE-COLLAPSE fix)
+
+**When to run this**: ONLY when the goal is *"produce one deliverable for EACH
+item in a known, enumerable set"* — e.g. "1 BDD test for **each** identified
+coverage-manifest gap", "close **every** open lint finding", "add a handler for
+**all** 40 event types". Skip it for ordinary single-deliverable goals.
+
+**Why it exists**: the §1.5 AC AND-check measures completion against the *length
+of the criteria array itself*. If Step 1 authored ACs for only the first CHUNK
+of the set, the evaluator awards SUCCESS at chunk-done — the run stops having
+covered 19 of 359 items and reports itself complete (field incident 2026-08-30,
+BDD-gap campaign). ACs cannot be the sole bar for an enumerated universe: the
+REMAINING count must be re-measured from the source of truth at terminal time.
+
+**What to do**: write a `completeness_gate` object into the goal state. The
+`/goal` evaluator (F7) re-reads it at every terminal anchor, recomputes the
+remaining count live from the SSoT, and VETOES SUCCESS while remaining exceeds
+`max_remaining` — driving the pipeline to loop the remaining items into the next
+wave (Step 2) until the whole set is covered. It is a FINAL veto: it overrides
+even the Bug-B backstop and the landing gate, because a run with items left is
+not done regardless of ship-verdict.
+
+```bash
+# Run in the same shell as §1.5 (SLUG, GOAL_FILE, MAIN_ROOT resolved there).
+# Pick ONE measure of REMAINING work from the SSoT:
+#   .jq         → a jq expression printing the remaining count (JSON SSoT)
+#   .grep_count → a regex; remaining = count of matching lines (text SSoT)
+# .file is repo-relative. .max_remaining is the allowed leftover (usually 0).
+COMPLETENESS_GATE=$(jq -n \
+  --arg label "BDD coverage-manifest GAP+PARTIAL entries" \
+  --arg file  "tests/bdd/coverage-manifest.json" \
+  --arg jq    '[.entries[] | select(.realDataStatus=="GAP" or .realDataStatus=="PARTIAL")] | length' \
+  '{label:$label, file:$file, jq:$jq, max_remaining:0}')
+
+MAIN_GOAL_FILE="${MAIN_ROOT:+${MAIN_ROOT}/.claude/state/plan-w-team-goal-${SLUG}.json}"
+for GF in "$GOAL_FILE" "$MAIN_GOAL_FILE"; do
+    [ -n "$GF" ] && [ -f "$GF" ] || continue
+    jq --argjson g "$COMPLETENESS_GATE" '.completeness_gate = $g' "$GF" \
+        > "$GF.tmp" && mv "$GF.tmp" "$GF"
+    echo "[§1.6] wrote completeness_gate into $(basename "$GF")"
+done
+```
+
+**Do NOT enumerate all N items as N ACs** — that is what the aggregate gate
+replaces. A single `completeness_gate` measuring "0 remaining in the SSoT" is the
+true, self-truthing done condition; N literal AC lines are unwieldy and still
+snapshot-stale. Keep the ordinary ACs describing the QUALITY bar (each new test
+is real, prod-verified, wired to the cron) and let the gate own the COUNT bar.
+
+**Schema**: `shared/goal-conditions.md` → "Completeness Gate (F7)". Kill switch:
+`PWT_DISABLE_COMPLETENESS_GATE=1`.
+
 ## End-of-Stage Status Block (PWT-T5)
 
 At the end of this stage, emit a status block for the `/goal` evaluator. This is a one-line invocation; the helper handles all field population (workflow lock, supervisor log, fleet log, escalations).

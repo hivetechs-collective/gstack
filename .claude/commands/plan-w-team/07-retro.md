@@ -1382,6 +1382,31 @@ The completion-summary doc's `## Spec Compliance Check` section is the run's **r
 Full design: `docs/specs/reporting-holistic-check.md`.
 Writer spec: `docs/specs/retro-completion-summary.md`.
 
+## Completeness-Gate precondition (enumerated-universe goals)
+
+If the goal state carries a `completeness_gate` (a "for each `<enumerable set>`"
+goal — see `01-specification.md` §1.6), you MUST confirm the set is fully covered
+BEFORE emitting the `retro-complete` anchor. The `/goal` evaluator (F7) will veto
+SUCCESS while any items remain, so emitting retro-complete early just wastes a
+terminal attempt and re-blocks. Check it yourself and loop instead:
+
+```bash
+GOAL_FILE=".claude/state/plan-w-team-goal-${SLUG}.json"   # (§1.5 MAIN-checkout resolution applies)
+CG=$(jq -c '.completeness_gate // empty' "$GOAL_FILE" 2>/dev/null || echo "")
+if [ -n "$CG" ] && [ "$CG" != "null" ]; then
+    CG_FILE=$(echo "$CG" | jq -r '.file'); CG_JQ=$(echo "$CG" | jq -r '.jq // ""')
+    CG_GREP=$(echo "$CG" | jq -r '.grep_count // ""'); CG_MAX=$(echo "$CG" | jq -r '.max_remaining // 0')
+    if [ -n "$CG_JQ" ]; then REMAIN=$(jq -r "$CG_JQ" "$CG_FILE" 2>/dev/null); else REMAIN=$(grep -Ec "$CG_GREP" "$CG_FILE" 2>/dev/null); fi
+    if [ "${REMAIN:-1}" -gt "${CG_MAX:-0}" ] 2>/dev/null; then
+        echo "[retro] completeness_gate UNMET: ${REMAIN} remaining — NOT emitting retro-complete."
+        echo "[retro] Return to Step 2 (task-breakdown), break the remaining ${REMAIN} into the next wave, execute + ship, then re-enter retro."
+        # Do NOT run surface-status.sh retro-complete. Loop to the next wave.
+    fi
+fi
+```
+
+Only when the gate is met (or absent) do you proceed to emit the terminal block below.
+
 ## End-of-Stage Status Block (PWT-T5)
 
 The final action of the retro stage emits the terminal status block — its presence with the JSON anchors `"stage": "retro-complete"` and `"workflow_lock": "done"` is the SUCCESS anchor the `/goal` evaluator's terminal condition looks for (see `shared/goal-conditions.md` §Terminal-State Reference).
