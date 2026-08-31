@@ -14,6 +14,106 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.33.0] — 2026-08-31 (Multi-Anthropic-account awareness & management — local-first + a Phase-2 coordination seam) (68fa07a)
+
+Adds skill-owned, machine-global, **local-first** multi-account routing to `/plan-w-team`. When an
+operator holds more than one Claude Max subscription, the pipeline can register the accounts, read each
+one's **real** 5h/7d utilization from Anthropic rate-limit response headers, and route each lane to the
+account with the most headroom — proactively, with a reactive 429 backstop. With 0–1 accounts the
+feature is **fully dormant**: byte-for-byte the pre-2.33.0 behavior, and the dormant path never spawns a
+subprocess. All new code is portable and self-contained under `.claude/commands/plan-w-team/accounts/`
+so it travels to every consumer via the standard sync; nothing lives in a business/consumer repo.
+
+**The enabling discovery.** `POST https://api.anthropic.com/v1/messages` with `max_tokens:1` and the
+Claude Code system prompt returns `anthropic-ratelimit-unified-{status,5h-utilization,5h-reset,
+7d-utilization,7d-reset,representative-claim}` response headers (needs only `user:inference` scope);
+`/api/oauth/usage` is a dead end for setup-tokens (403). This is the same source the CC statusline reads.
+
+**New modules (`accounts/`).** `registry.py` (durable identity: label/email/token/added_at/active at
+`${XDG_CONFIG_HOME:-~/.config}/claude-pwt/accounts.json`, 0600 file / 0700 parent, `O_NOFOLLOW`,
+`fcntl.flock`, INV-3 mass-assignment allow-list, refuse-on-loose-perms); `probe.py` (pure
+`parse_usage_headers` + injectable-transport `probe_usage` + fail-open `resolve_usage` writing a
+write-rare `usage-cache.json` that owns the volatile `limited_until`, with a `PWT_ACCT_MAX_STALE`
+staleness ceiling → UNKNOWN); `selector.py` (pure lowest-`max(5h%,7d%)`, exclude rejected /
+`binding_pct≥HARD` / limited / UNKNOWN, `HOLD_SOFT` penalty, pin tie-break; exit 0 chosen / 3
+measured-all-hot / 4 no-fresh-data); `lane_cred.py` (the ONLY spawn-time token writer: selector emits a
+LABEL, this reads the token from the 0600 registry and writes the lane env block via `json.dump` to an
+atomic 0600 temp — token never in a shell var/argv/stdout); `backend.py` (`CoordinationBackend` ABC +
+wired `LocalBackend` default + `RemoteBackend` Phase-2 `NotImplementedError` stub); `lib.sh` (pure-bash
+P0 dormancy short-circuit, no Python on the dormant hot path); `accounts.sh` (headless operator CLI:
+add/remove/deactivate/activate/set-active/status/onboard; refuses to mint under `CLAUDECODE`).
+
+**Integration.** `pwt-goal.sh` gains the dormancy short-circuit and wires the selector AS the **built-in
+default resolver** behind the existing KI-1 `PWT_LANE_SETTINGS_RESOLVER` seam (precedence: explicit
+`--lane-settings-json` > operator resolver > built-in selector > ambient). The failure policy splits by
+CLASS: a **measurement/selection** failure (all-hot, stale/unknown, no python3, dormant) is FAIL-OPEN →
+ambient login + warning (never idle the fleet); a **correctness/write** failure after an account is
+already selected (lane_cred exit 5) is FAIL-CLOSED → abort the spawn, no ambient fallback (a silent
+mis-route is worse than a loud stop). On a successful lane-cred write the launcher scrubs any inherited
+`CLAUDE_CODE_OAUTH_TOKEN` so the lane binds to its assigned label. **429 rotation = death-and-respawn**
+(never re-credential a live lane — the lane guard forbids it): `plan-w-team-rate-limit-resume.sh`, for a
+lane carrying `PWT_ACCOUNT_LABEL`, calls `mark_limited` on a 429 (next spawn re-selects onto a fresh
+account) and **auto-deactivates** on a 401/revoked token (a cooldown would resurrect a dead credential).
+`damage-control/patterns.yaml` marks the per-lane `settings.local.json` and the `claude-pwt/` store
+zero-access (reading a token into a transcript leaks it to reviewers).
+
+**Security invariants.** Token values are never printed, logged, or passed on argv — read from the 0600
+file, handed to a child only via the settings env block. No secret leaves the machine except as
+`Authorization: Bearer` to `api.anthropic.com`. Verified by a SENTINEL leak audit across stdout/stderr
+and an `xtrace` run. Coverage-of-record: `tests/skill/cases/pwt-accounts.bats` (bats is the only vehicle
+— the `.test.sh`/`.test.ts` walkers don't scan `.claude/commands/`), sandboxed on `XDG_CONFIG_HOME` with
+a guard refusing the real store, all probe paths offline via header fixtures + the injectable transport.
+Ops doc: [`docs/operations/plan-w-team-multi-account.md`](../../../docs/operations/plan-w-team-multi-account.md).
+Kill switches: `PWT_DISABLE_ACCT_BUILTIN_RESOLVER=1`, `PWT_DISABLE_ACCT_429_RESUME=1`. Deferred to
+Phase 2 (per operator brief): the cross-machine shared-lease backend (`RemoteBackend`), a documented
+seam only this run. Spec: [`docs/specs/pwt-multi-account-management.md`](../../../docs/specs/pwt-multi-account-management.md).
+
+## [2.32.0] — 2026-08-31 (SPAWN-LIVE1/2 — spawn-death detection kills the lane-wedge at source and adds a self-reclaim backstop) (fd8cc55)
+
+Fixes a **lane-wedge** class proven from a live incident (2026-08-31, worker `c42e401f`): a fresh
+`claude --bg` worker hit the spurious "Not logged in · Please run /login" wall at spawn, its `/goal`
+self-cleared "after an unrecoverable error," and the worker then sat `blocked` — a LIVE process behind
+a DEAD run. Because `pwt-goal.sh` seeded the lane binding (goal-state + `worker_sid`) the instant it
+parsed the `backgrounded · <sid>` line — BEFORE the worker authenticated — the dead-at-spawn run bound
+a lane that could never be reclaimed: process-liveness reads ALIVE (the `blocked` process is real), so
+the lane guard's confirmed-dead auto-release never fired, and the lane held until a manual USER release.
+`bg-spawn-auth-glitch` (memory) had established the death signature and the in-session reclaim; this
+makes both the prevention and the recovery mechanical.
+
+Two independent, individually kill-switchable fixes:
+
+**SPAWN-LIVE1 — spawn-liveness probe + bounded re-spawn (`pwt-goal.sh`).** After each `claude --bg`,
+the launcher now PROBES the worker transcript before seeding anything: it waits (bounded) for the
+transcript to appear, then watches for either the death signature (`Goal cleared after an unrecoverable
+error` / `Not logged in · Please run /login`) or forward progress (transcript growth). On the death
+signature it RE-SPAWNS (bounded by `PWT_SPAWN_MAX_ATTEMPTS`, default 3); on total exhaustion it seeds
+NOTHING, binds NO lane, and exits LOUD (`75`) telling the operator to re-run once the account is
+authenticated. The seed block downstream now uses the FINAL surviving `WORKER_SID`. The probe fails
+OPEN (a transcript that never appears, or grows without either signal, is treated as "proceed") so a
+slow-but-healthy spawn is never killed. Kill switch: `PWT_DISABLE_SPAWN_LIVENESS_PROBE=1` restores the
+pre-2.32.0 single-spawn-then-seed path byte-for-byte. Test seams: `PWT_SPAWN_PROBE_PROJECTS_DIR`,
+`PWT_SPAWN_PROBE_APPEAR_S` / `_WINDOW_S` / `_INTERVAL_S`, `PWT_SPAWN_RETRY_BACKOFF_S`.
+
+**SPAWN-LIVE2 — frozen-abandonment verdict upgrade (`pwt-lane-alive.sh`), the backstop.** For a lane
+that ALREADY wedged (or a worker that dies just after the seed), the ONE liveness truth now recognises
+the dead run behind the still-`blocked` process: when the base verdict is not already `1`, and the
+worker transcript's TAIL shows the unrecoverable-goal-clear AND the transcript is FROZEN (silent past
+`PWT_LANE_ALIVE_ABANDON_FREEZE_S`, default 120s), the verdict is UPGRADED to `1` (confirmed-dead,
+`source=transcript-abandoned+frozen`). This flows into the lane guard's existing confirmed-dead
+auto-release, so a wedged lane self-reclaims within ~30s (the guard's memo TTL) with no manual release.
+The freeze gate is the false-positive guard: a healthy worker writes constantly and the clear message
+is TERMINAL, so "clear-in-tail + long silence" is a dead run and never a live, progressing one — the
+upgrade only ever moves `0`/`2` → `1`, never masks a live worker. Kill switch:
+`PWT_LANE_ALIVE_ABANDON_DETECT=0`.
+
+**Tests.** Two new regression suites: `pwt-goal-spawn-liveness-probe.test.sh` (dead-then-healthy →
+re-spawn-once-then-seed-survivor; all-dead → exhaust budget, exit 75, NOTHING seeded; probe-off →
+single-spawn back-compat) and `pwt-lane-alive-abandon.test.sh` (frozen abandonment → verdict 1; fresh
+[unfrozen] same signature → stays 0; frozen-but-healthy → stays 0; kill switch off → stays 0).
+`tests/skill/run.sh` disables the spawn probe (`PWT_DISABLE_SPAWN_LIVENESS_PROBE=1`) for every OTHER
+spawn test so the fake-claude corpus stays fast; the dedicated probe test re-enables it against a
+controlled fake transcript.
+
 ## [2.31.0] — 2026-08-31 (KI-8 — unattended non-push halts fire a proactive operator alert) (b609e87)
 
 Closes **KI-8** (KNOWN_ISSUES): a `--worker-only` (or bare `/goal`) run that hit a NON-push halt

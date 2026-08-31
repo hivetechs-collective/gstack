@@ -133,6 +133,113 @@ for k in ("error","errorMessage","message","reason","stopReason"):
         print(v[:200]); break
 ' 2>/dev/null)
 
+# ─── multi-account: bench / deactivate THIS lane's account (death-and-respawn) ──
+# Runs BEFORE the bg-session early-exit below (a --bg lane worker has no TMUX pane,
+# so it would otherwise leave here having done NOTHING) AND before the 429-only case
+# below (a 401 does not match that case and would `exit 0` early). We react to a
+# capacity/auth wall on the lane's OWN account so the NEXT lane spawn re-selects onto
+# a healthy one. We do NOT re-credential the live lane in place — the lane guard
+# forbids mutating a bound lane — so this is death-and-respawn: bench (or deactivate)
+# the account, let the worker die, and the next spawn's selector routes elsewhere.
+# Gated on PWT_ACCOUNT_LABEL: a dormant / single-account / no-label session skips this
+# ENTIRELY and behaves exactly as today. Never reads or prints the token — only the
+# non-secret label. Kill switch: PWT_DISABLE_ACCT_429_RESUME=1.
+if [ "${PWT_DISABLE_ACCT_429_RESUME:-0}" != "1" ] && command -v python3 >/dev/null 2>&1; then
+  __ACCT_DIR="$(cd "$(dirname "$0")/../commands/plan-w-team/accounts" 2>/dev/null && pwd)"
+  if [ -n "$__ACCT_DIR" ] && [ -r "$__ACCT_DIR/probe.py" ]; then
+    # Discover the lane's account label (NON-secret): the exported env var first, else
+    # the .env block of the lane's settings.local.json. Read ONLY the label out of that
+    # file — never the sibling token.
+    __ACCT_LABEL="${PWT_ACCOUNT_LABEL:-}"
+    if [ -z "$__ACCT_LABEL" ]; then
+      __ACCT_SETTINGS="${CLAUDE_PROJECT_DIR:-$PWD}/.claude/settings.local.json"
+      if [ -r "$__ACCT_SETTINGS" ]; then
+        __ACCT_LABEL=$(python3 -c '
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    print((d.get("env") or {}).get("PWT_ACCOUNT_LABEL") or "")
+except Exception:
+    pass
+' "$__ACCT_SETTINGS" 2>/dev/null)
+      fi
+    fi
+    if [ -n "$__ACCT_LABEL" ]; then
+      case "$ERR" in
+        *401*|*revoked*|*Unauthorized*|*unauthorized*|*authentication_error*)
+          # 401 / revoked token (F13): a cooldown would wrongly resurrect a dead
+          # credential, so AUTO-DEACTIVATE the account (active=false) instead of
+          # benching it, and say so loudly. Do NOT mark_limited a 401.
+          #
+          # This is a CORRECTNESS write (fail-CLOSED reporting): if the deactivation
+          # fails (loose-perms / malformed / locked registry / import error) we must
+          # NOT claim success — the dead credential is still active:true on disk and
+          # the operator has to be told to deactivate it by hand. So the child
+          # self-reports via exit status (raises → exit 1) and bash branches on it,
+          # instead of the old `except: pass` + `|| true` + unconditional success log.
+          if __ACCT_DIR="$__ACCT_DIR" __ACCT_LABEL="$__ACCT_LABEL" python3 -c '
+import os,sys
+try:
+    sys.path.insert(0, os.environ["__ACCT_DIR"])
+    import registry
+    label=os.environ.get("__ACCT_LABEL") or ""
+    if not label:
+        sys.exit(1)
+    registry.set_account_field(label, "active", False)
+except Exception as e:
+    sys.stderr.write("pwt-accounts: set_account_field(active=false) failed: %s\n" % e)
+    sys.exit(1)
+'; then
+            echo "pwt-accounts: account '$__ACCT_LABEL' returned 401/revoked — AUTO-DEACTIVATED (active=false); re-add it with a fresh token before re-enabling." >&2
+            log "401/revoked on lane account [$__ACCT_LABEL] — deactivated (active=false)"
+          else
+            echo "pwt-accounts: account '$__ACCT_LABEL' returned 401/revoked but DEACTIVATION FAILED (registry locked / loose-perms / malformed?) — it may still be active:true. Run: accounts.sh deactivate-account --label '$__ACCT_LABEL'" >&2
+            log "401/revoked on lane account [$__ACCT_LABEL] — DEACTIVATION FAILED (still active:true?)"
+          fi
+          ;;
+        *rate*limit*|*rate_limit*|*429*|*overloaded*|*529*|*Overloaded*)
+          # 429 / capacity wall: bench the account until its reset (parsed from the
+          # error text when present, else a default cooldown) so the next spawn's
+          # selector routes to a fresher account.
+          #
+          # This is a MEASUREMENT-class write (fail-OPEN): benching is only an
+          # advisory hint — if it fails, the next spawn's selector still re-probes
+          # this account live and routes away from it on its own. So we do NOT abort
+          # the hook on failure. But we must not LOG a bench that did not happen
+          # (I1): the child self-reports via exit status and bash logs the truth.
+          if __ACCT_DIR="$__ACCT_DIR" __ACCT_LABEL="$__ACCT_LABEL" __ACCT_ERR="$ERR" python3 -c '
+import os,sys,re,datetime
+try:
+    sys.path.insert(0, os.environ["__ACCT_DIR"])
+    import probe
+    label=os.environ.get("__ACCT_LABEL") or ""
+    err=os.environ.get("__ACCT_ERR") or ""
+    if not label:
+        sys.exit(1)
+    until=None
+    m=re.search(r"reset[s]?\s+at\s+([0-9T:\-\+\.Z]+)", err, re.I)
+    if m:
+        until=m.group(1)
+    if not until:
+        try: cooldown=int(os.environ.get("PWT_ACCT_429_COOLDOWN_S","3600"))
+        except Exception: cooldown=3600
+        t=datetime.datetime.now(datetime.timezone.utc)+datetime.timedelta(seconds=cooldown)
+        until=t.strftime("%Y-%m-%dT%H:%M:%SZ")
+    probe.mark_limited(label, until)
+except Exception as e:
+    sys.stderr.write("pwt-accounts: mark_limited failed: %s\n" % e)
+    sys.exit(1)
+'; then
+            log "429/capacity wall on lane account [$__ACCT_LABEL] — benched (mark_limited)"
+          else
+            log "429/capacity wall on lane account [$__ACCT_LABEL] — bench FAILED (mark_limited); selector will re-measure at next spawn"
+          fi
+          ;;
+      esac
+    fi
+  fi
+fi
+
 case "$ERR" in
   *rate*limit*|*rate_limit*|*429*|*overloaded*|*529*|*Overloaded*) : ;;
   *) exit 0 ;;   # not a capacity wall — the notify hook already handled it

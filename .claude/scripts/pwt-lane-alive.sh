@@ -19,7 +19,10 @@
 #
 # NOT-ALIVE (exit 1, release-authorizing — AC8) requires the CONJUNCTION of negative evidence:
 # the recorded pid is ESRCH (truly gone, not EPERM-alive-unownable) AND `pgrep -f <uuid>` finds
-# no process. A live worker whose recorded pid is stale returns 2 (HOLD), never 1.
+# no process. A live worker whose recorded pid is stale returns 2 (HOLD), never 1. A SECOND
+# exit-1 path (SPAWN-LIVE2, 2.32.0) covers a DEAD RUN behind a still-`blocked` process: the
+# worker transcript's tail shows the CLI's unrecoverable-goal-clear AND the transcript is frozen
+# (see __pla_abandoned). It only UPGRADES 0/2 → 1, never masks a live/progressing worker.
 #
 # bg-spare ownership (BRIEF §4.3, the O2 correction): do NOT exclude a `bg-spare`-argv process by
 # argv — a claimed spare keeps that argv and can BE the live lead. Count it only when it owns a
@@ -41,6 +44,29 @@
 set -u
 
 __pla_self_dir() { cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd; }
+
+# ── frozen-abandonment detector (SPAWN-LIVE2, 2.32.0) ───────────────────────────
+# A run the CLI abandoned at spawn (spurious "Not logged in" → /goal self-clears "after an
+# unrecoverable error") leaves a LIVE `blocked` process — so process evidence reads ALIVE and
+# the lane wedges. This detector recognises the DEAD RUN behind the live process: the CLI's
+# unrecoverable-clear system message in the transcript tail AND a FROZEN transcript. The freeze
+# gate is the false-positive guard — a healthy worker writes constantly, and the clear message
+# is TERMINAL (the CLI stops after emitting it), so "clear-in-tail + long silence" is a dead run
+# and NEVER a live, progressing one. Seam: PWT_SPAWN_PROBE_PROJECTS_DIR (shared with pwt-goal.sh).
+__pla_ts_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0; }
+__pla_worker_transcript() {   # $1=wsid(8) $2=worktree(reserved) → newest transcript naming wsid, or ""
+  local sid="$1" base="${PWT_SPAWN_PROBE_PROJECTS_DIR:-$HOME/.claude/projects}"
+  [ -n "$sid" ] && [ -d "$base" ] || { echo ""; return 0; }
+  ls -t "$base"/*/"$sid"*.jsonl 2>/dev/null | head -1
+}
+__pla_abandoned() {   # $1=transcript → 0 if abandoned (unrecoverable-clear in tail) AND frozen
+  local tr="$1" freeze="${PWT_LANE_ALIVE_ABANDON_FREEZE_S:-120}" now mt age
+  [ -n "$tr" ] && [ -f "$tr" ] || return 1
+  tail -n 6 "$tr" 2>/dev/null | grep -q 'Goal cleared after an unrecoverable error' || return 1
+  now=$(date +%s 2>/dev/null || echo 0); mt=$(__pla_ts_mtime "$tr")
+  age=$((now - mt))
+  [ "$age" -ge "$freeze" ] 2>/dev/null
+}
 
 # ── state-dir resolution (git-common-dir; MAIN wins) ────────────────────────────
 __pla_main_root() {
@@ -321,6 +347,19 @@ EOF_ROW
       elif [ -n "$wsid" ] && [ "$pg" = "0" ]; then verdict=1; source="absent-from-registry+no-pgrep"
       elif [ -n "$wsid" ]; then verdict=2; source="absent-from-registry+pgrep-unavailable"
       else verdict=2; source="no-worker-sid"; fi
+    fi
+  fi
+
+  # Frozen-abandonment upgrade (SPAWN-LIVE2): a run the CLI abandoned at spawn leaves a
+  # LIVE `blocked` process, so process evidence reads ALIVE (verdict 0) and the lane wedges.
+  # If the worker transcript's tail shows the unrecoverable-clear message AND is frozen, the
+  # RUN is dead — upgrade to confirmed-dead (1) so the lane guard's confirmed-dead release
+  # reclaims it. Only ever UPGRADES toward 1 (the freeze gate blocks masking a live,
+  # progressing worker). Kill switch: PWT_LANE_ALIVE_ABANDON_DETECT=0.
+  if [ "${PWT_LANE_ALIVE_ABANDON_DETECT:-1}" != "0" ] && [ "$verdict" != "1" ] && [ -n "$wsid" ]; then
+    local __pla_tr; __pla_tr=$(__pla_worker_transcript "$wsid" "$wt")
+    if [ -n "$__pla_tr" ] && __pla_abandoned "$__pla_tr"; then
+      verdict=1; source="transcript-abandoned+frozen"
     fi
   fi
 

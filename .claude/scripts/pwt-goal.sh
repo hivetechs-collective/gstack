@@ -2575,6 +2575,122 @@ if [ "$LAUNCH" = "1" ]; then
         echo "  lane credential:    auto-sourced via PWT_LANE_SETTINGS_RESOLVER (lane '$LANE_SLUG'; source path not logged)" >&2
     fi
 
+    # ─── multi-account built-in default resolver (item 5 / KI-1 precedence #3) ──
+    # P0 DORMANCY SHORT-CIRCUIT (Edit 1a): decide dormancy in PURE BASH before any new
+    # multi-account logic runs at this lane spawn. `pwt_acct_is_dormant`
+    # (accounts/lib.sh) returns 0 = DORMANT (single/zero account, feature off, or ANY
+    # doubt) → this whole section is a no-op and the spawn behaves byte-for-byte as it
+    # does today (no probe, no python, no writes); return 1 = NOT dormant (>=2 active
+    # accounts AND multi_account_enabled). On a dormant machine the helper early-returns
+    # on a missing/empty registry with NO subprocess (jq only runs once a real
+    # multi-account registry exists), preserving the zero-overhead guarantee — sourcing
+    # lib.sh is itself pure bash.
+    __PWT_ACCT_NOT_DORMANT=0
+    __PWT_ACCT_DIR="$(dirname "$0")/../commands/plan-w-team/accounts"
+    if [ -r "$__PWT_ACCT_DIR/lib.sh" ]; then
+        . "$__PWT_ACCT_DIR/lib.sh" 2>/dev/null || true
+        if command -v pwt_acct_is_dormant >/dev/null 2>&1; then
+            pwt_acct_is_dormant || __PWT_ACCT_NOT_DORMANT=1
+        fi
+    fi
+
+    # PRECEDENCE (first match wins; Edit 1b):
+    #   1. --lane-settings-json / PWT_LANE_SETTINGS_JSON → item-5 block below (fail-closed).
+    #   2. PWT_LANE_SETTINGS_RESOLVER (operator seam)    → KI-1 block above (fail-closed FATAL).
+    #   3. THIS built-in default: NOT dormant AND neither (1) nor (2) set → lane_cred.py
+    #      selects the freshest eligible account and SELF-PLACES the lane's
+    #      settings.local.json into the pre-created worktree.
+    #   4. dormant / single-account → ambient (writes nothing), exactly as today.
+    #
+    # FAILURE POLICY SPLITS BY CLASS (the goal's binding rule: "fail-OPEN on
+    # measurement, fail-SAFE on correctness"):
+    #   • MEASUREMENT / SELECTION failure — a spawn site must NEVER idle the fleet over a
+    #     measurement problem, so these degrade to the AMBIENT daemon login:
+    #       0 = self-placed (proceed); 3 = selector pause / all hot → ambient, SILENT per
+    #       contract; 4 = no fresh account (stale/unknown) → ambient + a brief note; and
+    #       the pre-lane_cred degradations above (no python3, worktree exists, pre-create
+    #       failed) → ambient + a warning.
+    #   • CORRECTNESS / WRITE failure — lane_cred exit 5 (or any other unexpected non-zero):
+    #     an account WAS selected and its token READ, but the atomic settings.local.json
+    #     WRITE failed. Falling back to ambient here would silently mis-route the lane onto
+    #     the daemon-default account, which test-blocker-4 forbids. So this is fail-CLOSED:
+    #     roll back the pre-created worktree and route into the SAME `exit 1` FATAL abort the
+    #     KI-1 operator resolver uses — NO ambient fallback.
+    #
+    # WRITE-vs-RETURN choice (1b): (b) — lane_cred.py `--self-place` writes
+    # <wt>/.claude/settings.local.json DIRECTLY (atomic mkstemp 0600 + fsync +
+    # os.replace). We do NOT route it through __pwt_inject_lane_settings: that copy step
+    # would be redundant AND would collide with the item-5 block's own worktree
+    # pre-create (item-5 aborts FATAL if the path already exists). Pre-creating the
+    # worktree here + self-placing keeps every failure branch fail-open and under our
+    # control. Kill switch: PWT_DISABLE_ACCT_BUILTIN_RESOLVER=1. Optional pin:
+    # PWT_ACCOUNT_PIN=<label> tie-breaks selection toward that account.
+    if [ -z "$LANE_SETTINGS_JSON" ] \
+       && [ -z "${PWT_LANE_SETTINGS_RESOLVER:-}" ] \
+       && [ "$__PWT_ACCT_NOT_DORMANT" = "1" ] \
+       && [ -n "$WT_FLAG" ] \
+       && [ "${PWT_DISABLE_ACCT_BUILTIN_RESOLVER:-0}" != "1" ]; then
+        __acct_py="$(command -v python3 2>/dev/null || true)"
+        if [ -z "$__acct_py" ] || [ ! -r "$__PWT_ACCT_DIR/lane_cred.py" ]; then
+            echo "  lane credential:    ⚠ built-in account resolver unavailable (no python3 / module); using ambient login" >&2
+        else
+            LANE_MAIN_ROOT="$(__pwt_main_repo_root)"
+            LANE_WT_PATH="$LANE_MAIN_ROOT/.claude/worktrees/${WT_NAME:0:60}"
+            __acct_reg="$(pwt_acct_registry_path)"
+            if [ -e "$LANE_WT_PATH" ]; then
+                echo "  lane credential:    ⚠ built-in resolver skipped — worktree path already exists ($LANE_WT_PATH); using ambient login" >&2
+            elif ! git -C "$LANE_MAIN_ROOT" worktree add "$LANE_WT_PATH" -b "${WT_NAME:0:60}" HEAD >/dev/null 2>&1; then
+                echo "  lane credential:    ⚠ built-in resolver could not pre-create lane worktree; using ambient login" >&2
+            else
+                # lane_cred.py resolves its sibling imports via __file__, so an absolute
+                # path invocation needs no cd / PYTHONPATH. It NEVER prints a token — only
+                # `label=… reason=…` to stderr — so its stderr is safe to surface; only its
+                # stdout (the dst path, unneeded under --self-place) is dropped.
+                if [ -n "${PWT_ACCOUNT_PIN:-}" ]; then
+                    "$__acct_py" "$__PWT_ACCT_DIR/lane_cred.py" write \
+                        --wt "$LANE_WT_PATH" --registry "$__acct_reg" \
+                        --pinned "$PWT_ACCOUNT_PIN" --self-place >/dev/null
+                else
+                    "$__acct_py" "$__PWT_ACCT_DIR/lane_cred.py" write \
+                        --wt "$LANE_WT_PATH" --registry "$__acct_reg" --self-place >/dev/null
+                fi
+                __acct_rc=$?
+                if [ "$__acct_rc" -eq 0 ]; then
+                    # Edit 1c: the lane now authenticates from its OWN settings.local.json
+                    # env block. Scrub any inherited daemon CLAUDE_CODE_OAUTH_TOKEN from THIS
+                    # shell so `env $LAUNCH_ENV … claude` cannot leak it into the child and
+                    # override the per-lane account (F6). Unset directly (never a subshell).
+                    unset CLAUDE_CODE_OAUTH_TOKEN
+                    echo "  lane credential:    built-in resolver self-placed $LANE_WT_PATH/.claude/settings.local.json (mode 0600; contents not logged); inherited OAuth token scrubbed" >&2
+                elif [ "$__acct_rc" -eq 3 ]; then
+                    : # selector pause (all accounts hot) → ambient; SILENT per contract
+                elif [ "$__acct_rc" -eq 4 ]; then
+                    echo "  lane credential:    built-in resolver found no fresh account (stale/unknown); using ambient login" >&2
+                else
+                    # exit 5 (or ANY other non-zero) is a CORRECTNESS failure, NOT a
+                    # measurement one: lane_cred SELECTED an account and READ its token but
+                    # the atomic settings.local.json WRITE failed. Falling back to ambient
+                    # here would silently route the lane onto the daemon-default login AFTER
+                    # we committed to a specific account — the exact silent mis-route
+                    # test-blocker-4 forbids ("inject write/validate failure → lane aborts
+                    # non-zero, no fallback spawn"). The goal's binding rule is "fail-OPEN on
+                    # measurement, fail-SAFE on correctness". So the split is: measurement/
+                    # selection failure (exit 3/4 + the pre-lane_cred degradations above) =
+                    # fail-open ambient; correctness/write failure (exit 5/other) = fail-CLOSED
+                    # abort. Route into the SAME non-zero FATAL abort the KI-1 operator
+                    # resolver uses (exit 1, NO ambient fallback); additionally roll back the
+                    # worktree we pre-created (the KI-1 resolver aborts before any worktree
+                    # exists, so this mirrors the item-5 block's rollback instead).
+                    git -C "$LANE_MAIN_ROOT" worktree remove --force "$LANE_WT_PATH" >/dev/null 2>&1 || true
+                    echo "FATAL: built-in account resolver hit a CORRECTNESS failure (lane_cred exit $__acct_rc):" >&2
+                    echo "       an account was selected and its token read, but the lane-cred WRITE failed." >&2
+                    echo "       Refusing to spawn on the daemon-default account (fail-closed; test-blocker-4)." >&2
+                    exit 1
+                fi
+            fi
+        fi
+    fi
+
     # ─── item 5 (v6): drop the per-lane credential BEFORE the worker starts ─────
     # When --lane-settings-json / PWT_LANE_SETTINGS_JSON is set, PRE-CREATE the
     # worktree here and drop the operator's settings.local.json (mode 0600) into
@@ -2629,30 +2745,120 @@ if [ "$LAUNCH" = "1" ]; then
     # Feeding EOF on stdin means a stray TUI resolves to its default / rejects
     # instead of hanging the session forever. The MCP pre-decide above is the
     # capability-preserving primary fix; this is defense-in-depth.
-    if [ -n "$LAUNCH_ENV" ]; then
-        env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
-        LAUNCH_RC=$?
-    else
-        # Carries PWT_LEAN_STATUSLINE=1 too: this branch is a safety net, and a
-        # safety net that drops the host-load protection would reintroduce the
-        # exact failure it exists to survive.
-        env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 PWT_LEAN_STATUSLINE=1 $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
-        LAUNCH_RC=$?
-    fi
+    # ─── Spawn-liveness probe + bounded re-spawn (SPAWN-LIVE1, 2.32.0) ───────────
+    # RC (incident 2026-08-31, worker c42e401f): a fresh `claude --bg` worker can hit
+    # a SPURIOUS "Not logged in · Please run /login" wall at spawn while the launching
+    # session stays authenticated; the CLI's /goal then self-clears "after an
+    # unrecoverable error (authentication failed)" and the worker sits `blocked` — a
+    # LIVE process with a DEAD run. Because the goal-state binding is seeded the instant
+    # `claude --bg` returns a SID (BELOW), BEFORE the worker authenticates, that
+    # dead-at-spawn run WEDGES the lane: it stays non-terminal, and process-liveness
+    # (pwt-lane-alive.sh) correctly reads the blocked process as ALIVE — so neither the
+    # confirmed-dead release nor the bound supervisor can reclaim it without a manual
+    # user release.
+    #
+    # Fix: after each spawn, PROBE the worker transcript for the death signature vs.
+    # real progress. On a confirmed spawn-death, RE-SPAWN (the glitch is transient — a
+    # bounded retry almost always clears it). If every attempt dies, seed NOTHING and
+    # exit LOUD: no binding is committed, so no lane can wedge. The goal-state seed
+    # below runs only once the worker is confirmed live OR the probe is inconclusive
+    # (fail-open to pre-2.32.0 behavior, backstopped by pwt-lane-alive.sh
+    # frozen-abandonment). Kill switch: PWT_DISABLE_SPAWN_LIVENESS_PROBE=1.
+    __pwt_worker_transcript() {   # $1=sid8 → newest transcript file naming that sid, or ""
+        local sid="$1" base="${PWT_SPAWN_PROBE_PROJECTS_DIR:-$HOME/.claude/projects}"
+        [ -n "$sid" ] && [ -d "$base" ] || { echo ""; return 0; }
+        ls -t "$base"/*/"$sid"*.jsonl 2>/dev/null | head -1
+    }
+    __pwt_transcript_dead() {   # $1=transcript → 0 if the CLI unrecoverable-clear / auth-wall signature is present
+        local tr="$1"
+        [ -n "$tr" ] && [ -f "$tr" ] || return 1
+        grep -qE 'Goal cleared after an unrecoverable error|Not logged in · Please run /login' "$tr" 2>/dev/null
+    }
+    # Verdict for one spawned worker: dead | alive | unknown. Waits (bounded) first for
+    # the transcript to APPEAR, then for a death-or-progress signal. No transcript within
+    # the appearance window ⇒ unknown (test stubs / a worker logging elsewhere never
+    # block a real launch on a phantom). Every wait is integer-second + tunable.
+    __pwt_probe_worker_spawn() {   # $1=sid8 → echoes dead|alive|unknown
+        local sid="$1"
+        local appear="${PWT_SPAWN_PROBE_APPEAR_S:-6}" window="${PWT_SPAWN_PROBE_WINDOW_S:-12}"
+        local iv="${PWT_SPAWN_PROBE_INTERVAL_S:-2}"; [ "$iv" -ge 1 ] 2>/dev/null || iv=1
+        local waited tr="" rows0 rows
+        waited=0
+        while [ "$waited" -lt "$appear" ]; do
+            tr=$(__pwt_worker_transcript "$sid")
+            [ -n "$tr" ] && break
+            sleep "$iv"; waited=$((waited+iv))
+        done
+        [ -n "$tr" ] || { echo "unknown"; return 0; }
+        rows0=$(wc -l < "$tr" 2>/dev/null | tr -d ' '); [ -n "$rows0" ] || rows0=0
+        waited=0
+        while : ; do
+            tr=$(__pwt_worker_transcript "$sid"); [ -n "$tr" ] || { echo "unknown"; return 0; }
+            if __pwt_transcript_dead "$tr"; then echo "dead"; return 0; fi
+            rows=$(wc -l < "$tr" 2>/dev/null | tr -d ' '); [ -n "$rows" ] || rows=0
+            # Decisive growth past the frozen-death plateau ⇒ the worker is running.
+            [ "$rows" -gt $((rows0 + 12)) ] 2>/dev/null && { echo "alive"; return 0; }
+            [ "$waited" -ge "$window" ] && break
+            sleep "$iv"; waited=$((waited+iv))
+        done
+        echo "unknown"   # no death signature, no decisive growth → fail-open (proceed)
+    }
 
+    SPAWN_MAX="${PWT_SPAWN_MAX_ATTEMPTS:-3}"; [ "$SPAWN_MAX" -ge 1 ] 2>/dev/null || SPAWN_MAX=1
+    SPAWN_PROBE_ON=1; [ "${PWT_DISABLE_SPAWN_LIVENESS_PROBE:-0}" = "1" ] && SPAWN_PROBE_ON=0
+    SPAWN_ATTEMPT=0
     WORKER_SID=""
-    if [ -s "$WORKER_OUT_FILE" ]; then
-        WORKER_SID=$(sed -E 's/\x1b\[[0-9;]*m//g' "$WORKER_OUT_FILE" 2>/dev/null \
-            | grep -oE 'backgrounded · [a-f0-9]{8}' \
-            | head -1 | awk '{print $NF}' || echo "")
-    fi
-    cat "$WORKER_OUT_FILE" >&2
-    rm -f "$WORKER_OUT_FILE" 2>/dev/null || true
+    while : ; do
+        SPAWN_ATTEMPT=$((SPAWN_ATTEMPT+1))
+        : > "$WORKER_OUT_FILE" 2>/dev/null || true
+        if [ -n "$LAUNCH_ENV" ]; then
+            env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
+            LAUNCH_RC=$?
+        else
+            # Carries PWT_LEAN_STATUSLINE=1 too: this branch is a safety net, and a
+            # safety net that drops the host-load protection would reintroduce the
+            # exact failure it exists to survive.
+            env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 PWT_LEAN_STATUSLINE=1 $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
+            LAUNCH_RC=$?
+        fi
 
-    if [ -z "$WORKER_SID" ]; then
-        echo "WARN: worker session id could not be parsed; skipping supervisor launch" >&2
-        exit "$LAUNCH_RC"
-    fi
+        WORKER_SID=""
+        if [ -s "$WORKER_OUT_FILE" ]; then
+            WORKER_SID=$(sed -E 's/\x1b\[[0-9;]*m//g' "$WORKER_OUT_FILE" 2>/dev/null \
+                | grep -oE 'backgrounded · [a-f0-9]{8}' \
+                | head -1 | awk '{print $NF}' || echo "")
+        fi
+        cat "$WORKER_OUT_FILE" >&2
+
+        if [ -z "$WORKER_SID" ]; then
+            # No "backgrounded" line: the spawn did not even background. Retry within
+            # budget (transient), else preserve the pre-2.32.0 warn+exit contract.
+            if [ "$SPAWN_PROBE_ON" = "1" ] && [ "$SPAWN_ATTEMPT" -lt "$SPAWN_MAX" ]; then
+                echo "  spawn attempt $SPAWN_ATTEMPT: no worker sid returned; retrying…" >&2
+                sleep "${PWT_SPAWN_RETRY_BACKOFF_S:-3}"; continue
+            fi
+            rm -f "$WORKER_OUT_FILE" 2>/dev/null || true
+            echo "WARN: worker session id could not be parsed; skipping supervisor launch" >&2
+            exit "$LAUNCH_RC"
+        fi
+
+        # No probe ⇒ single spawn, pre-2.32.0 behavior (byte-identical seed path below).
+        [ "$SPAWN_PROBE_ON" = "1" ] || break
+
+        SPAWN_VERDICT=$(__pwt_probe_worker_spawn "$WORKER_SID")
+        [ "$SPAWN_VERDICT" != "dead" ] && break
+
+        echo "  spawn attempt $SPAWN_ATTEMPT: worker $WORKER_SID DIED at spawn (transient auth glitch — /goal self-cleared). Nothing seeded." >&2
+        if [ "$SPAWN_ATTEMPT" -ge "$SPAWN_MAX" ]; then
+            rm -f "$WORKER_OUT_FILE" 2>/dev/null || true
+            echo "FATAL: worker spawn failed after $SPAWN_MAX attempts — each hit the spurious 'Not logged in' wall and /goal self-cleared." >&2
+            echo "       NO lane was bound and NO goal-state was seeded (so no run can wedge)." >&2
+            echo "       Re-run once the account is authenticated (open a foreground 'claude' to clear the login wall, then relaunch)." >&2
+            exit 75
+        fi
+        sleep "${PWT_SPAWN_RETRY_BACKOFF_S:-3}"
+    done
+    rm -f "$WORKER_OUT_FILE" 2>/dev/null || true
 
     echo "  worker session:     $WORKER_SID" >&2
 

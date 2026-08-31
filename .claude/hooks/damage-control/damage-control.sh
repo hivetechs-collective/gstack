@@ -462,6 +462,15 @@ check_file_path() {
         "*secret*.json"
         "*credential*.json"
         "*token*.json"
+        # Multi-account (/plan-w-team) live-token stores (F7): the per-lane
+        # settings.local.json carries CLAUDE_CODE_OAUTH_TOKEN; the machine-global
+        # claude-pwt/ store holds the registry (tokens), usage cache, and selection
+        # log. Blocking Read/Write/Edit here stops a reviewer/evaluator agent from
+        # reading a token into its transcript. Substring-matched (no ~ /
+        # $XDG_CONFIG_HOME expansion), so `claude-pwt/` covers any XDG location.
+        # KEEP IN SYNC with patterns.yaml zeroAccessPaths (declarative mirror).
+        ".claude/settings.local.json"
+        "claude-pwt/"
     )
 
     for pattern in "${zero_access[@]}"; do

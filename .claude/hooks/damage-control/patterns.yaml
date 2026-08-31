@@ -222,6 +222,22 @@ zeroAccessPaths:
   - "*credential*.json"
   - "*token*.json"
 
+  # Multi-account (/plan-w-team) live-token stores — these hold live OAuth tokens;
+  # reading one into a transcript leaks it to reviewers/evaluators (F7). The
+  # per-lane settings.local.json carries CLAUDE_CODE_OAUTH_TOKEN; the machine-global
+  # claude-pwt/ store holds the registry (tokens), usage cache, and selection log.
+  # ENFORCEMENT NOTE: the built-in tier is matched by the `zero_access=()` array in
+  # damage-control.sh (this YAML is declarative only — the matcher never parses it),
+  # so these MUST be kept in sync with that array. The matcher is a substring/glob
+  # test with no ~ / $XDG_CONFIG_HOME expansion, so the enforced forms are the bare
+  # `.claude/settings.local.json` and `claude-pwt/` substrings, which cover any depth
+  # and any XDG_CONFIG_HOME location.
+  - "**/.claude/settings.local.json"
+  - ".claude/settings.local.json"
+  - "~/.config/claude-pwt/"
+  - "$XDG_CONFIG_HOME/claude-pwt/"
+  - "claude-pwt/"
+
 # =============================================================================
 # READ-ONLY PATHS - Allow read, block modifications
 # System and configuration files

@@ -1,0 +1,71 @@
+{
+  "schema": "pwt-status/1",
+  "slug": "parity",
+  "stage": "5-review",
+  "strategy": "lead-implements-directly",
+  "strategy_reason": "fixed",
+  "tasks": {
+    "total": 2,
+    "done": 1,
+    "in_progress": 1
+  },
+  "builders": {
+    "declared": 2,
+    "live_by_process": 0,
+    "live_by_registry": 0
+  },
+  "acs": {
+    "total": 2,
+    "pass": 1,
+    "fail": 0,
+    "pending": 1
+  },
+  "pause_site": null,
+  "terminal_state": null,
+  "terminal_state_source": null,
+  "worker": {
+    "sid": "deadbeef",
+    "pid": null,
+    "started_at": "<TS>"
+  },
+  "resources": {
+    "rss_gb": 0,
+    "builders_rss_gb": 0
+  },
+  "last_event_at": "<TS>",
+  "landed": {
+    "verdict": "NOT_LANDED",
+    "sha": null
+  },
+  "budget": null,
+  "coordination_hints": null,
+  "manifest": {
+    "schema": "plan-w-team-manifest/v1",
+    "slug": "parity",
+    "current_stage": "5-review",
+    "strategy": "lead-implements-directly",
+    "strategy_justification": "fixed",
+    "builder_count": 2,
+    "tasks": [
+      {
+        "id": "t1",
+        "status": "done"
+      },
+      {
+        "id": "t2",
+        "status": "running"
+      }
+    ],
+    "terminal_state": null,
+    "updated_at": "<TS>",
+    "run_sid": "deadbeef"
+  },
+  "fleet": {
+    "spawned": 0,
+    "completed": 0,
+    "failed": 0,
+    "running": 0,
+    "max_concurrent": 0
+  },
+  "sessions": []
+}

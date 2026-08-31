@@ -284,15 +284,22 @@ if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ]; then
   # test on ONE state dir; it is a NO-OP when the suite runs from main (REPO_ROOT==main),
   # and any test that sets its own CLAUDE_PROJECT_DIR (the sandbox-isolated corpus tests)
   # overrides this inherited value.
+  # PWT_DISABLE_SPAWN_LIVENESS_PROBE=1: the 2.32.0 spawn probe polls the worker
+  # transcript after each `claude --bg`, which the fake-claude spawn tests neither
+  # write nor want (it would only add appearance-window latency and never fire). Off
+  # by default here; the dedicated pwt-goal-spawn-liveness-probe.test.sh re-enables it
+  # (PWT_DISABLE_SPAWN_LIVENESS_PROBE=0) against a controlled fake transcript.
   run_one_shell_test() {
     if [ -n "$TIMEOUT_BIN" ]; then
       env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE -u PLAN_W_TEAM_AUTO_APPROVE_PUSH \
           -u PLAN_W_TEAM_FORCE_SPAWN -u PLAN_W_TEAM_DISABLE_GOAL \
+          PWT_DISABLE_SPAWN_LIVENESS_PROBE=1 \
           CLAUDE_PROJECT_DIR="$REPO_ROOT" \
           "$TIMEOUT_BIN" "$SHELL_TEST_TIMEOUT" bash "$1" >/dev/null 2>&1
     else
       env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE -u PLAN_W_TEAM_AUTO_APPROVE_PUSH \
           -u PLAN_W_TEAM_FORCE_SPAWN -u PLAN_W_TEAM_DISABLE_GOAL \
+          PWT_DISABLE_SPAWN_LIVENESS_PROBE=1 \
           CLAUDE_PROJECT_DIR="$REPO_ROOT" \
           bash "$1" >/dev/null 2>&1
     fi
