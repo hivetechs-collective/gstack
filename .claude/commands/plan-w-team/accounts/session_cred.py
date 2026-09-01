@@ -21,6 +21,7 @@ Behavior when the registry is DORMANT / absent / loose-perms / all-accounts-hot:
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -119,9 +120,91 @@ def launch(cmd, registry_path=None, pinned=None) -> int:
     return 127  # pragma: no cover - execvpe only returns on failure
 
 
+def _current_login_email() -> str:
+    """Email of the keychain / ``~/.claude.json`` login this machine runs as.
+
+    This is the account INTERACTIVE Claude Code actually authenticates as — the one a
+    rotated ``CLAUDE_CODE_OAUTH_TOKEN`` env token does NOT change (status line, /usage,
+    Remote Control all follow the keychain /login) — so ``advise`` compares its
+    recommendation against IT, never against an injected token. Fail-open to ``""``."""
+    try:
+        with open(os.path.expanduser("~/.claude.json"), encoding="utf-8") as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return ""
+    return ((d.get("oauthAccount") or {}).get("emailAddress") or "").strip()
+
+
+def _pcts(gauge):
+    if not gauge:
+        return None, None
+    return gauge.get("five_hour_pct"), gauge.get("seven_day_pct")
+
+
+def advise(registry_path=None, pinned=None) -> int:
+    """Print a one-line JSON advisory (NEVER a token) for the status line and
+    ``claude-account``: which registered account has the most headroom, which account
+    this machine is logged in as, and whether/why to move. Prints ``{}`` whenever
+    there is nothing to advise — dormant registry, unusable perms, or every account
+    hot / no fresh data — so the status line simply shows no advice segment (fail-open).
+
+    Keys: ``best``/``best_email``/``best_5h``/``best_7d`` (the pick),
+    ``current``/``current_email``/``current_5h``/``current_7d`` (this login, mapped to
+    a label by email), ``switch`` (best differs from current login), ``current_hot``
+    (current's binding window ≥ ``PWT_ACCT_SWITCH_HINT_PCT``, default 80).
+
+    Reads the shared usage cache (probing only stale accounts), so front it with the
+    caller's own short cache when calling on every status-line render."""
+    try:
+        reg = registry.load(registry_path)
+    except (registry.LoosePermsError, registry.RegistryMalformed):
+        print("{}")
+        return 0
+
+    active = [a for a in (reg.get("accounts") or []) if a.get("active")]
+    if not reg.get("multi_account_enabled") or len(active) < 2:
+        print("{}")
+        return 0
+
+    gauges = probe.resolve_usage(reg)
+    decision = selector.classify(gauges, pinned_label=pinned)
+    best = decision.get("chosen")
+    if not best:
+        # measured-all-hot / no-fresh-data → nothing actionable to recommend.
+        print("{}")
+        return 0
+
+    cur_email = _current_login_email()
+    by_email = {(a.get("email") or "").strip().lower(): a.get("label")
+                for a in active if (a.get("email") or "").strip()}
+    cur_label = by_email.get(cur_email.lower()) if cur_email else None
+
+    gmap = {g.get("label"): g for g in gauges}
+    b5, b7 = _pcts(best)
+    c5, c7 = _pcts(gmap.get(cur_label) if cur_label else None)
+
+    hint = float(os.environ.get("PWT_ACCT_SWITCH_HINT_PCT", "80"))
+    cur_binding = max((v for v in (c5, c7) if isinstance(v, (int, float))),
+                      default=None)
+    best_label = best.get("label")
+    out = {
+        "best": best_label,
+        "best_email": best.get("email") or "",
+        "best_5h": b5, "best_7d": b7,
+        "current": cur_label,
+        "current_email": cur_email,
+        "current_5h": c5, "current_7d": c7,
+        "switch": bool(best_label and best_label != cur_label),
+        "current_hot": cur_binding is not None and cur_binding >= hint,
+    }
+    print(json.dumps(out, separators=(",", ":")))
+    return 0
+
+
 def main(argv) -> int:
     pinned = None
     which = False
+    advise_flag = False
     rest = []
     i = 0
     while i < len(argv):
@@ -137,12 +220,18 @@ def main(argv) -> int:
             which = True
             i += 1
             continue
+        if a == "--advise":
+            advise_flag = True
+            i += 1
+            continue
         if a == "--":
             rest = argv[i + 1:]
             break
         # first non-flag token starts the command
         rest = argv[i:]
         break
+    if advise_flag:
+        return advise(pinned=pinned)
     if which:
         return which_label(pinned=pinned)
     if not rest:

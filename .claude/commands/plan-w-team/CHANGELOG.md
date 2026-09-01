@@ -14,6 +14,49 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.34.1] — 2026-08-31 (Multi-account skill: business-agnostic scrub + interactive-session advisory) (82c0f37)
+
+Completes 2.34.0's portability promise and removes hardcoded personal/business identity from the
+shipped skill. Two threads:
+
+- **Business-agnostic scrub (portability + privacy).** The multi-account skill no longer bakes any
+  vendor/business path or operator identity into shipped code or shared docs. `import_stores.py`
+  drops the hardcoded `~/.config/cleanrev/secrets.env` + `~/.config/cleanrev/claude-accounts.json`
+  + `~/.helm/tokens` default stores — the ONLY default search path is now the neutral
+  `~/.config/claude-pwt/secrets.env`; a store kept elsewhere is reached with `$PWT_SECRETS_ENV`,
+  and the two legacy store shapes (a JSON account store, a dir of `*.token` files) are opt-in via
+  `--source PATH`. `_read_cleanrev_json` → `_read_json_store`; `selector.py`, `accounts.sh --help`,
+  the accounts `README.md`, and the onboarding ops doc are all genericized (real emails and account
+  labels replaced with `you@example.com` / `<label>` placeholders). No behavior change for anyone
+  using the neutral default or `$PWT_SECRETS_ENV`; the only default-discovery paths removed were
+  vendor-specific and asserted by no test.
+- **Interactive rotation is now ADVISORY (2026-08-31 finding).** An earlier 2.34.1 attempt to
+  auto-rotate interactive sessions by shadowing `claude()` with `accounts.sh launch` was **reverted**:
+  an interactive session's account identity (status line, `/usage`, Remote Control, `~/.claude.json`)
+  is bound to the keychain `/login`, and a `CLAUDE_CODE_OAUTH_TOKEN` env token cannot switch it — it
+  only redirects model requests while breaking Remote Control and leaving the session on the old
+  account. The `claude()` launcher now runs plain `command claude --allowedTools "Grep,Glob"` for
+  interactive launches (no token injection); **fleet/bg-worker rotation (`lane_cred.py`) is unchanged
+  and unaffected** — only model requests matter there. In its place, a status-line + command advisory:
+  - `session_cred.py advise` / `accounts.sh advise` — token-free JSON (`best`, `current`, `switch`,
+    `current_hot`, plus 5h/7d pcts) that maps the keychain login (`~/.claude.json` email) to a registry
+    label and names the account with the most headroom; prints `{}` when dormant / all-hot /
+    single-account (fail-open, so the status line just shows no segment).
+  - `.claude/scripts/account-advice.sh` + a `statusline.sh` segment — renders `👉 next: <label>` once a
+    cooler account exists, becoming `⚠ switch → <label> (5h/7d%)` when the current login is hot
+    (binding window ≥ `PWT_ACCT_SWITCH_HINT_PCT`, default 80). Local cache + bounded timeout +
+    fail-open; lean/pipeline status lines skip it. The cache is **login-keyed**: statusline passes its
+    `👤` email in as `$1` and a `/login` to a different account invalidates it the instant it happens
+    (not after the TTL) — fixing the field defect where, right after switching to the best account, the
+    line kept replaying the pre-switch `⚠ switch → <that same account>` for up to 5 min.
+    `PWT_ACCT_ADVICE_CACHE` relocates the cache file (tests point it into a sandbox).
+  - `claude-account` shell function — prints the status table plus the recommended account and the
+    exact `/login` step. You switch with `/login`; the advisory never mutates anything.
+
+  Coverage: `tests/skill/cases/pwt-accounts.bats` **AC12–AC13** (8 new cases; 54 total — AC13 is the
+  login-keyed cache regression guard). Docs (accounts `README.md`, onboarding ops doc §A10, root
+  `README.md`) corrected off the retired auto-rotation model.
+
 ## [2.34.0] — 2026-08-31 (Multi-account onboarding automation — portable `secrets.env` source, guided `setup`, and interactive-session rotation) (d0c6128)
 
 Closes the onboarding-friction gap in 2.33.0: registering accounts still meant a manual

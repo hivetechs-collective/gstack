@@ -2,19 +2,21 @@
 """Auto-discovery + bulk-import of pre-existing Claude tokens into the registry.
 
 The operator almost always already has Max-account OAuth tokens saved on the
-machine (the local-first, no-vault posture of the CleanRev secrets architecture:
-tokens live in 0600 files under ``~/.config`` / ``~/.helm``, never a third-party
-vault). Re-minting them by hand, per account, is the friction this module removes:
-one ``accounts.sh import`` discovers those saved tokens, validates each with the
-SAME single probe ``add-account`` uses, and bulk-registers them — reusing
-``registry.upsert_account`` for storage (never re-implemented here) so every write
-lands 0600 under flock exactly like an interactive add.
+machine (a local-first, no-vault posture: tokens live in 0600 files under
+``~/.config``, never a third-party vault). Re-minting them by hand, per account,
+is the friction this module removes: one ``accounts.sh import`` discovers those
+saved tokens, validates each with the SAME single probe ``add-account`` uses, and
+bulk-registers them — reusing ``registry.upsert_account`` for storage (never
+re-implemented here) so every write lands 0600 under flock exactly like an
+interactive add.
 
-Known local stores discovered by default:
-  * ``~/.config/cleanrev/claude-accounts.json`` — the near-identical schema
+Discovered by default: a ``secrets.env`` store (see below). Two other store shapes
+are supported via ``--source PATH`` but are NEVER default-scanned, so no vendor or
+business path is baked into the shipped skill:
+  * a JSON account store — schema
     ``{"accounts": [{"label", "email", "token", "added_at", "note"}, ...]}``.
     Rows carrying label + email + token are *fully identified* → auto-registered.
-  * ``~/.helm/tokens/*.token`` — bare single-token files (no identity). These are
+  * a directory of bare single-token ``*.token`` files (no identity). These are
     *partial* → reported with the exact ``add-account --token-file`` command to
     finish them, never auto-stored under a guessed identity/email.
 
@@ -44,9 +46,10 @@ import tempfile
 import registry
 import probe
 
-# Default local stores, resolved against $HOME (honours a sandboxed HOME in tests).
-_CLEANREV_STORE = "~/.config/cleanrev/claude-accounts.json"
-_HELM_TOKENS_DIR = "~/.helm/tokens"
+# Legacy account stores (a JSON store, a directory of *.token files) are reachable
+# via --source but are NOT default-scanned: their paths are vendor/tool-specific
+# and must never be baked into a skill shared across machines and operators. The
+# portable default store is the secrets.env below.
 
 # ── secrets.env source (the canonical, portable Claude-token store) ────────────
 # The operator saves one setup-token per account as a shell-style ``KEY=value``
@@ -57,18 +60,18 @@ _HELM_TOKENS_DIR = "~/.helm/tokens"
 # Business-agnostic by construction:
 #   * the KEY convention (``CLAUDE_MAX_SETUP_TOKEN_<LABEL>``) carries no business
 #     identity — the <LABEL> is whatever the operator chose;
-#   * the default search paths are neutral + auto-detected, and ``$PWT_SECRETS_ENV``
-#     (``:``-separated) overrides them entirely, so nothing cleanrev-specific is
-#     baked into the shipped skill.
-_TOKEN_KEY_PREFIX = "CLAUDE_MAX_SETUP_TOKEN_"     # CLAUDE_MAX_SETUP_TOKEN_KNOX=sk-ant-…
-_EMAIL_KEY_PREFIX = "CLAUDE_MAX_EMAIL_"           # optional CLAUDE_MAX_EMAIL_KNOX=you@…
-_FAILOVER_KEY = "ACCOUNT_FAILOVER_ORDER"          # optional "knox ministry ops …"
+#   * the default search path is neutral, and ``$PWT_SECRETS_ENV`` (``:``-separated)
+#     overrides it entirely, so nothing business-specific is baked into the shipped
+#     skill — a store kept elsewhere is reached with one env var.
+_TOKEN_KEY_PREFIX = "CLAUDE_MAX_SETUP_TOKEN_"     # CLAUDE_MAX_SETUP_TOKEN_<LABEL>=sk-ant-…
+_EMAIL_KEY_PREFIX = "CLAUDE_MAX_EMAIL_"           # optional CLAUDE_MAX_EMAIL_<LABEL>=you@…
+_FAILOVER_KEY = "ACCOUNT_FAILOVER_ORDER"          # optional "<label1> <label2> …"
 
-# Neutral skill-owned default (also the scaffold target) first, then well-known
-# operator stores that may already exist. Absent paths are silently skipped.
+# The single neutral, skill-owned default (also the scaffold target). This is the
+# ONLY path baked in; anything else comes from $PWT_SECRETS_ENV. Absent paths are
+# silently skipped.
 _SECRETS_ENV_DEFAULTS = (
     "~/.config/claude-pwt/secrets.env",
-    "~/.config/cleanrev/secrets.env",
 )
 # The path a fresh operator's store is CREATED at (never an auto-detected one).
 _SCAFFOLD_TARGET = "~/.config/claude-pwt/secrets.env"
@@ -76,9 +79,9 @@ _SCAFFOLD_TARGET = "~/.config/claude-pwt/secrets.env"
 
 def _secrets_env_search_paths():
     """Ordered, de-duplicated list of secrets.env paths to scan. ``$PWT_SECRETS_ENV``
-    (``:``-separated) replaces the defaults when set; otherwise the neutral +
-    auto-detected defaults are used. Returned paths are expanded but NOT filtered
-    for existence (the caller skips missing ones and reports nothing for them)."""
+    (``:``-separated) replaces the default when set; otherwise the single neutral
+    default is used. Returned paths are expanded but NOT filtered for existence
+    (the caller skips missing ones and reports nothing for them)."""
     override = os.environ.get("PWT_SECRETS_ENV")
     if override:
         raw = [p for p in override.split(os.pathsep) if p.strip()]
@@ -120,8 +123,8 @@ def _warn_loose_source(path: str, notes: list) -> None:
         notes.append("source is group/world-readable (chmod 600 recommended): %s" % path)
 
 
-def _read_cleanrev_json(path: str, notes: list):
-    """Yield (label, email, token) candidate tuples from a cleanrev-style store.
+def _read_json_store(path: str, notes: list):
+    """Yield (label, email, token) candidate tuples from a JSON account store.
     A row missing email OR label (but carrying a token) is yielded with that field
     as None so the caller can classify it partial."""
     try:
@@ -266,23 +269,17 @@ def discover_candidates(sources=None):
     * ``notes``   — human-readable warnings (unreadable source, loose perms, …).
 
     ``sources`` is an explicit list of paths (files/dirs/JSON stores); when None the
-    two known local stores are probed. Absent default stores are silently skipped
-    (the common case: the operator only has one of them).
+    default secrets.env store(s) are probed. Absent paths are silently skipped.
     """
     notes: list = []
     explicit = sources is not None
     if sources is None:
         sources = []
-        # secrets.env FIRST — the canonical, portable Claude-token store.
+        # The portable secrets.env store is the ONLY default; legacy JSON / token-dir
+        # stores are opt-in via --source so no vendor path ships in the skill.
         for se in _secrets_env_search_paths():
             if os.path.exists(se):
                 sources.append(se)
-        cr = os.path.expanduser(_CLEANREV_STORE)
-        if os.path.exists(cr):
-            sources.append(cr)
-        helm = os.path.expanduser(_HELM_TOKENS_DIR)
-        if os.path.isdir(helm):
-            sources.append(helm)
     else:
         sources = [os.path.expanduser(s) for s in sources]
 
@@ -323,7 +320,7 @@ def discover_candidates(sources=None):
                 _add(label, email, token, src, email_optional=True)
         elif kind == "json":
             _warn_loose_source(src, notes)
-            for label, email, token in _read_cleanrev_json(src, notes):
+            for label, email, token in _read_json_store(src, notes):
                 _add(label, email, token, src)
         elif kind == "dir":
             for path in sorted(glob.glob(os.path.join(src, "*.token"))):
@@ -512,10 +509,11 @@ _USAGE = """import — discover + bulk-register pre-existing Claude tokens
 
 Usage: accounts.sh import [--source PATH]... [--dry-run] [--no-validate] [--no-enable]
 
-  --source PATH   an extra store to scan (a cleanrev-style .json, a *.token file,
-                  or a dir of *.token files). Repeatable. When omitted, the known
-                  local stores are scanned: ~/.config/cleanrev/claude-accounts.json
-                  and ~/.helm/tokens/*.token
+  --source PATH   an extra store to scan (a JSON account store, a *.token file, or
+                  a dir of *.token files). Repeatable. When omitted, the portable
+                  secrets.env store is scanned (searched at $PWT_SECRETS_ENV else
+                  ~/.config/claude-pwt/secrets.env); legacy JSON / token-dir stores
+                  are opt-in via --source, so no vendor path is baked in.
   --dry-run       report what WOULD be imported; probe nothing, store nothing
   --no-validate   store without a validating probe (offline bulk import)
   --no-enable     do not flip multi_account_enabled on after importing
@@ -600,10 +598,8 @@ def setup_main(argv) -> int:
 
     search = _secrets_env_search_paths()
     existing_env = [p for p in search if os.path.exists(p)]
-    # Only scaffold when the operator has NO secrets.env anywhere we look AND no
-    # other known token store — never fabricate a store on top of existing data.
-    other_store = (os.path.exists(os.path.expanduser(_CLEANREV_STORE))
-                   or os.path.isdir(os.path.expanduser(_HELM_TOKENS_DIR)))
+    # Only scaffold when the operator has NO secrets.env anywhere we look — never
+    # fabricate a store on top of existing data.
     created = None
     if not existing_env:
         created = scaffold_secrets_env()
@@ -631,8 +627,6 @@ def setup_main(argv) -> int:
             print("could not scaffold a secrets.env: %s" % path)
     elif existing_env:
         print("secrets.env store(s): %s" % ", ".join(existing_env))
-    elif other_store:
-        print("no secrets.env, but other token store(s) present — imported from those")
 
     _print_summary(r)
     return 0

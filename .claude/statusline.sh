@@ -784,6 +784,39 @@ if [ -x "$ACCOUNT_INFO_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
   fi
 fi
 
+# Account rotation advisory: when a registered account has more headroom than the
+# one this machine is logged in as, nudge toward it. `👉 next: <label>` normally;
+# `⚠ switch → <label>` once the current login gets hot. The switch is MANUAL (`/login`)
+# — interactive Claude Code can't be account-switched by an env token (2026-08-31).
+# Local-cached + bounded + fail-open (no segment) via account-advice.sh; skipped on
+# lean/pipeline statuslines to keep supervising renders cheap.
+ACCOUNT_ADVICE_HELPER="$PWD/.claude/scripts/account-advice.sh"
+if [ "$PWT_LEAN" -eq 0 ] && [ -x "$ACCOUNT_ADVICE_HELPER" ] && [ "$HAS_JQ" -eq 1 ] && [ -n "$line2" ]; then
+  advice_json=$("$ACCOUNT_ADVICE_HELPER" "${acct_email:-}" 2>/dev/null)
+  if [ -n "$advice_json" ] && [ "$advice_json" != "{}" ]; then
+    adv_switch=$(echo "$advice_json" | jq -r '.switch // false' 2>/dev/null)
+    if [ "$adv_switch" = "true" ]; then
+      adv_best=$(echo "$advice_json" | jq -r '.best // empty' 2>/dev/null)
+      adv_b5=$(echo "$advice_json" | jq -r '.best_5h // empty' 2>/dev/null)
+      adv_b7=$(echo "$advice_json" | jq -r '.best_7d // empty' 2>/dev/null)
+      adv_hot=$(echo "$advice_json" | jq -r '.current_hot // false' 2>/dev/null)
+      if [ -n "$adv_best" ]; then
+        adv_pct=""
+        if [ -n "$adv_b5" ] && [ -n "$adv_b7" ]; then
+          adv_b5f=$(printf '%.0f' "$adv_b5" 2>/dev/null || echo "$adv_b5")
+          adv_b7f=$(printf '%.0f' "$adv_b7" 2>/dev/null || echo "$adv_b7")
+          adv_pct=" (${adv_b5f}/${adv_b7f}%)"
+        fi
+        if [ "$adv_hot" = "true" ]; then
+          line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;203')⚠ switch → ${adv_best}${adv_pct}$(rst)"
+        else
+          line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;108')👉 next: ${adv_best}${adv_pct}$(rst)"
+        fi
+      fi
+    fi
+  fi
+fi
+
 # Session time still useful as a context-window proxy (long session → /compact incoming)
 if [ -n "$session_txt" ]; then
   if [ -n "$line2" ]; then

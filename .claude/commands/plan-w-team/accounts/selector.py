@@ -2,9 +2,9 @@
 """Neutral account selector for /plan-w-team multi-account routing.
 
 Pure core (``select_account`` / ``classify``) over usage gauges + a thin CLI.
-Generalized from the CleanScale relay — the billing classes, roles, founder
-−15pp reserve and emergency leg are deliberately STRIPPED; this is a
-business-agnostic "most headroom" objective.
+This is a business-agnostic "most headroom" objective — no billing classes,
+roles, per-account reserves, or emergency legs; every account is ranked purely
+by remaining usage headroom.
 
 Objective (spec §Selector objective):
   1. Exclude a gauge whose ``status == "rejected"``, whose ``binding_pct`` or

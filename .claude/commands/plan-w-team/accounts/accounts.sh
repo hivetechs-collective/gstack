@@ -67,18 +67,21 @@ Subcommands:
       Scans, by default (first match wins per token, deduped by fingerprint):
         secrets.env  CLAUDE_MAX_SETUP_TOKEN_<LABEL>= lines — the canonical store;
                      searched at $PWT_SECRETS_ENV (: -separated) else
-                     ~/.config/claude-pwt/secrets.env, ~/.config/cleanrev/secrets.env
-        ~/.config/cleanrev/claude-accounts.json   (label+email+token rows)
-        ~/.helm/tokens/*.token                     (bare token files)
+                     ~/.config/claude-pwt/secrets.env
+      Legacy stores (a JSON account store with label+email+token rows, or a dir of
+      *.token files) are opt-in via --source PATH (repeatable) — no vendor path is
+      baked in.
       Each new token is validated by one probe before it is stored (dedupe is by
       fingerprint, so re-running is idempotent). --dry-run reports without storing;
       --no-validate stores offline without a probe; --no-enable skips the flip.
   launch [--pinned L] [-- <cmd...>]       (default cmd: claude)
-      Start an interactive session on the SAME optimal account the fleet would pick,
-      handing the token to the child via env only (never argv/stdout). Dormant/loose
-      registry ⇒ launches unchanged (ambient login). Shadow `claude` in your shell
-      rc to make every session ride the rotation (see docs).
+      Run a command with the fleet's optimal-account token in its ENV (never argv/
+      stdout). NOTE: interactive `claude` does NOT switch account from this — Claude
+      Code ties interactive identity to the keychain /login, so an env token only
+      redirects model requests. For interactive use run `advise` (or `claude-account`)
+      then `/login`. Dormant/loose registry ⇒ runs unchanged (ambient login).
   which-account [--pinned L]              print the label a session WOULD run as
+  advise                                  JSON advisory: which account to move to (status line)
   remove-account     --label L            drop an account row entirely
   deactivate-account --label L            mark active=false
   activate-account   --label L            mark active=true
@@ -581,16 +584,19 @@ cmd_check() {
 # and exec the command unchanged (ambient login) so a missing python never blocks a
 # foreground session. Default command is `claude`.
 _launch_fallback_no_python() {
-  local which=0
+  local which=0 advise=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --pinned) shift 2 ;;
       --which)  which=1; shift ;;
+      --advise) advise=1; shift ;;
       --)       shift; break ;;
       -*)       shift ;;
       *)        break ;;
     esac
   done
+  # advise/which are read-only queries: NEVER exec a fallback command for them.
+  if [ "$advise" = "1" ]; then printf '%s\n' "{}"; return 0; fi
   if [ "$which" = "1" ]; then printf '%s\n' "(ambient)"; return 0; fi
   [ $# -gt 0 ] || set -- claude
   err "python3 unavailable — launching '$1' on ambient login"
@@ -664,6 +670,7 @@ main() {
     check)              cmd_check "$@" ;;
     launch)             cmd_launch "$@" ;;
     which-account)      cmd_launch --which "$@" ;;
+    advise)             cmd_launch --advise "$@" ;;
     remove-account)     cmd_simple_label remove "$@" ;;
     deactivate-account) cmd_simple_label deactivate "$@" ;;
     activate-account)   cmd_simple_label activate "$@" ;;

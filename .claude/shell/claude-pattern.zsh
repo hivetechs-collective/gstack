@@ -39,8 +39,17 @@ git() {
   return $_cp_rc
 }
 
-# Claude Code launcher — per-repo task lists plus the defaults long
-# /plan-w-team runs depend on.
+# Multi-account rotation CLI, resolved relative to THIS sourced file so it works
+# from any clone location on any machine (`${(%):-%x}` = the file being sourced;
+# :h:h climbs .claude/shell -> .claude). Used by `claude-account` (advisory) and
+# by the fleet/bg rotation. Absent/older clone => `claude-account` reports it.
+_CP_SHELL_SELF="${(%):-%x}"
+_CP_ACCOUNTS_CLI="${_CP_SHELL_SELF:A:h:h}/commands/plan-w-team/accounts/accounts.sh"
+
+# Claude Code launcher — per-repo task lists and long-run defaults. It does NOT
+# rotate the account (interactive identity is keychain/`/login` bound; an env
+# token can't switch it). The status line shows which account to move to, and
+# `claude-account` prints the full picture.
 claude() {
   _cp_seed_claude_md
   # ANTHROPIC_MODEL outranks the model in ~/.claude/settings.json for every
@@ -65,8 +74,18 @@ claude() {
   # Only inject on session launches — the variadic flag would swallow
   # subcommands like `claude mcp list` if always prepended.
   if [ $# -eq 0 ] || [[ "$1" == -* ]]; then
+    # Interactive session launch (no args, or a flag like -r /
+    # --dangerously-skip-permissions). We deliberately do NOT rotate the account
+    # here: interactive Claude Code ties its identity (status line, /usage,
+    # Remote Control, ~/.claude.json) to the keychain /login, and a
+    # CLAUDE_CODE_OAUTH_TOKEN env token can't switch it — it only redirected
+    # model requests while breaking Remote Control and leaving the status line on
+    # the old account (2026-08-31 finding). Interactive rotation is ADVISORY:
+    # the status line shows the account to move to, and `claude-account` /
+    # `/login` switch it. Fleet/bg-worker rotation is separate and unaffected.
     command claude --allowedTools "Grep,Glob" "$@"
   else
+    # Utility subcommands (`claude mcp list`, `claude agents`, …).
     command claude "$@"
   fi
 }
@@ -78,6 +97,29 @@ claude-env() {
   echo "  BASH_DEFAULT_TIMEOUT_MS: ${BASH_DEFAULT_TIMEOUT_MS:-120000 (default)}"
   if command git rev-parse --show-toplevel >/dev/null 2>&1; then
     echo "  Current repo: $(basename "$(command git rev-parse --show-toplevel)")"
+  fi
+}
+
+# claude-account — advisory account picker for INTERACTIVE sessions. Interactive
+# Claude Code can't be rotated by an env token (its identity — status line,
+# /usage, Remote Control, ~/.claude.json — is keychain/`/login` bound), so this
+# TELLS you which account has the most 5h/7d headroom; you switch with `/login`.
+# Fleet/bg-worker rotation is automatic and separate (lane_cred.py).
+claude-account() {
+  if [ ! -x "$_CP_ACCOUNTS_CLI" ]; then
+    echo "claude-account: rotation CLI not found (need a claude-pattern clone)."
+    return 1
+  fi
+  "$_CP_ACCOUNTS_CLI" status || return $?
+  local best
+  best="$("$_CP_ACCOUNTS_CLI" which-account 2>/dev/null)"
+  echo
+  if [ -n "$best" ] && [ "$best" != "(ambient)" ]; then
+    echo "→ Most headroom right now: '$best' (the '*' row above)."
+    echo "  To use it: type  /login  in Claude and sign in as that row's EMAIL."
+    echo "  (Interactive sessions don't auto-switch — this is advisory.)"
+  else
+    echo "→ Rotation dormant or every account is hot — stay on your current login."
   fi
 }
 
