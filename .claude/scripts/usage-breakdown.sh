@@ -3,9 +3,8 @@
 #
 # Aggregates today's local Claude session transcripts (~/.claude/projects/**/*.jsonl)
 # to produce a token-cost breakdown by Skill, Subagent (Agent tool), and MCP server.
-# This mirrors what `/usage` shows interactively (Boris's screenshot pattern) but
-# computes from local data — the /api/oauth/usage endpoint only returns 5h/7d windows,
-# not the breakdown.
+# This mirrors what `/usage` shows interactively but computes from local data —
+# the /api/oauth/usage endpoint only returns the plan windows, not the breakdown.
 #
 # Output: minified JSON
 #   {
@@ -20,41 +19,87 @@
 # a turn calls multiple tools — this matches Claude's interactive /usage shape
 # (percentages can sum >100% because skills/agents/mcp overlap).
 #
-# === FAIL-OPEN ===
-# Any failure → emit `{}` to stdout and exit 0.
+# === NON-BLOCKING (2026-09-02) ===
+# The scan reads EVERY transcript modified today (127 MB on a fleet day) and ran
+# INLINE in the status-line render, per repo, every 60 s. Claude Code cancels an
+# in-flight status-line command when the next trigger fires, so under load the
+# render died inside the scan and the display froze on its last completed frame.
+# The input is machine-wide (~/.claude/projects), so the cache is now ONE file per
+# machine, refreshed by a DETACHED bounded singleton; the render only reads it.
 #
-# Cache TTL: 60s default. Statusline calls this every render; we cap recompute cost.
+# USAGE
+#   usage-breakdown.sh [--sync]     default: serve the cache, refresh detached if stale
+#                                   --sync: refresh inline (bounded), then serve
+# ENV
+#   USAGE_BREAKDOWN_CACHE       cache file ($HOME/.config/claude-pattern/usage-breakdown.json)
+#   USAGE_BREAKDOWN_CACHE_TTL   seconds before a refresh is started (120)
+#   USAGE_BREAKDOWN_STALE_MAX   max age still served (3600)
+#   USAGE_BREAKDOWN_TIMEOUT_S   scan bound, seconds (60)
+#   USAGE_BREAKDOWN_COLD_WAIT   cold-cache wait for the first sample (1)
+#   USAGE_BREAKDOWN_PROJECTS    transcript root ($HOME/.claude/projects)
+#
+# === FAIL-OPEN ===
+# Any failure → `{}` on stdout, exit 0. A failed/killed scan never replaces the
+# previous value.
+#
+# bash 3.2 (mac-mini /bin/bash).
 set -u
 
-fail_open() { echo '{}'; exit 0; }
-trap fail_open ERR
+MODE=serve
+for a in "$@"; do case "$a" in --sync) MODE=sync ;; --refresh) MODE=refresh ;; esac; done
 
-PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)}"
-[ -z "$PROJECT_ROOT" ] && fail_open
+CACHE="${USAGE_BREAKDOWN_CACHE:-$HOME/.config/claude-pattern/usage-breakdown.json}"
+LOCK="$CACHE.lock"
+CACHE_TTL="${USAGE_BREAKDOWN_CACHE_TTL:-120}"
+STALE_MAX="${USAGE_BREAKDOWN_STALE_MAX:-3600}"
+BOUND_S="${USAGE_BREAKDOWN_TIMEOUT_S:-60}"
+COLD_WAIT="${USAGE_BREAKDOWN_COLD_WAIT:-1}"
+PROJECTS_DIR="${USAGE_BREAKDOWN_PROJECTS:-$HOME/.claude/projects}"
+case "$CACHE_TTL$STALE_MAX$BOUND_S$COLD_WAIT" in *[!0-9]*) CACHE_TTL=120; STALE_MAX=3600; BOUND_S=60; COLD_WAIT=1 ;; esac
 
-STATE_DIR="$PROJECT_ROOT/.claude/state"
-mkdir -p "$STATE_DIR" 2>/dev/null
-CACHE="$STATE_DIR/usage-breakdown-cache.json"
+__age_s() {
+  local f="$1" m
+  [ -e "$f" ] || { echo 999999; return 0; }
+  m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo "")
+  case "$m" in ''|*[!0-9]*) echo 999999; return 0 ;; esac
+  echo $(( $(date +%s) - m ))
+}
+__serve() {
+  if [ -s "$CACHE" ] && [ "$(__age_s "$CACHE")" -lt "$STALE_MAX" ] 2>/dev/null; then cat "$CACHE" 2>/dev/null || echo '{}'
+  else echo '{}'; fi
+  return 0
+}
+__lock() {
+  mkdir -p "$(dirname "$CACHE")" 2>/dev/null || return 1
+  if mkdir "$LOCK" 2>/dev/null; then return 0; fi
+  if [ "$(__age_s "$LOCK")" -gt $(( BOUND_S * 2 )) ] 2>/dev/null; then
+    rm -rf "$LOCK" 2>/dev/null; mkdir "$LOCK" 2>/dev/null && return 0
+  fi
+  return 1
+}
+__unlock() { rm -rf "$LOCK" 2>/dev/null; }
+__timeout_bin() {
+  if command -v gtimeout >/dev/null 2>&1; then echo gtimeout
+  elif command -v timeout >/dev/null 2>&1; then echo timeout
+  else echo ""; fi
+}
+__wait_for_fresh() {
+  local since="$1" max="$2" i=0 m
+  while [ "$i" -lt $(( max * 5 )) ]; do
+    if [ -s "$CACHE" ]; then
+      m=$(stat -f %m "$CACHE" 2>/dev/null || stat -c %Y "$CACHE" 2>/dev/null || echo 0)
+      [ "${m:-0}" -ge "$since" ] 2>/dev/null && return 0
+    fi
+    sleep 0.2 2>/dev/null || sleep 1
+    i=$(( i + 1 ))
+  done
+  return 1
+}
 
-CACHE_TTL="${USAGE_BREAKDOWN_CACHE_TTL:-60}"
-
-# Cache hit
-if [ -f "$CACHE" ]; then
-  age=$(($(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || stat -c %Y "$CACHE" 2>/dev/null || echo 0)))
-  [ "$age" -lt "$CACHE_TTL" ] && { cat "$CACHE"; exit 0; }
-fi
-
-command -v jq >/dev/null 2>&1 || fail_open
-command -v python3 >/dev/null 2>&1 || fail_open
-
-PROJECTS_DIR="$HOME/.claude/projects"
-[ -d "$PROJECTS_DIR" ] || fail_open
-
-# Today's date in local time (so it matches user expectation of "today")
-TODAY=$(date +%Y-%m-%d)
-
-# Aggregate via python3 — bash+jq for 100+ files would be too slow
-RESULT=$(TODAY="$TODAY" PROJECTS_DIR="$PROJECTS_DIR" python3 <<'PY' 2>/dev/null
+__scan() {  # prints the JSON result or nothing
+  command -v python3 >/dev/null 2>&1 || return 0
+  [ -d "$PROJECTS_DIR" ] || return 0
+  TODAY="$(date +%Y-%m-%d)" PROJECTS_DIR="$PROJECTS_DIR" python3 - <<'PY' 2>/dev/null
 import os
 import json
 import glob
@@ -150,13 +195,42 @@ result = {
 }
 print(json.dumps(result, separators=(",", ":")))
 PY
-)
+}
 
-[ -z "$RESULT" ] && fail_open
+__refresh() {  # under the lock; a failed/empty scan keeps the previous value
+  local out tb tmp="$CACHE.tmp.$$"
+  tb=$(__timeout_bin)
+  if [ -n "$tb" ]; then out=$("$tb" "${BOUND_S}s" bash "$0" --scan-only 2>/dev/null) || out=""
+  else out=$(__scan) || out=""; fi
+  [ -n "$out" ] || return 0
+  printf '%s' "$out" | python3 -c 'import json,sys; json.loads(sys.stdin.read())' >/dev/null 2>&1 || return 0
+  printf '%s' "$out" > "$tmp" 2>/dev/null && mv -f "$tmp" "$CACHE" 2>/dev/null
+  rm -f "$tmp" 2>/dev/null
+  return 0
+}
 
-# Validate before caching
-echo "$RESULT" | python3 -c 'import json,sys; json.loads(sys.stdin.read())' 2>/dev/null || fail_open
+for a in "$@"; do [ "$a" = "--scan-only" ] && { __scan; exit 0; }; done
 
-# Atomic cache write
-printf '%s' "$RESULT" > "$CACHE.tmp" 2>/dev/null && mv "$CACHE.tmp" "$CACHE" 2>/dev/null
-printf '%s' "$RESULT"
+case "$MODE" in
+  refresh) trap '__unlock' EXIT INT TERM; __refresh; exit 0 ;;
+  sync)
+    since=$(date +%s)
+    if __lock; then trap '__unlock' EXIT INT TERM; __refresh
+    else __wait_for_fresh "$since" "$BOUND_S" || true; fi
+    __serve; exit 0 ;;
+esac
+
+if [ -s "$CACHE" ] && [ "$(__age_s "$CACHE")" -lt "$CACHE_TTL" ] 2>/dev/null; then __serve; exit 0; fi
+
+since=$(date +%s)
+if __lock; then
+  TB=$(__timeout_bin)
+  (
+    set -m 2>/dev/null
+    if [ -n "$TB" ]; then nohup "$TB" "$(( BOUND_S + 5 ))s" bash "$0" --refresh </dev/null >/dev/null 2>&1 &
+    else nohup bash "$0" --refresh </dev/null >/dev/null 2>&1 & fi
+  ) 2>/dev/null
+fi
+[ -s "$CACHE" ] || __wait_for_fresh "$since" "$COLD_WAIT" || true
+__serve
+exit 0

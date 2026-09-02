@@ -10,6 +10,22 @@ input=$(cat)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOG_FILE="${SCRIPT_DIR}/statusline.log"
 
+# Project root for every state/helper path below: $PWD walked up to the git
+# root via `git rev-parse --show-cdup` (a worktree resolves to ITS OWN root),
+# falling back to $PWD when the cwd is not inside a git repo (sandboxed tests,
+# plain directories). The LOGICAL path is kept on purpose (`pwd -L`, not
+# --show-toplevel): the bg-agents cache stores each session's cwd as a logical
+# string and the dashboard filters compare prefixes, so a symlinked cwd (macOS
+# /var → /private/var) must resolve the same way here. Bare $PWD scattered
+# nested .claude/state/ dirs into apps/*, tests/* whenever a session sat in a
+# subdirectory — one such stale file false-failed a consumer's pre-push gate
+# (2026-09-02).
+if _cdup="$(git rev-parse --show-cdup 2>/dev/null)"; then
+  PROJECT_ROOT="$(cd "${_cdup:-.}" 2>/dev/null && pwd -L)"
+fi
+[ -n "${PROJECT_ROOT:-}" ] || PROJECT_ROOT="$PWD"
+unset _cdup
+
 # ---- check jq availability ----
 HAS_JQ=0
 if command -v jq >/dev/null 2>&1; then
@@ -91,9 +107,19 @@ print(int(datetime.datetime.fromisoformat(s).timestamp()))
 PY
 }
 
+# Local wall-clock time in 12-hour US form ("3:00pm", "11:45am") — every
+# user-facing time on the line goes through here (plan resets, ccusage block end).
+# Set STATUSLINE_TIME_24H=1 for "15:00". GNU and BSD date both honour %I/%p; the
+# leading zero is stripped in shell so no non-portable %-I is needed.
 fmt_time_hm() {
-  epoch="$1"
-  if date -r 0 +%s >/dev/null 2>&1; then date -r "$epoch" +"%H:%M"; else date -d "@$epoch" +"%H:%M"; fi
+  local epoch="$1" out
+  if [ "${STATUSLINE_TIME_24H:-0}" = "1" ]; then
+    if date -r 0 +%s >/dev/null 2>&1; then date -r "$epoch" +"%H:%M"; else date -d "@$epoch" +"%H:%M"; fi
+    return 0
+  fi
+  if date -r 0 +%s >/dev/null 2>&1; then out=$(date -r "$epoch" +"%I:%M%p"); else out=$(date -d "@$epoch" +"%I:%M%p"); fi
+  out="${out#0}"
+  printf '%s' "$out" | tr 'APM' 'apm'
 }
 
 progress_bar() {
@@ -360,7 +386,7 @@ fi
 # gate. Same helper shape as plan-usage.sh / usage-breakdown.sh / account-info.sh.
 # A repo that has not synced the helper simply renders no token segment — the
 # unbounded path is gone, not relocated.
-CCUSAGE_HELPER="$PWD/.claude/scripts/ccusage-blocks.sh"
+CCUSAGE_HELPER="$PROJECT_ROOT/.claude/scripts/ccusage-blocks.sh"
 if [ "$PWT_LEAN" -eq 0 ] && [ -x "$CCUSAGE_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
   blocks_output=$("$CCUSAGE_HELPER" 2>/dev/null)
   if [ -n "$blocks_output" ]; then
@@ -443,16 +469,17 @@ fi
 #
 # Falls back to nothing when there are zero bg sessions in the project.
 if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
-  # Cache is PWD-relative (same as launches_file below) so the statusline
-  # and downstream tooling agree on a single per-project state location,
-  # regardless of where statusline.sh itself lives.
-  bg_cache="$PWD/.claude/state/bg-agents-cache.json"
+  # Cache lives under PROJECT_ROOT (same as launches_file below) so the
+  # statusline and downstream tooling agree on a single per-project state
+  # location, regardless of where statusline.sh itself lives or which
+  # subdirectory the session's cwd happens to be.
+  bg_cache="$PROJECT_ROOT/.claude/state/bg-agents-cache.json"
   bg_cache_age=999
   if [ -f "$bg_cache" ]; then
     bg_cache_age=$(( $(date +%s) - $(stat -f %m "$bg_cache" 2>/dev/null || echo 0) ))
   fi
   if [ "$bg_cache_age" -gt 10 ]; then
-    mkdir -p "$PWD/.claude/state" 2>/dev/null
+    mkdir -p "$PROJECT_ROOT/.claude/state" 2>/dev/null
     # Use the extended wrapper so Agent-tool subagents (kind: "subagent") appear
     # alongside `claude agents --json` output (kind: "background" / "interactive").
     # The wrapper degrades gracefully when the script is missing (e.g., on a
@@ -520,7 +547,7 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
   # Build set of "my-launch" sessionIds from pwt-launches.jsonl (transitive: a sid
   # is mine if it's in the file OR its parent_sid chain reaches a sid that is)
   # AND a role map keyed by sid prefix ("supervisor" | "worker" | absent).
-  launches_file="$PWD/.claude/state/pwt-launches.jsonl"
+  launches_file="$PROJECT_ROOT/.claude/state/pwt-launches.jsonl"
   my_sids_json="[]"
   role_map_json="{}"
   if [ -f "$launches_file" ]; then
@@ -544,7 +571,7 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
     # Build the bg-bucket dashboard array (kind: "background"):
     #   [ {role: "supervisor"|"worker"|"other", busy: bool, sid: "abcd1234"}, ... ]
     # Sorted: supervisor first, then worker, then other. Stable within group.
-    dashboard_json=$(jq --arg cwd "$PWD" --arg own "$own_sid" \
+    dashboard_json=$(jq --arg cwd "$PROJECT_ROOT" --arg own "$own_sid" \
                         --argjson mine "$my_sids_json" \
                         --argjson roles "$role_map_json" '
       [.[]
@@ -579,7 +606,7 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
     # launches registry). The old assumption "subagents are always mine" broke
     # whenever two sessions shared a repo — every pane showed the union.
     # Empty own_sid (no session_id on stdin, old harness) keeps legacy behavior.
-    sub_dashboard_json=$(jq --arg cwd "$PWD" --arg own "$own_sid" --argjson mine "$my_sids_json" '
+    sub_dashboard_json=$(jq --arg cwd "$PROJECT_ROOT" --arg own "$own_sid" --argjson mine "$my_sids_json" '
       [.[]
         | select(.kind == "subagent")
         | select(.cwd == $cwd or (.cwd | startswith($cwd + "/")))
@@ -599,7 +626,7 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
     # always "mine" (children of THIS session's `Workflow` tool call), so only the
     # cwd gate applies. Previously uncaptured entirely: a running workflow showed
     # no dots, so the line read as "idle" while a fan-out was actively churning.
-    wf_dashboard_json=$(jq --arg cwd "$PWD" --arg own "$own_sid" --argjson mine "$my_sids_json" '
+    wf_dashboard_json=$(jq --arg cwd "$PROJECT_ROOT" --arg own "$own_sid" --argjson mine "$my_sids_json" '
       [.[]
         | select(.kind == "workflow")
         | select(.cwd == $cwd or (.cwd | startswith($cwd + "/")))
@@ -636,8 +663,8 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
     #   - mine_count == 0 AND other_count > 0 → fall back to old "👤 main 👥 N other"
     #   - all zero                  → emit nothing
     summaries_count=0
-    if [ -d "$PWD/.claude/state" ]; then
-      summaries_count=$(find "$PWD/.claude/state" -maxdepth 1 -name 'pwt-completion-summary-*.md' 2>/dev/null | wc -l | tr -d ' ')
+    if [ -d "$PROJECT_ROOT/.claude/state" ]; then
+      summaries_count=$(find "$PROJECT_ROOT/.claude/state" -maxdepth 1 -name 'pwt-completion-summary-*.md' 2>/dev/null | wc -l | tr -d ' ')
     fi
 
     # Render one bucket: dots + trailing count summary.
@@ -717,70 +744,176 @@ tier_color() {  # <tier> → SGR params for C()
   esac
 }
 
-# Line 2: Claude plan usage (5-hour + 7-day windows) + session time
+# Line 2: Claude plan usage (5h + 7d + model-scoped weekly windows) + session time
 #
-# Data source: Anthropic's /api/oauth/usage endpoint — the exact data the
-# interactive `/usage` slash command shows. We don't compute it ourselves;
-# we just call the same API Claude Code calls and surface the result.
+# Data: the `rate_limits` object Claude Code passes on stdin (this session's
+# last API response) reconciled with the account-keyed /api/oauth/usage cache
+# that plan-usage.sh refreshes off the render path — the exact data the
+# interactive `/usage` slash command shows. Full contract:
+# docs/operations/statusline-usage-reporting.md
 #
 # Context-remaining was removed: it lied after auto-compact, /compact is
 # already prompted by Claude Code itself when imminent, and `/context`
 # is one keystroke when the user wants the visual grid view.
 line2=""
-PLAN_USAGE_HELPER="$PWD/.claude/scripts/plan-usage.sh"
+# ── Plan usage: two sources, reconciled ─────────────────────────────────────
+# (a) stdin `rate_limits` (Claude Code ≥ 2.1.251): the 5h/7d gauge from THIS
+#     session's most recent API response. Zero cost and exactly the identity this
+#     pane bills to — but it only moves when THIS pane makes a request, so an idle
+#     pane's copy goes stale while other panes on the same account keep burning.
+# (b) plan-usage.sh: the machine-wide, ACCOUNT-KEYED /api/oauth/usage cache,
+#     refreshed every 60 s by a DETACHED bounded singleton — never in this render
+#     path. Claude Code cancels an in-flight status-line command when the next
+#     trigger fires; a synchronous fetch here was killed under load, so the line
+#     froze at "5h 87%" while the account was at 100% and every session on it was
+#     being rejected (2026-09-02). The helper also carries what stdin does not:
+#     the model-scoped weekly limits (the Fable bucket has been the BINDING limit
+#     at 61% while 5h read 7%), which limit is_active (▸), locked_reason, the
+#     sample's age and a burn-rate ETA.
+# Usage only rises inside a window, so for 5h/7d the truest current value is the
+# MAX of the readings whose resets_at has not passed. Every number is colored by
+# its own heat tier (usage_tier); an ETA under 15 min is hot regardless of the
+# percentage, because "87%" and "100% in six minutes" are the same fact.
+PLAN_USAGE_HELPER="$PROJECT_ROOT/.claude/scripts/plan-usage.sh"
+plan_json=""
 if [ -x "$PLAN_USAGE_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
   plan_json=$("$PLAN_USAGE_HELPER" 2>/dev/null)
-  if [ -n "$plan_json" ] && [ "$plan_json" != "{}" ]; then
-    five_hr=$(echo "$plan_json" | jq -r '.five_hour.utilization // empty' 2>/dev/null)
-    seven_d=$(echo "$plan_json" | jq -r '.seven_day.utilization // empty' 2>/dev/null)
-    five_hr_reset=$(echo "$plan_json" | jq -r '.five_hour.resets_at // empty' 2>/dev/null)
-
-    # Format reset time as LOCAL HH:MM. The API returns ISO-8601 in UTC;
-    # we use python3 because macOS `date -j` doesn't handle timezone-aware
-    # ISO parsing cleanly. Falls back to empty on any error.
-    reset_local=""
-    if [ -n "$five_hr_reset" ]; then
-      reset_local=$(RESET_TS="$five_hr_reset" python3 -c '
-import os
-from datetime import datetime
-try:
-    ts = os.environ.get("RESET_TS", "")
-    # Tolerate trailing Z or +HH:MM, plus fractional seconds
-    ts_clean = ts.replace("Z", "+00:00")
-    dt = datetime.fromisoformat(ts_clean)
-    # astimezone() with no arg converts UTC-aware dt → local tz
-    print(dt.astimezone().strftime("%H:%M"))
-except Exception:
-    pass
-' 2>/dev/null)
-    fi
-
-    # Color by utilization (5-hour is what matters most for active-session pressure).
-    # The tiers come from usage_tier/tier_color, SHARED with the account-rotation
-    # advisory further down so the two segments never disagree side by side.
-    five_color() { :; }
-    if [ -n "$five_hr" ]; then
-      five_int=$(printf '%.0f' "$five_hr" 2>/dev/null || echo 0)
-      five_sgr=$(tier_color "$(usage_tier "$five_int")")
-      five_color() { if [ "$use_color" -eq 1 ]; then printf '\033[%sm' "$five_sgr"; fi; }
-    fi
-
-    # Build the segment: "📊 Plan: 5h 2% (resets 18:00) · 7d 11% · 👤 email (tier)"
-    if [ -n "$five_hr" ]; then
-      five_hr_fmt=$(printf '%.0f' "$five_hr" 2>/dev/null || echo "$five_hr")
-      line2="📊 $(C '38;5;117')Plan:$(rst) $(five_color)5h ${five_hr_fmt}%$(rst)"
-      [ -n "$reset_local" ] && line2="$line2 $(C '38;5;245')(resets ${reset_local})$(rst)"
-      if [ -n "$seven_d" ]; then
-        seven_d_fmt=$(printf '%.0f' "$seven_d" 2>/dev/null || echo "$seven_d")
-        line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;117')7d ${seven_d_fmt}%$(rst)"
-      fi
-    fi
+  [ "$plan_json" = "{}" ] && plan_json=""
+fi
+plan_tier=cool      # hottest tier across every limit — the advisory inherits it
+plan_limited=0
+five_hr=""; seven_d=""
+tier_rank() { case "$1" in hot) echo 2 ;; warm) echo 1 ;; *) echo 0 ;; esac; }
+fmt_dur() {  # seconds → 45s | 6m | 1h12m
+  local s="${1:-0}"
+  case "$s" in ''|*[!0-9]*) s=0 ;; esac
+  if [ "$s" -ge 3600 ]; then printf '%dh%02dm' $(( s / 3600 )) $(( (s % 3600) / 60 ))
+  elif [ "$s" -ge 60 ]; then printf '%dm' $(( s / 60 ))
+  else printf '%ds' "$s"; fi
+}
+# lim_seg <label> <pct> <eta_s> <locked_reason> <severity> <is_active 0|1>
+# Sets LIM_OUT (the colored segment) and bubbles the heat into plan_tier. Not
+# called in a $(…) so the globals survive.
+lim_seg() {
+  local label="$1" pct="$2" eta="$3" lock="$4" sev="$5" active="$6" pi tier mark="" etxt=""
+  pi=$(printf '%.0f' "$pct" 2>/dev/null) || pi=0
+  case "$pi" in ''|*[!0-9]*) pi=0 ;; esac
+  tier=$(usage_tier "$pi")
+  # The API's own severity (enum not published beyond "normal"): a non-normal
+  # reading can only raise the tier, never lower it.
+  case "$sev" in ''|normal) ;; warning) [ "$tier" = cool ] && tier=warm ;; *) tier=hot ;; esac
+  case "$eta" in ''|*[!0-9]*) eta="" ;; esac
+  if [ -n "$eta" ]; then
+    if [ "$eta" -lt 900 ]; then tier=hot
+    elif [ "$eta" -lt 2700 ] && [ "$tier" = cool ]; then tier=warm; fi
+    [ "$eta" -lt 5400 ] && etxt=" →100% in $(fmt_dur "$eta")"
   fi
+  [ "$active" = "1" ] && mark="▸"
+  if [ -n "$lock" ] || [ "$pi" -ge 100 ]; then
+    tier=hot; plan_limited=1
+    LIM_OUT="$(C "$(tier_color hot)")${mark}${label} ⛔ LIMITED$(rst)"
+  else
+    LIM_OUT="$(C "$(tier_color "$tier")")${mark}${label} ${pi}%${etxt}$(rst)"
+  fi
+  [ "$(tier_rank "$tier")" -gt "$(tier_rank "$plan_tier")" ] && plan_tier="$tier"
+  return 0
+}
+pick_max() {  # <a> <b> → the larger numeric reading; empty-safe
+  local a="$1" b="$2" ai bi
+  [ -n "$a" ] || { printf '%s' "$b"; return 0; }
+  [ -n "$b" ] || { printf '%s' "$a"; return 0; }
+  ai=$(printf '%.0f' "$a" 2>/dev/null) || ai=0; bi=$(printf '%.0f' "$b" 2>/dev/null) || bi=0
+  if [ "${ai:-0}" -ge "${bi:-0}" ] 2>/dev/null; then printf '%s' "$a"; else printf '%s' "$b"; fi
+}
+if [ "$HAS_JQ" -eq 1 ]; then
+  now_s=$(date +%s)
+  # (a) stdin gauge: used_percentage + resets_at (epoch s), each window optional.
+  sd_five=""; sd_five_reset=""; sd_seven=""; sd_seven_reset=""
+  sd_line=$(printf '%s' "$input" | jq -r '[(.rate_limits.five_hour.used_percentage // ""), (.rate_limits.five_hour.resets_at // ""), (.rate_limits.seven_day.used_percentage // ""), (.rate_limits.seven_day.resets_at // "")] | map(tostring) | join("|")' 2>/dev/null)
+  if [ -n "$sd_line" ]; then
+    sd_five="${sd_line%%|*}"; _r="${sd_line#*|}"; sd_five_reset="${_r%%|*}"; _r="${_r#*|}"; sd_seven="${_r%%|*}"; sd_seven_reset="${_r#*|}"
+    unset _r
+  fi
+  # (b) helper sample — one jq, one field per line (empty lines are empty fields).
+  h_five=""; h_seven=""; h_five_reset=""; h_seven_reset=""; h_five_lock=""; h_seven_lock=""
+  h_fetched=""; h_stale_max=""; h_ttl=""; h_five_eta=""; h_seven_eta=""; h_active=""; h_five_sev=""; h_seven_sev=""
+  if [ -n "$plan_json" ]; then
+    pf=$(printf '%s' "$plan_json" | jq -r '
+      def ep: if . == null or . == "" then "" else (tostring | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | (try fromdateiso8601 catch "") | tostring) end;
+      def n: if . == null then "" else tostring end;
+      (.five_hour.utilization | n), (.seven_day.utilization | n),
+      (.five_hour.resets_at | ep), (.seven_day.resets_at | ep),
+      (.five_hour.locked_reason | n), (.seven_day.locked_reason | n),
+      (._meta.fetched_at | n), (._meta.stale_max_s | n), (._meta.ttl_s | n),
+      (._meta.rates.five_hour.eta_s | n), (._meta.rates.seven_day.eta_s | n),
+      ([.limits[]? | select(.is_active == true) | .kind] | first // ""),
+      ([.limits[]? | select(.kind == "session") | .severity] | first // ""),
+      ([.limits[]? | select(.kind == "weekly_all") | .severity] | first // "")
+    ' 2>/dev/null)
+    pf_i=0
+    while IFS= read -r pf_l; do
+      case $pf_i in
+        0) h_five="$pf_l" ;; 1) h_seven="$pf_l" ;; 2) h_five_reset="$pf_l" ;; 3) h_seven_reset="$pf_l" ;;
+        4) h_five_lock="$pf_l" ;; 5) h_seven_lock="$pf_l" ;; 6) h_fetched="$pf_l" ;; 7) h_stale_max="$pf_l" ;;
+        8) h_ttl="$pf_l" ;; 9) h_five_eta="$pf_l" ;; 10) h_seven_eta="$pf_l" ;; 11) h_active="$pf_l" ;;
+        12) h_five_sev="$pf_l" ;; 13) h_seven_sev="$pf_l" ;;
+      esac
+      pf_i=$(( pf_i + 1 ))
+    done <<< "$pf"
+    # A reading from a window that has already reset describes the PREVIOUS
+    # window — drop it rather than show a high number that is no longer true.
+    case "$h_five_reset" in *[!0-9]*|'') ;; *) [ "$h_five_reset" -le "$now_s" ] && { h_five=""; h_five_reset=""; h_five_lock=""; h_five_eta=""; } ;; esac
+    case "$h_seven_reset" in *[!0-9]*|'') ;; *) [ "$h_seven_reset" -le "$now_s" ] && { h_seven=""; h_seven_reset=""; h_seven_lock=""; h_seven_eta=""; } ;; esac
+  fi
+  case "$sd_five_reset" in *[!0-9]*|'') ;; *) [ "$sd_five_reset" -le "$now_s" ] && { sd_five=""; sd_five_reset=""; } ;; esac
+  case "$sd_seven_reset" in *[!0-9]*|'') ;; *) [ "$sd_seven_reset" -le "$now_s" ] && { sd_seven=""; sd_seven_reset=""; } ;; esac
+
+  five_hr=$(pick_max "$h_five" "$sd_five")
+  seven_d=$(pick_max "$h_seven" "$sd_seven")
+  five_reset_ep="${h_five_reset:-$sd_five_reset}"
+  five_active=0; seven_active=0
+  case "$h_active" in session) five_active=1 ;; weekly_all) seven_active=1 ;; esac
+
+  if [ -n "$five_hr" ]; then
+    lim_seg "5h" "$five_hr" "$h_five_eta" "$h_five_lock" "$h_five_sev" "$five_active"
+    line2="📊 $(C '38;5;117')Plan:$(rst) $LIM_OUT"
+    case "$five_reset_ep" in ''|*[!0-9]*) ;; *) line2="$line2 $(C '38;5;245')(resets $(fmt_time_hm "$five_reset_ep"))$(rst)" ;; esac
+  fi
+  if [ -n "$seven_d" ]; then
+    lim_seg "7d" "$seven_d" "$h_seven_eta" "$h_seven_lock" "$h_seven_sev" "$seven_active"
+    if [ -n "$line2" ]; then line2="$line2 $(C '38;5;245')·$(rst) $LIM_OUT"; else line2="📊 $(C '38;5;117')Plan:$(rst) $LIM_OUT"; fi
+  fi
+  # Model-scoped weekly buckets (e.g. "Fable 61%") — a separate limit that can be
+  # the binding one; stdin never carries it, only the helper does.
+  if [ -n "$plan_json" ]; then
+    sc_lines=$(printf '%s' "$plan_json" | jq -r '. as $d | .limits[]? | select(.kind == "weekly_scoped") | (((.scope.model.display_name) // "?") as $n | [$n, ((.percent // "") | tostring), (if .is_active == true then "1" else "0" end), (.severity // ""), (($d._meta.rates.scoped[$n].eta_s // "") | tostring)] | join("|"))' 2>/dev/null)
+    while IFS='|' read -r sc_name sc_pct sc_active sc_sev sc_eta; do
+      [ -n "$sc_name" ] && [ -n "$sc_pct" ] || continue
+      lim_seg "$sc_name" "$sc_pct" "$sc_eta" "" "$sc_sev" "$sc_active"
+      if [ -n "$line2" ]; then line2="$line2 $(C '38;5;245')·$(rst) $LIM_OUT"; else line2="📊 $(C '38;5;117')Plan:$(rst) $LIM_OUT"; fi
+    done <<< "$sc_lines"
+  fi
+  # Sample age. Absent for a legacy helper (no _meta). Quiet under 2×TTL; a grey
+  # ⟳ once the refresher is late; a loud STALE past stale_max — red when stdin
+  # holds no reading of its own, peach when this pane's own gauge still moves.
+  case "$h_fetched" in ''|*[!0-9]*) ;; *)
+    plan_age=$(( now_s - h_fetched )); [ "$plan_age" -lt 0 ] && plan_age=0
+    case "$h_stale_max" in ''|*[!0-9]*) h_stale_max=900 ;; esac
+    case "$h_ttl" in ''|*[!0-9]*) h_ttl=60 ;; esac
+    if [ -n "$line2" ]; then
+      if [ "$plan_age" -ge "$h_stale_max" ]; then
+        stale_tier=hot; [ -n "$sd_five" ] && stale_tier=warm
+        line2="$line2 $(C "$(tier_color "$stale_tier")")⚠ STALE $(fmt_dur "$plan_age")$(rst)"
+      elif [ "$plan_age" -ge $(( h_ttl * 2 )) ]; then
+        line2="$line2 $(C '38;5;245')⟳$(fmt_dur "$plan_age")$(rst)"
+      fi
+    fi ;;
+  esac
 fi
 
 # Append account identity to line2 so multi-account users can tell at a glance
 # which Claude account is logged in. Reads ~/.claude.json — local, no network.
-ACCOUNT_INFO_HELPER="$PWD/.claude/scripts/account-info.sh"
+ACCOUNT_INFO_HELPER="$PROJECT_ROOT/.claude/scripts/account-info.sh"
 if [ -x "$ACCOUNT_INFO_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
   acct_json=$("$ACCOUNT_INFO_HELPER" 2>/dev/null)
   if [ -n "$acct_json" ] && [ "$acct_json" != "{}" ]; then
@@ -811,7 +944,7 @@ fi
 # Local-cached + bounded + fail-open (no segment) via
 # account-advice.sh; skipped on lean/pipeline statuslines to keep supervising
 # renders cheap.
-ACCOUNT_ADVICE_HELPER="$PWD/.claude/scripts/account-advice.sh"
+ACCOUNT_ADVICE_HELPER="$PROJECT_ROOT/.claude/scripts/account-advice.sh"
 if [ "$PWT_LEAN" -eq 0 ] && [ -x "$ACCOUNT_ADVICE_HELPER" ] && [ "$HAS_JQ" -eq 1 ] && [ -n "$line2" ]; then
   advice_json=$("$ACCOUNT_ADVICE_HELPER" "${acct_email:-}" 2>/dev/null)
   if [ -n "$advice_json" ] && [ "$advice_json" != "{}" ]; then
@@ -850,6 +983,9 @@ if [ "$PWT_LEAN" -eq 0 ] && [ -x "$ACCOUNT_ADVICE_HELPER" ] && [ "$HAS_JQ" -eq 1
         done
         adv_tier=$(usage_tier "$adv_heat")
         [ "$adv_hot" = "true" ] && adv_tier=hot
+        # …and never cooler than the plan segment itself, which also folds in the
+        # model-scoped limits, the API severity and the burn-rate ETA.
+        [ "$(tier_rank "${plan_tier:-cool}")" -gt "$(tier_rank "$adv_tier")" ] && adv_tier="${plan_tier:-cool}"
         case "$adv_tier" in
           hot)  line2="$line2 $(C '38;5;245')·$(rst) $(C "$(tier_color hot)")⚠ switch → ${adv_who}${adv_pct}$(rst)" ;;
           warm) line2="$line2 $(C '38;5;245')·$(rst) $(C "$(tier_color warm)")👉 next: ${adv_who}${adv_pct}$(rst)" ;;
@@ -900,7 +1036,7 @@ line4=""
 # Skipped in lean mode (F1): this helper aggregates ~/.claude/projects/**/*.jsonl,
 # so like ccusage its cost scales with the run's own transcript output — the same
 # feedback loop, one layer over. Its 60s cache bounds the rate, not the cost.
-USAGE_BREAKDOWN_HELPER="$PWD/.claude/scripts/usage-breakdown.sh"
+USAGE_BREAKDOWN_HELPER="$PROJECT_ROOT/.claude/scripts/usage-breakdown.sh"
 if [ "$PWT_LEAN" -eq 0 ] && [ -x "$USAGE_BREAKDOWN_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
   ub_json=$("$USAGE_BREAKDOWN_HELPER" 2>/dev/null)
   if [ -n "$ub_json" ] && [ "$ub_json" != "{}" ]; then
