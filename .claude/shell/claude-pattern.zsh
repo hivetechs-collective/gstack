@@ -46,6 +46,37 @@ git() {
 _CP_SHELL_SELF="${(%):-%x}"
 _CP_ACCOUNTS_CLI="${_CP_SHELL_SELF:A:h:h}/commands/plan-w-team/accounts/accounts.sh"
 
+# ── Model Tiering v7 (2026-09-02): ONE Fable lead session per host ─────────────
+# Fable is the design tier only. Every interactive session takes the model in
+# ~/.claude/settings.json (claude-opus-4-8 under v7); the ONE session that needs
+# Fable is launched with CLAUDE_LEAD=1, which adds `--model claude-fable-5-1` and
+# holds a pid lock (CP_FABLE_LEAD_LOCK, default ~/.config/claude-pattern/fable-lead.pid).
+# A second CLAUDE_LEAD=1 launch while that lead is live is downgraded to Opus 4.8
+# with a notice — never a second Fable. An explicit --model in argv always wins.
+# Seams: CP_LEAD_MODEL, CP_NONLEAD_MODEL, CP_FABLE_LEAD_LOCK; tests override
+# _cp_fable_lead_live to simulate a live lead.
+_cp_fable_lead_live() {   # $1 = lock file; true when its pid is alive AND hosts a claude child
+  local p; p="$(cat "$1" 2>/dev/null)"
+  [ -n "$p" ] && kill -0 "$p" 2>/dev/null && pgrep -P "$p" -f claude >/dev/null 2>&1
+}
+_cp_fable_lead_gate() {   # prints the --model args to add (nothing when not a lead launch)
+  [ "${CLAUDE_LEAD:-0}" = 1 ] || return 0
+  local lock="${CP_FABLE_LEAD_LOCK:-$HOME/.config/claude-pattern/fable-lead.pid}"
+  mkdir -p "${lock:h}" 2>/dev/null
+  if _cp_fable_lead_live "$lock" && [ "$(cat "$lock" 2>/dev/null)" != "$$" ]; then
+    echo "⚠️  A Fable lead session is already live (pid $(cat "$lock")) — one Fable lead per host (Model Tiering v7). Launching this one on ${CP_NONLEAD_MODEL:-claude-opus-4-8}." >&2
+    printf -- "--model\n%s\n" "${CP_NONLEAD_MODEL:-claude-opus-4-8}"
+  else
+    printf "%s\n" "$$" > "$lock"
+    printf -- "--model\n%s\n" "${CP_LEAD_MODEL:-claude-fable-5-1}"
+  fi
+}
+_cp_fable_lead_release() {
+  local lock="${CP_FABLE_LEAD_LOCK:-$HOME/.config/claude-pattern/fable-lead.pid}"
+  [ "$(cat "$lock" 2>/dev/null)" = "$$" ] && rm -f "$lock"
+  return 0
+}
+
 # Claude Code launcher — per-repo task lists and long-run defaults. It does NOT
 # rotate the account (interactive identity is keychain/`/login` bound; an env
 # token can't switch it). The status line shows which account to move to, and
@@ -65,7 +96,7 @@ claude() {
     export CLAUDE_CODE_TASK_LIST_ID="$(basename "$(command git rev-parse --show-toplevel)")"
   fi
   unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE   # REMOVED 2026-08-30: undocumented; stacked on AUTO_COMPACT_WINDOW it compacted at ~25% of the window (62K) and thrashed every new session
-  : "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:=250000}"   # documented knob (tokens): compact interactive sessions at ~250K instead of the 1M limit (2026-08-30 burn audit)
+  : "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:=150000}"   # documented knob (tokens): compact interactive sessions at ~150K. Model Tiering v7 (2026-09-02): burn ∝ turns × context; 250K (v6) let 4–5 Fable terminals eat a 5-hour window in a morning
   export CLAUDE_CODE_AUTO_COMPACT_WINDOW
   : "${BASH_DEFAULT_TIMEOUT_MS:=300000}"
   export BASH_DEFAULT_TIMEOUT_MS
@@ -83,7 +114,13 @@ claude() {
     # the old account (2026-08-31 finding). Interactive rotation is ADVISORY:
     # the status line shows the account to move to, and `claude-account` /
     # `/login` switch it. Fleet/bg-worker rotation is separate and unaffected.
-    command claude --allowedTools "Grep,Glob" "$@"
+    local -a _cp_model_args; _cp_model_args=()
+    if [[ " $* " != *" --model "* && " $* " != *" --model="* ]]; then
+      _cp_model_args=("${(@f)$(_cp_fable_lead_gate)}")
+      [ -n "${_cp_model_args[1]:-}" ] || _cp_model_args=()
+    fi
+    command claude --allowedTools "Grep,Glob" "${_cp_model_args[@]}" "$@"
+    local _cp_rc=$?; _cp_fable_lead_release; return $_cp_rc
   else
     # Utility subcommands (`claude mcp list`, `claude agents`, …).
     command claude "$@"

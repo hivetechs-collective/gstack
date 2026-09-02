@@ -777,7 +777,8 @@ line2=""
 PLAN_USAGE_HELPER="$PROJECT_ROOT/.claude/scripts/plan-usage.sh"
 plan_json=""
 if [ -x "$PLAN_USAGE_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
-  plan_json=$("$PLAN_USAGE_HELPER" 2>/dev/null)
+  # Signed with this pane's session_id so a failure backoff gates only its writer (2.38.1).
+  plan_json=$(PLAN_USAGE_WRITER="${session_id:-}" "$PLAN_USAGE_HELPER" 2>/dev/null)
   [ "$plan_json" = "{}" ] && plan_json=""
 fi
 plan_tier=cool      # hottest tier across every limit — the advisory inherits it

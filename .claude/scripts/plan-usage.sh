@@ -64,6 +64,19 @@
 #   PLAN_USAGE_FAIL_BACKOFF   seconds a render waits after a failed refresh before it
 #                            spawns another (60); a 429 uses the Retry-After header
 #                            instead (default 120, clamped 30..900)
+#   PLAN_USAGE_NOTOKEN_BACKOFF  seconds a render waits after a refresh that could not
+#                            even read a token (no keychain item for this user, no
+#                            curl/security/python3 on PATH) — 15, short on purpose:
+#                            such a failure is the SPAWNER's environment, not the
+#                            account's, and the cache is shared by every pane on
+#                            that login (2026-09-02: a renderer with no USER in its
+#                            env kept every pane ⚠ STALE for 37 min)
+#   PLAN_USAGE_WRITER         identity of this renderer (the status line passes its
+#                            session_id; default: the helper path). A failure backoff
+#                            gates only its writer; a 429 window gates everyone.
+#   PLAN_USAGE_SYSTEM_PATH    dirs appended to PATH so a lean spawner PATH still finds
+#                            curl/security/python3 (default /usr/bin:/bin:/usr/sbin:
+#                            /opt/homebrew/bin:/usr/local/bin; tests set it empty)
 #   PLAN_USAGE_FETCH_RETRY_AFTER  (tests) Retry-After seconds when the fetch stub exits 29
 #   PLAN_USAGE_FETCH_CMD      override the fetch (tests): a command that prints the
 #                             usage JSON body on stdout; exit 0 = success, exit 22 =
@@ -81,6 +94,10 @@
 # bash 3.2 (mac-mini /bin/bash): no `declare -A`, no `${v,,}`, no mapfile.
 
 set -u
+# A renderer's PATH is whatever spawned its session; the tools this needs (curl,
+# security, python3, sed, date) live in fixed places, so a lean PATH must never
+# read as "no curl" (2.38.1).
+PATH="$PATH:${PLAN_USAGE_SYSTEM_PATH-/usr/bin:/bin:/usr/sbin:/opt/homebrew/bin:/usr/local/bin}"; export PATH
 
 MODE=serve
 META=0
@@ -97,6 +114,7 @@ done
 TTL="${PLAN_USAGE_CACHE_TTL:-120}"
 STALE_MAX="${PLAN_USAGE_STALE_MAX:-900}"
 FAIL_BACKOFF="${PLAN_USAGE_FAIL_BACKOFF:-60}"
+NOTOKEN_BACKOFF="${PLAN_USAGE_NOTOKEN_BACKOFF:-15}"
 COLD_WAIT="${PLAN_USAGE_COLD_WAIT:-2}"
 BOUND_S="${PLAN_USAGE_TIMEOUT_S:-15}"
 CURL_MAX="${PLAN_USAGE_CURL_MAX_TIME:-6}"
@@ -138,6 +156,13 @@ CACHE="$CACHE_DIR/$KEY.json"
 HIST="$CACHE_DIR/$KEY.history"
 LOCK="$CACHE_DIR/$KEY.lock"
 ERRF="$CACHE_DIR/$KEY.err"
+# Who is refreshing. The status line passes its session_id; a bare call is the
+# helper path. A failure backoff is honored ONLY by its writer (2.38.1): every
+# pane on a login shares this cache, and on 2026-09-02 a 2.37.0 helper copy inside
+# a worktree (no backoff logic at all) failed every 10 s and re-minted .err, which
+# every newer pane obeyed for 60 s — ⚠ STALE 37m while a foreground --sync worked.
+# A 429 window stays shared: that is the account's state, not the writer's.
+WRITER=$(printf '%s' "${PLAN_USAGE_WRITER:-$0}" | tr -c 'A-Za-z0-9._/-' '_' | cut -c1-200)
 
 __age_s() {
   local f="$1" m
@@ -288,9 +313,10 @@ PY
 # Runs under $LOCK (owned by whoever created it). Every failure leaves the cache
 # UNTOUCHED (the status line shows the growing age instead of a blank) and records
 # the reason in $ERRF; success replaces the cache atomically and clears $ERRF.
+FETCH_DETAIL=""   # on 3/4: WHICH tool or keychain step failed (never a token); __fetch prints it
 __fail() {  # <reason> [http_code]
-  printf '{"at":%s,"reason":"%s","code":"%s"}\n' "$(date +%s)" "$1" "${2:-}" > "$ERRF" 2>/dev/null || true
-  echo "plan-usage: refresh failed: $1 ${2:-}" >&2
+  printf '{"at":%s,"reason":"%s","code":"%s","detail":"%s","writer":"%s"}\n' "$(date +%s)" "$1" "${2:-}" "$FETCH_DETAIL" "$WRITER" > "$ERRF" 2>/dev/null || true
+  echo "plan-usage: refresh failed: $1 ${2:-} $FETCH_DETAIL" >&2
   return 0
 }
 # HTTP 429: the endpoint's Retry-After (seconds; default 120, clamp 30..900) becomes
@@ -308,38 +334,54 @@ __rate_limited() {  # [retry-after-seconds]
 # Seconds a render must still wait before spawning another refresh (0 = none):
 # Retry-After after a 429, FAIL_BACKOFF after any other failure; a success clears it.
 __backoff_left() {
-  local at reason code until now
+  local at reason code until now writer
   [ -s "$ERRF" ] || { echo 0; return 0; }
   at=$(sed -n 's/.*"at":\([0-9]*\).*/\1/p' "$ERRF" 2>/dev/null | head -1)
   reason=$(sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' "$ERRF" 2>/dev/null | head -1)
   code=$(sed -n 's/.*"code":"\([0-9]*\)".*/\1/p' "$ERRF" 2>/dev/null | head -1)
+  writer=$(sed -n 's/.*"writer":"\([^"]*\)".*/\1/p' "$ERRF" 2>/dev/null | head -1)
   case "$at" in ''|*[!0-9]*) echo 0; return 0 ;; esac
-  if [ "$reason" = "rate-limited" ] && [ -n "$code" ]; then until=$(( at + code )); else until=$(( at + FAIL_BACKOFF )); fi
+  # Another renderer's failure (or a record from a helper too old to sign one) is
+  # information, not a gate: its environment broke, mine may work.
+  if [ "$reason" != "rate-limited" ] && [ "$writer" != "$WRITER" ]; then echo 0; return 0; fi
+  if [ "$reason" = "rate-limited" ] && [ -n "$code" ]; then until=$(( at + code ))
+  elif [ "$reason" = "no-token" ] || [ "$reason" = "no-tool" ]; then until=$(( at + NOTOKEN_BACKOFF ))
+  else until=$(( at + FAIL_BACKOFF )); fi
   now=$(date +%s)
   if [ "$until" -gt "$now" ]; then echo $(( until - now )); else echo 0; fi
 }
 
-__fetch() {  # → prints body; return 0 = HTTP 200 body, 22 = HTTP error, 1 = other
-  local tok src="$1" body code hdr ra frc
+__fetch() {  # → prints body; return 0 = HTTP 200 body, 22 = HTTP error, 3 = no token, 4 = no tool, 1 = other
+  local tok src="$1" body code hdr ra frc acct kc_out kc_rc
+  FETCH_DETAIL=""
   if [ -n "${PLAN_USAGE_FETCH_CMD:-}" ]; then
     "$PLAN_USAGE_FETCH_CMD" "--$src" 2>/dev/null; frc=$?
     [ "$frc" = "29" ] && __rate_limited "${PLAN_USAGE_FETCH_RETRY_AFTER:-}"   # tests: exit 29 = HTTP 429
     return $frc
   fi
-  command -v curl >/dev/null 2>&1 || return 1
+  command -v curl >/dev/null 2>&1 || { printf 'missing=curl'; return 4; }
   if [ "$src" = "env" ]; then
     tok="${CLAUDE_CODE_OAUTH_TOKEN:-}"
   else
-    command -v security >/dev/null 2>&1 || return 1
-    command -v python3  >/dev/null 2>&1 || return 1
-    tok=$(security find-generic-password -s "Claude Code-credentials" -a "$USER" -w 2>/dev/null \
-      | python3 -c 'import sys,json
+    command -v security >/dev/null 2>&1 || { printf 'missing=security'; return 4; }
+    command -v python3  >/dev/null 2>&1 || { printf 'missing=python3'; return 4; }
+    # The keychain item is per login user. A renderer spawned without USER in its
+    # environment (a bg daemon session) asked for account "" and got nothing —
+    # then its failure backoff starved every pane on that login (2026-09-02).
+    acct="${USER:-$(id -un 2>/dev/null)}"
+    kc_out=$(security find-generic-password -s "Claude Code-credentials" -a "$acct" -w 2>/dev/null); kc_rc=$?
+    tok=$(printf '%s' "$kc_out" | python3 -c 'import sys,json
 try:
     print(json.load(sys.stdin)["claudeAiOauth"]["accessToken"])
 except Exception:
     pass' 2>/dev/null)
+    # Diagnosable, never sensitive: the security exit status (44 = no item for this
+    # account, 36 = keychain locked / no UI), the account asked for, the blob size.
+    # __fetch runs inside $(…), so on 3/4 the detail IS the printed body.
+    [ -n "$tok" ] || { printf 'keychain rc=%s acct=%s bytes=%s' "$kc_rc" "$acct" "${#kc_out}"; return 3; }
+    kc_out=""
   fi
-  [ -n "$tok" ] || return 1
+  [ -n "$tok" ] || { printf 'env token empty'; return 3; }
   body="$CACHE.body.$$"; hdr="$CACHE.hdr.$$"
   # `-K -`: the Authorization header travels in a curl CONFIG on stdin, so the
   # token is not on argv (readable by any process of this user via `ps`).
@@ -372,6 +414,8 @@ __refresh() {
   command -v python3 >/dev/null 2>&1 || { __fail "no-python3"; return 0; }
   body=$(__fetch "$src"); rc=$?
   [ "$rc" = "29" ] && return 0                     # 429: __rate_limited already recorded the window
+  [ "$rc" = "3" ] && { FETCH_DETAIL="$body"; __fail "no-token" "$rc"; return 0; }   # spawner's environment, short backoff
+  [ "$rc" = "4" ] && { FETCH_DETAIL="$body"; __fail "no-tool" "$rc"; return 0; }
   if [ "$rc" != "0" ] || [ -z "$body" ]; then __fail "fetch" "$rc"; return 0; fi
   now=$(date +%s); tmp="$CACHE.tmp.$$"
   # Validate, stamp _meta, append the history sample, compute rates — one python.

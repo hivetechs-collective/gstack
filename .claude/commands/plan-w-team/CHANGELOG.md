@@ -14,6 +14,51 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.38.1] — 2026-09-02 (plan-usage: a foreign renderer's failure must not starve the shared cache) (04b5257)
+
+Right after the 3:00pm reset every pane read `⚠ STALE 37m`: the account sample had
+not refreshed since 2:28pm although a foreground `--sync` succeeded at once. Caught in
+the act with a `ps` sampler: the refresher was a **2.37.0 copy of the helper inside a
+cleanscale worktree** (`pwt-work-queue-item-fix-1886-…`; worktrees keep whatever
+`.claude/scripts/` their branch had, the sync only touches the main checkout). That copy
+has no backoff logic: it failed every 10 s (`code 1`) and re-minted `.err`, and every
+2.37.1+ pane obeyed the 60 s backoff it kept renewing. One broken renderer starved the
+whole login.
+
+- `plan-usage.sh` + `statusline.sh`: the status line signs each call with its
+  `session_id` (`PLAN_USAGE_WRITER`), `.err` records the writer, and a failure backoff
+  gates ONLY its writer — a record with no writer (an older copy) gates nobody; a 429
+  window stays shared (the account's state). Keychain account falls back to `id -un`;
+  an empty token records `no-token` (missing curl/security/python3 → `no-tool`) with a
+  15 s backoff (`PLAN_USAGE_NOTOKEN_BACKOFF`); the fixed system dirs are appended to
+  PATH (`PLAN_USAGE_SYSTEM_PATH`); `.err` carries a `detail` (missing tool, or keychain
+  exit status + account + blob size, never a token) so the next episode names its cause.
+  `plan-usage.test.sh` +10 (47/47); docs env rows + paragraph.
+- Also BDD-renamed the 8 `claude-launcher-wrapper.bats` names that 2.38.0 added
+  without the `given/when/then` shape, so the r10 naming ratchet (and the suite) is
+  green again — the allowlist is legacy-only and capped, so new tests rename, not enlist.
+
+## [2.38.0] — 2026-09-02 (Model Tiering v7 for INTERACTIVE sessions: 150K window, one Fable lead per host, Opus 4.8 default) (f6507f5)
+
+2026-09-02: five accounts exhausted in one 5-hour window. The interactive half of the
+burn was 4–5 Fable terminals (`claude-fable-5-1[1m]` at effort xhigh from
+`~/.claude/settings.json`) compacting at 250K, plus stale-skill repos fanning out on Opus 5.
+Burn is turns × context, and the 250K/v6 cap only trimmed the second factor.
+
+- `.claude/shell/claude-pattern.zsh`: `CLAUDE_CODE_AUTO_COMPACT_WINDOW` defaults to 150000
+  (was 250000); an explicit value still wins.
+- ONE Fable lead per host: `CLAUDE_LEAD=1 claude` adds `--model claude-fable-5-1` and holds a
+  pid lock (`CP_FABLE_LEAD_LOCK`, default `~/.config/claude-pattern/fable-lead.pid`); a second
+  lead launch while that one is live is downgraded to `claude-opus-4-8` with a notice. Every
+  other interactive session takes the model in `~/.claude/settings.json` — set that file to
+  `claude-opus-4-8` / `effortLevel: high` on every operator host (done on both CleanRev hosts).
+  An explicit `--model` in argv always wins; utility subcommands are untouched.
+- `tests/skill/cases/claude-launcher-wrapper.bats` (+8): window default/override, no-model
+  plain launch, lead lock held-then-released, downgrade on a live lead, stale lock, explicit
+  --model, subcommand pass-through.
+- Pairs with cleanscale's fleet-side v7 (`scripts/ops/model-tiers.json`: Sonnet lanes, Opus 4.8
+  judge/CE/hard rows, 200K lanes, `fleet-pause.sh`).
+
 ## [2.37.5] — 2026-09-02 (The operator sweep delivers the status-line bundle past the default-branch guard) (83a81a7)
 
 The 2.37.3 guard defers the bundle on any default-branch checkout with an origin to
