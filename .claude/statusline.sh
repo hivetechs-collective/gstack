@@ -836,7 +836,7 @@ if [ "$HAS_JQ" -eq 1 ]; then
   fi
   # (b) helper sample — one jq, one field per line (empty lines are empty fields).
   h_five=""; h_seven=""; h_five_reset=""; h_seven_reset=""; h_five_lock=""; h_seven_lock=""
-  h_fetched=""; h_stale_max=""; h_ttl=""; h_five_eta=""; h_seven_eta=""; h_active=""; h_five_sev=""; h_seven_sev=""
+  h_fetched=""; h_stale_max=""; h_ttl=""; h_five_eta=""; h_seven_eta=""; h_active=""; h_five_sev=""; h_seven_sev=""; h_login=""
   if [ -n "$plan_json" ]; then
     pf=$(printf '%s' "$plan_json" | jq -r '
       def ep: if . == null or . == "" then "" else (tostring | sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | (try fromdateiso8601 catch "") | tostring) end;
@@ -848,7 +848,8 @@ if [ "$HAS_JQ" -eq 1 ]; then
       (._meta.rates.five_hour.eta_s | n), (._meta.rates.seven_day.eta_s | n),
       ([.limits[]? | select(.is_active == true) | .kind] | first // ""),
       ([.limits[]? | select(.kind == "session") | .severity] | first // ""),
-      ([.limits[]? | select(.kind == "weekly_all") | .severity] | first // "")
+      ([.limits[]? | select(.kind == "weekly_all") | .severity] | first // ""),
+      (._meta.account_email | n)
     ' 2>/dev/null)
     pf_i=0
     while IFS= read -r pf_l; do
@@ -856,7 +857,7 @@ if [ "$HAS_JQ" -eq 1 ]; then
         0) h_five="$pf_l" ;; 1) h_seven="$pf_l" ;; 2) h_five_reset="$pf_l" ;; 3) h_seven_reset="$pf_l" ;;
         4) h_five_lock="$pf_l" ;; 5) h_seven_lock="$pf_l" ;; 6) h_fetched="$pf_l" ;; 7) h_stale_max="$pf_l" ;;
         8) h_ttl="$pf_l" ;; 9) h_five_eta="$pf_l" ;; 10) h_seven_eta="$pf_l" ;; 11) h_active="$pf_l" ;;
-        12) h_five_sev="$pf_l" ;; 13) h_seven_sev="$pf_l" ;;
+        12) h_five_sev="$pf_l" ;; 13) h_seven_sev="$pf_l" ;; 14) h_login="$pf_l" ;;
       esac
       pf_i=$(( pf_i + 1 ))
     done <<< "$pf"
@@ -867,6 +868,30 @@ if [ "$HAS_JQ" -eq 1 ]; then
   fi
   case "$sd_five_reset" in *[!0-9]*|'') ;; *) [ "$sd_five_reset" -le "$now_s" ] && { sd_five=""; sd_five_reset=""; } ;; esac
   case "$sd_seven_reset" in *[!0-9]*|'') ;; *) [ "$sd_seven_reset" -le "$now_s" ] && { sd_seven=""; sd_seven_reset=""; } ;; esac
+  # Login tag (2.37.4): the reset-time identity below cannot tell accounts apart
+  # whose windows COINCIDE — four of the five accounts reset 2:59pm on 2026-09-02
+  # and a pane whose last response came from a 103% account rendered ⛔ LIMITED on
+  # the current login at 80%. stdin is this session's last response, so the payload
+  # is tagged with the login it was FIRST seen under (one tiny file per session,
+  # machine-local); an unchanged payload after the login moved on is the previous
+  # account's gauge and is dropped. A new payload re-tags under the current login.
+  # No session_id, or no login in the sample ⇒ the 2.37.1 behaviour alone.
+  if [ -n "${session_id:-}" ] && [ -n "$h_login" ] && [ -n "$sd_line" ] && [ "$sd_line" != "|||" ]; then
+    sd_tag_dir="${PLAN_USAGE_STDIN_TAG_DIR:-$HOME/.config/claude-pattern/stdin-tags}"
+    sd_tag_f="$sd_tag_dir/${session_id}.tag"
+    sd_owner=""
+    if [ -f "$sd_tag_f" ] && [ "$(sed -n 1p "$sd_tag_f" 2>/dev/null)" = "$sd_line" ]; then
+      sd_owner=$(sed -n 2p "$sd_tag_f" 2>/dev/null)
+    else
+      mkdir -p "$sd_tag_dir" 2>/dev/null
+      printf '%s\n%s\n' "$sd_line" "$h_login" > "$sd_tag_f.$$" 2>/dev/null && mv -f "$sd_tag_f.$$" "$sd_tag_f" 2>/dev/null
+      find "$sd_tag_dir" -name '*.tag' -mtime +7 -delete 2>/dev/null
+      sd_owner="$h_login"
+    fi
+    if [ -n "$sd_owner" ] && [ "$sd_owner" != "$h_login" ]; then
+      sd_five=""; sd_five_reset=""; sd_seven=""; sd_seven_reset=""
+    fi
+  fi
   # Identity (2.37.1): stdin is THIS session's LAST response, so after a /login it
   # still carries the PREVIOUS account's gauge until this pane makes a request —
   # MAX then rendered king's 94% with lazio's reset time as one line (2026-09-02).

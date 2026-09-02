@@ -14,6 +14,17 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.37.4] — 2026-09-02 (Status line: login-tagged stdin gauge for accounts whose windows coincide) (b151699)
+
+Seen right after 2.37.2 landed (2.37.3 was taken by a parallel release on main): four of the five accounts reset at 2:59pm, so the
+2.37.1 reset-time identity check let a pane whose last response came from a 103 %
+account render `⛔ LIMITED` on the current login at 80 %.
+
+- `statusline.sh`: the stdin payload is tagged with the login it was first seen under
+  (`PLAN_USAGE_STDIN_TAG_DIR`, one file per session, from the sample's
+  `_meta.account_email`); an unchanged payload after a `/login` is dropped, a new
+  response re-tags it. `statusline-plan-usage.test.sh` +4 (39/39).
+
 ## [2.37.3] — 2026-09-02 (The bundle refresh never writes or commits on a consumer's default branch) (59d3a2c)
 
 The 2.37.1 session-start bundle refresh committed straight onto the laptop's cleanscale
