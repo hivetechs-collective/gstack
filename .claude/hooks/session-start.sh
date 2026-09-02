@@ -108,7 +108,17 @@ auto_sync_from_pattern() {
     elif [ -f "$SOURCE_VERSION_FILE" ]; then
         SOURCE_DATE=$(cat "$SOURCE_VERSION_FILE" 2>/dev/null)
         LOCAL_DATE=$(cat "$LOCAL_VERSION_FILE" 2>/dev/null)
-        if [ "$SOURCE_DATE" != "$LOCAL_DATE" ]; then
+        # Only sync FORWARD. The stamps are ISO-8601 UTC, so a plain string
+        # compare orders them. A local claude-pattern checkout that is behind
+        # its origin carries an OLDER stamp than the consumer repo; syncing
+        # from it rewrites tracked files backwards (cleanscale #1943).
+        if [[ "$SOURCE_DATE" < "$LOCAL_DATE" ]]; then
+            echo ""
+            echo "⚠️  AUTO-SYNC SKIPPED: claude-pattern source ($SOURCE_DATE) is BEHIND this repo ($LOCAL_DATE)"
+            echo "   Fast-forward the source first: git -C $CLAUDE_PATTERN pull --ff-only"
+            echo ""
+            return 0
+        elif [ "$SOURCE_DATE" != "$LOCAL_DATE" ]; then
             needs_sync=true
             reason="claude-pattern updated ($SOURCE_DATE)"
         fi
@@ -180,6 +190,10 @@ auto_sync_from_pattern() {
 # in-progress work (auto_sync_from_pattern refuses a dirty .claude/) and a repo that
 # never takes the skill sync at all. Provenance-guarded per file; the scoped
 # `git commit --only` touches nothing else. Linked worktrees are left to their branch.
+# A checkout on its DEFAULT branch with an origin (a PR-gated follower — cleanscale's
+# primaries on both hosts) is left alone by the helper itself (exit 4, filtered below): the
+# bundle reaches it through the sync PR. 2.37.2 — a direct commit on main had turned every
+# ff-only follower of that checkout (self-update timer, ship chains) into `diverged`.
 refresh_statusline_bundle() {
     local b="$CLAUDE_PATTERN/.claude/scripts/sync-statusline-bundle.sh"
     case "$PROJECT_ROOT" in "$CLAUDE_PATTERN"|"$CLAUDE_PATTERN"/*) return 0 ;; esac

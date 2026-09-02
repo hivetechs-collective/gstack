@@ -300,6 +300,7 @@ __fail() {  # <reason> [http_code]
 __rate_limited() {  # [retry-after-seconds]
   local ra="${1:-}"
   case "$ra" in ''|*[!0-9]*) ra=120 ;; esac
+  [ "$ra" -eq 0 ] 2>/dev/null && ra=120          # "retry-after: 0" = unspecified (live 2026-09-02): default, not 30 s
   [ "$ra" -lt 30 ] 2>/dev/null && ra=30
   [ "$ra" -gt 900 ] 2>/dev/null && ra=900
   __fail "rate-limited" "$ra"

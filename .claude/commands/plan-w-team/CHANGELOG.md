@@ -14,6 +14,41 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.37.3] — 2026-09-02 (The bundle refresh never writes or commits on a consumer's default branch) (59d3a2c)
+
+The 2.37.1 session-start bundle refresh committed straight onto the laptop's cleanscale
+primary while it sat on `main`, so the checkout stood one local commit ahead of
+`origin/main` — and every ff-only follower of that branch (cleanscale's
+`io.cleanrev.self-update` timer, the ship chains' `git pull --ff-only`) reported
+`diverged` until an operator moved the commit into a PR (cleanscale #1939) and reset the
+tree. Writing without committing is no better on such a checkout: a dirty `main` makes the
+same followers skip `dirty`.
+
+- **Default-branch guard in `sync-statusline-bundle.sh`.** When the target has an `origin`
+  remote and its checkout is on the default branch (whatever `origin/HEAD` names; `main` /
+  `master` when it is unset), the helper writes nothing and commits nothing — `⏭ … deferred`,
+  exit 4 — because such a consumer takes the bundle through its regular claude-pattern sync
+  PR. A feature branch, a detached HEAD, or a repo without an origin behaves exactly as in
+  2.37.1; `STATUSLINE_BUNDLE_ON_DEFAULT=1` forces the old behaviour for an operator who
+  means to push to a consumer's default branch. `session-start.sh` already filters the
+  helper's line, so a PR-gated consumer's session start stays quiet. Pinned by
+  `sync-statusline-bundle.test.sh` §9 (+7, 28/28): deferred on `main` with an
+  origin (files, HEAD and status untouched), deferred via `origin/HEAD` → `trunk`, refreshed
+  on a feature branch, refreshed with no origin, forced by the override, `--dry-run` defers.
+
+## [2.37.2] — 2026-09-02 (Status line: legible age marker, endpoint 5-minute floor, retry-after 0) (598017e)
+
+Live observation after the 2.37.1 rollout: `/api/oauth/usage` answers 429 with
+`retry-after: 0` and serves a new sample exactly every ~5 minutes, so `⟳4m`–`⟳6m`
+appeared on every pane in the normal course of things and read as "refresher late"
+when nothing was late — and the double-width `⟳` glyph overlapped the minutes.
+
+- `statusline.sh`: `⟳ Nm` (space after the glyph, user report 2026-09-02); the grey
+  marker is quiet under max(2×TTL, 7 min); `⚠ STALE` past 15 min is unchanged.
+  `statusline-plan-usage.test.sh` +1 (35/35).
+- `plan-usage.sh`: a `Retry-After` of 0 means unspecified → the default 120 s window,
+  not the 30 s floor. `plan-usage.test.sh` +1 (37/37).
+
 ## [2.37.1] — 2026-09-02 (Rollout fixes: dirt verdict before the bundle refresh, 429 Retry-After backoff, session-start bundle refresh) (6692bfe)
 
 Two defects found while verifying the 2.37.0 rollout across the fleet:

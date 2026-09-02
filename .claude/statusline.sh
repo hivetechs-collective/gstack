@@ -919,8 +919,8 @@ if [ "$HAS_JQ" -eq 1 ]; then
       if [ "$plan_age" -ge "$h_stale_max" ]; then
         stale_tier=hot; [ -n "$sd_five" ] && stale_tier=warm
         line2="$line2 $(C "$(tier_color "$stale_tier")")⚠ STALE $(fmt_dur "$plan_age")$(rst)"
-      elif [ "$plan_age" -ge $(( h_ttl * 2 )) ]; then
-        line2="$line2 $(C '38;5;245')⟳$(fmt_dur "$plan_age")$(rst)"
+      elif [ "$plan_age" -ge $(( h_ttl * 2 > 420 ? h_ttl * 2 : 420 )) ]; then   # the endpoint serves a new sample every ~5 min: quiet under 7
+        line2="$line2 $(C '38;5;245')⟳ $(fmt_dur "$plan_age")$(rst)"
       fi
     fi ;;
   esac
