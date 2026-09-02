@@ -14,6 +14,56 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.35.1] — 2026-09-01 (Status-line account advisory names the account by full email) (8f29fd6)
+
+The `👉 next: <label>` / `⚠ switch → <label>` segment shipped in 2.34.1 named the recommended account
+by its registry LABEL. Labels are operator-chosen stems and collide in practice: with two accounts
+on one company domain the segment read `👉 next: <company> (0/0%)` while the `👤` segment showed
+`<other-user>@<company>` — the operator could not tell which account they were being pointed at,
+and `/login` asks for an email anyway. The segment now renders the advisory's **`best_email`**
+(present since 2.34.1), keeping the label only as a fallback when the advisory carries no email
+(an older `accounts.sh advise`, or a registry row missing its email). `statusline.sh` only;
+`account-advice.sh` / `session_cred.py advise` are unchanged.
+
+Field check that surfaced it (2026-09-01, same operator): the `0/0%` on the recommended account is
+what Anthropic's own `anthropic-ratelimit-unified-*` headers report for that token, so the pick is
+faithful — the only defect was the ambiguous name.
+
+Coverage: new `.claude/scripts/statusline-account-advice.test.sh` (sandboxed `$PWD` with stubbed
+`account-info.sh` / `account-advice.sh`, same harness shape as `statusline-dots.test.sh`) — email
+rendering for both `👉 next` and `⚠ switch`, rounded pcts, label fallback for an empty AND an absent
+`best_email`, no segment on `switch:false` / `{}`, lean-mode skip (helper never invoked), and the
+login-email-as-`$1` contract. Accounts `README.md` + onboarding ops doc updated.
+
+## [2.35.0] — 2026-09-01 (Row-20 goal-termination handshake: ship-verdict-absent C3 corroboration pinning tests) (621ac9a)
+
+Pins the recursive-followup **row-20** mechanism — deterministic SUCCESS when Step 6 committed +
+pushed cleanly but produced **NO ship-verdict FILE at all** (the 1.47.0 runaway-after-ship, where
+every SUCCESS path that needed the verdict failed and the worker could not self-terminate). The
+row-20 machinery itself already shipped (PWT-TERM1/2/3, the C3 `__landing_corroborated` liveness
+fallback, the F6 landing gate); this run's Step-1 adversarial review **overturned the "zero
+coverage" premise** — the present-but-REDACTED verdict path was already pinned by
+`rotated-lead-success.bats` ac6a–ac6g — so the deliverable is a **TESTS-only** delta (Outcome A: no
+production code touched). Seven tests appended to `tests/skill/cases/rotated-lead-success.bats`,
+homed there (not `landing-gate.bats`) so every case runs worker-mode
+(`PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1`) and the SUCCESS assertions cannot be vacuous:
+
+- **Ship-verdict-FILE-absent C3 handshake (AC1–AC3, AC5, AC7).** With NO ship-verdict file, a
+  worker-mode run flips SUCCESS iff the landing is verified (`ac_r20_1`); withholds with
+  `(C3 anti-spoof)` when the landing is absent (`ac_r20_2`, the non-vacuity control) or the
+  corroboration kill switch is set (`ac_r20_3`); reproduces end-to-end under worktree isolation with
+  C3 + F6 both passing (`ac_r20_5`); and STILL withholds for an interactive non-owner via `PWT-LANE2`
+  (`ac_r20_lane2`) — the **C3-accept / LANE2-reject asymmetry** (the landing artifact is
+  non-owner-forgeable) is now a pinned invariant.
+- **Two genuinely-unpinned `__landing_corroborated` branches.** `ac_r20_stale` rewinds a REAL
+  `land.sh` landing's own `default_ref` so `landed_sha` is unreachable → C3 withholds (anti-spoof at
+  the C3 level, not F6). `ac_r20_failopen` removes the run root's `.git` so git cannot re-verify →
+  the deliberate **fail-OPEN** arm is characterization-locked (SUCCESS), so a future refactor that
+  silently flips it to fail-closed breaks a test.
+
+Spec: [`docs/specs/goal-termination-handshake.md`](../../../docs/specs/goal-termination-handshake.md)
+(row 20). No production code change; full skill suite green.
+
 ## [2.34.1] — 2026-08-31 (Multi-account skill: business-agnostic scrub + interactive-session advisory) (82c0f37)
 
 Completes 2.34.0's portability promise and removes hardcoded personal/business identity from the

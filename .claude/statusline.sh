@@ -785,11 +785,16 @@ if [ -x "$ACCOUNT_INFO_HELPER" ] && [ "$HAS_JQ" -eq 1 ]; then
 fi
 
 # Account rotation advisory: when a registered account has more headroom than the
-# one this machine is logged in as, nudge toward it. `👉 next: <label>` normally;
-# `⚠ switch → <label>` once the current login gets hot. The switch is MANUAL (`/login`)
-# — interactive Claude Code can't be account-switched by an env token (2026-08-31).
-# Local-cached + bounded + fail-open (no segment) via account-advice.sh; skipped on
-# lean/pipeline statuslines to keep supervising renders cheap.
+# one this machine is logged in as, nudge toward it. `👉 next: <email>` normally;
+# `⚠ switch → <email>` once the current login gets hot. The segment names the
+# account by its FULL EMAIL (`best_email`), falling back to the registry label only
+# when the advisory carries no email: labels are operator-chosen stems that collide
+# in practice (two accounts on one domain both read as "<company>"), and `/login`
+# asks for an email, so the email is the only unambiguous handle (2026-09-01). The
+# switch is MANUAL (`/login`) — interactive Claude Code can't be account-switched by
+# an env token (2026-08-31). Local-cached + bounded + fail-open (no segment) via
+# account-advice.sh; skipped on lean/pipeline statuslines to keep supervising
+# renders cheap.
 ACCOUNT_ADVICE_HELPER="$PWD/.claude/scripts/account-advice.sh"
 if [ "$PWT_LEAN" -eq 0 ] && [ -x "$ACCOUNT_ADVICE_HELPER" ] && [ "$HAS_JQ" -eq 1 ] && [ -n "$line2" ]; then
   advice_json=$("$ACCOUNT_ADVICE_HELPER" "${acct_email:-}" 2>/dev/null)
@@ -797,10 +802,14 @@ if [ "$PWT_LEAN" -eq 0 ] && [ -x "$ACCOUNT_ADVICE_HELPER" ] && [ "$HAS_JQ" -eq 1
     adv_switch=$(echo "$advice_json" | jq -r '.switch // false' 2>/dev/null)
     if [ "$adv_switch" = "true" ]; then
       adv_best=$(echo "$advice_json" | jq -r '.best // empty' 2>/dev/null)
+      adv_best_email=$(echo "$advice_json" | jq -r '.best_email // empty' 2>/dev/null)
       adv_b5=$(echo "$advice_json" | jq -r '.best_5h // empty' 2>/dev/null)
       adv_b7=$(echo "$advice_json" | jq -r '.best_7d // empty' 2>/dev/null)
       adv_hot=$(echo "$advice_json" | jq -r '.current_hot // false' 2>/dev/null)
-      if [ -n "$adv_best" ]; then
+      # Email first; label is the fallback so an advisory without an email (older
+      # accounts CLI, a registry row missing its email) still renders something.
+      adv_who="${adv_best_email:-$adv_best}"
+      if [ -n "$adv_who" ]; then
         adv_pct=""
         if [ -n "$adv_b5" ] && [ -n "$adv_b7" ]; then
           adv_b5f=$(printf '%.0f' "$adv_b5" 2>/dev/null || echo "$adv_b5")
@@ -808,9 +817,9 @@ if [ "$PWT_LEAN" -eq 0 ] && [ -x "$ACCOUNT_ADVICE_HELPER" ] && [ "$HAS_JQ" -eq 1
           adv_pct=" (${adv_b5f}/${adv_b7f}%)"
         fi
         if [ "$adv_hot" = "true" ]; then
-          line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;203')⚠ switch → ${adv_best}${adv_pct}$(rst)"
+          line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;203')⚠ switch → ${adv_who}${adv_pct}$(rst)"
         else
-          line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;108')👉 next: ${adv_best}${adv_pct}$(rst)"
+          line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;108')👉 next: ${adv_who}${adv_pct}$(rst)"
         fi
       fi
     fi
