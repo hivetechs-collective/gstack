@@ -2,7 +2,7 @@
 name: fable-spec-consult
 color: purple
 description: Read-only Fable-tier spec consultant — critiques a draft spec at Step 1 §1b-pre before the AC freeze; advises only, never authors
-model: claude-fable-5
+model: claude-fable-5-1
 effort: high
 disallowedTools:
   - Write
@@ -11,12 +11,13 @@ disallowedTools:
   - Agent
 ---
 
-<!-- MODEL TIERING v3 (1.57.0). This is the ONLY agent definition in the repo
-     permitted to pin `claude-fable-5`, and tests/skill/cases/model-tiering-v3.bats
-     enforces that with a negative fan-out sweep. Deliberate properties:
-     (1) the bare model id — NOT the `claude-fable-5[1m]` 1m-context variant,
-         which is the one that caused the 2026-07 default-inheritance incident
-         (CHANGELOG.md 1.51.0 entry);
+<!-- MODEL TIERING v3 (1.57.0); FABLE 5.1 ROLLOVER (2.36.0, 2026-09-01). This is
+     the ONLY agent definition in the repo permitted to pin `claude-fable-5-1`,
+     and tests/skill/cases/model-tiering-v3.bats + model-tiering-v5.bats enforce
+     that with a negative fan-out sweep. Deliberate properties:
+     (1) the bare model id `claude-fable-5-1` — NOT a `[1m]` 1m-context variant
+         (the prior generation's `claude-fable-5[1m]` caused the 2026-07
+         default-inheritance incident, CHANGELOG.md 1.51.0 entry);
      (2) `effort: high` — pinned, so a session at ultracode/xhigh does not bleed
          into this agent (the 1.52.2/1.52.3 pin class). Anthropic's guidance is
          that Fable at high already exceeds prior models at xhigh; escalating

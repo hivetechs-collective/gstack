@@ -61,6 +61,10 @@
 #   PLAN_USAGE_CURL_MAX_TIME  per-request curl bound, seconds          (6)
 #   PLAN_USAGE_CACHE_DIR      cache directory        ($HOME/.config/claude-pattern/plan-usage)
 #   PLAN_USAGE_ACCOUNT_KEY    override the account key (tests)
+#   PLAN_USAGE_FAIL_BACKOFF   seconds a render waits after a failed refresh before it
+#                            spawns another (60); a 429 uses the Retry-After header
+#                            instead (default 120, clamped 30..900)
+#   PLAN_USAGE_FETCH_RETRY_AFTER  (tests) Retry-After seconds when the fetch stub exits 29
 #   PLAN_USAGE_FETCH_CMD      override the fetch (tests): a command that prints the
 #                             usage JSON body on stdout; exit 0 = success, exit 22 =
 #                             HTTP error. Gets `--source` as $1 for symmetry.
@@ -90,8 +94,9 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-TTL="${PLAN_USAGE_CACHE_TTL:-30}"
+TTL="${PLAN_USAGE_CACHE_TTL:-120}"
 STALE_MAX="${PLAN_USAGE_STALE_MAX:-900}"
+FAIL_BACKOFF="${PLAN_USAGE_FAIL_BACKOFF:-60}"
 COLD_WAIT="${PLAN_USAGE_COLD_WAIT:-2}"
 BOUND_S="${PLAN_USAGE_TIMEOUT_S:-15}"
 CURL_MAX="${PLAN_USAGE_CURL_MAX_TIME:-6}"
@@ -288,12 +293,37 @@ __fail() {  # <reason> [http_code]
   echo "plan-usage: refresh failed: $1 ${2:-}" >&2
   return 0
 }
+# HTTP 429: the endpoint's Retry-After (seconds; default 120, clamp 30..900) becomes
+# the backoff window. Retrying every TTL kept the bucket drained (2026-09-02: 429 on
+# three of every four refreshes, good samples landing ~10 min apart) — honouring the
+# header is what fixes it. The 5h/7d gauges stay real-time from Claude Code's stdin.
+__rate_limited() {  # [retry-after-seconds]
+  local ra="${1:-}"
+  case "$ra" in ''|*[!0-9]*) ra=120 ;; esac
+  [ "$ra" -lt 30 ] 2>/dev/null && ra=30
+  [ "$ra" -gt 900 ] 2>/dev/null && ra=900
+  __fail "rate-limited" "$ra"
+}
+# Seconds a render must still wait before spawning another refresh (0 = none):
+# Retry-After after a 429, FAIL_BACKOFF after any other failure; a success clears it.
+__backoff_left() {
+  local at reason code until now
+  [ -s "$ERRF" ] || { echo 0; return 0; }
+  at=$(sed -n 's/.*"at":\([0-9]*\).*/\1/p' "$ERRF" 2>/dev/null | head -1)
+  reason=$(sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' "$ERRF" 2>/dev/null | head -1)
+  code=$(sed -n 's/.*"code":"\([0-9]*\)".*/\1/p' "$ERRF" 2>/dev/null | head -1)
+  case "$at" in ''|*[!0-9]*) echo 0; return 0 ;; esac
+  if [ "$reason" = "rate-limited" ] && [ -n "$code" ]; then until=$(( at + code )); else until=$(( at + FAIL_BACKOFF )); fi
+  now=$(date +%s)
+  if [ "$until" -gt "$now" ]; then echo $(( until - now )); else echo 0; fi
+}
 
 __fetch() {  # → prints body; return 0 = HTTP 200 body, 22 = HTTP error, 1 = other
-  local tok src="$1" body code
+  local tok src="$1" body code hdr ra frc
   if [ -n "${PLAN_USAGE_FETCH_CMD:-}" ]; then
-    "$PLAN_USAGE_FETCH_CMD" "--$src" 2>/dev/null
-    return $?
+    "$PLAN_USAGE_FETCH_CMD" "--$src" 2>/dev/null; frc=$?
+    [ "$frc" = "29" ] && __rate_limited "${PLAN_USAGE_FETCH_RETRY_AFTER:-}"   # tests: exit 29 = HTTP 429
+    return $frc
   fi
   command -v curl >/dev/null 2>&1 || return 1
   if [ "$src" = "env" ]; then
@@ -309,13 +339,18 @@ except Exception:
     pass' 2>/dev/null)
   fi
   [ -n "$tok" ] || return 1
-  body="$CACHE.body.$$"
+  body="$CACHE.body.$$"; hdr="$CACHE.hdr.$$"
   # `-K -`: the Authorization header travels in a curl CONFIG on stdin, so the
   # token is not on argv (readable by any process of this user via `ps`).
   code=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" \
     | curl -sS -K - -H "anthropic-beta: oauth-2025-04-20" -H "Accept: application/json" \
-        --max-time "$CURL_MAX" -o "$body" -w '%{http_code}' "$USAGE_URL" 2>/dev/null)
-  if [ "$code" = "200" ]; then cat "$body" 2>/dev/null; rm -f "$body"; return 0; fi
+        --max-time "$CURL_MAX" -o "$body" -D "$hdr" -w '%{http_code}' "$USAGE_URL" 2>/dev/null)
+  if [ "$code" = "200" ]; then cat "$body" 2>/dev/null; rm -f "$body" "$hdr"; return 0; fi
+  if [ "$code" = "429" ]; then
+    ra=$(tr -d '\r' < "$hdr" 2>/dev/null | awk 'tolower($1)=="retry-after:" {print $2; exit}')
+    rm -f "$body" "$hdr"; __rate_limited "$ra"; return 29
+  fi
+  rm -f "$hdr"
   # Setup tokens (sk-ant-oat…, fleet lanes) lack the user:profile scope the usage
   # endpoint demands (403). The rate-limit HEADERS of a max_tokens:1 call carry
   # the same 5h/7d gauge and work for every token kind — the accounts skill's
@@ -335,6 +370,7 @@ __refresh() {
   src=keychain; [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && src=env
   command -v python3 >/dev/null 2>&1 || { __fail "no-python3"; return 0; }
   body=$(__fetch "$src"); rc=$?
+  [ "$rc" = "29" ] && return 0                     # 429: __rate_limited already recorded the window
   if [ "$rc" != "0" ] || [ -z "$body" ]; then __fail "fetch" "$rc"; return 0; fi
   now=$(date +%s); tmp="$CACHE.tmp.$$"
   # Validate, stamp _meta, append the history sample, compute rates — one python.
@@ -406,6 +442,11 @@ esac
 
 # ── default: stale-while-revalidate ─────────────────────────────────────────
 if [ -s "$CACHE" ] && [ "$(__age_s "$CACHE")" -lt "$TTL" ] 2>/dev/null; then
+  __serve; exit 0
+fi
+# Backing off after a failed refresh (429 Retry-After, else FAIL_BACKOFF): serve what
+# we have and spawn nothing — every render retrying is what drained the bucket.
+if [ "$(__backoff_left)" -gt 0 ] 2>/dev/null; then
   __serve; exit 0
 fi
 

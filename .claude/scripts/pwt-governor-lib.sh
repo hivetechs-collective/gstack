@@ -149,8 +149,8 @@ pwt_governor_clamp_builders() {   # $1 = requested
 
 # Downward-only model guard. Per-tier EXACT-STRING ALLOW-LIST membership — NOT rank≤ceiling.
 # A capability-rank gate is blind to the reliability ban that keeps Fable out of the lead /
-# fan-out tiers: claude-fable-5 is a *downgrade* by capability yet models.intelligent:
-# claude-fable-5 is exactly the 2026-07 lockout. So the accessor emits ONLY a member of the
+# fan-out tiers: claude-fable-5-1 is a *downgrade* by capability yet models.intelligent:
+# claude-fable-5-1 is exactly the 2026-07 lockout. So the accessor emits ONLY a member of the
 # tier's allow-list or the tier's HARDCODED DEFAULT LITERAL — never claude-opus-5, the bare
 # `opus`/`opus-*` alias (CLI-resolved to newest Opus), `inherit`, an unknown, or a tier-raise.
 # Ungoverned ⇒ empty (the caller keeps its own default).
@@ -163,7 +163,7 @@ pwt_governor_clamp_builders() {   # $1 = requested
 pwt_governor_model() {   # $1 = tier (design|intelligent|mechanical)
   local tier="${1:-}" default=""
   case "$tier" in
-    design)      default="claude-fable-5" ;;
+    design)      default="claude-fable-5-1" ;;
     intelligent) default="claude-opus-4-8" ;;
     mechanical)  default="claude-sonnet-5" ;;
     *) echo ""; return 0 ;;
@@ -174,7 +174,11 @@ pwt_governor_model() {   # $1 = tier (design|intelligent|mechanical)
   [ -n "$ov" ] || { echo "$default"; return 0; }
   local ok=0
   case "$tier" in
-    design)      case "$ov" in claude-fable-5|claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
+    # Fable 5.1 rollover (2026-09-01): primary design id is claude-fable-5-1. The
+    # bare claude-fable-5 is kept accepted for ONE release (backward compat) so a
+    # governed config still pinning the old id degrades to acceptance, not refusal;
+    # drop it next rollover. Both resolve to the Fable design tier.
+    design)      case "$ov" in claude-fable-5-1|claude-fable-5|claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
     intelligent) case "$ov" in claude-opus-4-8|claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
     mechanical)  case "$ov" in claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
   esac

@@ -266,7 +266,9 @@ fi
 # would silently degrade this guard into a permissive unrelated number the day
 # "Fable" is renamed at GA. An unresolvable bucket is reported as such instead.
 PLAN_USAGE_CMD="${PWT_PLAN_USAGE_CMD:-$(cd "$(dirname "$0")" 2>/dev/null && pwd)/plan-usage.sh}"
-USAGE_JSON=$("$PLAN_USAGE_CMD" 2>/dev/null || echo '{}')
+# `--sync`: the helper is stale-while-revalidate for the status line (2.37.0); a
+# budget decision wants the number NOW, inline and bounded, not last minute's.
+USAGE_JSON=$("$PLAN_USAGE_CMD" --sync 2>/dev/null || echo '{}')
 [ -n "$USAGE_JSON" ] || USAGE_JSON='{}'
 
 BUCKET=$(printf '%s' "$USAGE_JSON" | jq -r '

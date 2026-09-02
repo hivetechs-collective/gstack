@@ -158,11 +158,13 @@ fi
 echo
 echo "Recommended:"
 
-# ccusage (plan-usage percentages in the statusline: '5h 0% · 7d 18%')
+# ccusage (the token/tpm session line in the statusline — the 📊 Plan 5h/7d
+# percentages do NOT depend on it: they come from Claude Code's stdin rate_limits
+# plus plan-usage.sh, see docs/operations/statusline-usage-reporting.md)
 if command -v ccusage >/dev/null 2>&1; then
-  ok "ccusage (plan-usage line in the statusline)"
+  ok "ccusage (token/tpm session line in the statusline)"
 else
-  warn "ccusage missing — statusline uses its slower fallback for plan-usage data" "run: npm install -g ccusage"
+  warn "ccusage missing — statusline shows no token/tpm session line (plan 5h/7d percentages are unaffected)" "optional: npm install -g ccusage"
 fi
 
 # GNU coreutils (gdate/gtimeout — statusline timing niceties). On Linux/WSL the

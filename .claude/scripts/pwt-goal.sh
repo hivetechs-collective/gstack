@@ -365,6 +365,13 @@ Options:
                        Trades safety for autonomy — only push-ack auto-approves;
                        secret-scan-allow and scope-unlock-for-drift still halt.
       --no-auto-push   Explicit opt-out even with --launch (require push confirm)
+      --no-bind        On --launch, do NOT bind the launching session as the
+                       lane's supervisor (item 5 / defect d). Default --launch
+                       binds the SPAWNED bg supervisor, so the launcher stays
+                       free to do in-repo work; --no-bind forces that even when
+                       PLAN_W_TEAM_SUPERVISOR_SESSION=1. (No effect in
+                       --worker-only mode, where the origin chat IS the
+                       supervisor by design.)
       --lane-settings-json FILE
                        Per-lane credential seam (v6 item 5). Drop FILE at
                        <worktree>/.claude/settings.local.json (mode 0600) BEFORE
@@ -413,6 +420,12 @@ INTERACTIVE=0
 LAUNCH=0
 WORKER_ONLY=0    # spawn only the worker bg session; caller is the supervisor
 SUPERVISOR_GOAL=0  # like --worker-only, plus mirror goal state to origin .claude/state/
+NO_BIND=0        # --no-bind (item 5 / defect d): on --launch, do NOT bind the
+                 # launching session as the lane's supervisor. Default --launch
+                 # binds the SPAWNED bg supervisor (not the launcher), so an
+                 # operator who launches lanes is not wedged out of in-repo work
+                 # by the lane-guard; --no-bind forces that even when
+                 # PLAN_W_TEAM_SUPERVISOR_SESSION=1 would otherwise bind the launcher.
 AUTO_PUSH=0      # auto-approve push-ack hard-gate during autonomous run
 TYPE="feature"
 PWT_TYPE_EXPLICIT=0  # 1 iff -t/--type was explicitly passed (Fix 5 — explicit type always wins over auto-classification)
@@ -566,6 +579,7 @@ while [ $# -gt 0 ]; do
         --launch) LAUNCH=1; AUTO_PUSH=1; shift ;;
         --worker-only) WORKER_ONLY=1; LAUNCH=1; AUTO_PUSH=1; shift ;;
         --supervisor-goal) SUPERVISOR_GOAL=1; WORKER_ONLY=1; LAUNCH=1; AUTO_PUSH=1; shift ;;
+        --no-bind) NO_BIND=1; shift ;;
         --auto-push) AUTO_PUSH=1; shift ;;
         --no-auto-push) AUTO_PUSH=0; shift ;;
         -t|--type) TYPE="$2"; PWT_TYPE_EXPLICIT=1; shift 2 ;;
@@ -1438,6 +1452,8 @@ There is no wall-clock or turn cap by design: keep working until one of the
 ALL-of completion conditions OR one of the halt conditions above fires.
 On stop, state which terminal condition was reached and quote the transcript
 line that demonstrates it.
+
+PWT-BOOTSTRAP-DO-NOT-ROUTE role=worker slug=${SLUG_GUESS}
 EOF_GOAL_TEXT
 }
 
@@ -1683,6 +1699,41 @@ if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; } && [ "$_PWT_BYPASS" != "
         echo ""
     }
 
+    # ── Item 4 (defect c, 2.36.0): KEY the double-spawn refusal on the GOAL, not
+    # merely "some worker is alive". A live worker owns a goal-state; map its sid8
+    # → that goal's slug so a manual --launch of a DIFFERENT goal proceeds while
+    # another goal's worker runs, and only a second spawn of THIS launch's goal
+    # (SLUG_GUESS) is refused as a duplicate. __ds1_sid_slug echoes the owned slug
+    # (or "" when unresolvable — jq missing, no matching goal-state).
+    __ds1_sid_slug() {  # $1=guard_dir $2=sid8 → owned slug or ""
+        local gdir="$1" sid8="$2" gf w
+        command -v jq >/dev/null 2>&1 || { echo ""; return 0; }
+        for gf in "$gdir"/plan-w-team-goal-*.json \
+                  "$(dirname "$gdir" 2>/dev/null)/worktrees"/*/.claude/state/plan-w-team-goal-*.json; do
+            [ -f "$gf" ] || continue
+            w=$(jq -r '.worker_sid // ""' "$gf" 2>/dev/null)
+            if [ "${w:0:8}" = "$sid8" ]; then jq -r '.slug // ""' "$gf" 2>/dev/null; return 0; fi
+        done
+        echo ""
+    }
+
+    # Decision: given a live-hit sid8, should THIS launch still be refused?
+    #   return 0 (refuse)  — the live worker owns the SAME goal as this launch,
+    #                        OR its slug is unresolvable (fail-closed: never allow
+    #                        a duplicate on uncertainty — also preserves the
+    #                        pre-2.36.0 behavior for that case).
+    #   return 1 (proceed) — the live worker owns a DIFFERENT goal than this
+    #                        launch's SLUG_GUESS → not a duplicate of this goal.
+    # Kill switch PWT_DS1_SLUG_KEYING_DISABLE=1 reverts to slug-agnostic (always
+    # refuse on a live hit — the pre-2.36.0 "any worker alive" behavior).
+    __ds1_hit_is_same_goal() {  # $1=guard_dir $2=sid8 → 0 refuse / 1 proceed(different goal)
+        [ "${PWT_DS1_SLUG_KEYING_DISABLE:-0}" = "1" ] && return 0
+        local hit_slug; hit_slug=$(__ds1_sid_slug "$1" "$2")
+        [ -n "$hit_slug" ] || return 0          # unresolvable → fail-closed refuse
+        [ "$hit_slug" = "$SLUG_GUESS" ] && return 0   # same goal → refuse (duplicate)
+        return 1                                 # different goal → proceed
+    }
+
     if [ -d "$GUARD_DIR" ]; then
         # Find any hook-spawn flag fresh within the double-spawn window.
         DS_WINDOW_MIN="${PWT_DOUBLE_SPAWN_WINDOW_MIN:-3}"
@@ -1709,6 +1760,21 @@ if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; } && [ "$_PWT_BYPASS" != "
                     FRESH_FLAG="$SAME_ORIGIN_FLAG"
                     __ds1_audit "refuse" "tierA-same-origin" "$(grep '^worker_sid=' "$SAME_ORIGIN_FLAG" 2>/dev/null | head -1 | cut -d= -f2)" "same-origin flag within ${DS_SAMEORIGIN_WINDOW_MIN}m wide window"
                 fi
+            fi
+        fi
+
+        # Item 4 (defect c): a fresh flag whose worker owns a DIFFERENT goal than
+        # this launch's slug is not a duplicate of THIS goal — drop it so Tier A
+        # does not refuse a legitimately-different concurrent goal (it then falls
+        # through to Tier B, which slug-keys the same way). Same-goal or
+        # unresolvable slug → kept (fail-closed); a jq-free host keeps the flag
+        # too (offline-safe refuse, unchanged). Kill switch:
+        # PWT_DS1_SLUG_KEYING_DISABLE=1 reverts to the pre-2.36.0 slug-agnostic refusal.
+        if [ -n "$FRESH_FLAG" ]; then
+            __ff_worker=$(grep '^worker_sid=' "$FRESH_FLAG" 2>/dev/null | head -1 | cut -d= -f2)
+            if [ -n "$__ff_worker" ] && ! __ds1_hit_is_same_goal "$GUARD_DIR" "${__ff_worker:0:8}"; then
+                __ds1_audit "proceed" "tierA-different-goal" "$__ff_worker" "fresh flag worker owns a different goal (slug != $SLUG_GUESS) — not a duplicate of this goal"
+                FRESH_FLAG=""
             fi
         fi
 
@@ -1863,6 +1929,14 @@ EOF
                             __ds1_audit "proceed" "tierB-lane-alive-confirmed-dead" "$DS_LIVE_HIT" "predicate confirms recorded worker dead — stale hit, not a duplicate"
                             DS_LIVE_HIT=""
                         fi
+                        # Item 4 (defect c): a live hit that owns a DIFFERENT goal than this
+                        # launch is not a duplicate of THIS goal → clear it and proceed. Same
+                        # goal / unresolvable slug → keep (refuse). PWT_DS1_SLUG_KEYING_DISABLE=1
+                        # reverts to the pre-2.36.0 "any worker alive → refuse" behavior.
+                        if [ -n "$DS_LIVE_HIT" ] && ! __ds1_hit_is_same_goal "$GUARD_DIR" "$DS_LIVE_HIT"; then
+                            __ds1_audit "proceed" "tierB-different-goal" "$DS_LIVE_HIT" "live worker owns a different goal (slug != $SLUG_GUESS) — not a duplicate of this goal"
+                            DS_LIVE_HIT=""
+                        fi
                         if [ -n "$DS_LIVE_HIT" ]; then
                             cat >&2 <<LIVEGUARD
 ✗ Double-spawn refused: a route-hook worker (${DS_LIVE_HIT}...) recorded by an
@@ -1897,6 +1971,12 @@ LIVEGUARD
                         # C3: a confirmed-dead recorded worker is a stale hit, not a duplicate.
                         if [ -n "$DS_LIVE_HIT" ] && __ds1_lane_alive_confirms_dead "$GUARD_DIR" "$DS_LIVE_HIT"; then
                             __ds1_audit "proceed" "tierB-lane-alive-confirmed-dead" "$DS_LIVE_HIT" "listing indeterminate; predicate confirms recorded worker dead — stale hit"
+                            DS_LIVE_HIT=""
+                        fi
+                        # Item 4 (defect c): a live goal-state hit that owns a DIFFERENT goal
+                        # than this launch is not a duplicate of THIS goal → clear + proceed.
+                        if [ -n "$DS_LIVE_HIT" ] && ! __ds1_hit_is_same_goal "$GUARD_DIR" "$DS_LIVE_HIT"; then
+                            __ds1_audit "proceed" "tierB-different-goal" "$DS_LIVE_HIT" "listing indeterminate; live worker owns a different goal (slug != $SLUG_GUESS) — not a duplicate of this goal"
                             DS_LIVE_HIT=""
                         fi
                         if [ -n "$DS_LIVE_HIT" ]; then
@@ -2347,6 +2427,63 @@ if [ "$LAUNCH" = "1" ]; then
             [ "$__pwt_primary_env_set" = "0" ] && { PWT_PRIMARY_MODEL="$__pwt_gov_int"; __PWT_APPLIED_MODEL="$__pwt_gov_int"; }
             [ "$__pwt_fallback_env_set" = "0" ] && PWT_FALLBACK_MODEL="$__pwt_gov_int"
         fi
+    fi
+
+    # ── bg-launch argv: permission posture + effort/compaction (items 2 & 3) ────
+    # MEASURED (F1, 2026-09-01): a `claude --bg` session is forked by the bg DAEMON
+    # and inherits the DAEMON's environment, NOT this launcher's. A probe that set
+    # CLAUDE_CODE_EFFORT_LEVEL / CLAUDE_CODE_AUTO_COMPACT_WINDOW in the launcher env
+    # saw the worker echo the daemon defaults (effort unset, compact window
+    # 250000), while the daemon DID record the --bg argv (respawnFlags). So for a
+    # daemon-hosted worker the ONLY channel that crosses is ARGV — the same reason
+    # --model / --fallback-model are pinned on argv above. BG_EXTRA_ARGS carries
+    # the argv-only knobs, threaded (unquoted, word-split like $WT_FLAG /
+    # $LAUNCH_ENV) into BOTH bg spawn sites below (worker + supervisor). Every
+    # value here is a single bare token, so unquoted expansion is safe.
+    #
+    #   item 3 (defect b — permission posture): a `--bg` lane's posture is
+    #   otherwise entirely a property of the host's settings.json; a host with no
+    #   auto/bypassPermissions default stalls every lane at its first Bash/Edit
+    #   prompt, invisibly (a bg session has no one to answer). pwt-steer.sh already
+    #   passes --permission-mode bypassPermissions on resume; the launcher now
+    #   matches it. Default bypassPermissions for a headless fleet worker; override
+    #   via PWT_BG_PERMISSION_MODE (e.g. auto / default / plan).
+    #
+    #   item 2 (defect a — effort/compaction argv, belt-and-suspenders): --effort
+    #   is one of the three argv channels the operator confirmed crosses (F1), so
+    #   pass it explicitly; default high (Brain-tier doctrine), override
+    #   PWT_BG_EFFORT / CLAUDE_CODE_EFFORT_LEVEL, disable entirely with
+    #   PWT_DISABLE_BG_EFFORT_ARGV=1 (defensive, for a CLI that rejects --effort
+    #   under --bg). --autocompact is passed ONLY when a window is explicitly set
+    #   (PWT_BG_AUTOCOMPACT / CLAUDE_CODE_AUTO_COMPACT_WINDOW), because F1 could not
+    #   confirm a compaction argv reaches the worker runtime, so it stays opt-in.
+    BG_EXTRA_ARGS=""
+    BG_PERMISSION_MODE="${PWT_BG_PERMISSION_MODE:-bypassPermissions}"
+    [ -n "$BG_PERMISSION_MODE" ] && BG_EXTRA_ARGS="$BG_EXTRA_ARGS --permission-mode $BG_PERMISSION_MODE"
+    if [ "${PWT_DISABLE_BG_EFFORT_ARGV:-0}" != "1" ]; then
+        __bg_effort="${PWT_BG_EFFORT:-${CLAUDE_CODE_EFFORT_LEVEL:-high}}"
+        [ -n "$__bg_effort" ] && [ "$__bg_effort" != "off" ] && BG_EXTRA_ARGS="$BG_EXTRA_ARGS --effort $__bg_effort"
+        __bg_compact="${PWT_BG_AUTOCOMPACT:-${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}}"
+        [ -n "$__bg_compact" ] && BG_EXTRA_ARGS="$BG_EXTRA_ARGS --autocompact $__bg_compact"
+    fi
+
+    # ── PWT_DAEMON_ENV_REFRESH=1 — the first-class daemon-fork-env knob (item 2) ─
+    # The argv path above is the reliable fix; this knob is the documented
+    # alternative from the DIRECTION ("provide a first-class knob to set the
+    # daemon's fork env"). Because a warm bg daemon forks workers from ITS startup
+    # env, the only safe, non-destructive way to enrich that env is to export the
+    # fleet knobs into THIS process BEFORE the `claude --bg` call, so that if this
+    # invocation is the one that COLD-STARTS the daemon, the daemon (and every
+    # worker it forks) inherits them. A daemon that is ALREADY running does NOT
+    # refresh — that would require killing it and its live bg sessions, which this
+    # knob deliberately never does; the advisory says how to force it. Off by
+    # default (empty ungoverned parity).
+    if [ "${PWT_DAEMON_ENV_REFRESH:-0}" = "1" ]; then
+        export CLAUDE_CODE_EFFORT_LEVEL="${PWT_BG_EFFORT:-${CLAUDE_CODE_EFFORT_LEVEL:-high}}"
+        [ -n "${PWT_BG_AUTOCOMPACT:-${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}}" ] \
+            && export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${PWT_BG_AUTOCOMPACT:-$CLAUDE_CODE_AUTO_COMPACT_WINDOW}"
+        echo "  daemon-env refresh: exporting effort=${CLAUDE_CODE_EFFORT_LEVEL} compact=${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-<unset>} into this launcher's env" >&2
+        echo "                      (takes effect only if THIS call cold-starts the bg daemon; a warm daemon keeps its startup env — restart it to pick up new fork env)" >&2
     fi
 
     # Resolve PROJECT_ROOT to the active worktree, not the main checkout.
@@ -2812,13 +2949,13 @@ if [ "$LAUNCH" = "1" ]; then
         SPAWN_ATTEMPT=$((SPAWN_ATTEMPT+1))
         : > "$WORKER_OUT_FILE" 2>/dev/null || true
         if [ -n "$LAUNCH_ENV" ]; then
-            env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
+            env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" $BG_EXTRA_ARGS "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
             LAUNCH_RC=$?
         else
             # Carries PWT_LEAN_STATUSLINE=1 too: this branch is a safety net, and a
             # safety net that drops the host-load protection would reintroduce the
             # exact failure it exists to survive.
-            env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 PWT_LEAN_STATUSLINE=1 $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
+            env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 PWT_LEAN_STATUSLINE=1 $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" $BG_EXTRA_ARGS "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
             LAUNCH_RC=$?
         fi
 
@@ -3222,9 +3359,23 @@ EOF_GOAL_MIRROR
     # is bash-3.2 safe (see GOAL_TEXT above for the same pattern). Quoted
     # heredoc (<<'SUPEOF') disables expansion; placeholders are filled via
     # bash 3.2-compatible ${var//pat/repl} parameter expansion below.
+    #
+    # ITEM 6 / defect e — phantom-lane sentinel. The FIRST body line below is the
+    # content sentinel `PWT-BOOTSTRAP-DO-NOT-ROUTE`. It is deliberately TERSE: the
+    # route hook only greps for that token (case `*PWT-BOOTSTRAP-DO-NOT-ROUTE*`),
+    # and this heredoc is charged against /goal's ~3800-char bootstrap ceiling —
+    # a verbose sentinel here overflows it and aborts the launch (regression
+    # caught 2026-09-02). WHY it must be content, not an env flag: this bootstrap
+    # starts with `#` (bypasses the route hook's slash-guard) and embeds the
+    # verbatim "Use /plan-w-team to …" request, so without a content signal the
+    # hook would re-trigger inside the supervisor and spawn a phantom lane; and
+    # F1 (2026-09-01) proved PLAN_W_TEAM_DISABLE_PROMPT_ROUTE does NOT cross to a
+    # daemon-hosted --bg session — argv/content is the one channel that does.
     DATE_UTC=$(date -u +%FT%TZ)
     read -r -d '' SUPERVISOR_BOOTSTRAP <<'SUPEOF' || true
 # /plan-w-team Outer Supervisor
+
+PWT-BOOTSTRAP-DO-NOT-ROUTE role=supervisor
 
 You are the **outer supervisor** for an autonomous /plan-w-team run. You exist as a separate bg session whose role is **observation and reporting**, not implementation.
 
@@ -3299,7 +3450,7 @@ SUPEOF
     # 2026-05-21: sid 0b5856d7 → 4bbb2cb8 → f2ec9cb9 → 7a4c658b cascade).
     SUP_OUT_FILE=$(mktemp -t pwt-goal-supervisor.XXXXXX 2>/dev/null || echo "")
     if [ -n "$SUP_OUT_FILE" ]; then
-        env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
+        env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" $BG_EXTRA_ARGS "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
         SUP_RC=$?
         SUPERVISOR_SID=""
         if [ -s "$SUP_OUT_FILE" ]; then
@@ -3313,7 +3464,7 @@ SUPEOF
         SUPERVISOR_SID=""
         SUP_RC=1
         echo "WARN: mktemp failed for supervisor; spawning anyway" >&2
-        env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" "$SUPERVISOR_BOOTSTRAP" >&2 || true
+        env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" $BG_EXTRA_ARGS "$SUPERVISOR_BOOTSTRAP" >&2 || true
     fi
 
     if [ -n "$SUPERVISOR_SID" ]; then
@@ -3321,6 +3472,47 @@ SUPEOF
     else
         echo "WARN: supervisor session id could not be parsed; worker still running" >&2
     fi
+
+    # ── Item 5 (defect d): bind the goal-state supervisor_sid to the CORRECT
+    # supervisor. The seed above wrote the LAUNCHING session's id (USER_SID). For
+    # a pure --launch (which spawns a SEPARATE bg supervisor and then EXITS), the
+    # launching operator session is NOT the supervisor — binding it wedges that
+    # session out of in-repo work via the lane-guard until the lane lands (F4). So:
+    #   • default --launch → rebind to the SPAWNED bg supervisor (the real one);
+    #   • PLAN_W_TEAM_SUPERVISOR_SESSION=1 → the launcher declares ITSELF the
+    #     supervisor → keep USER_SID (no rebind);
+    #   • --no-bind → force NOT binding the launcher, even when the env flag is set.
+    # --worker-only exits long before this point (the origin chat IS its
+    # supervisor by design), so this only ever affects the detached --launch path.
+    BIND_SPAWNED_SUPERVISOR=0
+    if [ "$NO_BIND" = "1" ]; then
+        BIND_SPAWNED_SUPERVISOR=1
+    elif [ "${PLAN_W_TEAM_SUPERVISOR_SESSION:-0}" = "1" ]; then
+        BIND_SPAWNED_SUPERVISOR=0
+    else
+        BIND_SPAWNED_SUPERVISOR=1
+    fi
+    if [ "$BIND_SPAWNED_SUPERVISOR" = "1" ] && [ -n "$SUPERVISOR_SID" ]; then
+        __pwt_patch_supervisor_sid() {  # $1=goal-state file $2=sid
+            [ -f "$1" ] || return 0
+            if command -v jq >/dev/null 2>&1; then
+                local __t="$1.tmp.$$"
+                jq --arg s "$2" '.supervisor_sid=$s' "$1" > "$__t" 2>/dev/null && mv "$__t" "$1" 2>/dev/null || rm -f "$__t" 2>/dev/null
+            else
+                # sed fallback: replace whatever the seed wrote (USER_SID or empty).
+                sed -E "s/(\"supervisor_sid\"[[:space:]]*:[[:space:]]*)\"[^\"]*\"/\\1\"$2\"/" "$1" > "$1.tmp.$$" 2>/dev/null \
+                    && mv "$1.tmp.$$" "$1" 2>/dev/null || rm -f "$1.tmp.$$" 2>/dev/null
+            fi
+        }
+        for __sd in "${MAIN_REPO_ROOT:-}/.claude/state" "${WORKER_WT_ROOT:-}/.claude/state"; do
+            case "$__sd" in "/.claude/state") continue ;; esac   # empty-root guard
+            __pwt_patch_supervisor_sid "$__sd/plan-w-team-goal-${SLUG_GUESS}.json" "$SUPERVISOR_SID"
+        done
+        echo "  supervisor bind:    goal-state supervisor_sid → $SUPERVISOR_SID (spawned bg supervisor; launching session left free — item 5/defect d)" >&2
+    elif [ "${PLAN_W_TEAM_SUPERVISOR_SESSION:-0}" = "1" ] && [ "$NO_BIND" != "1" ]; then
+        echo "  supervisor bind:    goal-state supervisor_sid kept as launching session (PLAN_W_TEAM_SUPERVISOR_SESSION=1)" >&2
+    fi
+
     echo "" >&2
     echo "Monitor:  claude agents" >&2
     echo "Worker:   claude logs $WORKER_SID" >&2

@@ -867,6 +867,21 @@ if [ "$HAS_JQ" -eq 1 ]; then
   fi
   case "$sd_five_reset" in *[!0-9]*|'') ;; *) [ "$sd_five_reset" -le "$now_s" ] && { sd_five=""; sd_five_reset=""; } ;; esac
   case "$sd_seven_reset" in *[!0-9]*|'') ;; *) [ "$sd_seven_reset" -le "$now_s" ] && { sd_seven=""; sd_seven_reset=""; } ;; esac
+  # Identity (2.37.1): stdin is THIS session's LAST response, so after a /login it
+  # still carries the PREVIOUS account's gauge until this pane makes a request —
+  # MAX then rendered king's 94% with lazio's reset time as one line (2026-09-02).
+  # The helper sample is keyed to the CURRENT login, so a stdin reading counts only
+  # when its window matches the helper's (resets_at within 120 s); a KNOWN mismatch
+  # is another account or an older window and is dropped. Unknown resets keep MAX.
+  same_window() {  # <helper-reset> <stdin-reset> → 0 unless both known and apart
+    local d
+    case "$1" in ''|*[!0-9]*) return 0 ;; esac
+    case "$2" in ''|*[!0-9]*) return 0 ;; esac
+    d=$(( $1 - $2 )); [ "$d" -lt 0 ] && d=$(( 0 - d ))
+    [ "$d" -le 120 ]
+  }
+  if [ -n "$h_five" ] && [ -n "$sd_five" ] && ! same_window "$h_five_reset" "$sd_five_reset"; then sd_five=""; sd_five_reset=""; fi
+  if [ -n "$h_seven" ] && [ -n "$sd_seven" ] && ! same_window "$h_seven_reset" "$sd_seven_reset"; then sd_seven=""; sd_seven_reset=""; fi
 
   five_hr=$(pick_max "$h_five" "$sd_five")
   seven_d=$(pick_max "$h_seven" "$sd_seven")

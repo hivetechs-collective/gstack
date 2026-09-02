@@ -14,7 +14,7 @@ version: 1.2.0
 # ============================================================================
 # MODEL CONFIGURATION (Required for v2.1.0)
 # ============================================================================
-model: claude-fable-5 # Design work = Fable 5 (founder doctrine 2026-08-29)
+model: claude-fable-5-1 # Design work = Fable 5.1 (founder doctrine 2026-08-29, rolled 2026-09-01)
 context: fork
 
 # ============================================================================

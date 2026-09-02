@@ -65,8 +65,10 @@ Two surfaces deliver the advice (both fail open — silent when dormant or singl
   nudge's **color follows the same heat tiers as the `5h` number beside it** (peach from 50%, red
   with `⚠ switch` from 80%), taken over the hottest reading the status line holds — the live plan
   read AND the advisory's cached view of your current account — so it never sits green next to a
-  peach or red plan number. Driven by `.claude/scripts/account-advice.sh` (local cache + bounded +
-  fail-open) off `accounts.sh advise`.
+  peach or red plan number. Driven by `.claude/scripts/account-advice.sh` off `accounts.sh advise` — a
+  machine-wide, login-keyed cache refreshed by a detached bounded singleton (the render never
+  waits on the probe), fail-open; see
+  [`docs/operations/statusline-usage-reporting.md`](../../../../docs/operations/statusline-usage-reporting.md).
 - **`claude-account`** — a shell function (claude-pattern's managed shell) that prints the full
   status table plus the recommended account and the exact `/login` step. Run it any time.
 

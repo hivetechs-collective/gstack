@@ -6,8 +6,8 @@ domain: workflow
 scope: project
 project: claude-pattern
 created: 2026-05-29T20:42:26Z
-last_applied: 2026-06-08T14:19:40Z
-applications: 5
+last_applied: 2026-09-02T01:53:08Z
+applications: 6
 evidence:
   - "First observed in session 1780087346"
 ---

@@ -174,6 +174,26 @@ auto_sync_from_pattern() {
     echo ""
 }
 
+# Status-line bundle refresh (2.37.1). Plan usage is per ACCOUNT and one /login
+# changes what every open session on this machine bills to, so the status line must
+# be current in every pane — including a repo whose skill sync stands down for
+# in-progress work (auto_sync_from_pattern refuses a dirty .claude/) and a repo that
+# never takes the skill sync at all. Provenance-guarded per file; the scoped
+# `git commit --only` touches nothing else. Linked worktrees are left to their branch.
+refresh_statusline_bundle() {
+    local b="$CLAUDE_PATTERN/.claude/scripts/sync-statusline-bundle.sh"
+    case "$PROJECT_ROOT" in "$CLAUDE_PATTERN"|"$CLAUDE_PATTERN"/*) return 0 ;; esac
+    [ -x "$b" ] && [ -f "$PROJECT_ROOT/.claude/statusline.sh" ] || return 0
+    if command -v git >/dev/null 2>&1 && git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+        local gd cd
+        gd=$(git -C "$PROJECT_ROOT" rev-parse --git-dir 2>/dev/null)
+        cd=$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir 2>/dev/null)
+        [ -n "$gd" ] && [ -n "$cd" ] && [ "$gd" != "$cd" ] && return 0   # linked worktree
+    fi
+    bash "$b" "$PROJECT_ROOT" --commit 2>/dev/null | grep -E '^(✓|⚠|status-line bundle: [1-9])' | sed 's/^/   📊 /' || true
+}
+refresh_statusline_bundle
+
 # Run auto-sync check
 auto_sync_from_pattern
 

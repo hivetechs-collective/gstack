@@ -14,6 +14,209 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.37.1] — 2026-09-02 (Rollout fixes: dirt verdict before the bundle refresh, 429 Retry-After backoff, session-start bundle refresh) (6692bfe)
+
+Two defects found while verifying the 2.37.0 rollout across the fleet:
+
+- **The sync guard tripped on its own writes.** `sync-to-project.sh` ran the status-line
+  bundle refresh BEFORE the target-dirty guard but took the dirt VERDICT after it, so every
+  consumer received the bundle (uncommitted — the sweep passes no `--commit` to the per-repo
+  script) and the guard then skipped the skill sync in all of them: the fleet stayed at 2.35.2
+  while `sync-all-projects.sh --commit` reported success. Fix: the verdict is taken FIRST, on
+  the untouched tree; the bundle still refreshes a dirty consumer, and when the guard is about
+  to skip it makes its own scoped `git commit --only` (`--commit` or `PWT_SYNC_BUNDLE_COMMIT=1`,
+  exported by `sync-all-projects.sh --commit`). `sync-statusline-bundle.sh --commit` also sweeps
+  bundle paths that are current-but-uncommitted, so a consumer never carries self-inflicted
+  dirt for the next guard to trip on. Pinned by two new `sync-target-dirty-guard.bats` cases
+  (dirty → SKIP + scoped bundle commit + skill files absent; clean → no SKIP + skill files
+  present) and `sync-statusline-bundle.test.sh` 3b (21/21).
+- **Refresh storm against a rate-limited endpoint.** `/api/oauth/usage` answers HTTP 429
+  (`retry-after: 88`) to most refreshes when polled every 30 s from every pane; the refresher
+  retried on every render and the `⟳Nm` age crept to 7 min. Fix: `plan-usage.sh` honours
+  `Retry-After` (recorded in `<key>.err` as `rate-limited`; default 120 s, clamped 30–900),
+  any other failure backs off `PLAN_USAGE_FAIL_BACKOFF` (60 s), the render path spawns nothing
+  inside the window, `--sync` bypasses it, and the default TTL is 120 s. The 5h/7d gauges and
+  the ETA stay real-time from Claude Code's stdin `rate_limits`; the endpoint feeds the scoped
+  Fable bucket and the advisory. `plan-usage.test.sh` +6 (36/36): 429 window recorded, no spawn
+  inside it, lapse → refresh, generic backoff, `--sync` bypass.
+- **Every session start refreshes the bundle.** `session-start.sh` runs
+  `sync-statusline-bundle.sh <repo> --commit` before the skill auto-sync, so a consumer whose
+  auto-sync stands down for a dirty `.claude/` (or never takes the skill sync) still shows the
+  current line; skipped for claude-pattern itself and for linked worktrees.
+- **A `/login` no longer leaks the previous account's gauge.** stdin `rate_limits` is this
+  session's LAST response, so after a switch an idle pane's stdin still held the old
+  account's number and MAX rendered king's 94 % with lazio's reset time as one line. The
+  status line now counts a stdin reading only when its window matches the account-keyed
+  sample's (`resets_at` within 120 s); a known mismatch is dropped. `statusline-plan-usage.test.sh` +2.
+- **Sync-inventory lint.** `sync-statusline-bundle.sh` is invoked from the source tree
+  (sync-to-project / sync-all / session-start all call `$CLAUDE_PATTERN/...`), so it joins
+  the `NOT_SYNCED_SOURCE_ONLY` carve-out in `sync-script-references.bats` — the lint had been
+  red on it since 2.37.0.
+- Docs: `docs/operations/statusline-usage-reporting.md` (identity rule, backoff, delivery
+  ordering, env rows).
+
+## [2.37.0] — 2026-09-02 (Status-line usage reporting: non-blocking, account-keyed, two-source, burn-rate ETA) (ea4f1e0)
+
+Incident: panes hit `You've hit your session limit` while every status line read `5h 87%`
+(the account was at 100 %). Claude Code CANCELS an in-flight statusLine command when the next
+trigger fires, and the render did keychain+curl (`plan-usage.sh`), an N-account serial probe
+(`account-advice.sh`) and a full transcript scan (`usage-breakdown.sh`) INLINE — under load the
+render died mid-call, the display froze on its last completed frame, the cache never committed,
+and nothing marked the number as old. The render also ignored the API's `limits[]`
+(`is_active`, scoped Fable bucket, `severity`, `locked_reason`), had no lead indicator, and kept a
+per-repo cache so panes disagreed and multiplied API calls.
+
+- **`plan-usage.sh` rewritten** as a stale-while-revalidate singleton: the render only READS
+  a file; a stale sample starts ONE detached `timeout`-bounded `--refresh` in its own process
+  group; failures never replace a sample (`<key>.err`); `--sync` for deterministic callers
+  (fable-guard, tests); `--meta`. Cache is MACHINE-WIDE and ACCOUNT-KEYED
+  (`~/.config/claude-pattern/plan-usage/<key>.json`, key = sha12(env token) | `accountUuid` |
+  keychain) so a `/login` re-keys instantly and every pane shares one sample. History ring →
+  `_meta.rates` (rate %/min + ETA to 100 %) per window and per scoped model, with window-reset
+  detection. Header-probe fallback for env tokens lacking `user:profile`.
+- **Two sources reconciled:** Claude Code's stdin `rate_limits` (≥ 2.1.251, zero cost,
+  pane-local) and the endpoint sample; the line shows the MAX of readings whose `resets_at`
+  has not passed.
+- **Render:** `▸` binding limit, scoped `Fable NN%`, `→100% in Xm` ETA (forces hot < 15 min),
+  `⛔ LIMITED`, grey `⟳Nm` past 2× TTL, `⚠ STALE Nm` past 15 min; API `severity` raises the
+  tier; the 👉/⚠ account advisory inherits the hottest plan tier. Reset times now render in
+  12-hour US form (`3:00pm`; `STATUSLINE_TIME_24H=1` opts back).
+- **`account-advice.sh` / `usage-breakdown.sh`** moved to the same detached, machine-wide
+  shape; account-advice validity is checked by LOGIN, not mtime (same-second `/login` race).
+- **Every pane, every repo:** new `sync-statusline-bundle.sh` refreshes the status-line
+  bundle (statusline.sh + the six helpers it execs) in a consumer with a per-file PROVENANCE
+  guard (only a byte-identical copy of SOME claude-pattern version is overwritten; a local
+  edit is skipped, exit 5) and a `git commit --only` scoped to the bundle. Runs inside
+  `sync-to-project.sh` BEFORE the target-dirty guard and from `sync-all-projects.sh` for the
+  new `STATUSLINE_ONLY_REPOS` (liamslanais, parts, progressive-qa-initiative, Stories — alive,
+  excluded from the skill sync). `account-advice.sh` falls back to the claude-pattern source's
+  accounts CLI (`CLAUDE_PATTERN_ROOT` / sibling) and serves the shared cache read-only with no
+  CLI at all. Evidence: three panes on ONE account read 5h 44 % / 38 % / 57 % at the same
+  moment before this release.
+- `operator-doctor.sh`: ccusage wording corrected (it feeds only the tok/tpm line).
+- Tests: `plan-usage.test.sh` (31), `statusline-plan-usage.test.sh` (32),
+  `account-advice.test.sh` (14), `usage-breakdown.test.sh` (8),
+  `sync-statusline-bundle.test.sh` (18). Docs: `docs/operations/statusline-usage-reporting.md`.
+
+## [2.36.1] — 2026-09-02 (Status line resolves state/helper paths against the git toplevel, not $PWD) (bc2af7c)
+
+`statusline.sh` built every state and helper path (`bg-agents-cache.json`, `pwt-launches.jsonl`,
+the completion-summary count, the ccusage / plan-usage / account-info / account-advice /
+usage-breakdown helpers, and the three dashboard `cwd` filters) from bare `$PWD`. Whenever a
+session's cwd was a **subdirectory** of the project — a worker that `cd`'d into `apps/web`, a
+session opened in `tests/skill` — the status line created and read a nested
+`<subdir>/.claude/state/` instead of the project's, scattering junk dirs across consumer repos.
+One such stale file (`tests/mobile-bdd/.claude/state/plan-w-team-credwall-active.json`, written
+2026-06-05, carrying a `WDIO_TAGS` line in its `command` field) false-failed CleanRev's pre-push
+gate on 2026-09-02 (`ios-conf.assert.test.sh` scanned it as an "in-repo caller").
+
+Fix: `PROJECT_ROOT` = `$PWD` walked up to the git root via `git rev-parse --show-cdup` + `pwd -L`
+— a worktree resolves to its OWN root (unchanged behaviour for lanes), a plain directory falls
+back to `$PWD` (unchanged behaviour for the sandboxed tests), and the LOGICAL path is kept on
+purpose: `--show-toplevel` canonicalizes symlinks (macOS `/var` → `/private/var`), which would
+break the dashboard's cwd-prefix match against the cache's logical cwd strings (caught by the new
+test on the first cut). All ten `$PWD/.claude/...` paths and the three dashboard `--arg cwd`
+filters now use it. `statusline.sh` only.
+
+Coverage: new `.claude/scripts/statusline-project-root.test.sh` — subdir cwd renders the root
+cache and creates no nested `.claude/`; a worktree subdir resolves to the worktree's own root;
+a non-git directory keeps the `$PWD` fallback; a symlinked cwd keeps its logical path; mutation
+guards on the derivation and on any remaining bare `$PWD/.claude` path. `statusline-dots` /
+`statusline-account-advice` unchanged and green.
+
+## [2.36.0] — 2026-09-02 (Fable 5.1 rollover + five bg-daemon defect fixes: effort/permission argv, goal-keyed double-spawn, conditional supervisor bind, content-sentinel phantom-lane guard) (c16df52)
+
+Two CleanRev DIRECTION documents land as one release. **(A) Fable 5.1 generation
+rollover** — every Fable model PIN moves `claude-fable-5` → `claude-fable-5-1`
+(the four design agents `system-architect` / `ui-designer` / `style-theme-expert`
+/ `team/fable-spec-consult`, the governor's `design`-tier default in
+`pwt-governor-lib.sh`, and the two Model Strategy table rows in the manifest). The
+prior-generation bare id `claude-fable-5` stays **accepted** in the governor's
+`design` allow-list for ONE release (backward compat, DIRECTION line 30) so a
+consumer manifest pinning the old id is not broken by the bump. This is a
+generation rollover within the design tier, not a tiering change — the tiers,
+budgets, guard, and Opus-4.8 landing rung are unchanged. `plan-w-team-fable-guard.sh`
+needs **no** change: it matches the consult agent by display-name `test("Fable"; "i")`,
+never by model id, so it is generation-agnostic by construction.
+
+**(B) Five bg-daemon defects (a–e)**, all rooted in one measured fact:
+
+**F1 MEASUREMENT (verbatim, item 2 / DONE3).** Probe session `947c7a54` launched
+`claude --bg --model claude-haiku-4-5-20251001 --effort low --autocompact 400000
+--permission-mode bypassPermissions`. The bg daemon recorded the respawn argv
+`["--effort","low","--autocompact","400000","--permission-mode","bypassPermissions",
+"--model","claude-haiku-4-5-20251001"]`, but the worker RUNTIME echoed
+`PROBE_EFFORT=UNSET PROBE_EFFORT_LEVEL=UNSET PROBE_COMPACT=250000` (the daemon
+default 250000, NOT the requested 400000). CONCLUSION: a `--bg` worker/supervisor
+is forked by the bg daemon and inherits the DAEMON's environment, not the
+launcher's — argv `--effort`/`--autocompact` do not surface to the worker runtime
+as `CLAUDE_CODE_*` env vars, and launcher-exported env does not cross. The only
+channels that reach a daemon-hosted session are **argv** and **prompt content**.
+
+- **defect a (effort/compaction).** Because launcher env does not cross, effort and
+  compaction now ride ARGV: `pwt-goal.sh` builds `BG_EXTRA_ARGS` with
+  `--effort ${PWT_BG_EFFORT:-${CLAUDE_CODE_EFFORT_LEVEL:-high}}` and
+  `--autocompact ${PWT_BG_AUTOCOMPACT:-${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}}`
+  (kill switch `PWT_DISABLE_BG_EFFORT_ARGV=1`) and threads it into every worker
+  AND supervisor `claude --bg` spawn. A first-class daemon-env knob
+  `PWT_DAEMON_ENV_REFRESH=1` additionally exports `CLAUDE_CODE_EFFORT_LEVEL` /
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` for a daemon started in the same env, and the
+  F1 rule is documented at the build site so a future edit cannot silently drop
+  the argv threading.
+- **defect b (permission mode).** `pwt-goal.sh` passes
+  `--permission-mode ${PWT_BG_PERMISSION_MODE:-bypassPermissions}` on the `--bg`
+  argv for worker AND supervisor (same `BG_EXTRA_ARGS` seam), so a daemon-hosted
+  session no longer falls back to an interactive default that silently
+  auto-rejects a `/dev/null`-stdin push.
+- **defect c (double-spawn keying).** PWT-DS1 now keys on the GOAL (slug), not "any
+  worker alive": helpers `__ds1_sid_slug` / `__ds1_hit_is_same_goal` resolve a live
+  flag's worker to the goal-state slug it owns and CLEAR the refusal when that
+  slug differs from the launch's slug — wired at the Tier A mtime fast-path and
+  both Tier B refusal sites. A manual `--launch` of goal B now succeeds while
+  goal A's worker is alive, WITHOUT `PWT_DOUBLE_SPAWN_LIVENESS_DISABLE=1`; a second
+  launch of the SAME goal is still refused. Fail-closed preserved: an
+  unresolvable slug refuses, and `PWT_DS1_SLUG_KEYING_DISABLE=1` reverts to the
+  pre-2.36.0 slug-agnostic refusal.
+- **defect d (supervisor binding).** The launching session is bound as supervisor
+  ONLY under `PLAN_W_TEAM_SUPERVISOR_SESSION=1`; otherwise the SPAWNED supervisor's
+  own session id is bound (post-spawn patch of the goal-state), so a plain
+  `--launch` no longer wedges the launching chat under the lane guard. `--no-bind`
+  forces the spawned-bind even when the env flag is set.
+- **defect e (phantom lanes).** The route hook recognizes a bg BOOTSTRAP by CONTENT
+  — a `PWT-BOOTSTRAP-DO-NOT-ROUTE` sentinel line — and short-circuits BEFORE trigger
+  detection, never by env flag alone (F1: `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE` may not
+  cross to a daemon-hosted session). `pwt-goal.sh` writes the sentinel into every bg
+  bootstrap it emits (worker goal text + supervisor bootstrap — the supervisor
+  bootstrap starts with `#`, bypassing the slash-guard, so it was the live
+  phantom-lane vector). Since argv/content is the one channel F1 confirms crosses,
+  the content sentinel is authoritative where the env flag is not.
+
+**DONE1 word-boundary caveat.** The DIRECTION's literal check
+`grep -rn 'claude-fable-5\b' .claude tests/skill` is unsatisfiable as written after
+the rollover: `\b` matches between `5` and `-`, so the pattern matches the rolled
+`claude-fable-5-1` too. Satisfied by INTENT — no stray Fable *pin* remains; the
+bare `claude-fable-5` occurrences that persist are all sanctioned: the governor's
+backward-compat allow-list, the dated Model-Tiering-v5 generation note, the
+`fable-spec-consult` incident-history comment (`claude-fable-5[1m]`), the test
+substring-matchers, and non-shipped `.claude/state/` run artifacts.
+
+**Coverage.** New `tests/skill/cases/pwt-bg-env-guards.bats` (14 cases) covers
+defects a–e: permission/effort/autocompact argv threading into both spawn classes,
+the `PWT_DAEMON_ENV_REFRESH` knob, the DS1 slug-keying helpers + kill switch + the
+three guard sites, the conditional supervisor-bind + `--no-bind`, the sentinel in
+both bootstraps, and a FUNCTIONAL route-hook pair proving a sentinel-bearing
+trigger prompt does NOT spawn while the identical trigger WITHOUT the sentinel
+does. `model-tiering-v3.bats` (exact-line consult pin → `-5-1`), `model-tiering-v5.bats`
+and `governor-budget.bats` (design functional sweep → `-5-1`, plus new backward-compat
+positives asserting the design tier accepts BOTH generations verbatim, and Fable in
+either generation refused for the intelligent/mechanical tiers). `opus48-uplift.bats`
+unchanged (14/14). The v5-substring sweeps (`grep -F 'model: claude-fable-5'`) stay
+green because `claude-fable-5-1` contains `claude-fable-5` as a substring.
+
+**Out-of-scope residuals (not touched this release).** `CLAUDE.md:446` and
+`dotfiles/claude/settings.json` were left as-is — outside the enumerated 9-item
+scope; the governor/agent/manifest pins are the load-bearing rollover surface.
+
 ## [2.35.2] — 2026-09-01 (Status-line account advisory colors by the plan's own heat tiers) (f3ec229)
 
 The `👉 next: <email>` nudge stayed GREEN until the advisory's own `current_hot` flag flipped, and

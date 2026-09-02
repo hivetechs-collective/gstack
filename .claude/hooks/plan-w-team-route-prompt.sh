@@ -146,6 +146,26 @@ case "$TRIMMED" in
     "<user-prompt-submit-hook>"*) exit 0 ;;
 esac
 
+# ─── pwt bg-bootstrap sentinel guard (item 6 / defect e — phantom lanes) ─────
+# Recognize a /plan-w-team bg BOOTSTRAP prompt by CONTENT and never route it,
+# INDEPENDENT of any env flag. The env kill switch above
+# (PLAN_W_TEAM_DISABLE_PROMPT_ROUTE) is NOT reliable for a daemon-hosted
+# `claude --bg` session: F1 (2026-09-01) measured that a `--bg` worker/supervisor
+# is forked by the bg daemon and inherits the DAEMON's env, not the launcher's —
+# so PLAN_W_TEAM_DISABLE_PROMPT_ROUTE set by pwt-goal.sh may never reach the
+# forked session. The supervisor bootstrap is the live vector: it starts with
+# `#` (bypasses the slash-guard above) and embeds the verbatim user request
+# ("Use /plan-w-team to …"), so without an env-independent signal this hook would
+# re-trigger inside the supervisor and spawn a phantom lane (the 2026-05-21
+# cascade class). pwt-goal.sh writes this sentinel into EVERY bg bootstrap it
+# emits (worker goal text + supervisor bootstrap); the prompt text always crosses
+# to the forked session (argv is the one channel F1 confirms crosses), so the
+# sentinel is authoritative where the env flag is not. Recognition is by content
+# here, never by env flag alone (item 6 requirement).
+case "$PROMPT" in
+    *PWT-BOOTSTRAP-DO-NOT-ROUTE*) exit 0 ;;
+esac
+
 # ─── Unanchored trigger detection ────────────────────────────────────────────
 # Trigger phrases match anywhere in the prompt. Natural language for any
 # effort is the product principle. Trust the specificity of the trigger
