@@ -14,6 +14,17 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.37.5] — 2026-09-02 (The operator sweep delivers the status-line bundle past the default-branch guard) (83a81a7)
+
+The 2.37.3 guard defers the bundle on any default-branch checkout with an origin to
+"the consumer's regular sync PR" — but the STATUSLINE_ONLY repos never take a skill
+sync and a dirty consumer's skill sync stands down, so the 2.37.4 sweep left parts,
+helm, liamslanais and progressive-qa-initiative on an old status line.
+
+- `sync-all-projects.sh` exports `STATUSLINE_BUNDLE_ON_DEFAULT=1` for its run: an
+  operator-run sweep with `--commit` is the deliberate delivery channel. The unattended
+  session-start refresh keeps the guard. `sync-statusline-bundle.test.sh` +1 (29/29).
+
 ## [2.37.4] — 2026-09-02 (Status line: login-tagged stdin gauge for accounts whose windows coincide) (b151699)
 
 Seen right after 2.37.2 landed (2.37.3 was taken by a parallel release on main): four of the five accounts reset at 2:59pm, so the
