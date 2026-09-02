@@ -61,8 +61,12 @@ Two surfaces deliver the advice (both fail open — silent when dormant or singl
   `⚠ switch → <email> (5h/7d%)` when your current login gets hot. The account is named by its
   **full email** (the registry label is only a fallback when the advisory carries none): labels
   are operator-chosen stems that collide in practice — two accounts on one domain both read as
-  `<company>` — and `/login` asks for an email, so the email is the one unambiguous handle. Driven
-  by `.claude/scripts/account-advice.sh` (local cache + bounded + fail-open) off `accounts.sh advise`.
+  `<company>` — and `/login` asks for an email, so the email is the one unambiguous handle. The
+  nudge's **color follows the same heat tiers as the `5h` number beside it** (peach from 50%, red
+  with `⚠ switch` from 80%), taken over the hottest reading the status line holds — the live plan
+  read AND the advisory's cached view of your current account — so it never sits green next to a
+  peach or red plan number. Driven by `.claude/scripts/account-advice.sh` (local cache + bounded +
+  fail-open) off `accounts.sh advise`.
 - **`claude-account`** — a shell function (claude-pattern's managed shell) that prints the full
   status table plus the recommended account and the exact `/login` step. Run it any time.
 

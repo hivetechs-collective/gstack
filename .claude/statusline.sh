@@ -700,6 +700,23 @@ if [ "$HAS_JQ" -eq 1 ] && command -v claude >/dev/null 2>&1; then
   fi
 fi
 
+# Usage heat tiers — ONE definition for every segment that colors by plan
+# utilization (the 📊 Plan 5h number and the 👉 next / ⚠ switch advisory), so a
+# nudge can never sit green beside a peach or red plan number (2026-09-01).
+# Thresholds match the producer's default switch hint (PWT_ACCT_SWITCH_HINT_PCT=80).
+usage_tier() {  # <pct-int> → hot | warm | cool
+  if [ "${1:-0}" -ge 80 ] 2>/dev/null; then echo hot
+  elif [ "${1:-0}" -ge 50 ] 2>/dev/null; then echo warm
+  else echo cool; fi
+}
+tier_color() {  # <tier> → SGR params for C()
+  case "$1" in
+    hot)  echo '38;5;203' ;;  # coral red
+    warm) echo '38;5;215' ;;  # peach
+    *)    echo '38;5;158' ;;  # mint green
+  esac
+}
+
 # Line 2: Claude plan usage (5-hour + 7-day windows) + session time
 #
 # Data source: Anthropic's /api/oauth/usage endpoint — the exact data the
@@ -738,17 +755,14 @@ except Exception:
 ' 2>/dev/null)
     fi
 
-    # Color by utilization (5-hour is what matters most for active-session pressure)
+    # Color by utilization (5-hour is what matters most for active-session pressure).
+    # The tiers come from usage_tier/tier_color, SHARED with the account-rotation
+    # advisory further down so the two segments never disagree side by side.
     five_color() { :; }
     if [ -n "$five_hr" ]; then
       five_int=$(printf '%.0f' "$five_hr" 2>/dev/null || echo 0)
-      if [ "$five_int" -ge 80 ]; then
-        five_color() { if [ "$use_color" -eq 1 ]; then printf '\033[38;5;203m'; fi; }  # coral red
-      elif [ "$five_int" -ge 50 ]; then
-        five_color() { if [ "$use_color" -eq 1 ]; then printf '\033[38;5;215m'; fi; }  # peach
-      else
-        five_color() { if [ "$use_color" -eq 1 ]; then printf '\033[38;5;158m'; fi; }  # mint green
-      fi
+      five_sgr=$(tier_color "$(usage_tier "$five_int")")
+      five_color() { if [ "$use_color" -eq 1 ]; then printf '\033[%sm' "$five_sgr"; fi; }
     fi
 
     # Build the segment: "📊 Plan: 5h 2% (resets 18:00) · 7d 11% · 👤 email (tier)"
@@ -792,7 +806,9 @@ fi
 # in practice (two accounts on one domain both read as "<company>"), and `/login`
 # asks for an email, so the email is the only unambiguous handle (2026-09-01). The
 # switch is MANUAL (`/login`) — interactive Claude Code can't be account-switched by
-# an env token (2026-08-31). Local-cached + bounded + fail-open (no segment) via
+# an env token (2026-08-31). Its COLOR follows the same heat tiers as the 📊 Plan
+# 5h number beside it (usage_tier), so the two can never disagree side by side.
+# Local-cached + bounded + fail-open (no segment) via
 # account-advice.sh; skipped on lean/pipeline statuslines to keep supervising
 # renders cheap.
 ACCOUNT_ADVICE_HELPER="$PWD/.claude/scripts/account-advice.sh"
@@ -816,11 +832,31 @@ if [ "$PWT_LEAN" -eq 0 ] && [ -x "$ACCOUNT_ADVICE_HELPER" ] && [ "$HAS_JQ" -eq 1
           adv_b7f=$(printf '%.0f' "$adv_b7" 2>/dev/null || echo "$adv_b7")
           adv_pct=" (${adv_b5f}/${adv_b7f}%)"
         fi
-        if [ "$adv_hot" = "true" ]; then
-          line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;203')⚠ switch → ${adv_who}${adv_pct}$(rst)"
-        else
-          line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;108')👉 next: ${adv_who}${adv_pct}$(rst)"
-        fi
+        # Heat: the SAME tiers as the 📊 Plan 5h number beside it (≥80 hot → red
+        # `⚠ switch →`, ≥50 warm → peach, else cool), evaluated over the hottest
+        # reading we hold — the plan segment's own 5h AND 7d (the numbers the
+        # operator is looking at, fresh from /api/oauth/usage every render) plus the
+        # advisory's cached current_5h/7d (a second probe with its own TTL that can
+        # lag either way). The producer's `current_hot` still forces hot. Before this
+        # the nudge sat green beside a peach `5h 79%` and read as "nothing to do"
+        # (2026-09-01).
+        adv_c5=$(echo "$advice_json" | jq -r '.current_5h // empty' 2>/dev/null)
+        adv_c7=$(echo "$advice_json" | jq -r '.current_7d // empty' 2>/dev/null)
+        adv_heat=0
+        for adv_v in "${five_hr:-}" "${seven_d:-}" "$adv_c5" "$adv_c7"; do
+          [ -n "$adv_v" ] || continue
+          adv_vi=$(printf '%.0f' "$adv_v" 2>/dev/null) || continue
+          [ "$adv_vi" -gt "$adv_heat" ] 2>/dev/null && adv_heat=$adv_vi
+        done
+        adv_tier=$(usage_tier "$adv_heat")
+        [ "$adv_hot" = "true" ] && adv_tier=hot
+        case "$adv_tier" in
+          hot)  line2="$line2 $(C '38;5;245')·$(rst) $(C "$(tier_color hot)")⚠ switch → ${adv_who}${adv_pct}$(rst)" ;;
+          warm) line2="$line2 $(C '38;5;245')·$(rst) $(C "$(tier_color warm)")👉 next: ${adv_who}${adv_pct}$(rst)" ;;
+          # cool keeps the advisory's muted green: an idle nudge stays quieter than
+          # the plan number it sits beside.
+          *)    line2="$line2 $(C '38;5;245')·$(rst) $(C '38;5;108')👉 next: ${adv_who}${adv_pct}$(rst)" ;;
+        esac
       fi
     fi
   fi

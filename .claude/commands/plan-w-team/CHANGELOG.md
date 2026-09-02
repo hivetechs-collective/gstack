@@ -14,6 +14,25 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.35.2] — 2026-09-01 (Status-line account advisory colors by the plan's own heat tiers) (f3ec229)
+
+The `👉 next: <email>` nudge stayed GREEN until the advisory's own `current_hot` flag flipped, and
+that flag comes from a SECOND probe of the current account (registry usage cache, 10-min TTL, behind
+the 5-min advice cache) — so beside a peach `5h 79%` from the live `/api/oauth/usage` read the nudge
+sat green and read as "nothing to do", and it could stay green past 80% until both caches caught up.
+The advisory now colors by the SAME tiers as the `📊 Plan` 5h number next to it (≥80 hot → red
+`⚠ switch →`, ≥50 warm → peach `👉 next:`, else cool → the advisory's muted green), evaluated over
+the hottest reading the status line holds: the plan segment's own 5h AND 7d (what the operator is
+looking at) plus the advisory's cached `current_5h`/`current_7d`; the producer's `current_hot` still
+forces hot. The tiers live in one `usage_tier`/`tier_color` pair shared by both segments so they
+cannot drift apart again. `statusline.sh` only; `session_cred.py advise` is unchanged.
+
+Coverage: `statusline-account-advice.test.sh` gains a stubbed `plan-usage.sh` and 7 heat cases —
+peach at 79, red `⚠ switch` at 80 while the advisory's cache still says 66, red at 79.6 (rounds to
+the displayed 80), peach from 7d alone, peach from the advisory's cache alone when the plan read is
+absent, green when everything is cool, and `current_hot:true` forcing red under a cool plan read.
+Accounts `README.md` + onboarding ops doc sentence.
+
 ## [2.35.1] — 2026-09-01 (Status-line account advisory names the account by full email) (8f29fd6)
 
 The `👉 next: <label>` / `⚠ switch → <label>` segment shipped in 2.34.1 named the recommended account
