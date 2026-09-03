@@ -338,6 +338,7 @@ if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ]; then
       [ -d "$REPO_ROOT/.claude/scripts" ] && find "$REPO_ROOT/.claude/scripts" -name '*.test.sh' -type f 2>/dev/null
       [ -d "$REPO_ROOT/.claude/hooks" ]   && find "$REPO_ROOT/.claude/hooks"   -name '*.test.sh' -type f 2>/dev/null
       [ -d "$REPO_ROOT/tests/version-uplift" ] && find "$REPO_ROOT/tests/version-uplift" -name '*.test.sh' -type f 2>/dev/null
+      [ -d "$REPO_ROOT/.claude/commands/plan-w-team/accounts" ] && find "$REPO_ROOT/.claude/commands/plan-w-team/accounts" -name '*.test.sh' -type f 2>/dev/null
     } | sort
   )
   echo "→ shell integration tests: $SHELL_PASSED/$SHELL_TOTAL passed"

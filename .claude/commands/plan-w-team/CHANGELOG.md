@@ -14,6 +14,42 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.38.10] — 2026-09-03 (feat: `accounts.sh status` gains a model-scoped weekly column — `FABLE%`) (5f653b1)
+
+"Add the fable usage in that chart so I can see it too." The account-headroom
+table showed only the 5h/7d unified windows because `probe.py` measures via the
+`anthropic-ratelimit-unified-*` headers of a `max_tokens:1` POST, and the
+per-model weekly gauge (Fable) exists ONLY in `GET /api/oauth/usage` (`limits[]`
+kind `weekly_scoped`). Measured 2026-09-03: every registry setup-token gets **403**
+there (no `user:profile` scope) and the ops token drew a 429 — and rejections
+count against that endpoint's rolling 1 h edge quota, which is the same quota the
+statusline's `plan-usage.sh` (120 s poll, every writer gated on one 429) depends
+on. So the source is the sample cache the statusline already maintains.
+
+- `accounts/probe.py`: `parse_scoped_usage()` (`weekly_scoped` → `{display_name:
+  pct}`, garbage → `{}`), `_plan_usage_scoped_sample(email)` (newest
+  `~/.config/claude-pattern/plan-usage/*.json` — env `PLAN_USAGE_CACHE_DIR` — whose
+  `_meta.account_email` matches), `probe_scoped()` (sample first; direct GET only
+  with `PWT_ACCT_SCOPED_PROBE=1`, default OFF, `Bearer` + `oauth-2025-04-20`, any
+  non-200 → None). `resolve_usage()` attaches additive gauge keys `scoped` /
+  `scoped_at`; the previous value is retained when a probe carries none; consumers
+  (selector / session_cred / lane_cred) ignore unknown keys. No new network call by
+  default.
+- `accounts/accounts.sh status`: one `<MODEL>%` column per model seen across the
+  gauges, placed after `7d%`; a sample older than `PWT_ACCT_SCOPED_TTL` (900 s) is
+  tagged with its age (`75.0 ~1d2h`) so a day-old reading cannot pass as live; `?`
+  when no sample exists for that email; `-` on deactivated rows. `advise` JSON is
+  unchanged.
+- `accounts/probe-scoped.test.sh` (new, 10/10; sandboxed `XDG_CONFIG_HOME` +
+  `PLAN_USAGE_CACHE_DIR` + `HOME`): parser, email match picks the newest sample,
+  opt-in gate, 200/403/429/network/empty-token, attach + retain + token-free cache,
+  status header/rows/age tag/`?`/deactivated, no token in output.
+- `tests/skill/run.sh`: the shell-test phase now also discovers
+  `.claude/commands/plan-w-team/accounts/*.test.sh`.
+- Docs: `plan-w-team-multi-account.md` (`status` row),
+  `pwt-multi-account-onboarding-and-phase2.md` (example table + FABLE% bullet),
+  `accounts/README.md` (`probe.py` row).
+
 ## [2.38.9] — 2026-09-03 (fix: plan-usage.sh header-less 429 is the ~5 min sample floor, not the 1 h edge quota) (bb1f34e)
 
 A keychain login stopped reporting: `📊 Plan … ⟳ 13m` on every pane while the

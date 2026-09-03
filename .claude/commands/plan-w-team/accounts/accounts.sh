@@ -303,6 +303,8 @@ except registry.RegistryMalformed as e:
 accounts = reg.get("accounts") or []
 active_label = reg.get("active_label")
 now = time.time()
+import os
+scoped_ttl = int(os.environ.get("PWT_ACCT_SCOPED_TTL", "900"))
 
 # Fail-open live gauges for ACTIVE accounts (resolve_usage never raises).
 try:
@@ -362,14 +364,18 @@ def pct(v):
         return "%.1f" % v
     return "?"
 
-hdr = ["PIN", "LABEL", "EMAIL", "5h%", "7d%", "WINDOW", "RESET-IN", "STATUS", "FRESH"]
+# Model-scoped weekly buckets (e.g. Fable) get one column each, right after 7d%.
+scoped_names = sorted({n for g in gmap.values() for n in ((g or {}).get("scoped") or {})})
+hdr = (["PIN", "LABEL", "EMAIL", "5h%", "7d%"] + ["%s%%" % n.upper() for n in scoped_names]
+       + ["WINDOW", "RESET-IN", "STATUS", "FRESH"])
 rows = [hdr]
 for a in accounts:
     label = a.get("label") or ""
     email = a.get("email") or ""
     pin = "*" if (active_label and label == active_label) else ""
     if not a.get("active"):
-        rows.append([pin, label, email, "-", "-", "-", "-", "deactivated", "-"])
+        rows.append([pin, label, email, "-", "-"] + ["-"] * len(scoped_names)
+                    + ["-", "-", "deactivated", "-"])
         continue
     g = gmap.get(label) or {}
     fh = g.get("five_hour_pct")
@@ -388,8 +394,16 @@ for a in accounts:
         status = "stale"
     else:
         status = "ok"
-    rows.append([pin, label, email, pct(fh), pct(sd), bw,
-                 hms(binding_reset(g)), status, "stale" if stale else "fresh"])
+    sc = g.get("scoped") or {}
+    sc_at = parse_iso(g.get("scoped_at"))
+    # A scoped sample older than the scoped TTL is still shown — the weekly bucket
+    # moves slowly — but tagged with its age so it is never mistaken for live.
+    sc_age = ""
+    if sc_at is not None and (now - sc_at) >= scoped_ttl:
+        sc_age = " ~" + hms(now + (now - sc_at))   # age, e.g. "~26h00m"
+    rows.append([pin, label, email, pct(fh), pct(sd)]
+                + [(pct(sc.get(n)) + sc_age) if sc.get(n) is not None else "?" for n in scoped_names]
+                + [bw, hms(binding_reset(g)), status, "stale" if stale else "fresh"])
 
 widths = [0] * len(hdr)
 for r in rows:

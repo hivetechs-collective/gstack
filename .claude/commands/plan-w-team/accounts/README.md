@@ -90,7 +90,7 @@ refuses to load on loose perms or a symlink. `accounts.sh` refuses to mint a tok
 | `accounts.sh`      | operator CLI (headless, bash 3.2) — the only entry point you run             |
 | `lib.sh`           | shared shell helpers (path/perms/dormancy/python resolution)                 |
 | `registry.py`      | durable identity store (`accounts.json`, `0600`, `flock`, `O_NOFOLLOW`)      |
-| `probe.py`         | usage measurement (rate-limit header parse + fail-open cache)                |
+| `probe.py`         | usage measurement (rate-limit header parse + fail-open cache + model-scoped weekly gauge from `plan-usage.sh` samples) |
 | `selector.py`      | pure lowest-`max(5h%,7d%)` selection with pinning + rotation                 |
 | `import_stores.py` | discover/validate/bulk-register saved tokens; `secrets.env` source; scaffold |
 | `lane_cred.py`     | spawn-time per-lane token writer (`settings.local.json` env block)           |

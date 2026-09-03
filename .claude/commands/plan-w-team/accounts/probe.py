@@ -39,6 +39,10 @@ from datetime import datetime, timezone
 from registry import resolve_cache_path  # sibling module
 
 API_URL = "https://api.anthropic.com/v1/messages"
+# Model-scoped weekly buckets (e.g. Fable) are NOT in the rate-limit headers; they
+# only come from the oauth usage endpoint that plan-usage.sh already samples.
+SCOPED_URL = "https://api.anthropic.com/api/oauth/usage"
+_PLAN_USAGE_DIR = os.path.join(os.path.expanduser("~"), ".config", "claude-pattern", "plan-usage")
 SYSTEM_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude."
 _PROBE_TIMEOUT_S = 30
 _HEADER_PREFIX = "anthropic-ratelimit-unified-"
@@ -156,6 +160,101 @@ def _default_transport(url, data, headers, timeout):
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         # Message carries only the error TYPE — never the token/headers.
         raise MeasurementError("network: %s" % type(e).__name__)
+
+
+def parse_scoped_usage(body) -> dict:
+    """Pure: ``{display_name: percent}`` for every ``weekly_scoped`` limit in an
+    oauth/usage body (bytes/str/dict). Anything unparseable → ``{}``."""
+    try:
+        if isinstance(body, (bytes, bytearray)):
+            body = body.decode("utf-8", "replace")
+        d = json.loads(body) if isinstance(body, str) else body
+    except (ValueError, TypeError):
+        return {}
+    out = {}
+    if not isinstance(d, dict):
+        return out
+    for lim in d.get("limits") or []:
+        if not isinstance(lim, dict) or lim.get("kind") != "weekly_scoped":
+            continue
+        name = (((lim.get("scope") or {}).get("model") or {}).get("display_name")) or ""
+        p = lim.get("percent")
+        if name and isinstance(p, (int, float)) and not isinstance(p, bool):
+            out[name] = float(p)
+    return out
+
+
+def _plan_usage_scoped_sample(email, cache_dir=None):
+    """Newest plan-usage.sh sample for this email (its cache is the raw endpoint
+    body + ``_meta.account_email`` / ``_meta.fetched_at``), as ``(scoped, at)`` or
+    None. Registry setup-tokens are 403 on the usage endpoint (no user:profile
+    scope), so a login's own sample is the ONLY source of model-scoped buckets.
+    Never touches the network, never raises."""
+    if not email:
+        return None
+    cache_dir = cache_dir or os.environ.get("PLAN_USAGE_CACHE_DIR") or _PLAN_USAGE_DIR
+    best = None
+    try:
+        names = os.listdir(cache_dir)
+    except OSError:
+        return None
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(cache_dir, name)) as f:
+                body = json.load(f)
+            meta = body.get("_meta") or {}
+            if meta.get("account_email") != email:
+                continue
+            at = float(meta.get("fetched_at") or 0)
+        except (OSError, ValueError, AttributeError, TypeError):
+            continue
+        if at and (best is None or at > best[1]):
+            best = (parse_scoped_usage(body), at)
+    return best
+
+
+def _default_get_transport(url, headers, timeout):
+    """GET via urllib. Returns ``(status, body_bytes)``; an HTTPError returns its
+    status with an empty body (a 429 here is the endpoint's sample floor — no data,
+    not a measurement). Network failures raise MeasurementError."""
+    req = urllib.request.Request(url, method="GET", headers=headers)
+    try:
+        r = urllib.request.urlopen(req, timeout=timeout)
+        return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, b""
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise MeasurementError("network: %s" % type(e).__name__)
+
+
+def probe_scoped(token, email=None, transport=None, now: float = None):
+    """Model-scoped weekly percentages for one account as ``(scoped, at_epoch)``
+    — ``{display_name: pct}`` — or None when unavailable. Source: the newest
+    plan-usage.sh sample for the email (free, no network). The direct GET of the
+    usage endpoint is opt-in (``PWT_ACCT_SCOPED_PROBE=1``): registry setup-tokens
+    answer 403 there, and a rejection still counts against the endpoint's rolling
+    edge quota. Fail-open: any failure, 429 or non-200 → None (the caller keeps
+    its previous value)."""
+    now = time.time() if now is None else now
+    sample = _plan_usage_scoped_sample(email)
+    if sample is not None:
+        return sample
+    if os.environ.get("PWT_ACCT_SCOPED_PROBE", "0") != "1" or not token:
+        return None
+    transport = transport or _default_get_transport
+    headers = {"Authorization": "Bearer %s" % token,
+               "anthropic-beta": "oauth-2025-04-20",
+               "Accept": "application/json"}
+    try:
+        status, body = transport(SCOPED_URL, headers, _PROBE_TIMEOUT_S)
+    except MeasurementError:
+        return None
+    if status != 200:
+        return None
+    scoped = parse_scoped_usage(body)
+    return (scoped, now) if scoped else None
 
 
 def probe_usage(token, transport=None, now: float = None) -> dict:
@@ -315,7 +414,8 @@ def _unknown_gauge(label, email, now) -> dict:
 
 
 def resolve_usage(registry: dict, cache_path: str = None, ttl: int = None,
-                  max_stale: int = None, transport=None, now: float = None) -> list:
+                  max_stale: int = None, transport=None, now: float = None,
+                  scoped_transport=None) -> list:
     """Return one gauge per ACTIVE account, reading the cache when fresh (< ttl)
     and probing otherwise. Fail-open: a probe failure keeps the last cached
     reading (marked stale) until it ages past ``max_stale``, then reports UNKNOWN.
@@ -351,6 +451,13 @@ def resolve_usage(registry: dict, cache_path: str = None, ttl: int = None,
                 g = probe_usage(token, transport=transport, now=now)
                 g["label"] = label
                 g["email"] = email
+                # Additive: model-scoped weekly buckets (Fable). A miss keeps the
+                # last cached value; consumers ignore the key.
+                sample = probe_scoped(token, email, transport=scoped_transport, now=now)
+                if sample is not None:
+                    g["scoped"], g["scoped_at"] = sample[0], _iso(sample[1])
+                elif prev.get("scoped") is not None:
+                    g["scoped"], g["scoped_at"] = prev["scoped"], prev.get("scoped_at")
             except MeasurementError:
                 if (prev and prev_at is not None
                         and (now - prev_at) < max_stale and not _is_unknown(prev)):
