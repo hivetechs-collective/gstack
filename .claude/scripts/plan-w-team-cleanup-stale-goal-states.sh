@@ -132,6 +132,8 @@ plan-w-team-workflow- \
 plan-w-team-postship- \
 plan-w-team-coupling- \
 plan-w-team-coupling-ack- \
+plan-w-team-path-existence- \
+plan-w-team-path-existence-ack- \
 plan-w-team-fleet- \
 plan-w-team-fleet-intent- \
 plan-w-team-supervisor-actions- \

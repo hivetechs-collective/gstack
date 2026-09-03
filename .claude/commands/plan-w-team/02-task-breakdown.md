@@ -184,6 +184,59 @@ Re-run the analyzer; it returns exit 2. The ack file (registered in `shared/stat
 
 Post-merge type duplication is the single most-cited Stage 2 pain point (this exists section, and the §New Type Dependency Detection block above). The check exists to make the cross-reference deterministic instead of asking the lead to spot it by reading. If the report shows coupling and there is no ack, the scope-lock writer below refuses to proceed.
 
+## Path-Existence Check (MANDATORY — GRD grounding floor, G2 follow-on)
+
+The `(create)`/`(modify)` annotations from §New Type Dependency Detection and the
+`creates_types` locations are LLM-guessed. Nothing validates them against the working
+tree, so a `(create)` target that **already exists** (the builder silently clobbers it,
+or the annotation is simply wrong) or a `(modify)` target that **does not exist** (the
+builder cannot Read-then-Edit it) passes straight into the scope-lock and the builder
+prompts. This is the same failure class the grounding contract (`shared/grounding.md`)
+closes for the spec's existing-system claims — "detection must not be LLM-only" — applied
+to the task-breakdown path annotations.
+
+Run the deterministic path-existence gate against the same `/tmp/tasks-$SLUG.json` the
+import-coupling analyzer consumes:
+
+```bash
+SLUG="<feature-slug>"
+.claude/scripts/plan-w-team-path-existence-gate.sh \
+  --slug "$SLUG" \
+  --tasks-json /tmp/tasks-"$SLUG".json
+```
+
+The gate builds a CREATED_SET from every `(create)` target **and** every
+`creates_types[].location` across all tasks, then flags:
+
+| Violation        | Meaning                                                                                       |
+| ---------------- | --------------------------------------------------------------------------------------------- |
+| `create-exists`  | A `(create)` target already exists on disk — re-annotate as `(modify)`, or drop the duplicate |
+| `modify-missing` | A `(modify)` target does not exist AND no sibling task creates it — fix the path or add a create |
+
+Intra-breakdown ordering is respected: a `(modify)` of a file a sibling task `(create)`s
+(directly or via `creates_types[].location`) is **not** flagged. It writes its report to
+`.claude/state/plan-w-team-path-existence-$SLUG.json` (registered in `shared/state-artifacts.md`).
+Exit code carries the verdict, mirroring the import-coupling analyzer:
+
+| Exit | Meaning                              | Lead action                                                                          |
+| ---- | ------------------------------------ | ------------------------------------------------------------------------------------ |
+| `0`  | No violations                        | Proceed to scope-lock                                                                 |
+| `1`  | Violations, no ack                   | Fix the breakdown annotations and re-run, OR write the ack file below                 |
+| `2`  | Violations acknowledged              | Proceed to scope-lock; the ack is recorded                                            |
+| `3`  | Environment error (bad/missing input) | Fix input/IO and re-run — never a silent pass                                        |
+
+Acknowledgement escape hatch (a deliberately intentional annotation, e.g. a `(create)`
+that regenerates a git-ignored artifact):
+
+```bash
+echo "intentional: T1 regenerates the generated client, safe to overwrite" \
+  > .claude/state/plan-w-team-path-existence-ack-"$SLUG"
+```
+
+Kill switch: `PLAN_W_TEAM_DISABLE_GROUNDING=1` (shared with the G2 grounding family) exits
+0 with a grep-able notice. If the report shows violations and there is no ack, the
+scope-lock writer below refuses to proceed.
+
 ## Task Metadata Fields
 
 | Field          | Required | Values                      | Purpose                                                                                                                                                                  |
@@ -461,7 +514,7 @@ Every intermediate state after merging completed tasks must compile and pass tes
 
 At the end of Step 2, write a scope-lock file. Step 5 (review) and Step 6 (ship) read this file to detect scope creep — any task added after Step 2 that is not in the lock must be flagged.
 
-**Pre-condition (ENFORCING)**: the import-coupling check above must have produced either a clean report (`couplings: []` in `.claude/state/plan-w-team-coupling-$SLUG.json`) or a coupling-ack file (`.claude/state/plan-w-team-coupling-ack-$SLUG`). The scope-lock writer below refuses to proceed otherwise — making the coupling decision a conscious, audited gate rather than a step the lead can forget.
+**Pre-condition (ENFORCING)**: two deterministic gates must pass before the scope-lock is written. (1) the import-coupling check above must have produced either a clean report (`couplings: []` in `.claude/state/plan-w-team-coupling-$SLUG.json`) or a coupling-ack file (`.claude/state/plan-w-team-coupling-ack-$SLUG`); and (2) the path-existence check must have produced a clean report (`violations: []` in `.claude/state/plan-w-team-path-existence-$SLUG.json`) or a path-existence-ack file (`.claude/state/plan-w-team-path-existence-ack-$SLUG`). The scope-lock writer below refuses to proceed otherwise — making both the coupling decision and the path-annotation grounding conscious, audited gates rather than steps the lead can forget.
 
 ```bash
 SLUG="<feature-slug>"           # same slug used for the spec file
@@ -483,6 +536,26 @@ if [ "$COUPLING_COUNT" != "0" ] && [ ! -f "$COUPLING_ACK" ]; then
   echo "  Either fix the breakdown and re-run the analyzer, OR write a one-line"
   echo "  justification to: $COUPLING_ACK"
   exit 1
+fi
+
+# Pre-condition gate: path-existence check must have run and be clean-or-acked.
+# (create) target that exists, or (modify) target that is missing → violation.
+# Kill switch PLAN_W_TEAM_DISABLE_GROUNDING=1 makes the gate exit 0 (report absent).
+PATHEXIST_REPORT=".claude/state/plan-w-team-path-existence-${SLUG}.json"
+PATHEXIST_ACK=".claude/state/plan-w-team-path-existence-ack-${SLUG}"
+if [ "${PLAN_W_TEAM_DISABLE_GROUNDING:-}" != "1" ]; then
+  if [ ! -f "$PATHEXIST_REPORT" ]; then
+    echo "✗ scope-lock refused: missing $PATHEXIST_REPORT"
+    echo "  Run: .claude/scripts/plan-w-team-path-existence-gate.sh --slug $SLUG --tasks-json /tmp/tasks-$SLUG.json"
+    exit 1
+  fi
+  PATHEXIST_COUNT=$(grep -c '"reason"' "$PATHEXIST_REPORT" || true)
+  if [ "$PATHEXIST_COUNT" != "0" ] && [ ! -f "$PATHEXIST_ACK" ]; then
+    echo "✗ scope-lock refused: $PATHEXIST_COUNT path-existence violation(s) and no ack file"
+    echo "  Either fix the breakdown annotations and re-run the gate, OR write a one-line"
+    echo "  justification to: $PATHEXIST_ACK"
+    exit 1
+  fi
 fi
 
 # Write the locked task set. Lock includes task IDs, subjects, and scope tags.

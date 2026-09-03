@@ -49,7 +49,10 @@
 #                            PLAN_USAGE_COLD_WAIT seconds for that refresh to land.
 #   plan-usage.sh --sync     refresh inline (bounded), then serve. For callers
 #                            that need a fresh number NOW (fable-guard, tests).
-#   plan-usage.sh --meta     print only the _meta object (diagnostics).
+#   plan-usage.sh --meta     print only the _meta object (diagnostics). ALWAYS carries
+#                            accountUuid (the account key) + account_source
+#                            (env|keychain|override), even on a cold cache — the
+#                            founder-vs-fleet isolation proof (cleanscale #1953).
 #   plan-usage.sh --refresh  (internal) the refresher body, run under the lock.
 #
 # ── ENV ───────────────────────────────────────────────────────────────────────
@@ -63,7 +66,20 @@
 #   PLAN_USAGE_ACCOUNT_KEY    override the account key (tests)
 #   PLAN_USAGE_FAIL_BACKOFF   seconds a render waits after a failed refresh before it
 #                            spawns another (60); a 429 uses the Retry-After header
-#                            instead (default 120, clamped 30..900)
+#                            instead, HONORED as sent (floor 30, ceiling
+#                            PLAN_USAGE_RATE_LIMIT_MAX); unspecified/0 → the default below
+#   PLAN_USAGE_RATE_LIMIT_DEFAULT  backoff when a 429 carries no usable Retry-After (3600).
+#                            The endpoint edge quota is a ROLLING 1 h window that counts
+#                            the rejections themselves, so any retry inside it re-arms it:
+#                            the old 900 s clamp left a key refreshed more than once an
+#                            hour rate-limited for ever (2026-09-02, claude-pattern#36)
+#   PLAN_USAGE_RATE_LIMIT_MAX  ceiling on an honored Retry-After (21600)
+#   PLAN_USAGE_SCOPE_MEMO_TTL  seconds a 401/403 "no user:profile scope" memo keeps an
+#                            env-token key OFF the endpoint (604800 = 7 d): setup tokens
+#                            never gain the scope, and every 403 counts against the edge
+#                            quota above
+#   PLAN_USAGE_PROBE_CMD      override the header probe (tests): prints the synthesized
+#                            usage JSON; exit 0 = success
 #   PLAN_USAGE_NOTOKEN_BACKOFF  seconds a render waits after a refresh that could not
 #                            even read a token (no keychain item for this user, no
 #                            curl/security/python3 on PATH) — 15, short on purpose:
@@ -84,7 +100,21 @@
 #   CLAUDE_CODE_OAUTH_TOKEN   when set, THIS token identifies and measures the
 #                             account (fleet lanes); the endpoint refuses setup
 #                             tokens (403, scope user:profile) so the refresher
-#                             falls back to the rate-limit HEADER probe.
+#                             falls back to the rate-limit HEADER probe — and
+#                             remembers the refusal (<key>.scope memo) so later
+#                             refreshes go straight to the probe without touching
+#                             the endpoint again for PLAN_USAGE_SCOPE_MEMO_TTL.
+#                             A 429 gets the SAME probe fallback (#2012): the
+#                             shared OPS setup token hits the endpoint's edge
+#                             quota routinely, and until this fix a 429 left the
+#                             cache un-refreshed for the whole Retry-After window
+#                             (up to 6 h) with no fallback at all. $ERRF's
+#                             "rate-limited" record (__rate_limited_fresh) keeps
+#                             routing straight to the probe for the rest of that
+#                             window, and the top-level backoff gate lets a
+#                             refresh spawn during it specifically so the probe
+#                             — a different call, a different quota — keeps
+#                             getting a chance to run.
 #
 # ── SECURITY ──────────────────────────────────────────────────────────────────
 #   The bearer token is never on argv (curl reads it from a stdin config: `-K -`),
@@ -115,6 +145,9 @@ TTL="${PLAN_USAGE_CACHE_TTL:-120}"
 STALE_MAX="${PLAN_USAGE_STALE_MAX:-900}"
 FAIL_BACKOFF="${PLAN_USAGE_FAIL_BACKOFF:-60}"
 NOTOKEN_BACKOFF="${PLAN_USAGE_NOTOKEN_BACKOFF:-15}"
+RATE_LIMIT_DEFAULT="${PLAN_USAGE_RATE_LIMIT_DEFAULT:-300}"
+RATE_LIMIT_MAX="${PLAN_USAGE_RATE_LIMIT_MAX:-21600}"
+SCOPE_MEMO_TTL="${PLAN_USAGE_SCOPE_MEMO_TTL:-604800}"
 COLD_WAIT="${PLAN_USAGE_COLD_WAIT:-2}"
 BOUND_S="${PLAN_USAGE_TIMEOUT_S:-15}"
 CURL_MAX="${PLAN_USAGE_CURL_MAX_TIME:-6}"
@@ -124,6 +157,7 @@ HIST_KEEP=120
 RATE_WINDOW_S=900
 
 case "$TTL$STALE_MAX$COLD_WAIT$BOUND_S$CURL_MAX" in *[!0-9]*) TTL=60; STALE_MAX=900; COLD_WAIT=2; BOUND_S=15; CURL_MAX=6 ;; esac
+case "$RATE_LIMIT_DEFAULT$RATE_LIMIT_MAX$SCOPE_MEMO_TTL" in *[!0-9]*) RATE_LIMIT_DEFAULT=300; RATE_LIMIT_MAX=21600; SCOPE_MEMO_TTL=604800 ;; esac
 
 # ── account identity ────────────────────────────────────────────────────────
 # The key names WHO IS BILLED for this session's requests, which is what the
@@ -137,10 +171,15 @@ __sha12() {
   else cksum 2>/dev/null | cut -d' ' -f1; fi
 }
 ACCOUNT_EMAIL=""
+# ACCOUNT_SOURCE names WHICH identity the key was derived from — the cleanscale #1953
+# isolation proof reads this: a fleet lane resolves `env` (the ops setup token) while the
+# founder's interactive session resolves `keychain` (their login's accountUuid), so `--meta`
+# on the two never reports the same accountUuid. env|keychain|override.
+ACCOUNT_SOURCE="keychain"
 if [ -n "${PLAN_USAGE_ACCOUNT_KEY:-}" ]; then
-  KEY="$PLAN_USAGE_ACCOUNT_KEY"
+  KEY="$PLAN_USAGE_ACCOUNT_KEY"; ACCOUNT_SOURCE="override"
 elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  KEY="env-$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | __sha12)"
+  KEY="env-$(printf '%s' "$CLAUDE_CODE_OAUTH_TOKEN" | __sha12)"; ACCOUNT_SOURCE="env"
 else
   KEY=""
   if [ -r "$HOME/.claude.json" ]; then
@@ -156,6 +195,7 @@ CACHE="$CACHE_DIR/$KEY.json"
 HIST="$CACHE_DIR/$KEY.history"
 LOCK="$CACHE_DIR/$KEY.lock"
 ERRF="$CACHE_DIR/$KEY.err"
+SCOPEF="$CACHE_DIR/$KEY.scope"   # 401/403 memo: this key lacks user:profile → header probe only
 # Who is refreshing. The status line passes its session_id; a bare call is the
 # helper path. A failure backoff is honored ONLY by its writer (2.38.1): every
 # pane on a login shares this cache, and on 2026-09-02 a 2.37.0 helper copy inside
@@ -177,13 +217,21 @@ __serve() {
   return 0
 }
 __serve_meta() {
-  if [ -s "$CACHE" ] && command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import json,sys
-try:
-    d=json.load(open(sys.argv[1])); print(json.dumps(d.get("_meta",{}),separators=(",",":")))
-except Exception:
-    print("{}")' "$CACHE" 2>/dev/null || echo '{}'
-  else echo '{}'; fi
+  # cleanscale #1953: ALWAYS surface accountUuid + account_source (the founder-vs-fleet
+  # isolation proof), merged over whatever the cache's _meta already carries. The measured
+  # account's identity must be visible even on a cold cache, so these are injected here
+  # rather than read out of a cached probe response.
+  if command -v python3 >/dev/null 2>&1; then
+    PU_KEY="$KEY" PU_SRC="$ACCOUNT_SOURCE" PU_CACHE="$CACHE" python3 -c 'import json,os
+m={}
+c=os.environ.get("PU_CACHE","")
+if c and os.path.exists(c):
+    try: m=json.load(open(c)).get("_meta",{}) or {}
+    except Exception: m={}
+m["accountUuid"]=os.environ.get("PU_KEY","")
+m["account_source"]=os.environ.get("PU_SRC","")
+print(json.dumps(m,separators=(",",":")))' 2>/dev/null || printf '{"accountUuid":"%s","account_source":"%s"}\n' "$KEY" "$ACCOUNT_SOURCE"
+  else printf '{"accountUuid":"%s","account_source":"%s"}\n' "$KEY" "$ACCOUNT_SOURCE"; fi
 }
 
 # ── python bodies (script on argv, DATA on stdin — a heredoc on `python3 -`
@@ -319,17 +367,83 @@ __fail() {  # <reason> [http_code]
   echo "plan-usage: refresh failed: $1 ${2:-} $FETCH_DETAIL" >&2
   return 0
 }
-# HTTP 429: the endpoint's Retry-After (seconds; default 120, clamp 30..900) becomes
-# the backoff window. Retrying every TTL kept the bucket drained (2026-09-02: 429 on
-# three of every four refreshes, good samples landing ~10 min apart) — honouring the
-# header is what fixes it. The 5h/7d gauges stay real-time from Claude Code's stdin.
+# HTTP 429 → the backoff window. Two different 429s come off this endpoint and they
+# must not be confused (2026-09-03, claude-pattern 2.38.9):
+#   • a POSITIVE Retry-After is the edge quota — a ROLLING 1 h window that counts the
+#     rejections themselves. HONOR it as sent (floor 30 s, ceiling RATE_LIMIT_MAX): the
+#     old 30..900 clamp re-armed the window on every retry and a key refreshed more than
+#     once an hour never came back (measured Retry-After 2668 s, claude-pattern#36).
+#   • NO header / "retry-after: 0" is the endpoint's ordinary sample floor (~5 min per
+#     account, live 2026-09-02), sent between successes. 2.38.3 mapped it to the same 1 h
+#     default and one routine rejection froze a keychain login's sample for an hour
+#     (knox: 115 clean 120 s samples, then a single header-less 429 → `⚠ STALE`).
+#     It now backs off RATE_LIMIT_DEFAULT (300 s) and DOUBLES per consecutive
+#     header-less 429 — a rejected retry after the floor means the quota is really
+#     drained — up to RATE_LIMIT_MAX; a success clears $ERRF and so the streak.
+# `.err` records `retry-after=<n>` (sent) or `retry-after=none streak=<k>` in `detail`.
 __rate_limited() {  # [retry-after-seconds]
-  local ra="${1:-}"
-  case "$ra" in ''|*[!0-9]*) ra=120 ;; esac
-  [ "$ra" -eq 0 ] 2>/dev/null && ra=120          # "retry-after: 0" = unspecified (live 2026-09-02): default, not 30 s
-  [ "$ra" -lt 30 ] 2>/dev/null && ra=30
-  [ "$ra" -gt 900 ] 2>/dev/null && ra=900
+  local ra="${1:-}" streak=1 prev_reason prev_detail prev_streak i
+  case "$ra" in ''|*[!0-9]*) ra=0 ;; esac
+  if [ "$ra" -gt 0 ] 2>/dev/null; then
+    [ "$ra" -lt 30 ] 2>/dev/null && ra=30
+    [ "$ra" -gt "$RATE_LIMIT_MAX" ] 2>/dev/null && ra=$RATE_LIMIT_MAX
+    FETCH_DETAIL="retry-after=$ra"
+  else
+    if [ -s "$ERRF" ]; then   # a success removes $ERRF, so a rate-limited record = no success since
+      prev_reason=$(sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' "$ERRF" 2>/dev/null | head -1)
+      prev_detail=$(sed -n 's/.*"detail":"\([^"]*\)".*/\1/p' "$ERRF" 2>/dev/null | head -1)
+      prev_streak=$(printf '%s' "$prev_detail" | sed -n 's/.*streak=\([0-9]*\).*/\1/p')
+      if [ "$prev_reason" = "rate-limited" ]; then
+        case "$prev_streak" in ''|*[!0-9]*) prev_streak=1 ;; esac
+        streak=$(( prev_streak + 1 ))
+      fi
+    fi
+    ra=$RATE_LIMIT_DEFAULT; i=1
+    while [ "$i" -lt "$streak" ] && [ "$ra" -lt "$RATE_LIMIT_MAX" ]; do ra=$(( ra * 2 )); i=$(( i + 1 )); done
+    [ "$ra" -lt 30 ] 2>/dev/null && ra=30
+    [ "$ra" -gt "$RATE_LIMIT_MAX" ] 2>/dev/null && ra=$RATE_LIMIT_MAX
+    FETCH_DETAIL="retry-after=none streak=$streak"
+  fi
   __fail "rate-limited" "$ra"
+}
+# 401/403 on the endpoint for an env token = missing user:profile scope (setup tokens
+# never gain it). Remember it so the next refreshes skip the endpoint — every 403 counts
+# against the same edge quota — and go straight to the header probe. A 200 clears it.
+__scope_memo_fresh() {
+  local at now
+  [ -s "$SCOPEF" ] || return 1
+  at=$(sed -n 's/.*"at":\([0-9]*\).*/\1/p' "$SCOPEF" 2>/dev/null | head -1)
+  case "$at" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(date +%s); [ $(( now - at )) -lt "$SCOPE_MEMO_TTL" ]
+}
+__scope_memo_write() {  # <http-code>
+  printf '{"at":%s,"code":"%s","reason":"no-user-profile-scope"}\n' "$(date +%s)" "$1" > "$SCOPEF" 2>/dev/null || true
+}
+# #2012: a 429 on the endpoint for an env token is the SAME situation as a 401/403 —
+# the shared edge quota, not this key's scope — so it gets the same treatment: fall
+# through to the header probe right away, and while $ERRF still records a live
+# "rate-limited" window (honoring Retry-After, claude-pattern#36), later refreshes
+# route straight to the probe too rather than re-touching the endpoint. Reads $ERRF
+# directly (no separate memo file needed — __rate_limited already wrote it).
+__rate_limited_fresh() {
+  local at reason code now
+  [ -s "$ERRF" ] || return 1
+  at=$(sed -n 's/.*"at":\([0-9]*\).*/\1/p' "$ERRF" 2>/dev/null | head -1)
+  reason=$(sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' "$ERRF" 2>/dev/null | head -1)
+  code=$(sed -n 's/.*"code":"\([0-9]*\)".*/\1/p' "$ERRF" 2>/dev/null | head -1)
+  [ "$reason" = "rate-limited" ] || return 1
+  case "$at" in ''|*[!0-9]*) return 1 ;; esac
+  case "$code" in ''|*[!0-9]*) return 1 ;; esac
+  now=$(date +%s)
+  [ $(( now - at )) -lt "$code" ]
+}
+# The rate-limit HEADER probe (max_tokens:1 /v1/messages); PLAN_USAGE_PROBE_CMD = test seam.
+__probe() {  # reads $tok (caller's local) → prints usage JSON; 0 = ok, 22 = probe failed
+  if [ -n "${PLAN_USAGE_PROBE_CMD:-}" ]; then "$PLAN_USAGE_PROBE_CMD" 2>/dev/null; return $?; fi
+  command -v python3 >/dev/null 2>&1 || return 22
+  printf '%s' "$tok" | python3 -c "$PROBE_PY" 2>/dev/null
+  [ "${PIPESTATUS[1]:-1}" = "0" ] && return 0
+  return 22
 }
 # Seconds a render must still wait before spawning another refresh (0 = none):
 # Retry-After after a 429, FAIL_BACKOFF after any other failure; a success clears it.
@@ -355,8 +469,22 @@ __fetch() {  # → prints body; return 0 = HTTP 200 body, 22 = HTTP error, 3 = n
   local tok src="$1" body code hdr ra frc acct kc_out kc_rc
   FETCH_DETAIL=""
   if [ -n "${PLAN_USAGE_FETCH_CMD:-}" ]; then
+    if [ "$src" = "env" ] && __scope_memo_fresh; then __probe; return $?; fi   # memo: endpoint never touched
+    if [ "$src" = "env" ] && __rate_limited_fresh; then                       # memo: endpoint never touched
+      __probe && return 0
+      return 29   # probe ALSO failed: return 29 (not 22) so __refresh's rc=29 short-circuit
+    fi            # leaves $ERRF's "rate-limited" record alone instead of __fail("fetch") clobbering it
     "$PLAN_USAGE_FETCH_CMD" "--$src" 2>/dev/null; frc=$?
-    [ "$frc" = "29" ] && __rate_limited "${PLAN_USAGE_FETCH_RETRY_AFTER:-}"   # tests: exit 29 = HTTP 429
+    if [ "$frc" = "29" ]; then                                               # tests: exit 29 = HTTP 429
+      __rate_limited "${PLAN_USAGE_FETCH_RETRY_AFTER:-}"
+      if [ "$src" = "env" ]; then                                            # #2012: env token -> header probe, not a 22-min blank
+        __probe && return 0
+        return 29
+      fi
+      return 29
+    fi
+    if [ "$frc" = "43" ] && [ "$src" = "env" ]; then __scope_memo_write 403; __probe; return $?; fi   # tests: exit 43 = HTTP 403
+    [ "$frc" = "0" ] && rm -f "$SCOPEF" 2>/dev/null
     return $frc
   fi
   command -v curl >/dev/null 2>&1 || { printf 'missing=curl'; return 4; }
@@ -382,16 +510,26 @@ except Exception:
     kc_out=""
   fi
   [ -n "$tok" ] || { printf 'env token empty'; return 3; }
+  if [ "$src" = "env" ] && __scope_memo_fresh; then __probe; return $?; fi   # memo: endpoint never touched
+  if [ "$src" = "env" ] && __rate_limited_fresh; then                       # memo: endpoint never touched
+    __probe && return 0
+    return 29   # probe ALSO failed: return 29 (not 22) so __refresh's rc=29 short-circuit
+  fi            # leaves $ERRF's "rate-limited" record alone instead of __fail("fetch") clobbering it
   body="$CACHE.body.$$"; hdr="$CACHE.hdr.$$"
   # `-K -`: the Authorization header travels in a curl CONFIG on stdin, so the
   # token is not on argv (readable by any process of this user via `ps`).
   code=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" \
     | curl -sS -K - -H "anthropic-beta: oauth-2025-04-20" -H "Accept: application/json" \
         --max-time "$CURL_MAX" -o "$body" -D "$hdr" -w '%{http_code}' "$USAGE_URL" 2>/dev/null)
-  if [ "$code" = "200" ]; then cat "$body" 2>/dev/null; rm -f "$body" "$hdr"; return 0; fi
+  if [ "$code" = "200" ]; then cat "$body" 2>/dev/null; rm -f "$body" "$hdr" "$SCOPEF"; return 0; fi
   if [ "$code" = "429" ]; then
     ra=$(tr -d '\r' < "$hdr" 2>/dev/null | awk 'tolower($1)=="retry-after:" {print $2; exit}')
-    rm -f "$body" "$hdr"; __rate_limited "$ra"; return 29
+    rm -f "$body" "$hdr"; __rate_limited "$ra"
+    if [ "$src" = "env" ]; then   # #2012: env token -> header probe, not a 22-min blank
+      __probe && return 0
+      return 29
+    fi
+    return 29
   fi
   rm -f "$hdr"
   # Setup tokens (sk-ant-oat…, fleet lanes) lack the user:profile scope the usage
@@ -400,10 +538,8 @@ except Exception:
   # probe. Synthesize the endpoint's shape from them (limits[] included) so the
   # consumer never branches on the source.
   rm -f "$body"
-  if [ "$src" = "env" ] && { [ "$code" = "403" ] || [ "$code" = "401" ]; } && command -v python3 >/dev/null 2>&1; then
-    printf '%s' "$tok" | python3 -c "$PROBE_PY" 2>/dev/null
-    [ "${PIPESTATUS[1]:-1}" = "0" ] && return 0
-    return 22
+  if [ "$src" = "env" ] && { [ "$code" = "403" ] || [ "$code" = "401" ]; }; then
+    __scope_memo_write "$code"; __probe; return $?
   fi
   return 22
 }
@@ -491,8 +627,17 @@ if [ -s "$CACHE" ] && [ "$(__age_s "$CACHE")" -lt "$TTL" ] 2>/dev/null; then
 fi
 # Backing off after a failed refresh (429 Retry-After, else FAIL_BACKOFF): serve what
 # we have and spawn nothing — every render retrying is what drained the bucket.
+# #2012 exception: an env-token 429 backoff is honored for the ENDPOINT only — the
+# header probe is a different call (max_tokens:1 /v1/messages, not /api/oauth/usage)
+# and __fetch/__rate_limited_fresh already route this account straight to it, so
+# skipping the spawn here would just mean the probe fallback never runs again until
+# the whole Retry-After window (up to 6h) elapses.
 if [ "$(__backoff_left)" -gt 0 ] 2>/dev/null; then
-  __serve; exit 0
+  __bo_reason=""
+  [ -s "$ERRF" ] && __bo_reason=$(sed -n 's/.*"reason":"\([^"]*\)".*/\1/p' "$ERRF" 2>/dev/null | head -1)
+  if [ "$__bo_reason" != "rate-limited" ] || [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    __serve; exit 0
+  fi
 fi
 
 since=$(date +%s)

@@ -128,9 +128,27 @@ spec claim cannot launder a finding.
 | Step 5 | §5a-ter: deterministic re-check + semantic re-verification        | gate `--phase review` + Pass-1 CRITICAL row |
 | Retro  | REFUTED-at-review count is a spec-quality signal (note in §8i)    | advisory                                    |
 
+## Sibling floor — Step-2 path-existence gate (G2 follow-on)
+
+The same deterministic-floor philosophy ("detection must not be LLM-only") applies to
+Step 2's task-breakdown path annotations, not just the spec's existing-system claims.
+The `files_touched` `(create)`/`(modify)` annotations and `creates_types` locations are
+LLM-guessed; left unchecked, a `(create)` target that already exists — or a `(modify)`
+target that does not exist — passes into the ENFORCING scope-lock and the builder
+prompts. `plan-w-team-path-existence-gate.sh` (`.claude/scripts/`) validates every
+annotation against the working tree at scope-lock time — intra-breakdown-aware (a
+`(modify)` of a file a sibling task `(create)`s is not flagged) — with the same exit-code
+contract and ack escape hatch as the import-coupling analyzer. It is wired as a second
+ENFORCING pre-condition in `02-task-breakdown.md`'s Scope Lock Artifact, writes
+`.claude/state/plan-w-team-path-existence-$SLUG.json` (registered in
+`shared/state-artifacts.md`), and **shares this gate's kill switch** —
+`PLAN_W_TEAM_DISABLE_GROUNDING=1` disables it too. See `02-task-breakdown.md`
+§Path-Existence Check for the full contract.
+
 Kill switch: `PLAN_W_TEAM_DISABLE_GROUNDING=1` (consistent with the
 `PLAN_W_TEAM_DISABLE_*` family) — for trivial/docs-only runs where the ceremony
-exceeds the risk. This switch is documented HERE for operator use and deliberately
+exceeds the risk. It disables both the spec grounding gate AND the Step-2
+path-existence floor above. This switch is documented HERE for operator use and deliberately
 not echoed in gate failure messages (C6 precedent — a blocked autonomous worker is
 not handed its own escape hatch). When the gate runs disabled it prints a grep-able
 notice line; note the family-wide residual that a worker env exporting

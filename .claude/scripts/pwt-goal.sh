@@ -27,6 +27,15 @@
 
 set -u
 
+# #1957 lane-env scrub: source the ONE allow-list at GLOBAL scope so
+# `pwt_lane_env_scrub` is defined on EVERY code path (worker-only, full /goal,
+# --supervisor-goal) before any `claude --bg` spawn. Fail-OPEN — on an old
+# checkout without the lib, a no-op stub keeps spawns unblocked (the doctor +
+# watchdog catch any leak that slips through). The scrub runs in a SUBSHELL at
+# each spawn site so this process keeps its own env for post-spawn work.
+. "$(dirname "$0")/../../scripts/ops/lib/pwt-lane-env-allowlist.sh" 2>/dev/null || true
+command -v pwt_lane_env_scrub >/dev/null 2>&1 || pwt_lane_env_scrub() { :; }
+
 # ─── PWT-WT2 SEED LIVE-CLOBBER GUARD (Run-State Router Item 4) ───────────────
 # The PWT-WT2 goal-state seed (__pwt_emit_goal_state, far below) writes with an
 # unconditional `>`. Re-issued identical phrasing (a duplicate run on the same
@@ -2382,6 +2391,16 @@ if [ "$LAUNCH" = "1" ]; then
     __pwt_scrub_leak_env
     LAUNCH_ENV=$(__pwt_build_launch_env "$AUTO_PUSH")
 
+    # #1957 lane-env scrub: source the ONE allow-list so every `claude --bg` spawn
+    # below can drop the inherited secrets store (bash -l plists source the whole
+    # ~/.config/cleanrev/secrets.env) to an allow-list + the one auth binding BEFORE
+    # exec — the daemon and every bg-spare/worker it forks then inherit zero secrets.
+    # Fail-OPEN: on an old checkout without the lib, define a no-op so a spawn is never
+    # blocked (the doctor + watchdog catch a leak that slips through). Applied in a
+    # SUBSHELL at each spawn site so THIS process keeps its env for post-spawn work.
+    . "$(dirname "$0")/../../scripts/ops/lib/pwt-lane-env-allowlist.sh" 2>/dev/null || true
+    command -v pwt_lane_env_scrub >/dev/null 2>&1 || pwt_lane_env_scrub() { :; }
+
     # Governor Contract phase 3 (C2): source the governed-only accessor lib and compute the
     # nice command prefix ONCE (definedness-guarded so the LAUNCH_ENV-less safety-net branch
     # cannot crash if the lib failed to load). Empty ungoverned ⇒ every spawn argv below is
@@ -2949,13 +2968,17 @@ if [ "$LAUNCH" = "1" ]; then
         SPAWN_ATTEMPT=$((SPAWN_ATTEMPT+1))
         : > "$WORKER_OUT_FILE" 2>/dev/null || true
         if [ -n "$LAUNCH_ENV" ]; then
-            env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" $BG_EXTRA_ARGS "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
+            # #1957: scrub the inherited secrets store in a SUBSHELL, then exec the spawn.
+            # `env $LAUNCH_ENV` re-adds the (allow-listed) launch knobs with their intended
+            # values; every non-allow-listed var (all secrets) is already gone from the
+            # subshell's env, so the daemon/worker/spare this backgrounds carries none.
+            ( pwt_lane_env_scrub; exec env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" $BG_EXTRA_ARGS "$GOAL_TEXT" ) >"$WORKER_OUT_FILE" 2>&1 </dev/null
             LAUNCH_RC=$?
         else
             # Carries PWT_LEAN_STATUSLINE=1 too: this branch is a safety net, and a
             # safety net that drops the host-load protection would reintroduce the
-            # exact failure it exists to survive.
-            env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 PWT_LEAN_STATUSLINE=1 $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" $BG_EXTRA_ARGS "$GOAL_TEXT" >"$WORKER_OUT_FILE" 2>&1 </dev/null
+            # exact failure it exists to survive. #1957 scrub applies here too.
+            ( pwt_lane_env_scrub; exec env PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1 PWT_LEAN_STATUSLINE=1 $NICE_PREFIX "$CLAUDE_BIN" --bg $WT_FLAG --model "$PWT_PRIMARY_MODEL" --fallback-model "$PWT_FALLBACK_MODEL" $BG_EXTRA_ARGS "$GOAL_TEXT" ) >"$WORKER_OUT_FILE" 2>&1 </dev/null
             LAUNCH_RC=$?
         fi
 
@@ -3450,7 +3473,9 @@ SUPEOF
     # 2026-05-21: sid 0b5856d7 → 4bbb2cb8 → f2ec9cb9 → 7a4c658b cascade).
     SUP_OUT_FILE=$(mktemp -t pwt-goal-supervisor.XXXXXX 2>/dev/null || echo "")
     if [ -n "$SUP_OUT_FILE" ]; then
-        env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" $BG_EXTRA_ARGS "$SUPERVISOR_BOOTSTRAP" >"$SUP_OUT_FILE" 2>&1
+        # #1957: scrub the inherited secrets store before the supervisor spawn too —
+        # the supervisor is an AI agent spawned exactly like a lane worker.
+        ( pwt_lane_env_scrub; exec env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" $BG_EXTRA_ARGS "$SUPERVISOR_BOOTSTRAP" ) >"$SUP_OUT_FILE" 2>&1
         SUP_RC=$?
         SUPERVISOR_SID=""
         if [ -s "$SUP_OUT_FILE" ]; then
@@ -3464,7 +3489,7 @@ SUPEOF
         SUPERVISOR_SID=""
         SUP_RC=1
         echo "WARN: mktemp failed for supervisor; spawning anyway" >&2
-        env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" $BG_EXTRA_ARGS "$SUPERVISOR_BOOTSTRAP" >&2 || true
+        ( pwt_lane_env_scrub; exec env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" $BG_EXTRA_ARGS "$SUPERVISOR_BOOTSTRAP" ) >&2 || true
     fi
 
     if [ -n "$SUPERVISOR_SID" ]; then

@@ -117,6 +117,14 @@ FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-opus-4-8}"
 # NEVER opus-5). An explicit env pin wins; empty ungoverned ⇒ the opus-4-8 default stands (parity).
 __steer_gov_lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/pwt-governor-lib.sh"
 [ -r "$__steer_gov_lib" ] && { . "$__steer_gov_lib" 2>/dev/null || true; }
+# #1957 lane-env scrub: the resume below `exec`s a fresh `claude --bg` from THIS
+# process's env, which `bash -l` loaded the whole secrets store into. Source the
+# ONE allow-list so the resume subshell drops every non-allow-listed var (all
+# secrets) before exec, keeping only the allow-listed knobs + the one auth
+# binding. Fail-OPEN to a no-op on a checkout without the lib.
+__steer_scrub_lib="$(cd "$(dirname "$0")/../../scripts/ops/lib" 2>/dev/null && pwd)/pwt-lane-env-allowlist.sh"
+[ -r "$__steer_scrub_lib" ] && { . "$__steer_scrub_lib" 2>/dev/null || true; }
+command -v pwt_lane_env_scrub >/dev/null 2>&1 || pwt_lane_env_scrub() { :; }
 if type pwt_governor_model >/dev/null 2>&1; then
     __steer_gov_int=$(pwt_governor_model intelligent)
     if [ -n "$__steer_gov_int" ] && [ "$__steer_gov_int" != "claude-opus-4-8" ]; then
@@ -621,6 +629,12 @@ if type __pwt_nice_prefix >/dev/null 2>&1; then STEER_NICE_PREFIX=$(__pwt_nice_p
 RESUME_OUT="${TMPDIR:-/tmp}/pwt-steer-resume-$$.out"
 (
   cd "$RESUME_CWD" 2>/dev/null || exit 127
+  # #1957: scrub the inherited secrets store from THIS subshell before exec. The
+  # `env $STEER_LAUNCH_ENV` below then re-layers only the intended allow-listed
+  # knobs onto the cleaned env, so the resumed worker carries the one auth binding
+  # + launch knobs, not Stripe/SMTP/DB/etc. STEER_LAUNCH_ENV/EXTRA_ENV/CLAUDE_BIN
+  # are non-exported shell vars → not in awk ENVIRON → they survive the scrub.
+  pwt_lane_env_scrub
   # `${EXTRA_ENV[@]+"${EXTRA_ENV[@]}"}` — the bash 3.2 empty-array-under-set-u
   # idiom.  A bare "${EXTRA_ENV[@]}" on an EMPTY array is an unbound-variable
   # error there, which would break every steer that passes no --env.

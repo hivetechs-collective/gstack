@@ -53,7 +53,9 @@ _CP_ACCOUNTS_CLI="${_CP_SHELL_SELF:A:h:h}/commands/plan-w-team/accounts/accounts
 # holds a pid lock (CP_FABLE_LEAD_LOCK, default ~/.config/claude-pattern/fable-lead.pid).
 # A second CLAUDE_LEAD=1 launch while that lead is live is downgraded to Opus 4.8
 # with a notice — never a second Fable. An explicit --model in argv always wins.
-# Seams: CP_LEAD_MODEL, CP_NONLEAD_MODEL, CP_FABLE_LEAD_LOCK; tests override
+# The lead compacts at CP_LEAD_WINDOW (200000, founder 2026-09-02); every other terminal
+# at 150000; an explicit CLAUDE_CODE_AUTO_COMPACT_WINDOW wins over both.
+# Seams: CP_LEAD_MODEL, CP_NONLEAD_MODEL, CP_LEAD_WINDOW, CP_FABLE_LEAD_LOCK; tests override
 # _cp_fable_lead_live to simulate a live lead.
 _cp_fable_lead_live() {   # $1 = lock file; true when its pid is alive AND hosts a claude child
   local p; p="$(cat "$1" 2>/dev/null)"
@@ -96,8 +98,19 @@ claude() {
     export CLAUDE_CODE_TASK_LIST_ID="$(basename "$(command git rev-parse --show-toplevel)")"
   fi
   unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE   # REMOVED 2026-08-30: undocumented; stacked on AUTO_COMPACT_WINDOW it compacted at ~25% of the window (62K) and thrashed every new session
-  : "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:=150000}"   # documented knob (tokens): compact interactive sessions at ~150K. Model Tiering v7 (2026-09-02): burn ∝ turns × context; 250K (v6) let 4–5 Fable terminals eat a 5-hour window in a morning
-  export CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  # Window (tokens; documented knob). Default 150000 for a terminal — Model Tiering v7
+  # (2026-09-02): burn ∝ turns × context; 250K (v6) let 4–5 Fable terminals eat a 5-hour
+  # window in a morning. The ONE Fable lead gets CP_LEAD_WINDOW (200000; founder 2026-09-02:
+  # a design/crisis session loses the most at every compaction — ~40K of fixed prompt
+  # overhead re-ingested each time plus re-orientation reads — and one lead process was
+  # never where the burn came from). A value the USER set always wins; a value THIS
+  # launcher exported on an earlier launch in the same shell is re-derived every launch
+  # (plain → 150K, lead → 200K), so it is never mistaken for the user's.
+  local _cp_win_explicit=1
+  if [ -z "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" ] || [ "${CLAUDE_CODE_AUTO_COMPACT_WINDOW}" = "${_CP_WINDOW_LAUNCHER_SET:-}" ]; then
+    _cp_win_explicit=0; CLAUDE_CODE_AUTO_COMPACT_WINDOW=150000
+  fi
+  export CLAUDE_CODE_AUTO_COMPACT_WINDOW; _CP_WINDOW_LAUNCHER_SET="$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
   : "${BASH_DEFAULT_TIMEOUT_MS:=300000}"
   export BASH_DEFAULT_TIMEOUT_MS
   # Restore built-in Grep/Glob tools (removed by default since CC 2.1.216;
@@ -118,6 +131,11 @@ claude() {
     if [[ " $* " != *" --model "* && " $* " != *" --model="* ]]; then
       _cp_model_args=("${(@f)$(_cp_fable_lead_gate)}")
       [ -n "${_cp_model_args[1]:-}" ] || _cp_model_args=()
+      # v7 lead window: only the launch that HOLDS the lead lock (this shell's pid) compacts at
+      # CP_LEAD_WINDOW; a downgraded second lead keeps the terminal default; explicit env wins.
+      if [ "$_cp_win_explicit" = 0 ] && [ "$(cat "${CP_FABLE_LEAD_LOCK:-$HOME/.config/claude-pattern/fable-lead.pid}" 2>/dev/null)" = "$$" ]; then
+        export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CP_LEAD_WINDOW:-200000}"; _CP_WINDOW_LAUNCHER_SET="$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+      fi
     fi
     command claude --allowedTools "Grep,Glob" "${_cp_model_args[@]}" "$@"
     local _cp_rc=$?; _cp_fable_lead_release; return $_cp_rc

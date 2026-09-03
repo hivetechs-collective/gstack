@@ -14,6 +14,202 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.38.9] — 2026-09-03 (fix: plan-usage.sh header-less 429 is the ~5 min sample floor, not the 1 h edge quota) (bb1f34e)
+
+A keychain login stopped reporting: `📊 Plan … ⟳ 13m` on every pane while the
+account was the live `/login` (king.e.knox, 2026-09-03 3:59pm). Its `.history`
+showed 115 consecutive clean 120 s samples, then ONE 429 with no `Retry-After`
+header — and 2.38.3 (claude-pattern#36) had mapped "no usable header" to the same
+`PLAN_USAGE_RATE_LIMIT_DEFAULT` = 3600 s it uses for the edge quota, so a single
+routine rejection froze the sample for an hour (`⚠ STALE` from minute 15). The
+endpoint sends two different 429s: a POSITIVE `Retry-After` is the rolling 1 h edge
+quota (honored as sent, unchanged); a header-less / `retry-after: 0` 429 is its
+ordinary ~5 min sample floor between successes (measured 2026-09-02).
+
+- `.claude/scripts/plan-usage.sh` `__rate_limited`: a header-less 429 backs off
+  `PLAN_USAGE_RATE_LIMIT_DEFAULT` (now **300 s**, was 3600) and DOUBLES per
+  consecutive header-less rejection with no success between (300 → 600 → 1200 …,
+  capped at `PLAN_USAGE_RATE_LIMIT_MAX` 21600) — a rejected retry after the floor
+  means the quota really is drained, which keeps #36's "never re-arm the rolling
+  window" property; a success removes `.err` and so the streak. A sent header is
+  still honored as sent (floor 30 s, ceiling 21600) and is never doubled.
+  `.err.detail` now says which case fired: `retry-after=<n>` or
+  `retry-after=none streak=<k>`. The env-token probe fallback (2.38.7) is untouched.
+- `.claude/scripts/plan-usage.test.sh` (59 → 65/65): 5c covers floor, doubling
+  ×2, a sent header mid-streak, the doubling ceiling, streak reset on success.
+- `docs/operations/statusline-usage-reporting.md`: backoff paragraph + env table
+  rows for `PLAN_USAGE_RATE_LIMIT_DEFAULT` / `_MAX`.
+
+Not a defect: the `👤 <email> (max)` segment at the end of the Plan line is the
+IDENTITY of the live login (`account-info.sh`), not a "next account" pointer; the
+rotation advisory (`👉 next:` / `⚠ switch →`) cannot render while multi-account is
+dormant (`accounts.sh check`: not enabled), and the 5h gauge for a window the
+helper has not sampled since it reset comes from Claude Code's stdin `rate_limits`.
+
+## [2.38.8] — 2026-09-03 (Step-2 grounding floor: deterministic path-existence check at scope-lock time) (d36f436)
+
+Recursive-followups row 24 (`pwt-grounding-eval`, G2 follow-on): the Step-2
+`files_touched`/`creates_types` annotations were LLM-guessed and never validated against
+the working tree — a `(create)` target that already exists, or a `(modify)` path that
+does not exist, passed straight into the ENFORCING scope-lock and the builder prompts.
+
+- New deterministic sibling gate `.claude/scripts/plan-w-team-path-existence-gate.sh`
+  (bash + jq, no node dependency). Reads the same `/tmp/tasks-$SLUG.json` as the
+  import-coupling analyzer, builds a CREATED_SET from every `(create)` target **and**
+  every `creates_types[].location`, then flags `create-exists` (a `(create)` target that
+  exists on disk) and `modify-missing` (a `(modify)` target absent on disk that no sibling
+  task creates). Intra-breakdown ordering is respected. Exit codes mirror the coupling
+  analyzer (0 clean / 1 violations / 2 acked / 3 env-error); ack escape hatch
+  `.claude/state/plan-w-team-path-existence-ack-$SLUG`; shares the G2 family kill switch
+  `PLAN_W_TEAM_DISABLE_GROUNDING=1`.
+- Wired as a second ENFORCING pre-condition in `02-task-breakdown.md`'s Scope Lock
+  Artifact, beside the import-coupling gate. New report/ack artifacts registered in
+  `shared/state-artifacts.md`; floor documented in `shared/grounding.md`.
+- Sync propagation: the new runtime gate is cp-allowlisted in `sync-to-project.sh`
+  (real-sync + dry-run branches, mirroring the grounding gate) so consumer repos
+  actually receive the script the synced stage docs instruct them to run; the two new
+  per-run state classes (`plan-w-team-path-existence-`, `plan-w-team-path-existence-ack-`)
+  are added to the state-janitor's reap-prefix list, keeping janitor⇔registry parity.
+- `plan-w-team-path-existence-gate.test.sh` +17 (17/17).
+## [2.38.7] — 2026-09-03 (fix: plan-usage.sh env-token 429 → rate-limit header-probe fallback, cleanscale#2012) (332ba45)
+
+Upstream port of cleanscale PR #2017 (issue cleanscale-io/cleanscale#2012). The
+usage endpoint (`/api/oauth/usage`) fell back to the rate-limit HEADER probe only
+on 401/403 (missing `user:profile` scope), never on 429 — so the shared fleet
+setup token, which hits the endpoint's rolling-1h edge quota routinely, left the
+per-account cache un-refreshed for the whole `Retry-After` window (up to 6 h)
+with no fallback at all. Downstream that kept the account-window admission gate
+and the per-account burn meter `measured:false` forever.
+
+- `.claude/scripts/plan-usage.sh`: an env-token 429 routes to `__probe` right
+  away (both the test-seam `PLAN_USAGE_FETCH_CMD` path and the real curl path);
+  new `__rate_limited_fresh` reads `.err`'s `rate-limited` record so later
+  refreshes inside the window go straight to the probe (the endpoint is touched at
+  most once per window); a probe failure returns 29 (not 22) so `__refresh`'s
+  short-circuit leaves the `rate-limited` record intact instead of `__fail("fetch")`
+  clobbering it; the top-level backoff gate exempts an env-token `rate-limited`
+  window so the probe — a different call, a different quota — keeps getting a chance
+  to run. Keychain tokens are untouched (a 429 there still just backs off).
+- `.claude/scripts/plan-usage-429-probe.test.sh` (new, 22/22): the four
+  invariants above plus the 401/403 scope-memo path staying unaffected. Shipped
+  downstream as `plan-usage.test.sh`; renamed here because upstream already owns
+  a 59-case `plan-usage.test.sh` (still 59/59).
+- `docs/operations/statusline-usage-reporting.md`: header-probe paragraph covers
+  the 429 case.
+
+Why it lives here: `.claude/scripts/*` is claude-pattern-owned and re-synced into
+every consuming repo; the downstream edit in cleanscale #2017 would be reverted by
+the next `sync-to-project` run without this port.
+
+## [2.38.6] — 2026-09-03 (fix: lane-env scrub at every `claude --bg` spawn site — pwt-goal.sh / pwt-steer.sh, #1957) (da18459)
+
+Upstream port of cleanscale PR #1984 (issue cleanscale-io/cleanscale#1957). The
+fleet's `bash -l` launchd plists source the whole `~/.config/cleanrev/secrets.env`
+into the launcher's env, and every `claude --bg` spawn (worker, supervisor,
+`pwt-steer` resume) handed that entire store to the daemon and every bg-spare /
+worker it forked. The scrub drops the inherited env to ONE allow-list + the one
+auth binding before `exec`, in a SUBSHELL at each spawn site, so the launcher
+keeps its own env for post-spawn work.
+
+- `.claude/scripts/pwt-goal.sh`: sources `scripts/ops/lib/pwt-lane-env-allowlist.sh`
+  (relative to the consuming repo) at global scope and inside the launch path;
+  every `env … "$CLAUDE_BIN" --bg` spawn (worker, worker-only, the
+  PLAN_W_TEAM_DISABLE_PROMPT_ROUTE fallback, the two supervisor spawns) becomes
+  `( pwt_lane_env_scrub; exec env … )`. **Fail-OPEN**: a repo without the lib
+  gets a no-op stub so a spawn is never blocked (the consuming repo's doctor +
+  watchdog catch a leak).
+- `.claude/scripts/pwt-steer.sh`: the resume subshell scrubs before it `exec`s
+  the fresh `claude --bg`; `STEER_LAUNCH_ENV` / `EXTRA_ENV` / `CLAUDE_BIN` are
+  non-exported shell vars and survive the scrub.
+- `.claude/scripts/pwt-goal-heredoc-size.test.sh`: fixture updated for the new
+  spawn-site shape.
+
+Why it lives here: `.claude/scripts/*` is claude-pattern-owned and re-synced into
+every consuming repo; a fix landed only downstream is silently reverted by the
+next `sync-to-project` run (the cleanscale 2026-09-03 lesson).
+
+## [2.38.5] — 2026-09-03 (docs: skill/agent/template text never recommends the bare `opus` alias — explicit claude-opus-4-8) (cf8e7a7)
+
+A /plan-w-team session in another repo spawned 65 subagents with `model: "opus"`
+(= Opus 5, forbidden under Model Tiering v7) because `04-fix-first-review.md` still
+told the lead that Brain-tier reviewers are pinned via `model: opus` → Opus 5. The
+Agent tool's bare `opus` alias resolves to `claude-opus-5` and is now denied by the
+global `agent-model-guard` PreToolUse hook, but shipped guidance text had not caught
+up.
+
+- `04-fix-first-review.md` §Fan-Out Roster: the reviewer-pinning parenthetical now
+  names `claude-opus-4-8` and says to omit the Agent tool's `model` parameter
+  entirely, rather than describing the pin as `model: opus` → Opus 5.
+- `create-agent.md`: the "Model defaults to `opus`" note now names
+  `claude-opus-4-8` and calls out that the bare alias resolves to Opus 5.
+- `AGENT_TEMPLATE_V2.1.md` and `SKILL_TEMPLATE_V2.1.md`: every `model: opus`
+  example (frontmatter default, decision-tree leaves, skill examples) now reads
+  `model: claude-opus-4-8`.
+- `.claude/agents/coordination/meta-agent.md`: the frontmatter format block's
+  `model: opus|sonnet|haiku` now lists the explicit ids
+  `claude-opus-4-8|claude-sonnet-5|claude-haiku-4-5-20251001`.
+
+Swept the rest of `.claude/**/*.md` for `` `opus` `` / `model: opus`; the remaining
+hits are either dated historical notes, guard/gotcha text that already warns against
+the bare alias, or vendored external reference docs describing the CLI's alias list —
+none recommend using it.
+
+## [2.38.4] — 2026-09-02 (plan-usage: --meta always carries accountUuid + account_source — the fleet-vs-founder isolation proof) (348db75)
+
+cleanscale #1953 (fleet account isolation) needs every host to PROVE which account a
+process bills: a fleet lane must resolve the ops setup token (`env`), the founder's
+interactive session their login (`keychain`), and the two must never report the same
+key. cleanscale PR #1972 had patched this into its synced copy of `plan-usage.sh`,
+which the next sync would have overwritten — so it lands here, in the owner.
+
+- `.claude/scripts/plan-usage.sh`: `ACCOUNT_SOURCE` (`env|keychain|override`) is
+  derived next to `KEY`; `--meta` ALWAYS prints `accountUuid` (the account key) and
+  `account_source`, merged over the cache's `_meta` — even on a cold cache, and never
+  the token value.
+- `.claude/scripts/plan-usage.test.sh` 5f: override on a cold cache, env token
+  (`env-<sha12>`, no value leak), warm cache keeps `fetched_at` and adds the identity.
+
+## [2.38.3] — 2026-09-02 (plan-usage: Retry-After honored as sent; 401/403 scope memo keeps setup tokens off the endpoint) (dc362cc)
+
+Measured 2026-09-02 (cleanscale #1963, claude-pattern #36): `GET /api/oauth/usage` answers
+429 with `Retry-After: 2668` and its edge quota is a ROLLING 1 h window that counts the
+rejections themselves. `plan-usage.sh` clamped the header to 900 s, retried, was rejected
+and re-armed the window — a key refreshed more than once an hour stayed rate-limited for
+ever (the mini's OPS token sat at `code 900` all afternoon, so no burn baseline could be
+read for the account-window admission and spend-meter work).
+
+- `.claude/scripts/plan-usage.sh`: a 429 backs off the Retry-After AS SENT (floor 30 s,
+  ceiling `PLAN_USAGE_RATE_LIMIT_MAX` 21600); no usable header →
+  `PLAN_USAGE_RATE_LIMIT_DEFAULT` 3600 (was 120). A 401/403 for an env token (setup tokens
+  lack `user:profile`) writes a `<key>.scope` memo; while it is fresh
+  (`PLAN_USAGE_SCOPE_MEMO_TTL` 604800) refreshes go straight to the rate-limit HEADER probe
+  and never touch the endpoint (every 403 counted against the same quota). A 200 clears
+  the memo. `PLAN_USAGE_PROBE_CMD` = probe test seam; fetch stub exit 43 = HTTP 403.
+- `.claude/scripts/plan-usage.test.sh`: 5d (2668 honored, no refresh inside the window,
+  ceiling 21600) + 5e (403 → memo → probe-only → expiry re-tries once → memo cleared on
+  200; no token value on disk); the retry-after-0 case now expects 3600.
+- `docs/operations/statusline-usage-reporting.md`: backoff + memo text.
+
+## [2.38.2] — 2026-09-02 (shell: the ONE Fable lead compacts at 200K; every other terminal stays at 150K) (0e9cdf1)
+
+Founder decision 2026-09-02 on the v7 150K interactive cap: keep it as the default for
+every terminal (burn ∝ turns × context — about a third less per turn than 250K) and give
+the single Fable lead 200K. A design/crisis session loses the most at every compaction
+(~40K of fixed prompt overhead re-ingested each time, plus the re-orientation reads that
+follow), and one lead process was never where the burn came from — that was 4–5 Fable
+terminals at xhigh, which the one-lead rule already ends.
+
+- `.claude/shell/claude-pattern.zsh`: the launch that HOLDS the lead lock exports
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=${CP_LEAD_WINDOW:-200000}`; a downgraded second lead
+  keeps 150000; an explicit `CLAUDE_CODE_AUTO_COMPACT_WINDOW` wins over both. A value the
+  launcher itself exported on an earlier launch in the same shell is re-derived every
+  launch (`_CP_WINDOW_LAUNCHER_SET`), so lead → plain in one shell returns to 150K.
+- `tests/skill/cases/claude-launcher-wrapper.bats`: +5 cases (lead 200K, downgraded lead
+  150K, explicit wins, `CP_LEAD_WINDOW` seam, lead-then-plain re-derivation).
+- Consumer side (cleanscale, same day): `scripts/ops/model-tiers.json` gains
+  `context_window.interactive_lead` and the parity doctor (6c) allows the one Fable TTY
+  process that cap; every other terminal is still judged against `interactive`.
+
 ## [2.38.1] — 2026-09-02 (plan-usage: a foreign renderer's failure must not starve the shared cache) (04b5257)
 
 Right after the 3:00pm reset every pane read `⚠ STALE 37m`: the account sample had

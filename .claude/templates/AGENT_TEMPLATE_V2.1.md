@@ -32,7 +32,7 @@ version: 1.0.0
 # - opus: Complex reasoning, coding, architecture, debugging, security (80.9% SWE-bench)
 # - sonnet: Documentation, simple tasks, cost-effective standard work
 # - haiku: MECHANICAL ONLY - file ops, builds, logs (95% cost savings)
-model: opus
+model: claude-opus-4-8
 
 # ============================================================================
 # TOOL CONFIGURATION
@@ -462,10 +462,10 @@ Creates comprehensive technical documentation following best practices.
 Is this task mechanical (file ops, builds, logs)?
 ├─ YES → Use model: haiku
 └─ NO → Does it require deep reasoning or coding?
-    ├─ YES → Use model: opus
+    ├─ YES → Use model: claude-opus-4-8
     └─ NO → Is it documentation or simple prose?
         ├─ YES → Use model: sonnet
-        └─ NO → Default to model: opus (safe choice)
+        └─ NO → Default to model: claude-opus-4-8 (safe choice)
 ```
 
 ---

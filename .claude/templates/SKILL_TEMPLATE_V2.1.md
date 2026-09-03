@@ -312,7 +312,7 @@ allowed-tools:
 # ============================================================================
 # MODEL CONFIGURATION
 # ============================================================================
-model: opus  # Complex reasoning for security
+model: claude-opus-4-8  # Complex reasoning for security
 
 # ============================================================================
 # CONTEXT
@@ -435,7 +435,7 @@ allowed-tools:
 # ============================================================================
 # MODEL CONFIGURATION
 # ============================================================================
-model: opus  # Thorough analysis requires best model
+model: claude-opus-4-8  # Thorough analysis requires best model
 
 # ============================================================================
 # VISIBILITY - SLASH COMMAND

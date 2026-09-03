@@ -49,8 +49,12 @@ export PWT_PROJECT_ROOT_OVERRIDE="$SANDBOX"
 # Fake `claude` that emits a deterministic backgrounded line. Counter so we can
 # distinguish worker (call 1) from supervisor (call 2). Records each
 # invocation's --bg prompt for size measurement.
-cat > "$SANDBOX/bin/claude" <<'FAKE'
-#!/usr/bin/env bash
+#
+# #1957: the real spawn boundary now SCRUBS the child env to an allow-list, which
+# (correctly) drops SANDBOX_DIR — a test-only var no real lane needs. So the fake
+# must NOT rely on inheriting SANDBOX_DIR across the spawn: bake it in as a
+# literal assignment at the top of the generated script, self-contained.
+{ printf '#!/usr/bin/env bash\n'; printf 'SANDBOX_DIR=%q\n' "$SANDBOX"; cat <<'FAKE'
 COUNTER_FILE="$SANDBOX_DIR/.claude/state/counter"
 N=$(cat "$COUNTER_FILE" 2>/dev/null || echo 0)
 N=$((N + 1))
@@ -71,6 +75,7 @@ else
 fi
 exit 0
 FAKE
+} > "$SANDBOX/bin/claude"
 chmod +x "$SANDBOX/bin/claude"
 
 export PATH="$SANDBOX/bin:$PATH"
