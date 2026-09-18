@@ -14,6 +14,172 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.41.0] — 2026-09-08 (feat: launcher — interactive compact window 150K → 250K, Fable lead 200K → 300K; the v7 floor assumption was off by 2×) (a340bce)
+
+Founder report (2026-09-08): "cleanscale is still compacting very often" and, in
+the claude-pattern terminal, "I just said one thing and we compacted". Measured
+from transcript `message.usage` (`input + cache_read + cache_creation`): auto-
+compact fires at ≈77 % of `CLAUDE_CODE_AUTO_COMPACT_WINDOW` (114–133K observed at
+150K), and the FIXED prompt floor — tool schemas, both CLAUDE.md files, the memory
+index, MCP servers — is **74–82K** in claude-pattern/cleanscale sessions, not the
+~40K Model Tiering v7 assumed. 150K left ~32K of working room: compaction every
+7–12 minutes (20 in one claude-pattern session; 680 across 19,839 turns in a
+cleanscale MacBook terminal), each re-ingesting the 74–82K floor. The v7 economy
+was inverted — the re-ingest cost more than the room it saved, and every
+compaction lost context. Mac-mini lanes at 200K (`PWT_BG_AUTOCOMPACT`) compact
+every 1–4 h and are untouched.
+
+- **`.claude/shell/claude-pattern.zsh`** — terminal default 150000 → **250000**
+  (~110K room); `CP_LEAD_WINDOW` default 200000 → **300000** (~150K room). The
+  explicit-wins / launcher-set re-derivation mechanics (`_CP_WINDOW_LAUNCHER_SET`,
+  `_cp_win_explicit`, lead pid lock) are unchanged; only the two constants and
+  the rationale comment moved. Lanes still take `PWT_BG_AUTOCOMPACT` /
+  `pwt-launch-env.sh` — no lane inherits the terminal default.
+- **`tests/skill/cases/claude-launcher-wrapper.bats`** — the four window
+  assertions track the new constants (plain 250000, lead 300000, downgraded
+  second lead 250000, lead-then-plain re-derivation 300000 → 250000).
+- Global `~/.claude/CLAUDE.md` "Shell Integration" line already read
+  250000 / 300000 / 200000 — the launcher now matches the documentation.
+- Applies to NEWLY launched sessions only: live terminals keep the window they
+  were launched with until relaunched.
+
+## [2.40.1] — 2026-09-08 (fix: worktree GC — OS-process cwd liveness source; bash lanes standing inside a worktree are no longer invisible) (76775cf)
+
+Positive control on two live fleets (2026-09-08): `lsof -d cwd` showed plain bash
+lanes (`dispatch-lane.sh`, `claude -p` children, test runners) executing INSIDE
+`.claude/worktrees/*` while `claude agents --json` — the only thing the GC's in-use
+probe consulted — listed no session there. The GC classified those worktrees
+`SAFE-PRUNE-*`; one `--execute` would have reaped them from under running
+processes. The session probe was never wrong about sessions; it was blind to
+everything that is not a registered session.
+
+- **`.claude/scripts/pwt-live-process-cwds.sh`** — NEW tertiary liveness source:
+  `lsof -d cwd -Fn` filtered to the worktrees dir (argv[1]; both raw and
+  `realpath` spellings), deduped absolute cwds on stdout, **exit 0 always**.
+  Contract is ADDITIVE / best-effort by construction: no `__QUERY_FAILED__` token,
+  missing `lsof` ⇒ empty, `timeout`/`gtimeout` optional (`PWT_LIVE_PROCESS_TIMEOUT`,
+  default 10 s). Seams: `PWT_LIVE_PROCESS_CWDS_OVERRIDE`, `PWT_LSOF_BIN`. Unit corpus
+  `pwt-live-process-cwds.test.sh` (10 assertions, bash 3.2 + zsh, real-`lsof`
+  positive control).
+- **`plan-w-team-worktree-gc.sh`** — consumes it inside the real (non-TEST_MODE)
+  branch AFTER the canonical probe + `claude-agents-extended.sh`, appending to
+  `LIVE_CWDS` and flowing through the existing `is_in_use` → VETO 1. **Never
+  clears the fail-closed flag** — a failed session probe still turns every
+  `SAFE-PRUNE-*` into `UNSAFE-KEEP`. New `in_use_source: "process"` (reason
+  `in-use by live OS process …`) only when the OS-process source alone matched;
+  a session match keeps the canonical `"session"` label. `is_in_use` refactored
+  onto `_cwd_matches(wt, list)` (raw + realpath spellings on both sides).
+  Override: `PWT_LIVE_PROCESS_CWDS_SCRIPT`. All test seams
+  (`TEST_QUERY_FAILED` / `TEST_LIVE_CWDS` / `TEST_MODE`) short-circuit before the
+  new block, so the existing 144 assertions are byte-for-byte unaffected.
+- **`plan-w-team-worktree-gc.test.sh`** — Tests 37–38 (no TEST_MODE, both probes
+  stubbed): process-only owner in a SUBDIR ⇒ `UNSAFE-KEEP` / `"process"` /
+  survives `--execute`, contrast with no owner ⇒ `SAFE-PRUNE-PUSHED`; session +
+  process ⇒ label stays `"session"`; failed session probe + healthy process data ⇒
+  `live_query_failed` stays `true` and an UNOWNED sibling still survives
+  `--execute`; missing process helper ⇒ pure no-op. 146/146.
+- `sync-to-project.sh` allowlists both new files; `docs/operations/worktree-lifecycle.md`
+  invariant 3 + fail-closed section describe the third source.
+
+## [2.40.0] — 2026-09-04 (fix: Step 7 doc-vs-code conflict — §7a-quater refuses to rewrite a correct doc from an unconfirmed implementation) (242a381)
+
+Recursive-followups row 25 (2026-07-02 evaluation): "06-post-ship treats code as
+'the new reality' unconditionally, so a wrong implementation can overwrite
+previously-correct docs." Step 7's per-file pass rewrote prose to match the shipped
+diff with no check that the diff itself was grounded — a *wrong* implementation is
+also a change, and blindly matching it buries correct documentation under the bug.
+
+The fix adds a grounding-gated escalation branch. When a doc **contradicts** the diff
+and the Grounding Ledger row backing that change is not CONFIRMED, Step 7 now surfaces
+**"implementation may be wrong"** and leaves the doc unchanged, instead of rewriting it.
+
+- **`.claude/scripts/plan-w-team-grounding-gate.sh`** — new **`--claims`** mode: a
+  programmatic accessor over the same frozen-spec Grounding Ledger. Emits
+  `<STATUS>\t<claim>` per row to stdout; exit 0 = every row CONFIRMED (fully grounded),
+  exit 1 = any ASSUMED/absent/blank/rowless, exit 2 = spec-not-found. The
+  `PLAN_W_TEAM_DISABLE_GROUNDING=1` kill switch still short-circuits every mode to exit
+  0 (family invariant), so a kill-switched exit 0 is **not** a grounding verdict — the
+  caller contract (documented in the script header, reference caller §7a-quater)
+  requires callers to test the env var themselves FIRST and own the disabled→untrusted
+  policy. 8 new behavioral cases in `plan-w-team-grounding-gate.test.sh`.
+- **`06-post-ship.md`** — §Overview framing qualified ("code is the new reality **only
+  where the change is grounded**"); new **§7a-quater** escalation branch that computes
+  `DOC_TRUSTED` deterministically and always fails CONSERVATIVE: tests
+  `PLAN_W_TEAM_DISABLE_GROUNDING` first → disabled floor ⇒ `DOC_TRUSTED=0` (cannot
+  confirm grounding); else `--claims` exit 0 ⇒ `DOC_TRUSTED=1` (rewrite the doc), any
+  other exit ⇒ `DOC_TRUSTED=0`. `DOC_TRUSTED=0` surfaces "implementation may be wrong"
+  and leaves the doc UNCHANGED. New `doc_vs_code` §7e artifact field
+  (`unconfirmed_conflicts` / `confirmed_rewrites`); new §7f refusal that keys off
+  `doc_vs_code.unconfirmed_conflicts`, coaches code/ledger resolution, and carries a
+  `PLAN_W_TEAM_DOC_VS_CODE_DISABLE=1` soft override in the prose bullet mirroring
+  `PLAN_W_TEAM_NETNEW_DISABLE` — the exit echo never names the bypass (C6).
+- **`tests/skill/cases/grounding-gate.bats`** — 6 new prose-invariant cases pinning
+  §7a-quater, the "implementation may be wrong" surface, `--claims`, the `doc_vs_code`
+  artifact field, the conservative kill-switch ordering, and the C6 no-bypass refusal.
+**Bundled build-hygiene fixes (out-of-spec-scope).** The base commit `073dbdd` was
+landed RED on three suite anchors unrelated to row 25; all three would block this run's
+Step-6 100%-green completion gate, so they are greened here (same precedent as the
+2026-08-19 hook-index externalization):
+
+- **`CLAUDE.md`** — trimmed 41273 → 39808 chars (192-char margin) to green the
+  pre-existing `claude-md-size` live-regression anchor (`tests/skill/cases/claude-md-size.bats`),
+  which asserts the repo `CLAUDE.md` stays under the 40 000-char limit. The trim only
+  compressed sections already externalized to `docs/operations/` (Consumer-Pull Sync,
+  CI Alerting, Model Tiering historical blockquote, Sync Features/Time Savings, the sync
+  docs list), preserving every `docs/` pointer and the `Model Tiering v3` anchor phrase
+  that `model-tiering-v3.bats` pins; no behavioral prose was removed.
+- **`.claude/scripts/claude-pattern-pull.sh`** — the 2.39.0 argparse block used
+  unguarded `shift 2` on five value-consuming flags, tripping `argparse-shift2-lint`
+  (the value-less-trailing-flag hang class). Converted each to the lint's documented
+  bash-3.2-safe pattern `shift; [ $# -gt 0 ] && shift`.
+- **`tests/skill/cases/claude-pattern-pull.bats`** — its seven 2.39.0 `@test` names
+  skipped the R-10 BDD naming shape and were not allowlisted, tripping `r10-naming-ratchet`.
+  Renamed to `claude-pattern-pull: given …, when …, then …` (cosmetic; no test logic
+  changed).
+
+## [2.39.0] — 2026-09-03 (fix: consumer-pull sync — `claude-pattern-pull.sh` replaces the session-start in-place regen that wedged PR-gated followers) (a744680)
+
+"Our process of syncing to other repositories is causing real issues in the
+clean scale repo. We need that repository to PULL the latest version from this
+repository instead." The session-start hook's `auto_sync_from_pattern()` had an
+**author path** — it ran the consumer's own `sync-to-project.sh` against the
+consumer's PRIMARY checkout and regenerated the sync files IN PLACE. On a
+follower whose `main` is PR-gated (cleanscale) that left five uncommitted tracked
+files on `main`, so ff-only self-update skipped the pull as "dirty," and ten dead
+lane worktrees plus seven queued `git push` jobs piled up behind the wedged main.
+
+The fix inverts the flow: **the primary checkout is never where a sync is built.**
+
+- **`.claude/scripts/claude-pattern-pull.sh`** (NEW) — consumer-initiated, atomic.
+  Refreshes a BARE cache clone of claude-pattern, guards against no-op
+  (origin already carries the source stamp) and against syncing BACKWARDS (source
+  older than origin → refuse), builds the sync commit in a THROWAWAY worktree off
+  `origin/<default>`, runs the SNAPSHOT's `sync-to-project.sh` (no `--commit`),
+  commits via `sync-commit-lib.sh` (scoped add + tracked-dirt veto), and delivers
+  to `origin` as `direct` | `pr` | `branch`. The primary checkout is only ever
+  FAST-FORWARDED — and only when it is on the default branch, has no `index.lock`,
+  is tracked-clean, and is strictly behind origin. A dirty primary is left exactly
+  as-is; the delivery still lands, so no update is lost. `trap` cleanup, `mkdir`
+  lock keyed by consumer path (exit 7 if held), `--auto` cooldown
+  (`CLAUDE_PATTERN_PULL_COOLDOWN_S`, default 600 s). Refuses to run inside
+  claude-pattern itself. Exit codes: 0 ok/no-op, 2 usage, 3 source unreachable,
+  4 consumer prereqs, 5 sync failed, 6 delivery failed, 7 lock held.
+- **`session-start.sh`** — the author-path block is replaced by PULL mode: reads
+  `mode` from `.claude/.sync-policy` (default `pull` when the consumer has an
+  origin, else `regen`); in pull mode it launches the puller DETACHED with
+  `--auto`, logging to `.claude/state/claude-pattern-pull.log`, never blocking the
+  session. Kill switch `CLAUDE_PATTERN_SYNC_FORCE_REGEN=1` forces the legacy path.
+- **`sync-all-projects.sh`** — a consumer whose `.sync-policy` says `mode=pull` is
+  routed through the puller (exit code captured via a log file, not a pipe) instead
+  of a push-side `sync-to-project.sh`.
+- **`sync-to-project.sh`** — ships `claude-pattern-pull.sh` into every consumer
+  (cp-allowlisted) so a freshly-synced repo can pull itself next time.
+- **`.claude/.sync-policy`** (NEW, optional) — per-consumer `key=value`:
+  `mode` / `deliver` / `profile` / `remote` / `ref` / `branch_prefix`.
+- Tests: `tests/skill/cases/claude-pattern-pull.bats` (7 cases, hermetic).
+- Docs: [`docs/operations/consumer-pull-sync.md`](../../docs/operations/consumer-pull-sync.md).
+
+
 ## [2.38.10] — 2026-09-03 (feat: `accounts.sh status` gains a model-scoped weekly column — `FABLE%`) (5f653b1)
 
 "Add the fable usage in that chart so I can see it too." The account-headroom

@@ -53,8 +53,8 @@ _CP_ACCOUNTS_CLI="${_CP_SHELL_SELF:A:h:h}/commands/plan-w-team/accounts/accounts
 # holds a pid lock (CP_FABLE_LEAD_LOCK, default ~/.config/claude-pattern/fable-lead.pid).
 # A second CLAUDE_LEAD=1 launch while that lead is live is downgraded to Opus 4.8
 # with a notice — never a second Fable. An explicit --model in argv always wins.
-# The lead compacts at CP_LEAD_WINDOW (200000, founder 2026-09-02); every other terminal
-# at 150000; an explicit CLAUDE_CODE_AUTO_COMPACT_WINDOW wins over both.
+# The lead compacts at CP_LEAD_WINDOW (300000, 2026-09-08); every other terminal
+# at 250000; an explicit CLAUDE_CODE_AUTO_COMPACT_WINDOW wins over both.
 # Seams: CP_LEAD_MODEL, CP_NONLEAD_MODEL, CP_LEAD_WINDOW, CP_FABLE_LEAD_LOCK; tests override
 # _cp_fable_lead_live to simulate a live lead.
 _cp_fable_lead_live() {   # $1 = lock file; true when its pid is alive AND hosts a claude child
@@ -98,17 +98,23 @@ claude() {
     export CLAUDE_CODE_TASK_LIST_ID="$(basename "$(command git rev-parse --show-toplevel)")"
   fi
   unset CLAUDE_AUTOCOMPACT_PCT_OVERRIDE   # REMOVED 2026-08-30: undocumented; stacked on AUTO_COMPACT_WINDOW it compacted at ~25% of the window (62K) and thrashed every new session
-  # Window (tokens; documented knob). Default 150000 for a terminal — Model Tiering v7
-  # (2026-09-02): burn ∝ turns × context; 250K (v6) let 4–5 Fable terminals eat a 5-hour
-  # window in a morning. The ONE Fable lead gets CP_LEAD_WINDOW (200000; founder 2026-09-02:
-  # a design/crisis session loses the most at every compaction — ~40K of fixed prompt
-  # overhead re-ingested each time plus re-orientation reads — and one lead process was
-  # never where the burn came from). A value the USER set always wins; a value THIS
-  # launcher exported on an earlier launch in the same shell is re-derived every launch
-  # (plain → 150K, lead → 200K), so it is never mistaken for the user's.
+  # Window (tokens; documented knob). Default 250000 for a terminal (2026-09-08).
+  # History: v6 ran 250K; Model Tiering v7 (2026-09-02) cut terminals to 150K because
+  # burn ∝ turns × context and 4–5 Fable terminals ate a 5-hour window in a morning.
+  # Measured 2026-09-08 from transcript usage: the FIXED prompt floor (tool schemas, both
+  # CLAUDE.md files, memory index, MCP servers) is 74–82K in claude-pattern/cleanscale
+  # sessions, not the ~40K v7 assumed, and auto-compact fires at ≈77% of the window
+  # (114–133K observed). 150K therefore left ~32K of working room: compaction every
+  # 7–12 minutes (20 compactions in one claude-pattern session, 680 in a cleanscale
+  # terminal), each one re-ingesting the 74–82K floor — MORE burn than the room it
+  # saved, plus lost context. 250K gives ~110K of room; the lead (CP_LEAD_WINDOW,
+  # 300000) ~150K. Lanes are unaffected (PWT_BG_AUTOCOMPACT, 200K on the mac-mini).
+  # A value the USER set always wins; a value THIS launcher exported on an earlier
+  # launch in the same shell is re-derived every launch (plain → 250K, lead → 300K),
+  # so it is never mistaken for the user's.
   local _cp_win_explicit=1
   if [ -z "${CLAUDE_CODE_AUTO_COMPACT_WINDOW:-}" ] || [ "${CLAUDE_CODE_AUTO_COMPACT_WINDOW}" = "${_CP_WINDOW_LAUNCHER_SET:-}" ]; then
-    _cp_win_explicit=0; CLAUDE_CODE_AUTO_COMPACT_WINDOW=150000
+    _cp_win_explicit=0; CLAUDE_CODE_AUTO_COMPACT_WINDOW=250000
   fi
   export CLAUDE_CODE_AUTO_COMPACT_WINDOW; _CP_WINDOW_LAUNCHER_SET="$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
   : "${BASH_DEFAULT_TIMEOUT_MS:=300000}"
@@ -134,7 +140,7 @@ claude() {
       # v7 lead window: only the launch that HOLDS the lead lock (this shell's pid) compacts at
       # CP_LEAD_WINDOW; a downgraded second lead keeps the terminal default; explicit env wins.
       if [ "$_cp_win_explicit" = 0 ] && [ "$(cat "${CP_FABLE_LEAD_LOCK:-$HOME/.config/claude-pattern/fable-lead.pid}" 2>/dev/null)" = "$$" ]; then
-        export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CP_LEAD_WINDOW:-200000}"; _CP_WINDOW_LAUNCHER_SET="$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+        export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CP_LEAD_WINDOW:-300000}"; _CP_WINDOW_LAUNCHER_SET="$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
       fi
     fi
     command claude --allowedTools "Grep,Glob" "${_cp_model_args[@]}" "$@"
@@ -181,3 +187,9 @@ claude-account() {
 # /plan-w-team long-run support — let the Stop hook keep a multi-hour /goal
 # pipeline alive instead of halting at the default cap.
 export CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=200
+
+# CLI 2.1.268 gated the task-tracking tools (TaskCreate/Get/Update/List, TodoWrite)
+# to pre-Claude-5 models. Every /plan-w-team tier runs on Opus 5 / Sonnet 5 /
+# Fable 5.1 and the Step 2-8 task graph is built on those tools, so re-enable
+# them explicitly (mirrors .claude/settings.json env; uplift 2026-09-18).
+export CLAUDE_CODE_ENABLE_TODO_TOOLS=1

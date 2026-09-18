@@ -55,6 +55,9 @@
 #                                  ignored (default ".claude/state/"; empty disables)
 #   PWT_LIVE_SESSION_CWDS_SCRIPT   override path to pwt-live-session-cwds.sh (the
 #                                  canonical `claude agents --json` liveness probe)
+#   PWT_LIVE_PROCESS_CWDS_SCRIPT   override path to pwt-live-process-cwds.sh (the
+#                                  ADDITIVE `lsof -d cwd` OS-process source — any
+#                                  live process standing inside a worktree keeps it)
 #   PWT_WORKTREE_GC_TEST_QUERY_FAILED=1  test seam: simulate a failed liveness
 #                                  probe (sets the fail-closed flag) without a fake
 #                                  claude binary
@@ -66,8 +69,11 @@
 #   3. NEVER remove a worktree currently in-use: a LIVE claude session (background
 #      OR interactive) whose cwd is the worktree — the canonical signal is
 #      pwt-live-session-cwds.sh (`claude agents --json`), with claude-agents-
-#      extended.sh as an additive subagent-worktreePath source — or holding a lock
-#      backed by a live session / recent activity.
+#      extended.sh as an additive subagent-worktreePath source — OR any live OS
+#      process whose cwd is inside the worktree (pwt-live-process-cwds.sh,
+#      `lsof -d cwd`; additive — bash lanes such as dispatch-lane.sh are invisible
+#      to the session probe, 2026-09-08) — or holding a lock backed by a live
+#      session / recent activity.
 #   3b. FAIL-CLOSED: if the liveness probe cannot run (claude unavailable / timeout
 #      / unparseable), NEVER reap a reclaimable (merged/pushed/idle) worktree. A
 #      worker that pushed in Step 6 still has Steps 6b-8 to run; reaping it the
@@ -251,6 +257,8 @@ elif ! __pwt_python_ok; then
 fi
 
 LIVE_CWDS=""
+SESSION_CWDS=""   # session-derived subset of LIVE_CWDS (labels IN_USE_SOURCE)
+PROC_CWDS=""      # OS-process-derived subset of LIVE_CWDS (labels IN_USE_SOURCE)
 LIVE_QUERY_FAILED=0
 if [ "${PWT_WORKTREE_GC_TEST_QUERY_FAILED:-0}" = "1" ]; then
     # Test seam: simulate a failed liveness probe without a fake claude binary.
@@ -308,23 +316,56 @@ for entry in (data if isinstance(data, list) else []):
 }$_ext_cwds"
         fi
     fi
+    SESSION_CWDS="$LIVE_CWDS"
+    # Tertiary (ADDITIVE) source: any LIVE OS process whose cwd is inside the
+    # worktrees dir. The two sources above only see what `claude agents --json`
+    # registers; a plain bash lane (dispatch-lane.sh, plan-usage.sh, a `claude -p`
+    # child, a test runner) executing INSIDE a worktree is invisible to them, so an
+    # actively-used worktree could classify SAFE-PRUNE-* and be reaped from under
+    # a running process (2026-09-08 finding, positive control on two fleets).
+    # Best-effort + additive: a missing helper / missing lsof adds nothing, and
+    # this source NEVER clears the fail-closed flag — the claude-session probe
+    # stays the authority. Strictly an improvement, never a regression.
+    PROC_HELPER="${PWT_LIVE_PROCESS_CWDS_SCRIPT:-}"
+    if [ -z "$PROC_HELPER" ]; then
+        if [ -n "$GC_SCRIPT_DIR" ] && [ -x "$GC_SCRIPT_DIR/pwt-live-process-cwds.sh" ]; then
+            PROC_HELPER="$GC_SCRIPT_DIR/pwt-live-process-cwds.sh"
+        elif [ -x "$MAIN_CHECKOUT/.claude/scripts/pwt-live-process-cwds.sh" ]; then
+            PROC_HELPER="$MAIN_CHECKOUT/.claude/scripts/pwt-live-process-cwds.sh"
+        fi
+    fi
+    if [ -n "$PROC_HELPER" ] && [ -x "$PROC_HELPER" ]; then
+        PROC_CWDS="$("$PROC_HELPER" "$WORKTREES_DIR" 2>/dev/null || true)"
+        if [ -n "$PROC_CWDS" ]; then
+            LIVE_CWDS="${LIVE_CWDS:+$LIVE_CWDS
+}$PROC_CWDS"
+        fi
+    fi
 fi
 
-is_in_use() {
-    local wt_path="$1"
-    [ -z "$LIVE_CWDS" ] && return 1
+# Does any cwd in the newline-separated list ($2) sit at or under $1?
+# Both sides are realpath'd so a raw lsof path and a symlinked worktree still match.
+_cwd_matches() {
+    local wt_path="$1" cwd_list="$2"
+    [ -z "$cwd_list" ] && return 1
     local real_wt
     real_wt="$(realpath "$wt_path" 2>/dev/null || echo "$wt_path")"
     while IFS= read -r cwd; do
         [ -z "$cwd" ] && continue
         local real_cwd
         real_cwd="$(realpath "$cwd" 2>/dev/null || echo "$cwd")"
+        # Match against BOTH spellings of the worktree: a cwd that no longer
+        # resolves (deleted subdir, raced process) falls back to its raw string,
+        # which may carry the unresolved prefix (/var vs /private/var on macOS).
+        # Keeping is the safe direction, so the raw spelling counts too.
         case "$real_cwd" in
-            "$real_wt"|"$real_wt"/*) return 0 ;;
+            "$real_wt"|"$real_wt"/*|"$wt_path"|"$wt_path"/*) return 0 ;;
         esac
-    done <<< "$LIVE_CWDS"
+    done <<< "$cwd_list"
     return 1
 }
+
+is_in_use() { _cwd_matches "$1" "$LIVE_CWDS"; }
 
 # ─── active PWT-run detection via state JSONL ─────────────────────────────
 # A worktree is "active" if its branch appears in any non-terminal goal-state
@@ -779,7 +820,14 @@ classify_one() {
     if origin_reachable "$wt_path"; then ORIGIN_REACHABLE=1; fi
 
     # In-use check (live claude session whose cwd / worktreePath is this dir)
-    if is_in_use "$wt_path"; then IN_USE=1; IN_USE_SOURCE="session"; fi
+    if is_in_use "$wt_path"; then
+        IN_USE=1; IN_USE_SOURCE="session"
+        # Label a match that ONLY the OS-process source produced so the reason
+        # says who is standing in the worktree. A session match keeps its label.
+        if ! _cwd_matches "$wt_path" "$SESSION_CWDS" && _cwd_matches "$wt_path" "$PROC_CWDS"; then
+            IN_USE_SOURCE="process"
+        fi
+    fi
 
     # Git-lock check (stale-lock aware) — Claude Code locks an Agent-tool
     # subagent's worktree for its lifetime and SHOULD unlock on SubagentStop, but
@@ -876,6 +924,7 @@ classify_one() {
             lock-pid-alive) REASON="locked by LIVE pid $LOCK_PID — owning process alive (independent of session probe)" ;;
             lock-recent)  REASON="locked, recent activity (<${PWT_STALE_LOCK_HOURS:-${PWT_WORKTREE_LOCK_STALE_HOURS:-6}}h) — possible live agent" ;;
             lock-trusted) REASON="locked worktree (PWT_WORKTREE_GC_TRUST_LOCKS=1)" ;;
+            process)      REASON="in-use by live OS process (cwd inside worktree — not a registered claude session)" ;;
             *)            REASON="in-use by live claude session" ;;
         esac
         return 0

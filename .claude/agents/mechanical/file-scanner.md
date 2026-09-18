@@ -34,6 +34,11 @@ disallowedTools:
 # ============================================================================
 permissionMode: allow  # Auto-approve read operations
 
+# CLI 2.1.271 `omitClaudeMd` — mechanical Haiku work does not need the user +
+# project CLAUDE.md pair (~45k chars of reasoning-tier rules) on every spawn.
+# Managed policy files still load. Adopted 2026-09-18 (version-uplift 2.1.276).
+omitClaudeMd: true
+
 # ============================================================================
 # NO SKILLS - MECHANICAL ONLY
 # ============================================================================

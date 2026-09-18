@@ -906,6 +906,78 @@ case "$OUT2" in
   *)            fail "contrast (python3 OK, truly unregistered) → ORPHAN-ASK" "got: $OUT2" ;;
 esac
 
+# ═══════════════════════════════════════════════════════════════════════════
+# 2026-09-08 OS-process liveness source (pwt-live-process-cwds.sh)
+# The session probe only sees what `claude agents --json` registers; a plain
+# bash lane executing INSIDE a worktree was invisible and the worktree could be
+# reaped from under it. These tests run WITHOUT TEST_MODE so the real source
+# assembly is live, and stub BOTH probes so the assertions are hermetic.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# ── Test 37: process-only owner → UNSAFE-KEEP (source "process"), survives --execute
+echo "[37] live OS process standing in a pushed worktree → UNSAFE-KEEP / in_use_source=process"
+R=$(new_repo); make_nogh "$R"; add_origin "$R"
+WT=$(add_worktree "$R" "proc-owned")
+push_branch "$R" "worktree-proc-owned"
+PROBES="$R/_probes"; mkdir -p "$PROBES"
+# session probe: healthy but EMPTY (no registered session owns anything)
+printf '#!/bin/sh\nexit 0\n' > "$PROBES/session-empty.sh"
+# process probe: reports a process whose cwd is a SUBDIR of the worktree (raw lsof shape)
+mkdir -p "$WT/src"
+printf '#!/bin/sh\necho "%s/src"\n' "$WT" > "$PROBES/proc-owner.sh"
+# process probe: nothing standing anywhere
+printf '#!/bin/sh\nexit 0\n' > "$PROBES/proc-empty.sh"
+chmod +x "$PROBES"/*.sh
+gc_real() {  # $1 root, $2 session-probe, $3 process-probe, rest → GC args
+    local root="$1" sp="$2" pp="$3"; shift 3
+    ( cd "$root" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_IGNORE_LOCKS=1 \
+      PWT_LIVE_SESSION_CWDS_SCRIPT="$sp" PWT_LIVE_PROCESS_CWDS_SCRIPT="$pp" \
+      PATH="$root/_nogh:$PATH" bash "$GC" "$@" 2>/dev/null )
+}
+JSON=$(gc_real "$R" "$PROBES/session-empty.sh" "$PROBES/proc-owner.sh" --json)
+assert_eq "process-owned pushed → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" proc-owned)"
+assert_eq "in_use true" "true" "$(field_of "$JSON" proc-owned in_use)"
+assert_eq "in_use_source is process" '"process"' "$(field_of "$JSON" proc-owned in_use_source)"
+assert_eq "live_query_failed stays false (process source is not a failure)" "false" \
+    "$(field_of "$JSON" proc-owned live_query_failed)"
+gc_real "$R" "$PROBES/session-empty.sh" "$PROBES/proc-owner.sh" --execute --json >/dev/null 2>&1
+assert_eq "process-owned worktree survives --execute" "yes" "$([ -d "$WT" ] && echo yes || echo no)"
+# CONTRAST: nobody standing in it → the SAME fixture is reaped (non-tautological)
+JSON=$(gc_real "$R" "$PROBES/session-empty.sh" "$PROBES/proc-empty.sh" --json)
+assert_eq "no process owner → SAFE-PRUNE-PUSHED" "SAFE-PRUNE-PUSHED" "$(class_of "$JSON" proc-owned)"
+
+# ── Test 38: session match wins the label; process source never clears fail-closed
+echo "[38] process source is ADDITIVE: session label wins; never clears fail-closed"
+R=$(new_repo); make_nogh "$R"; add_origin "$R"
+WT=$(add_worktree "$R" "both-owned")
+push_branch "$R" "worktree-both-owned"
+WT2=$(add_worktree "$R" "unowned-pushed")
+push_branch "$R" "worktree-unowned-pushed"
+PROBES="$R/_probes"; mkdir -p "$PROBES"
+printf '#!/bin/sh\necho "%s"\n' "$WT" > "$PROBES/session-owner.sh"
+printf '#!/bin/sh\necho "%s"\n' "$WT" > "$PROBES/proc-owner.sh"
+printf '#!/bin/sh\necho __QUERY_FAILED__\n' > "$PROBES/session-failed.sh"
+chmod +x "$PROBES"/*.sh
+# both probes claim the same worktree → the canonical "session" label is kept
+JSON=$(gc_real "$R" "$PROBES/session-owner.sh" "$PROBES/proc-owner.sh" --json)
+assert_eq "session+process → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" both-owned)"
+assert_eq "session+process → label stays session" '"session"' "$(field_of "$JSON" both-owned in_use_source)"
+# session probe FAILED, process probe healthy with data → fail-closed posture HOLDS
+JSON=$(gc_real "$R" "$PROBES/session-failed.sh" "$PROBES/proc-owner.sh" --json)
+assert_eq "probe-failed + process data → live_query_failed still true" "true" \
+    "$(field_of "$JSON" both-owned live_query_failed)"
+assert_eq "process-owned under failed probe → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" both-owned)"
+assert_eq "UNowned sibling under failed probe → UNSAFE-KEEP (flag not cleared)" "UNSAFE-KEEP" \
+    "$(class_of "$JSON" unowned-pushed)"
+gc_real "$R" "$PROBES/session-failed.sh" "$PROBES/proc-owner.sh" --execute --json >/dev/null 2>&1
+assert_eq "unowned sibling survives --execute under failed probe" "yes" "$([ -d "$WT2" ] && echo yes || echo no)"
+# process helper MISSING → best-effort no-op, nothing else changes (session probe still decides)
+JSON=$(gc_real "$R" "$PROBES/session-owner.sh" "$R/_probes/does-not-exist.sh" --json)
+assert_eq "missing process helper: session-owned still UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" both-owned)"
+assert_eq "missing process helper: unowned pushed still SAFE-PRUNE-PUSHED" "SAFE-PRUNE-PUSHED" \
+    "$(class_of "$JSON" unowned-pushed)"
+assert_eq "missing process helper: live_query_failed false" "false" "$(field_of "$JSON" unowned-pushed live_query_failed)"
+
 echo ""
 echo "── results: $PASS passed, $FAIL failed ──"
 [ "$FAIL" -eq 0 ]

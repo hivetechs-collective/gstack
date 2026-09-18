@@ -33,6 +33,25 @@
 # relevant docs are reached from these entry points (LLM judgment, verified
 # semantically at Step 5 per shared/grounding.md).
 #
+# Claims query (--claims --spec <spec>):
+#   A programmatic accessor over the SAME Grounding Ledger the --check gate
+#   reads, for downstream callers that must know whether a change is grounded
+#   (Step-7 doc-vs-code conflict resolution, 06-post-ship.md §7a-quater/§7f).
+#   It emits one "<STATUS>\t<claim>" line per ledger claim row to stdout
+#   (STATUS ∈ CONFIRMED/ASSUMED, claim = the row's first cell), and its EXIT
+#   CODE is the grounded verdict:
+#     0 — every claim row is CONFIRMED (the ledger is fully grounded)
+#     1 — any row is ASSUMED, OR the ledger is absent / blank / has no claim
+#         rows (i.e. NOT fully grounded — treat the change as unconfirmed)
+#   CALLER CONTRACT: the PLAN_W_TEAM_DISABLE_GROUNDING kill switch below makes
+#   EVERY mode exit 0, so a kill-switched exit 0 is NOT a grounding verdict. A
+#   caller that gates a grounding-dependent action on --claims MUST test
+#   PLAN_W_TEAM_DISABLE_GROUNDING itself FIRST and apply its OWN disabled-policy:
+#   when the switch is set the grounding floor is off and grounding cannot be
+#   confirmed, so a conservative caller treats "disabled" as NOT grounded rather
+#   than reading exit 0 as "confirmed". See 06-post-ship.md §7a-quater for the
+#   reference caller (disabled floor → DOC_TRUSTED=0 → do not overwrite the doc).
+#
 # Kill switch (consistent with the PLAN_W_TEAM_DISABLE_* family):
 #   PLAN_W_TEAM_DISABLE_GROUNDING=1 → exit 0 with a notice, never blocks.
 #
@@ -41,10 +60,13 @@
 #   plan-w-team-grounding-gate.sh --check --spec docs/specs/<slug>.md \
 #       [--phase spec|review] [--root <dir>]
 #   plan-w-team-grounding-gate.sh --check --slug <slug>   # → docs/specs/<slug>.md
+#   plan-w-team-grounding-gate.sh --claims --spec docs/specs/<slug>.md \
+#       [--root <dir>]                                    # or --slug <slug>
 #
 # Exit codes (mirrors plan-w-team-reuse-audit-gate.sh):
-#   0 — gate passes (or kill switch active)
-#   1 — gate FAILS (section missing/blank, uncovered doc, ASSUMED at review)
+#   0 — gate passes (or kill switch active); for --claims, ledger fully CONFIRMED
+#   1 — gate FAILS (section missing/blank, uncovered doc, ASSUMED at review);
+#       for --claims, any ASSUMED row or an absent/blank/rowless ledger
 #   2 — spec file not found (author the spec first)
 #
 # Env:
@@ -73,6 +95,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --enumerate) MODE="enumerate"; shift ;;
     --check) MODE="check"; shift ;;
+    --claims) MODE="claims"; shift ;;
     # "shift 2" with the flag as the LAST arg shifts nothing (set -u does not
     # catch a failed shift), leaving $# and $1 unchanged → infinite 100%-CPU
     # loop. Shift the flag, then shift the value only if one is present.
@@ -81,7 +104,7 @@ while [ $# -gt 0 ]; do
     --root) ROOT="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
     --phase) PHASE="${2:-spec}"; shift; [ $# -gt 0 ] && shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -50; exit 0 ;;
-    *) [ -z "$SPEC" ] && [ "$MODE" = "check" ] && SPEC="$1"; shift ;;
+    *) [ -z "$SPEC" ] && { [ "$MODE" = "check" ] || [ "$MODE" = "claims" ]; } && SPEC="$1"; shift ;;
   esac
 done
 
@@ -152,7 +175,7 @@ if [ "$MODE" = "enumerate" ]; then
   exit 0
 fi
 
-# ── --check mode ─────────────────────────────────────────────────────────────
+# ── --check / --claims mode (both read a spec's Grounding Ledger) ────────────
 if [ -z "$SPEC" ] && [ -n "$SLUG" ]; then
   SPEC="docs/specs/${SLUG}.md"
 fi
@@ -199,6 +222,48 @@ if [ -z "$BODY_STRIPPED" ]; then
   echo "[$PROG] ✗ Grounding Ledger section present but BLANK: $SPEC" >&2
   echo "[$PROG]   list CONFIRMED/ASSUMED claim rows + sources consulted, or state greenfield." >&2
   exit 1
+fi
+
+# ── --claims: programmatic ledger accessor (grounded-verdict via exit code) ──
+# Reaches here only when the section is PRESENT and non-blank (absent/blank
+# already exited 1 above — both map to "not grounded" per AC1). Emits one
+# "<STATUS>\t<claim>" line per claim row to stdout, then exits 0 iff there is
+# at least one claim row AND every claim row is CONFIRMED; exits 1 on any
+# ASSUMED row or when the ledger has no claim rows at all.
+if [ "$MODE" = "claims" ]; then
+  # Reuse CLAIM_ROW_RE (defined below for --check) verbatim: a markdown TABLE
+  # ROW whose last cell is the status token. Prose mentions do not count.
+  CLAIMS_ROW_RE='^\|.*\|[[:space:]]*(CONFIRMED|ASSUMED)[[:space:]]*\|?[[:space:]]*$'
+  CLAIM_LINES=$(printf '%s\n' "$BODY" | grep -E "$CLAIMS_ROW_RE" || true)
+  if [ -z "$CLAIM_LINES" ]; then
+    echo "[$PROG] ✗ --claims: Grounding Ledger has no CONFIRMED/ASSUMED claim rows: $SPEC" >&2
+    exit 1
+  fi
+  # Emit "<STATUS>\t<claim>" per row. claim = first cell ($2 under -F'|', since
+  # the leading pipe makes $1 empty); STATUS = the rightmost cell that is
+  # EXACTLY CONFIRMED/ASSUMED (scan from the right so a trailing-pipe empty
+  # field and a claim cell that merely contains the word both behave).
+  printf '%s\n' "$CLAIM_LINES" | awk -F'|' '
+    {
+      claim = $2
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", claim)
+      status = ""
+      for (i = NF; i >= 1; i--) {
+        cell = $i
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", cell)
+        if (cell == "CONFIRMED" || cell == "ASSUMED") { status = cell; break }
+      }
+      print status "\t" claim
+    }
+  '
+  # Verdict: any ASSUMED row → not grounded → exit 1.
+  ASSUMED_ROWS=$(printf '%s\n' "$CLAIM_LINES" | grep -cE '^\|.*\|[[:space:]]*ASSUMED[[:space:]]*\|?[[:space:]]*$' || true)
+  if [ "${ASSUMED_ROWS:-0}" -gt 0 ]; then
+    echo "[$PROG] --claims: $ASSUMED_ROWS ASSUMED row(s) — ledger NOT fully grounded (exit 1)" >&2
+    exit 1
+  fi
+  echo "[$PROG] --claims: all claim rows CONFIRMED — ledger fully grounded (exit 0)" >&2
+  exit 0
 fi
 
 # ── Greenfield short-circuit ─────────────────────────────────────────────────

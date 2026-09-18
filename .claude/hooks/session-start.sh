@@ -170,8 +170,46 @@ auto_sync_from_pattern() {
         return 0
     fi
 
-    # Author path: origin doesn't have this version yet (or no remote).
-    # Regen locally; caller is expected to commit+push so consumers can pull.
+    # Consumer PULL mode (2.39.0). Origin does not carry this version yet. The
+    # old behaviour regenerated the sync files IN PLACE here ("author path"),
+    # which left uncommitted tracked files on a consumer's primary checkout —
+    # cleanscale's ff-only self-update then skipped as "dirty" and lane
+    # worktrees piled up behind it (2026-09-03). A consumer with an origin now
+    # PULLS instead: claude-pattern-pull.sh runs detached, builds the sync
+    # commit in a temporary worktree from claude-pattern's remote, delivers it
+    # to origin (direct / pr / branch per .claude/.sync-policy), and only ever
+    # fast-forwards a clean primary. The in-place regen survives solely for
+    # mode=regen (or a consumer with no origin to deliver to).
+    local sync_mode=""
+    if [ -f "$PROJECT_ROOT/.claude/.sync-policy" ]; then
+        sync_mode=$(sed -n 's/^[[:space:]]*mode[[:space:]]*=[[:space:]]*//p' "$PROJECT_ROOT/.claude/.sync-policy" 2>/dev/null | tail -1 | tr -d '[:space:]')
+    fi
+    if [ -z "$sync_mode" ]; then
+        if [ -d "$PROJECT_ROOT/.git" ] && git -C "$PROJECT_ROOT" remote get-url origin >/dev/null 2>&1; then
+            sync_mode="pull"
+        else
+            sync_mode="regen"
+        fi
+    fi
+    if [ "$sync_mode" != "regen" ] && [ -z "${CLAUDE_PATTERN_SYNC_FORCE_REGEN:-}" ]; then
+        local puller="$PROJECT_ROOT/.claude/scripts/claude-pattern-pull.sh"
+        [ -x "$puller" ] || puller="$CLAUDE_PATTERN/.claude/scripts/claude-pattern-pull.sh"
+        if [ -x "$puller" ]; then
+            mkdir -p "$PROJECT_ROOT/.claude/state" 2>/dev/null || true
+            local pull_log="$PROJECT_ROOT/.claude/state/claude-pattern-pull.log"
+            echo "   ↓ consumer pull mode: delivering the claude-pattern sync to origin in the background"
+            echo "     (temporary worktree; this checkout is only ever fast-forwarded when clean)"
+            echo "     log: $pull_log"
+            nohup "$puller" "$PROJECT_ROOT" --auto >> "$pull_log" 2>&1 < /dev/null &
+        else
+            echo "   ⚠️  claude-pattern-pull.sh not found — not regenerating in place (set mode=regen in .claude/.sync-policy to opt back in)"
+        fi
+        echo ""
+        return 0
+    fi
+
+    # Legacy regen path (mode=regen only): regenerate in place; the caller is
+    # expected to commit+push so consumers can pull.
     echo "   Syncing from claude-pattern (local regen — commit+push to share)..."
     if "$SYNC_SCRIPT" "$PROJECT_ROOT" >/dev/null 2>&1; then
         if [ -f "$SOURCE_VERSION_FILE" ]; then

@@ -12,7 +12,9 @@
      Kill switch: PLAN_W_TEAM_DISABLE_ORCHESTRATOR=1
 -->
 
-After shipping, update documentation to reflect what changed. This stage closes the loop between code (which now reflects new reality) and prose (which by default still describes the old reality).
+After shipping, update documentation to reflect what changed. This stage closes the loop between code and prose: where the code has moved ahead of the docs, the prose is brought up to date.
+
+**Code is the new reality only where the change is grounded.** The default assumption — "the code now reflects new reality, so rewrite the docs to match" — holds when the change is backed by a CONFIRMED Grounding Ledger. It does NOT hold unconditionally: a *wrong* implementation is also a change, and blindly rewriting prose to match it would overwrite previously-correct documentation with the bug. So when a doc **contradicts** the shipped diff and the ledger row backing that change is not CONFIRMED, §7a-quater surfaces "implementation may be wrong" and leaves the doc alone instead of rewriting it (2026-07-02 evaluation, recursive-followups row 25).
 
 The stage produces a state artifact `.claude/state/plan-w-team-postship-$SLUG.json` consumed by Step 8 retro §8d. The artifact captures what was audited, what was updated, and what was deliberately deferred — so retro can score documentation hygiene without re-running the audit.
 
@@ -193,6 +195,70 @@ Record the deliverable path in the §7e artifact's `secret_handling_doc` field. 
 `shared/secret-safety.md §Secret-Handling Documentation Duty` for the checklist. If
 the feature introduced no new secret, set the field to `"n/a"`.
 
+## 7a-quater. Doc-vs-Code Conflict Escalation (grounding-gated)
+
+The default of this stage — "code is the new reality, rewrite the prose to match"
+(§Overview) — is safe only when the shipped change is **grounded**. A *wrong*
+implementation is also a change: if a doc that was previously **correct** contradicts
+the diff, and the diff's change is not backed by a CONFIRMED Grounding Ledger row,
+then rewriting the doc to match the code would overwrite correct documentation with
+the bug. This section catches exactly that case and, when it fires, surfaces
+**"implementation may be wrong"** rather than rewriting the doc (recursive-followups
+row 25, 2026-07-02 evaluation).
+
+**Deterministic-floor principle** (same split as §7a-bis net-new): the *contradiction*
+is a matter of judgment (does this prose actually disagree with the diff?), but the
+*grounding verdict* is not — it is read mechanically from the frozen spec's Grounding
+Ledger via `plan-w-team-grounding-gate.sh --claims`. The judgment cannot manufacture a
+CONFIRMED where the ledger has none.
+
+**Kill-switch contract (the CALLER owns the disabled→untrusted policy).** The `--claims`
+accessor is part of the grounding family, so `PLAN_W_TEAM_DISABLE_GROUNDING=1` makes it
+exit 0 for *every* ledger — a kill-switched exit 0 is NOT a grounding verdict. This
+branch therefore tests `PLAN_W_TEAM_DISABLE_GROUNDING` **itself, FIRST**, and when it is
+set treats the doc as **NOT trusted** (`DOC_TRUSTED=0`) — the grounding floor is off, so
+grounding *cannot be confirmed*, and the conservative rule applies: do not overwrite the
+doc. Reading the mode's exit 0 as "confirmed" while the floor is disabled would be the
+one path that lets an ungrounded change quietly overwrite a correct doc, which is exactly
+what this section exists to prevent.
+
+**The failure direction is always CONSERVATIVE.** Any uncertainty about grounding —
+disabled floor, ASSUMED row, absent/blank ledger, missing spec — resolves to
+`DOC_TRUSTED=0` → *do not rewrite the doc*, never to "trust the code."
+
+**Procedure** — for each doc the per-file pass (§7a) would rewrite because it
+**contradicts** the diff (not merely lags it — a stale-but-not-contradicted doc is the
+ordinary §7a rewrite), compute doc-trust deterministically, then branch:
+
+```bash
+# snippet-lint: skip — illustrative; SPEC is the frozen Step-1 spec for this run
+DOC_TRUSTED=0
+if [ "${PLAN_W_TEAM_DISABLE_GROUNDING:-0}" = "1" ]; then
+  DOC_TRUSTED=0   # floor off → cannot confirm grounding → conservative (do not trust code)
+else
+  # exit 0 = every ledger row CONFIRMED (grounded → code IS new reality)
+  # exit ≠0 = any ASSUMED/absent/blank/rowless, or spec-not-found → NOT grounded
+  .claude/scripts/plan-w-team-grounding-gate.sh --claims --spec "$SPEC"
+  [ $? -eq 0 ] && DOC_TRUSTED=1 || DOC_TRUSTED=0
+fi
+
+if [ "$DOC_TRUSTED" -eq 1 ]; then
+  echo "§7a-quater: ledger fully CONFIRMED — code is new reality, rewriting doc to match (record in doc_vs_code.confirmed_rewrites)"
+  # → proceed with the normal §7a substantive rewrite for this doc
+else
+  echo "⚠ §7a-quater: doc contradicts the diff, but the change is NOT grounded (ASSUMED/absent, or grounding floor disabled)."
+  echo "  IMPLEMENTATION MAY BE WRONG — leaving the doc unchanged. Do NOT rewrite prose to match ungrounded code."
+  echo "  Recorded in doc_vs_code.unconfirmed_conflicts; §7f refuses terminal until this is resolved."
+  # → DO NOT rewrite this doc; record the conflict and route to the user/orchestrator as an ASK
+fi
+```
+
+When the escalation fires (`DOC_TRUSTED=0`), the correct resolution is **not** a doc
+edit — it is either fixing the implementation so the previously-correct doc holds, or
+confirming the ledger row (upgrading ASSUMED→CONFIRMED with real evidence) so the code
+genuinely is the new reality. Both are decisions above this stage, which is why §7f
+refuses to go terminal while `doc_vs_code.unconfirmed_conflicts` is non-empty.
+
 ## 7b. Cross-Document Consistency Check
 
 After per-file updates, verify the same concept is described consistently across all docs. Drift here is the silent killer — README says one thing, ARCHITECTURE says another, CLAUDE.md says a third.
@@ -302,7 +368,12 @@ cat > "$ARTIFACT" <<EOF
     "waived": [],
     "infra_runbook": "n/a"
   },
-  "secret_handling_doc": "n/a"
+  "secret_handling_doc": "n/a",
+  "doc_vs_code": {
+    "grounding_disabled": ${PLAN_W_TEAM_DISABLE_GROUNDING:-0},
+    "unconfirmed_conflicts": [],
+    "confirmed_rewrites": []
+  }
 }
 EOF
 
@@ -316,6 +387,7 @@ Populate the new fields from §7a-bis / §7a-ter before writing:
 - `netnew_surface.waived` — items waived via `plan-w-team-docs-waived-$SLUG.txt` (audit trail).
 - `netnew_surface.infra_runbook` — runbook/config path updated for a C2 infra change, or `"n/a"`.
 - `secret_handling_doc` — `.env.example`/runbook path for a C1 new-secret deliverable, or `"n/a"`.
+- `doc_vs_code` — from §7a-quater. `grounding_disabled` mirrors `PLAN_W_TEAM_DISABLE_GROUNDING` (when `1`, the floor is off and every contradiction is treated as untrusted → recorded in `unconfirmed_conflicts`). `confirmed_rewrites` = docs that contradicted the diff and WERE rewritten because `DOC_TRUSTED=1` (`--claims` exit 0, ledger fully CONFIRMED — code IS new reality). `unconfirmed_conflicts` = docs that contradicted the diff and were LEFT UNCHANGED because `DOC_TRUSTED=0` (ASSUMED/absent row, missing spec, or disabled floor — implementation may be wrong). **`unconfirmed_conflicts` is the field the §7f gate keys off.**
 
 Step 8 retro reads this file in §8d to score "documentation hygiene" without re-running the audit. If the artifact is missing, retro scores §8d as `n/a (docs-skipped)` and notes the skip in the friction log.
 
@@ -330,6 +402,7 @@ Do **not** mark Step 7 complete if any of the following are true:
 - **(A1/A6)** §7a-bis reports residual `UNDOCUMENTED` net-new surface that is neither documented nor waived — i.e. `netnew_surface.undocumented` in the §7e artifact is non-empty. Add the doc target or record an explicit waiver, then re-run the scan. (Soft override: `PLAN_W_TEAM_NETNEW_DISABLE=1` downgrades this to a warning — use only with a recorded reason.)
 - **(C1)** The feature introduced a new secret-bearing variable (spec §1c credential signal) but `secret_handling_doc` is `"n/a"` / missing — there is no `.env.example` row + provisioning/rotation note. Write the deliverable (§7a-ter) before completing.
 - **(C2)** The diff touched an infra glob (`shared/governance-tags.md`) but `netnew_surface.infra_runbook` is `"n/a"` / missing — no runbook/config-reference update accompanies the infra change.
+- **(row 25 / doc-vs-code)** §7a-quater recorded a doc that contradicts the diff whose backing change is not grounded — i.e. `doc_vs_code.unconfirmed_conflicts` in the §7e artifact is non-empty. The implementation may be wrong; the doc was correctly left unrewritten. Resolve by fixing the implementation so the doc holds, or by confirming the ledger row (ASSUMED→CONFIRMED with real evidence) and re-running §7a-quater — not by editing the doc to match ungrounded code. (Soft override: `PLAN_W_TEAM_DOC_VS_CODE_DISABLE=1` downgrades this to a warning — use only with a recorded reason, consistent with `PLAN_W_TEAM_NETNEW_DISABLE`.)
 
 ```bash
 # §7f net-new / secret-doc / infra refusal check (reads the §7e artifact):
@@ -337,6 +410,16 @@ ART=".claude/state/plan-w-team-postship-$SLUG.json"
 if [ "${PLAN_W_TEAM_NETNEW_DISABLE:-}" != "1" ] \
    && [ "$(jq -r '.netnew_surface.undocumented | length' "$ART" 2>/dev/null || echo 0)" -gt 0 ]; then
   echo "✗ §7f: net-new surface is UNDOCUMENTED — add docs or waive. See $ART .netnew_surface.undocumented" >&2
+  exit 1
+fi
+
+# §7f doc-vs-code refusal check (row 25): an unconfirmed doc-vs-code conflict means the
+# implementation may be wrong — refuse terminal until the code or the ledger is resolved.
+if [ "${PLAN_W_TEAM_DOC_VS_CODE_DISABLE:-}" != "1" ] \
+   && [ "$(jq -r '.doc_vs_code.unconfirmed_conflicts | length' "$ART" 2>/dev/null || echo 0)" -gt 0 ]; then
+  echo "✗ §7f: doc-vs-code conflict on an ungrounded change — implementation may be wrong." >&2
+  echo "  Doc left unchanged (correct). Fix the code or confirm the ledger row; do not rewrite the doc." >&2
+  echo "  See $ART .doc_vs_code.unconfirmed_conflicts" >&2
   exit 1
 fi
 ```
