@@ -58,7 +58,7 @@ has the most headroom and you switch with `/login`.
 Two surfaces deliver the advice (both fail open — silent when dormant or single-account):
 
 - **Status line** — a `👉 next: <email>` nudge appears once a cooler account exists, turning into
-  `⚠ switch → <email> (5h/7d%)` when your current login gets hot. The account is named by its
+  `⚠ switch → <email> (5h N% · 7d N% · Fable N%)` when your current login gets hot. The account is named by its
   **full email** (the registry label is only a fallback when the advisory carries none): labels
   are operator-chosen stems that collide in practice — two accounts on one domain both read as
   `<company>` — and `/login` asks for an email, so the email is the one unambiguous handle. The

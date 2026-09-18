@@ -14,6 +14,35 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.42.0] — 2026-09-18 (feat: statusline 1.4.0 — `💾 Cache` prompt-cache segment; `👉 next:` nudge labels 5h · 7d · Fable) (34cf9ca)
+
+Founder request (2026-09-18), two parts. **(1)** "anything we can do to enhance our status
+line based on `/cost`": the CLI has put a `prompt_cache` object on the statusline stdin
+since 2.1.251 (miss causes from 2.1.260) — the same numbers `/cost` prints as "Prompt
+cache (main)". Line 3 now renders it live: `💾 Cache: 91% hit · ▸warm 1h (cold in 42m) ·
+2 misses (last 6m ago: tools changed) · 1 rebuild`, or `⚠ COLD · next msg re-caches 310k
+tok`. Pure stdin (one jq), stays on in lean pipeline mode, no `$` figures, kill switch
+`STATUSLINE_DISABLE_CACHE_SEGMENT=1`. **(2)** the account-rotation nudge printed a bare
+`(0/7%)` — two unlabelled numbers and no Fable bucket, so an account could be recommended
+at 0/7 % while sitting at 95 % of its Fable week. `accounts.sh advise` (`session_cred.advise`)
+now emits `best_scoped` / `current_scoped` (`{display_name: pct}` from the gauge's
+`scoped` buckets, `{}` when none) and the line prints every reading labelled:
+`👉 next: <email> (5h 0% · 7d 7% · Fable 95%)`. Older advisories without `*_scoped` still
+render `(5h N% · 7d N%)`. The pick is still ranked on `max(5h, 7d)` — the third number is
+there so the operator can see when that ranking is lying.
+
+- `.claude/statusline.sh` 1.3.2 → **1.4.0**: `💾 Cache` segment (`fmt_rel_s`, `fmt_tok_k`,
+  `cache_miss_label` helpers; hit-% ladder mint ≥ 90 / peach ≥ 75 / coral); `adv_pct`
+  rebuilt from labelled parts + `best_scoped` entries.
+- `accounts/session_cred.py`: `_scoped()` (numeric buckets only) + the two new advise keys.
+- Corpus: `tests/skill/cases/statusline-segments.bats` (10 tests — warm / cold /
+  post-compaction / none-observed / absent-zero-killswitch / broken-jq fail-open / lean +
+  line-3 sharing; nudge with and without `*_scoped`; producer emits the keys and never a
+  token). `pwt-accounts.bats` AC12 and `host-load-protection.bats` AC1 stay green.
+- Docs: `statusline-usage-reporting.md` (two new subsections), accounts README +
+  onboarding doc format string, compat-doc row for the 2.1.251/2.1.260 `prompt_cache`
+  stdin object.
+
 ## [2.41.0] — 2026-09-08 (feat: launcher — interactive compact window 150K → 250K, Fable lead 200K → 300K; the v7 floor assumption was off by 2×) (a340bce)
 
 Founder report (2026-09-08): "cleanscale is still compacting very often" and, in

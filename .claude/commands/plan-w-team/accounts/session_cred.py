@@ -141,6 +141,16 @@ def _pcts(gauge):
     return gauge.get("five_hour_pct"), gauge.get("seven_day_pct")
 
 
+def _scoped(gauge):
+    """``{display_name: percent}`` of the gauge's model-scoped weekly buckets,
+    numeric values only, ``{}`` when the gauge has none."""
+    sc = (gauge or {}).get("scoped") or {}
+    if not isinstance(sc, dict):
+        return {}
+    return {str(k): float(v) for k, v in sc.items()
+            if isinstance(v, (int, float)) and not isinstance(v, bool)}
+
+
 def advise(registry_path=None, pinned=None) -> int:
     """Print a one-line JSON advisory (NEVER a token) for the status line and
     ``claude-account``: which registered account has the most headroom, which account
@@ -148,10 +158,15 @@ def advise(registry_path=None, pinned=None) -> int:
     there is nothing to advise — dormant registry, unusable perms, or every account
     hot / no fresh data — so the status line simply shows no advice segment (fail-open).
 
-    Keys: ``best``/``best_email``/``best_5h``/``best_7d`` (the pick),
-    ``current``/``current_email``/``current_5h``/``current_7d`` (this login, mapped to
-    a label by email), ``switch`` (best differs from current login), ``current_hot``
-    (current's binding window ≥ ``PWT_ACCT_SWITCH_HINT_PCT``, default 80).
+    Keys: ``best``/``best_email``/``best_5h``/``best_7d``/``best_scoped`` (the pick),
+    ``current``/``current_email``/``current_5h``/``current_7d``/``current_scoped`` (this
+    login, mapped to a label by email), ``switch`` (best differs from current login),
+    ``current_hot`` (current's binding window ≥ ``PWT_ACCT_SWITCH_HINT_PCT``, default 80).
+    ``*_scoped`` is ``{display_name: percent}`` for every model-scoped weekly bucket the
+    gauge carries (today ``{"Fable": 95.0}``), ``{}`` when the account has none on
+    record — the status line prints all three numbers (5h · 7d · Fable) beside the
+    nudge, because a "0/7%" pick can still be sitting at 95 % of its Fable week
+    (2026-09-18).
 
     Reads the shared usage cache (probing only stale accounts), so front it with the
     caller's own short cache when calling on every status-line render."""
@@ -191,9 +206,11 @@ def advise(registry_path=None, pinned=None) -> int:
         "best": best_label,
         "best_email": best.get("email") or "",
         "best_5h": b5, "best_7d": b7,
+        "best_scoped": _scoped(best),
         "current": cur_label,
         "current_email": cur_email,
         "current_5h": c5, "current_7d": c7,
+        "current_scoped": _scoped(gmap.get(cur_label) if cur_label else None),
         "switch": bool(best_label and best_label != cur_label),
         "current_hot": cur_binding is not None and cur_binding >= hint,
     }
