@@ -64,6 +64,12 @@
 #   PLAN_USAGE_CURL_MAX_TIME  per-request curl bound, seconds          (6)
 #   PLAN_USAGE_CACHE_DIR      cache directory        ($HOME/.config/claude-pattern/plan-usage)
 #   PLAN_USAGE_ACCOUNT_KEY    override the account key (tests)
+#   PLAN_USAGE_PROBE_MODEL    header-probe model (the Fable model, see PRIMARY — its headers carry the
+#                            Fable weekly bucket as `7d_oi-*`; 2.43.0)
+#   PLAN_USAGE_PROBE_FALLBACK_MODEL  probed in the same tick when the primary is refused
+#                            without a measurement (HTTP 400 version-too-old) (claude-haiku-4-5-20251001)
+#   PLAN_USAGE_CLI_VERSION    user-agent version override (default: `claude --version`, cached 1 d)
+#   PLAN_USAGE_PROBE_HEADERS_FILE  test seam: JSON list of {status, headers} answered per probe call
 #   PLAN_USAGE_FAIL_BACKOFF   seconds a render waits after a failed refresh before it
 #                            spawns another (60); a 429 uses the Retry-After header
 #                            instead, HONORED as sent (floor 30, ceiling
@@ -237,22 +243,48 @@ print(json.dumps(m,separators=(",",":")))' 2>/dev/null || printf '{"accountUuid"
 # ── python bodies (script on argv, DATA on stdin — a heredoc on `python3 -`
 #    would steal stdin from the pipe that carries the token / the body) ──────
 PROBE_PY=$(cat <<'PY'
-import sys, json, time, datetime, urllib.request, urllib.error
+import sys, json, os, time, datetime, urllib.request, urllib.error
 tok = sys.stdin.read().strip()
-body = json.dumps({"model": "claude-haiku-4-5-20251001", "max_tokens": 1,
-                   "messages": [{"role": "user", "content": "."}]}).encode()
-req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, method="POST", headers={
-    "authorization": "Bearer " + tok, "anthropic-version": "2023-06-01",
-    "anthropic-beta": "oauth-2025-04-20", "content-type": "application/json",
-    "user-agent": "claude-cli/2.1.0 (external, cli)"})
-try:
-    r = urllib.request.urlopen(req, timeout=8); h = r.headers
-except urllib.error.HTTPError as e:
-    h = e.headers
-except Exception:
-    sys.exit(1)
-low = {k.lower(): v for k, v in h.items()}
+# Fable-model probe (2.43.0): the same max_tokens:1 call answered for the Fable
+# model carries a `7d_oi-*` triple = the model-scoped Fable weekly bucket, live,
+# for ANY token kind. The server refuses the Fable model to a client older than
+# 2.1.251 (HTTP 400 claude_code_version_too_old), so the UA carries the INSTALLED
+# CLI version (PU_CLI_VERSION) and a refusal falls back to the haiku model in the
+# same tick (5h/7d survive; the scoped bucket is simply absent).
+PRIMARY = os.environ.get("PLAN_USAGE_PROBE_MODEL") or "claude-fable-5-1"
+FALLBACK = os.environ.get("PLAN_USAGE_PROBE_FALLBACK_MODEL") or "claude-haiku-4-5-20251001"
+UA = "claude-cli/%s (external, cli)" % (os.environ.get("PU_CLI_VERSION") or "2.1.276")
+SCOPED = {"oi": "Fable"}
 P = "anthropic-ratelimit-unified-"
+fixture = os.environ.get("PLAN_USAGE_PROBE_HEADERS_FILE")   # test seam: [{"status":N,"headers":{}}, ...]
+fixture_rows = None
+if fixture:
+    try:
+        fixture_rows = list(json.load(open(fixture)))
+    except Exception:
+        sys.exit(1)
+def call(model):
+    if fixture_rows is not None:
+        row = fixture_rows.pop(0) if fixture_rows else {"status": 0, "headers": {}}
+        return int(row.get("status") or 0), {str(k).lower(): str(v) for k, v in (row.get("headers") or {}).items()}
+    body = json.dumps({"model": model, "max_tokens": 1,
+                       "messages": [{"role": "user", "content": "."}]}).encode()
+    req = urllib.request.Request("https://api.anthropic.com/v1/messages", data=body, method="POST", headers={
+        "authorization": "Bearer " + tok, "anthropic-version": "2023-06-01",
+        "anthropic-beta": "oauth-2025-04-20", "content-type": "application/json",
+        "user-agent": UA})
+    try:
+        r = urllib.request.urlopen(req, timeout=8); st, h = r.status, r.headers
+    except urllib.error.HTTPError as e:
+        st, h = e.code, e.headers
+    except Exception:
+        return 0, {}
+    return st, {k.lower(): v for k, v in h.items()}
+status, low = call(PRIMARY)
+model_used = PRIMARY
+if status not in (200, 429) and low.get(P + "5h-utilization") is None and low.get(P + "7d-utilization") is None:
+    status, low = call(FALLBACK)
+    model_used = FALLBACK
 def pct(s):
     v = low.get(P + s)
     try: return round(float(v) * 100, 1)
@@ -264,14 +296,34 @@ def iso(s):
 fh, sd = pct("5h-utilization"), pct("7d-utilization")
 if fh is None and sd is None: sys.exit(1)
 rep = low.get(P + "representative-claim") or ""
-status = low.get(P + "status") or "allowed"
-locked = None if status in ("allowed", "allowed_warning") else status
-out = {"five_hour": {"utilization": fh, "resets_at": iso("5h-reset"), "locked_reason": locked if rep == "five_hour" else None},
-       "seven_day": {"utilization": sd, "resets_at": iso("7d-reset"), "locked_reason": locked if rep == "seven_day" else None},
+RANK = {"allowed": 0, "allowed_warning": 1, "rejected": 2}
+fh_st, sd_st = low.get(P + "5h-status"), low.get(P + "7d-status")
+# Account status = worst of the PER-WINDOW statuses; the top-level status is the
+# fallback only (a Fable-exhausted account answers `status: rejected` while 5h/7d
+# are fine -- that must not read as an account-wide lock).
+win = [x for x in (fh_st, sd_st) if x]
+status_s = (max(win, key=lambda x: RANK.get(x, 2)) if win else (low.get(P + "status") or "allowed"))
+def locked(st): return None if st in (None, "allowed", "allowed_warning") else st
+SEV = {"allowed": "normal", "allowed_warning": "warning", "rejected": "critical"}
+out = {"five_hour": {"utilization": fh, "resets_at": iso("5h-reset"), "locked_reason": locked(fh_st) if fh_st else (locked(status_s) if rep == "five_hour" else None)},
+       "seven_day": {"utilization": sd, "resets_at": iso("7d-reset"), "locked_reason": locked(sd_st) if sd_st else (locked(status_s) if rep == "seven_day" else None)},
        "limits": [
-         {"kind": "session", "group": "session", "percent": fh, "severity": "normal", "resets_at": iso("5h-reset"), "scope": None, "is_active": rep == "five_hour"},
-         {"kind": "weekly_all", "group": "weekly", "percent": sd, "severity": "normal", "resets_at": iso("7d-reset"), "scope": None, "is_active": rep == "seven_day"}]}
+         {"kind": "session", "group": "session", "percent": fh, "severity": SEV.get(fh_st or "", "normal"), "resets_at": iso("5h-reset"), "scope": None, "is_active": rep == "five_hour"},
+         {"kind": "weekly_all", "group": "weekly", "percent": sd, "severity": SEV.get(sd_st or "", "normal"), "resets_at": iso("7d-reset"), "scope": None, "is_active": rep == "seven_day"}]}
+for k in list(low):
+    if not (k.startswith(P + "7d_") and k.endswith("-utilization")): continue
+    bucket = k[len(P) + 3:-len("-utilization")]
+    name = SCOPED.get(bucket, bucket)
+    bp = pct("7d_%s-utilization" % bucket)
+    if bp is None: continue
+    bst = low.get(P + "7d_%s-status" % bucket) or ""
+    out["limits"].append({"kind": "weekly_scoped", "group": "weekly", "percent": bp,
+                          "severity": SEV.get(bst, "normal"), "resets_at": iso("7d_%s-reset" % bucket),
+                          "scope": {"model": {"id": None, "display_name": name}, "surface": None},
+                          "is_active": rep.startswith("seven_day_") and rep != "seven_day",
+                          "status": bst or None})
 out["_source"] = "ratelimit-header"
+out["_probe_model"] = model_used
 print(json.dumps(out, separators=(",", ":")))
 PY
 )
@@ -438,10 +490,25 @@ __rate_limited_fresh() {
   [ $(( now - at )) -lt "$code" ]
 }
 # The rate-limit HEADER probe (max_tokens:1 /v1/messages); PLAN_USAGE_PROBE_CMD = test seam.
+# The INSTALLED CLI version for the probe's user-agent (the server gates the Fable
+# model on it). `claude --version` costs ~1 s of node startup, so it is cached for
+# a day beside the usage cache; PLAN_USAGE_CLI_VERSION overrides (tests).
+__cli_version() {
+  local f="$CACHE_DIR/cli-version" v="" m now
+  case "${PLAN_USAGE_CLI_VERSION:-}" in [0-9]*.[0-9]*.[0-9]*) echo "$PLAN_USAGE_CLI_VERSION"; return 0 ;; esac
+  if [ -s "$f" ]; then
+    m=$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0); now=$(date +%s)
+    if [ $(( now - ${m:-0} )) -lt 86400 ]; then v=$(head -1 "$f" 2>/dev/null); fi
+  fi
+  case "$v" in [0-9]*.[0-9]*.[0-9]*) echo "$v"; return 0 ;; esac
+  v=$(claude --version 2>/dev/null | sed -n 's/.*\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -1)
+  case "$v" in [0-9]*.[0-9]*.[0-9]*) mkdir -p "$CACHE_DIR" 2>/dev/null; printf '%s\n' "$v" > "$f.tmp.$$" 2>/dev/null && mv -f "$f.tmp.$$" "$f" 2>/dev/null; echo "$v"; return 0 ;; esac
+  echo "2.1.276"
+}
 __probe() {  # reads $tok (caller's local) → prints usage JSON; 0 = ok, 22 = probe failed
   if [ -n "${PLAN_USAGE_PROBE_CMD:-}" ]; then "$PLAN_USAGE_PROBE_CMD" 2>/dev/null; return $?; fi
   command -v python3 >/dev/null 2>&1 || return 22
-  printf '%s' "$tok" | python3 -c "$PROBE_PY" 2>/dev/null
+  printf '%s' "$tok" | PU_CLI_VERSION="$(__cli_version)" python3 -c "$PROBE_PY" 2>/dev/null
   [ "${PIPESTATUS[1]:-1}" = "0" ] && return 0
   return 22
 }

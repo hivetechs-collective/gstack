@@ -81,7 +81,9 @@ Subcommands:
       redirects model requests. For interactive use run `advise` (or `claude-account`)
       then `/login`. Dormant/loose registry ⇒ runs unchanged (ambient login).
   which-account [--pinned L]              print the label a session WOULD run as
-  advise                                  JSON advisory: which account to move to (status line)
+  advise [--model M | --need any|fable]   JSON advisory: which account to move to (status line);
+                                          --model claude-fable-* (or --need fable) ranks on
+                                          max(5h,7d,Fable) and excludes Fable-rejected accounts
   remove-account     --label L            drop an account row entirely
   deactivate-account --label L            mark active=false
   activate-account   --label L            mark active=true
@@ -364,17 +366,24 @@ def pct(v):
         return "%.1f" % v
     return "?"
 
-# Model-scoped weekly buckets (e.g. Fable) get one column each, right after 7d%.
+# Model-scoped weekly buckets (e.g. Fable) get TWO columns each, right after 7d%:
+# the percentage and the bucket's own status (ok / warn / rejected). A header-
+# sourced reading (the Fable-model probe, 2.43.0) is live and carries no age tag;
+# only a plan-usage sample fallback is tagged with its age past PWT_ACCT_SCOPED_TTL.
 scoped_names = sorted({n for g in gmap.values() for n in ((g or {}).get("scoped") or {})})
-hdr = (["PIN", "LABEL", "EMAIL", "5h%", "7d%"] + ["%s%%" % n.upper() for n in scoped_names]
+if not scoped_names:
+    scoped_names = ["Fable"]
+hdr = (["PIN", "LABEL", "EMAIL", "5h%", "7d%"]
+       + [c for n in scoped_names for c in ("%s%%" % n.upper(), "%s-ST" % n.upper(), "%s-RESET" % n.upper())]
        + ["WINDOW", "RESET-IN", "STATUS", "FRESH"])
+SC_STATUS = {"allowed": "ok", "allowed_warning": "warn", "rejected": "rejected"}
 rows = [hdr]
 for a in accounts:
     label = a.get("label") or ""
     email = a.get("email") or ""
     pin = "*" if (active_label and label == active_label) else ""
     if not a.get("active"):
-        rows.append([pin, label, email, "-", "-"] + ["-"] * len(scoped_names)
+        rows.append([pin, label, email, "-", "-"] + ["-"] * (3 * len(scoped_names))
                     + ["-", "-", "deactivated", "-"])
         continue
     g = gmap.get(label) or {}
@@ -383,7 +392,11 @@ for a in accounts:
     bw = g.get("binding_window") or "-"
     stale = bool(g.get("stale"))
     unknown = (g.get("status") == "UNKNOWN") or (fh is None and sd is None)
-    lim_ts = parse_iso(g.get("limited_until"))
+    lim_raw = g.get("limited_until")
+    try:
+        lim_ts = float(str(lim_raw).strip()) if lim_raw not in (None, "") else None
+    except ValueError:
+        lim_ts = parse_iso(lim_raw)
     if lim_ts is not None and now < lim_ts:
         status = "cooling"
     elif g.get("status") == "rejected":
@@ -395,14 +408,33 @@ for a in accounts:
     else:
         status = "ok"
     sc = g.get("scoped") or {}
+    sc_st = g.get("scoped_status") or {}
+    sc_src = g.get("scoped_source") or ("plan-usage-sample" if sc else "unavailable")
     sc_at = parse_iso(g.get("scoped_at"))
-    # A scoped sample older than the scoped TTL is still shown — the weekly bucket
-    # moves slowly — but tagged with its age so it is never mistaken for live.
+    # A plan-usage SAMPLE older than the scoped TTL is still shown — the weekly
+    # bucket moves slowly — but tagged with its age so it is never mistaken for
+    # live. A header-sourced reading is live by construction (no tag). A sample
+    # from a previous 7-day window never reaches here (resolve_usage drops it).
     sc_age = ""
-    if sc_at is not None and (now - sc_at) >= scoped_ttl:
+    if sc_src != "ratelimit-header" and sc_at is not None and (now - sc_at) >= scoped_ttl:
         sc_age = " ~" + hms(now + (now - sc_at))   # age, e.g. "~26h00m"
-    rows.append([pin, label, email, pct(fh), pct(sd)]
-                + [(pct(sc.get(n)) + sc_age) if sc.get(n) is not None else "?" for n in scoped_names]
+    # <NAME>-RESET (2.44.0): when THAT bucket resets — the instant a lane that needs
+    # the model waits on. Its own header value, never inferred from the 7d window.
+    sc_rs = g.get("scoped_reset") or {}
+    sc_cells = []
+    for n in scoped_names:
+        try:
+            rs = float(sc_rs.get(n)) if isinstance(sc_rs, dict) and sc_rs.get(n) not in (None, "") else None
+        except (TypeError, ValueError):
+            rs = None
+        if sc.get(n) is not None:
+            sc_cells.append(pct(sc.get(n)) + sc_age)
+            st = sc_st.get(n) if isinstance(sc_st, dict) else None
+            sc_cells.append(SC_STATUS.get(st, st) if st else ("sample" if sc_src == "plan-usage-sample" else "-"))
+            sc_cells.append(hms(rs))
+        else:
+            sc_cells.extend(["?", "-", "-"])
+    rows.append([pin, label, email, pct(fh), pct(sd)] + sc_cells
                 + [bw, hms(binding_reset(g)), status, "stale" if stale else "fresh"])
 
 widths = [0] * len(hdr)
@@ -601,7 +633,7 @@ _launch_fallback_no_python() {
   local which=0 advise=0
   while [ $# -gt 0 ]; do
     case "$1" in
-      --pinned) shift 2 ;;
+      --pinned|--model|--need) shift 2 ;;
       --which)  which=1; shift ;;
       --advise) advise=1; shift ;;
       --)       shift; break ;;

@@ -7,7 +7,7 @@ description: |
   proactively at the start of new projects, when scaling existing systems, or
   when making major architectural decisions. Examples:
 color: green
-model: claude-fable-5-1
+model: claude-opus-5-5 # Model Tiering v9 (2.50.0) — design = Opus 5.5 (Fable 5.1 retired, operator ruling 2026-09-22)
 context: fork
 
 # ============================================================================

@@ -635,9 +635,19 @@ if [ -x "$VERSION_UPLIFT_DETECT" ]; then
             # next auto-launch invocation. Uplift composes:
             #   detect (persist=0) → fetch --curl → evaluate → write report
             # Logs to detection.log; never blocks session start.
+            #
+            # --since carries the PREVIOUS version across the persist boundary.
+            # detect-version.sh (above) has already persisted CURRENT, so uplift's
+            # own detect reads previous == current and, without --since, fetches
+            # the empty range current→current: "0 entries parsed", no report, and
+            # the version is marked seen anyway. That silently swallowed the
+            # 2.1.277–2.1.280 changelogs (incl. the Opus 5.5 launch) until
+            # 2026-09-22.
             if [ -x "$VERSION_UPLIFT_UPLIFT" ] && [ "${PLAN_W_TEAM_DISABLE_VERSION_UPLIFT_AUTO:-0}" != "1" ]; then
+                UPLIFT_SINCE_ARG=""
+                case "$UPLIFT_PREV" in ""|null) ;; *) UPLIFT_SINCE_ARG="--since=$UPLIFT_PREV" ;; esac
                 (
-                    nohup "$VERSION_UPLIFT_UPLIFT" --force >> "$VERSION_UPLIFT_LOG" 2>&1 &
+                    nohup "$VERSION_UPLIFT_UPLIFT" --force ${UPLIFT_SINCE_ARG:+"$UPLIFT_SINCE_ARG"} >> "$VERSION_UPLIFT_LOG" 2>&1 &
                 ) 2>/dev/null || true
             fi
         fi
@@ -657,9 +667,50 @@ fi
 # Best-effort cleanup. Goal-state files from runs that completed BEFORE the
 # retro auto-cleanup landed (commit 409e265) linger on disk with
 # terminal_state="SUCCESS" until removed. Never block session start on this.
+#
+# DETACHED, and that is the rule for every hygiene step in this file: SessionStart
+# also fires with source=compact, so anything synchronous here is paid on EVERY
+# compaction, not once per session. 2026-09-21 (cleanscale): this call ran inline,
+# the janitor had gone quadratic over a ~1,350-entry state dir, and a busy lead
+# session spent 6–10 min in "Running SessionStart hooks" after each compaction —
+# about half its wall-clock, for three days. A janitor is hygiene, never a
+# prerequisite for the session. Pinned by session-start-nonblocking.test.sh.
 CLEANUP_GOAL_STATES="$PROJECT_ROOT/.claude/scripts/plan-w-team-cleanup-stale-goal-states.sh"
 if [ -x "$CLEANUP_GOAL_STATES" ]; then
-    "$CLEANUP_GOAL_STATES" 2>/dev/null || true
+    nohup "$CLEANUP_GOAL_STATES" >/dev/null 2>&1 < /dev/null &
+fi
+
+# =================================================================
+# Shared task list: archive old completed / long-stale open tasks, enforce a cap
+# =================================================================
+# The shell wrapper keys CLAUDE_CODE_TASK_LIST_ID on the repo name, so every session
+# in a repo shares ONE list that nothing prunes, and Claude Code's task_reminder
+# carries the WHOLE list (cleanscale 2026-09-21: 969 tasks ≈ 39K tokens per reminder,
+# compaction every ~20 min instead of hourly). Archives with mv, never deletes;
+# detached for the same reason as the janitor above.
+# Kill switch: PWT_DISABLE_TASK_LIST_RETENTION=1.
+TASK_LIST_RETENTION="$PROJECT_ROOT/.claude/scripts/task-list-retention.sh"
+if [ -x "$TASK_LIST_RETENTION" ]; then
+    nohup "$TASK_LIST_RETENTION" --quiet >/dev/null 2>&1 < /dev/null &
+fi
+
+# =================================================================
+# Compaction health: regression alarm (compactions/hour, post-compaction hook time,
+# task_reminder size, post-compaction context floor, state-dir entry count)
+# =================================================================
+# The 2026-09-21 regression ran three days with every signal sitting in the transcript
+# and nothing reading it. The SCAN is detached (a lead transcript reaches 1 GB); what is
+# shown here is the banner the PREVIOUS scan left, which exists only while it alarms —
+# so surfacing costs one small file read. → docs/operations/compaction-health.md
+# Kill switch: PWT_DISABLE_COMPACTION_HEALTH=1.
+COMPACTION_HEALTH="$PROJECT_ROOT/.claude/scripts/compaction-health.sh"
+COMPACTION_HEALTH_BANNER="$PROJECT_ROOT/.claude/state/compaction-health.txt"
+if [ -x "$COMPACTION_HEALTH" ] && [ "${PWT_DISABLE_COMPACTION_HEALTH:-}" != "1" ]; then
+    if [ -s "$COMPACTION_HEALTH_BANNER" ] && [ -n "$(find "$COMPACTION_HEALTH_BANNER" -mmin -1440 2>/dev/null)" ]; then
+        echo ""
+        cat "$COMPACTION_HEALTH_BANNER" 2>/dev/null || true
+    fi
+    nohup "$COMPACTION_HEALTH" --quiet >/dev/null 2>&1 < /dev/null &
 fi
 
 # =================================================================

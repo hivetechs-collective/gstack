@@ -11,7 +11,7 @@ description: |
   retroactive-security-coverage tasks executed by security-expert before
   retro. Pure read-only analysis — does not write code.
 color: red
-model: inherit # Model Tiering v6 — spec/review fan-out follows the lane (PWT_PRIMARY_MODEL, floor claude-opus-4-8)
+model: claude-opus-5-5 # Model Tiering v9 (2.50.0) — review/judgment = Opus 5.5, the highest-thinking tier (operator ruling 2026-09-22). PINNED (was `inherit` under v6).
 context: fork
 sdk_utilization: 70%
 sdk_features:

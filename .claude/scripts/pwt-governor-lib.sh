@@ -151,8 +151,9 @@ pwt_governor_clamp_builders() {   # $1 = requested
 # A capability-rank gate is blind to the reliability ban that keeps Fable out of the lead /
 # fan-out tiers: claude-fable-5-1 is a *downgrade* by capability yet models.intelligent:
 # claude-fable-5-1 is exactly the 2026-07 lockout. So the accessor emits ONLY a member of the
-# tier's allow-list or the tier's HARDCODED DEFAULT LITERAL — never claude-opus-5, the bare
-# `opus`/`opus-*` alias (CLI-resolved to newest Opus), `inherit`, an unknown, or a tier-raise.
+# tier's allow-list or the tier's HARDCODED DEFAULT LITERAL — never claude-opus-5 (forbidden, v5),
+# the bare `opus`/`opus-*` alias (CLI-resolved, so it drifts by CLI version: claude-opus-5 on
+# 2.1.25x, claude-opus-5-5 on 2.1.280), `inherit`, an unknown, or a tier-raise.
 # Ungoverned ⇒ empty (the caller keeps its own default).
 #
 # ⚠ THE ALLOW-LIST IS BOUND TO tests/skill/cases/model-tiering-v5.bats (the FUNCTIONAL sweep,
@@ -160,11 +161,15 @@ pwt_governor_clamp_builders() {   # $1 = requested
 #   and the doctrine drift apart (Model Tiering v5, skill 2.14.3: Opus 5 FORBIDDEN). Model
 #   Tiering v6 (2.20.0) was NOT such a rollover: it moved subagent tiers to follow-the-lane at
 #   agent frontmatter + spawn sites and left this governor policy table byte-for-byte unchanged.
+#   Model Tiering v8 (2.50.0, operator order 2026-09-22) IS one: intelligent claude-opus-4-8 →
+#   claude-opus-5-5. claude-opus-4-8 is deliberately NOT kept for backward compat — a governed
+#   config still naming it is refused (loud warning) and lands on the 5.5 default, which IS the
+#   rollover. Only the exact id claude-opus-5 is banned; never widen that to a claude-opus-5* glob.
 pwt_governor_model() {   # $1 = tier (design|intelligent|mechanical)
   local tier="${1:-}" default=""
   case "$tier" in
-    design)      default="claude-fable-5-1" ;;
-    intelligent) default="claude-opus-4-8" ;;
+    design)      default="claude-opus-5-5" ;;   # Model Tiering v9 (2.50.0): design = Opus 5.5
+    intelligent) default="claude-opus-5-5" ;;
     mechanical)  default="claude-sonnet-5" ;;
     *) echo ""; return 0 ;;
   esac
@@ -174,12 +179,12 @@ pwt_governor_model() {   # $1 = tier (design|intelligent|mechanical)
   [ -n "$ov" ] || { echo "$default"; return 0; }
   local ok=0
   case "$tier" in
-    # Fable 5.1 rollover (2026-09-01): primary design id is claude-fable-5-1. The
-    # bare claude-fable-5 is kept accepted for ONE release (backward compat) so a
-    # governed config still pinning the old id degrades to acceptance, not refusal;
-    # drop it next rollover. Both resolve to the Fable design tier.
-    design)      case "$ov" in claude-fable-5-1|claude-fable-5|claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
-    intelligent) case "$ov" in claude-opus-4-8|claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
+    # Model Tiering v9 (2.50.0, operator ruling 2026-09-22): Fable 5.1 is retired — no
+    # Fable anywhere. A governed config still naming a Fable id (claude-fable-5-1, or the
+    # bare claude-fable-5 accepted since 2.36.0) is now REFUSED and lands on the
+    # claude-opus-5-5 design default with one warning, the way v8 treated claude-opus-4-8.
+    design)      case "$ov" in claude-opus-5-5|claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
+    intelligent) case "$ov" in claude-opus-5-5|claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
     mechanical)  case "$ov" in claude-sonnet-5|claude-haiku-4-5) ok=1 ;; esac ;;
   esac
   if [ "$ok" = "1" ]; then
@@ -188,6 +193,35 @@ pwt_governor_model() {   # $1 = tier (design|intelligent|mechanical)
     printf '⚠ pwt-governor: models.%s=%s refused (forbidden/tier-raise/unknown) — using %s\n' "$tier" "$ov" "$default" >&2
     echo "$default"
   fi
+}
+
+# Model Tiering v9 (2.50.0, operator ruling 2026-09-22): the bg --fallback-model for a lane.
+# No Fable anywhere, fallbacks included. When Opus 5.5 is overloaded or unavailable the lane
+# steps down the fleet chain Opus 4.8 → Sonnet 5 (cleanscale #6254); any other primary (a
+# consumer's Sonnet/Haiku lane) falls back to itself. `--fallback-model` takes a
+# comma-separated list (CLI 2.1.280) and outranks settings.json `fallbackModel`. An explicit
+# fallback naming Fable or the forbidden claude-opus-5 is refused (one warning) and the
+# default chain for the primary is used. Pure (echo only); governed and ungoverned alike.
+pwt_fallback_model() {   # $1 = resolved primary, $2 = explicit fallback (may be empty)
+  local p="${1:-claude-opus-5-5}" f="${2:-}" base def m bad=""
+  base="${p%%\[*}"
+  case "$base" in
+    claude-opus-5-5) def="claude-opus-4-8,claude-sonnet-5" ;;
+    *)               def="$p" ;;
+  esac
+  if [ -z "$f" ]; then echo "$def"; return 0; fi
+  local IFS=','
+  for m in $f; do
+    case "$m" in
+      claude-fable*|fable|fable\[*|claude-opus-5|claude-opus-5\[*) bad="$m" ;;
+    esac
+  done
+  if [ -n "$bad" ]; then
+    printf '⚠ pwt-governor: fallback %s refused (%s is retired or forbidden — Model Tiering v9); using %s\n' "$f" "$bad" "$def" >&2
+    echo "$def"
+    return 0
+  fi
+  echo "$f"
 }
 
 # ── repo root (main checkout), for approver-dir scoping ──────────────────────────

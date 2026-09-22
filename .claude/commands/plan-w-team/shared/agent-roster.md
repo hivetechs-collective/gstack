@@ -21,19 +21,17 @@ in a task's assignee field only when one of the four reasons above applies.
 Tags: **RESTRICT** = binding tool restriction · **PIN** = model/effort pin ·
 **MANDATE** = a stage file spawns it by name · **GF** = grandfathered.
 
-**Model tier per agent (Model Tiering v6, 2026-08-30).** The execution lanes FOLLOW THE
-LANE — `builder`, `builder-opus`, the spec/review fan-out agents (`silent-failure-hunter`,
-`research-planning/test-gap-analyzer`, `research-planning/security-gap-analyzer`) and the
-Hands specialists (`implementation/react-typescript-specialist`, `rust-backend-specialist`)
-carry `model: inherit`, running on the launching session's model (`PWT_PRIMARY_MODEL` in an
-autonomous run; the consumer's per-item tier). Held at a **hardcoded pin**: the singleton
-verdict/supervisor floor `evaluator` / `validator` / `supervisor` (`claude-opus-4-8`); the
-four **design** agents `system-architect` / `ui-designer` / `style-theme-expert` /
-`fable-spec-consult` (the design tier, Fable 5); the three **mechanical** agents (`haiku`). The skill
-never hardcodes Fable into a spawnable role (the 2026-07 fan-out lockout); the consumer
-decides judge→Fable its own way. Seams: `PWT_SUBAGENT_MODEL_BUILDER` /
-`PWT_SUBAGENT_MODEL_MECHANICAL` (alias-validated, `sonnet`/`haiku` only). Full map: the
-Model Strategy table in `plan-w-team.md`.
+**Model tier per agent (Model Tiering v9, 2026-09-22).** Three tiers, no Fable anywhere,
+and every agent carries a literal pin (none inherits). **Opus 5.5** (`claude-opus-5-5`,
+the highest-thinking tier): `builder-opus`, `supervisor`, `evaluator`, `validator`,
+`silent-failure-hunter`, `fable-spec-consult` (name historical), the gap analyzers, the
+design agents (`system-architect`, `ui-designer`, `style-theme-expert`) and the roster
+reviewers/specialists. **Sonnet 5** (`claude-sonnet-5`, medium-thinking build work): the
+routine `builder` and the Hands specialists (`implementation/react-typescript-specialist`,
+`rust-backend-specialist`). **Haiku** (no thinking): the three mechanical agents. Pipeline
+effort pins are `high`. Seams: `PWT_SUBAGENT_MODEL_BUILDER` / `PWT_SUBAGENT_MODEL_MECHANICAL`
+(alias-validated, `sonnet`/`haiku` only). Full map: the Model Strategy table in
+`plan-w-team.md`.
 
 ### Coordination (4)
 
@@ -48,13 +46,13 @@ Model Strategy table in `plan-w-team.md`.
 
 | subagent_type           | Tag              | Role                                                                                                                                                |
 | ----------------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `builder`               | PIN              | Routine implementation — FOLLOWS THE LANE (v6: `model: inherit` → `PWT_PRIMARY_MODEL`; consumer's low-risk items → Sonnet 5); `effort: high` pinned |
-| `builder-opus`          | PIN              | Hard lane (`difficulty: hard`) — FOLLOWS THE LANE (v6: `model: inherit`; intelligent work → Opus 4.8); `effort: high` pinned                        |
-| `supervisor`            | PIN              | Owns Step 3-4 dispatch for one run — Brain floor (`claude-opus-4-8`; singleton, not fan-out)                                                        |
-| `evaluator`             | PIN+RESTRICT     | Evaluates output against acceptance criteria (read-only) — judge, Brain floor (`claude-opus-4-8`)                                                   |
-| `validator`             | PIN+RESTRICT     | Read-only code inspection — judge, Brain floor (`claude-opus-4-8`)                                                                                  |
-| `silent-failure-hunter` | RESTRICT+MANDATE | Pass-1 reviewer for silent failures/fallbacks — FOLLOWS THE LANE (v6: `model: inherit`)                                                             |
-| `fable-spec-consult`    | PIN+RESTRICT     | §1b-pre read-only spec consult — the one Fable design pin (Fable 5)                                                                                 |
+| `builder`               | PIN              | Routine implementation — Hands tier (`claude-sonnet-5`, v9); `effort: high` pinned                                                                   |
+| `builder-opus`          | PIN              | Hard lane (`difficulty: hard`) — Brain tier (`claude-opus-5-5`, v9); `effort: high` pinned                                                          |
+| `supervisor`            | PIN              | Owns Step 3-4 dispatch for one run — Brain floor (`claude-opus-5-5`; singleton, not fan-out)                                                        |
+| `evaluator`             | PIN+RESTRICT     | Evaluates output against acceptance criteria (read-only) — judge, Brain floor (`claude-opus-5-5`)                                                   |
+| `validator`             | PIN+RESTRICT     | Read-only code inspection — judge, Brain floor (`claude-opus-5-5`)                                                                                  |
+| `silent-failure-hunter` | RESTRICT+MANDATE | Pass-1 reviewer for silent failures/fallbacks — Brain tier (`claude-opus-5-5`, v9)                                                                  |
+| `fable-spec-consult`    | PIN+RESTRICT     | §1b-pre read-only spec consult — Brain tier (`claude-opus-5-5`, v9; the name is historical)                                                         |
 
 ### Mechanical (3)
 

@@ -274,6 +274,7 @@ emit_md() {
     printf '2. **breaking-change-required** entries indicate a migration is needed in already-adopted surfaces — schedule immediately.\n'
     printf '3. **not-applicable** entries can be ignored.\n'
     printf '4. **already-adopted** entries are informational — confirm the `Features Adopted` table in `docs/operations/claude-code-compatibility.md` mentions them.\n'
+    printf '5. **Context-cost gate** — before ENABLING anything from this report (an env flag, a settings key, a tool family), run `.claude/scripts/compaction-health.sh --census`, enable it, work a normal hour, and run the census again. A new or grown attachment type is the cost of the feature, paid on every turn of every session. See `docs/operations/version-uplift.md` → "Context-cost gate".\n'
 }
 
 emit_json() {

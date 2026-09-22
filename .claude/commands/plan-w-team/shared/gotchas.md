@@ -88,7 +88,7 @@ an alias defeats a generation pin (the alias overrides the agent-definition fron
 **Why**: the tool only accepts `opus` / `sonnet` / `haiku`.
 
 **Do instead**: pin a specific generation in the **agent-definition frontmatter**
-(e.g. `model: claude-opus-5` in `.claude/agents/team/evaluator.md`) and do **not** set
+(e.g. `model: claude-opus-5-5` in `.claude/agents/team/evaluator.md`) and do **not** set
 `model:` in the Agent call. For mechanical lead work, no pin is needed.
 
 **Source**: `.claude/commands/plan-w-team.md` §How tier pinning works.

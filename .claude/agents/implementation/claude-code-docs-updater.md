@@ -7,7 +7,7 @@ description: |
   when a breaking change or deprecation needs tracing through CLAUDE.md, agent
   definitions, and SDK documentation. Researches the current CLI / Agent SDK /
   Claude API surface, reports the gaps, then writes the corrections.
-model: claude-opus-4-8
+model: claude-opus-5-5
 color: blue
 # GRANDFATHERED (GF): this agent carries no binding tool restriction and no
 # model/effort pin — it is kept for its minimal-profile spawn mandate only.

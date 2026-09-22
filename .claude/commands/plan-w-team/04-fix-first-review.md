@@ -29,42 +29,39 @@ turn** (Anthropic, "knowing more vs. trying harder"):
 "builder-opus"`, Brain-tier). More effort on the smaller model buys a more elaborate
   wrong answer, and every failed iteration re-triggers this review stage.
 - **Already Brain-tier and still confidently wrong** on a genuinely hard problem —
-  an Opus 5 agent (`builder-opus`, or a Brain-tier fix) that had full context, clearly
-  tried, and was still wrong on the SAME task _after_ the hard-lane bump: escalate ONE
-  more rung, to the **Fable tier** (Model Tiering v3). This is the top of the ladder;
-  there is nothing above it.
+  an Opus 5.5 agent (`builder-opus`, or a Brain-tier fix) that had full context, clearly
+  tried, and was still wrong on the SAME task _after_ the hard-lane bump: that is the
+  top of the ladder. Take the existing hard-gate / human-escalation path. **Model
+  Tiering v9 (2.50.0) retired the Fable rung** that used to sit here — no Fable
+  anywhere — so Opus 5.5 is the highest model the pipeline escalates to.
 
+  Dormant rollback (operator-only, one run at a time): with
+  `PLAN_W_TEAM_FABLE_REENABLE=1` exported, the v3 rung comes back exactly as it was.
   Ask the guard FIRST — it owns the budget, the per-run cap, and the ledger:
 
   ```bash
   if .claude/scripts/plan-w-team-fable-guard.sh \
        --slug "$SLUG" --kind escalation --task "<task-id>" \
        --note "<one line: the confidently-wrong diagnosis>" >/dev/null 2>&1; then
-    # exit 0 only: spawn ONE Fable-pinned fix agent for THIS TASK ONLY.
+    # exit 0 only (requires PLAN_W_TEAM_FABLE_REENABLE=1): spawn ONE Fable-pinned
+    # fix agent for THIS TASK ONLY.
     :
   else
-    # ANY other exit (budget, cap-exhausted, disabled, unresolvable bucket,
-    # unwritable ledger, or 127 when the guard is absent) => do NOT spawn Fable.
-    # Fall through to the existing hard-gate / human-escalation path, unchanged.
+    # ANY other exit (fable-retired-v9 — the default —, budget, cap-exhausted,
+    # disabled, unresolvable bucket, unwritable ledger, or 127 when the guard is
+    # absent) => do NOT spawn Fable. Take the hard-gate / human-escalation path.
     :
   fi
   ```
 
-  Hard limits, none of them negotiable in-run:
-  - **ONE task.** Never a lane, never a pool, never a retry default. The Fable agent
-    fixes the single task that triggered it and nothing else.
-  - **Cap 2 per run** (`PLAN_W_TEAM_FABLE_ESCALATION_CAP`, default 2). The guard counts
-    its own ledger rows; when the cap is exhausted this rung is simply unavailable and
-    the run takes the existing human-escalation path.
-  - **Budget-gated.** Above the weekly Fable-bucket ceiling the guard skips and the run
-    continues on Opus. An unknown budget skips too — unknown never authorizes spend.
-  - **The skip lands on Brain (Opus 5), never lower.** Whether the guard says SKIP or the
-    spawned Fable agent comes back with `stop_reason: "refusal"` (its safety classifiers
-    can decline benign security-adjacent work), the task falls back to the Brain tier —
-    Opus 5 is Anthropic's documented recommended fallback for a Fable-tier refusal, so
-    the ladder degrades exactly one rung. Do NOT let a Fable skip drop the task to the
-    Hands lane: the whole reason it reached this rung is that Sonnet and the hard lane
-    already failed on it.
+  Hard limits when the rollback is on, none of them negotiable in-run:
+  - **ONE task.** Never a lane, never a pool, never a retry default.
+  - **Cap 2 per run** (`PLAN_W_TEAM_FABLE_ESCALATION_CAP`, default 2).
+  - **Budget-gated.** Above the weekly Fable-bucket ceiling the guard skips. An unknown
+    budget skips too — unknown never authorizes spend.
+  - **The skip lands on Brain (Opus 5.5), never lower.** A guard SKIP or a Fable
+    `stop_reason: "refusal"` returns the task to the Brain tier, never to the Hands
+    lane: the task reached this rung because Sonnet and the hard lane already failed.
   - Every outcome, ALLOW or SKIP, lands in the evidence ledger with its reason.
 
 This is the fix-stage twin of the supervisor's STALL-ALERT effort rung
@@ -436,7 +433,7 @@ If neither trigger fires, skip to **§5b (single-reviewer Pass 1)** unchanged �
 
 ### Fan-Out Roster
 
-Spawn **three parallel reviewers**, each focused on an independent dimension. Use `Agent` calls with `run_in_background: true` and rely on completion notifications (per `shared/opus-4-7-practices.md` §4). Reviewers are **Brain-tier** (`claude-opus-4-8`, e.g. `security-expert`, `code-review-expert`; the pin lives in the agent's frontmatter — **omit** the Agent tool's `model` parameter entirely: its bare `opus` alias resolves to Opus 5, which is forbidden under Model Tiering v7 and denied by the agent-model-guard hook). Reviewers read and report; they do not synthesize. Synthesis is the lead's job.
+Spawn **three parallel reviewers**, each focused on an independent dimension. Use `Agent` calls with `run_in_background: true` and rely on completion notifications (per `shared/opus-4-7-practices.md` §4). Reviewers are **Brain-tier** (`claude-opus-5-5`, e.g. `security-expert`, `code-review-expert`; the pin lives in the agent's frontmatter — **omit** the Agent tool's `model` parameter entirely: an alias overrides the pin, and the bare `opus` alias resolved to the forbidden `claude-opus-5` before CLI 2.1.280 — the agent-model-guard hook denies it there). Reviewers read and report; they do not synthesize. Synthesis is the lead's job.
 
 | Slot | Agent (frontmatter-pinned)             | Focus                                                                                                                                                                            | Skip If                                                                      |
 | ---- | -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
@@ -1041,7 +1038,7 @@ critical_count: 0
 informational_count: 0
 auto_fixed_count: 0
 ask_count: 0
-all_critical_resolved: true
+all_critical_resolved: false   # fail-closed default (GRD/C6): born NOT-passing — set true ONLY after the §5h reconciliation below confirms every Pass-1 CRITICAL is resolved
 access_control_high_unresolved: 0
 ---
 
@@ -1083,9 +1080,11 @@ EOF
 echo "✓ review findings persisted: $FINDINGS"
 ```
 
+**Fail-closed default (GRD/C6)**: the template is born with `all_critical_resolved: false`. This is the load-bearing self-attestation, so its default is the FAILING state: a template that is written and then abandoned (compaction, drift, a worker that never reaches the reconciliation pass) blocks ship rather than silently passing it — "did no review" must never read as "reviewed and clean." Flipping it to `true` is an **affirmative act**: set it to `true` ONLY after the reconciliation pass below confirms every Pass-1 CRITICAL bullet ends in `→ resolved in <commit-sha>` (or `→ DEFERRED (user ack: …)`) AND every count matches the bullets. Counts stay `0` in the template because a clean zero-finding review is the honest common case — but the flip to `true` is still required, so that inaction can never be mistaken for a pass.
+
 **Why persist**: Step 6's `6a. Review Readiness Check` greps this file's frontmatter for `all_critical_resolved: true`. If the file is missing or that flag is `false`, ship blocks. This converts the verbal "review is done" handoff into a re-readable contract.
 
-**What goes in the file**: every Pass-1 CRITICAL bullet, every Pass-2 INFORMATIONAL bullet, every AUTO-FIX line (cross-referenced to `plan-w-team-autofix-$SLUG.md`), and every ASK item with the user's decision. Mark each CRITICAL with its resolution: `→ resolved in <commit-sha>` or `→ DEFERRED (user ack: <reason>)`. If any CRITICAL lacks a resolution marker, set `all_critical_resolved: false` in the frontmatter.
+**What goes in the file**: every Pass-1 CRITICAL bullet, every Pass-2 INFORMATIONAL bullet, every AUTO-FIX line (cross-referenced to `plan-w-team-autofix-$SLUG.md`), and every ASK item with the user's decision. Mark each CRITICAL with its resolution: `→ resolved in <commit-sha>` or `→ DEFERRED (user ack: <reason>)`. The frontmatter's `all_critical_resolved` starts `false` (fail-closed); flip it to `true` ONLY once every CRITICAL carries a resolution marker. Leave it `false` if any CRITICAL still lacks one — the default already blocks ship, so forgetting to reconcile fails safe rather than shipping a blocker.
 
 **Access-control gating key**: set `access_control_high_unresolved` to the count of confirmed high-severity access-control findings (§5d-ter — A01/API1/API3/API5 in the diff's own touched code) that are NOT yet `→ resolved in <commit-sha>`. Unlike a normal CRITICAL, a `→ DEFERRED (user ack: …)` access-control finding **still counts** toward this number — these are non-deferrable. Step 6 §6c-ter reads this key and fails closed (`exit 1`) while it is non-zero, independent of `all_critical_resolved`.
 

@@ -9,8 +9,15 @@
 # singleton refresh and fail-open — the same shape as the sibling plan-usage.sh.
 #
 # Output shape (labels/numbers only — NEVER a token):
-#   {"best":"...","best_email":"...","best_5h":n,"best_7d":n,"current":"...",
-#    "current_email":"...","current_5h":n,"current_7d":n,"switch":bool,"current_hot":bool}
+#   {"need":"any|fable","best":"...","best_email":"...","best_5h":n,"best_7d":n,
+#    "best_scoped":{"Fable":n},"best_scoped_status":{"Fable":"allowed|allowed_warning|rejected"},
+#    "best_scoped_source":"ratelimit-header|plan-usage-sample|unavailable",
+#    "best_scoped_reset":{"Fable":epoch},"fable_next_open":{"label":"...","at_epoch":n}|null,
+#    "reason":"...",  (2.45.0; with NO pick under need=fable: {"need","current_email",
+#    "fable_next_open","fable_wait":"hold|downgrade","recheck_at"} and no "best" key)
+#    "current":"...","current_email":"...","current_5h":n,"current_7d":n,
+#    "current_scoped":{…},"current_scoped_status":{…},"current_scoped_source":"…",
+#    "switch":bool,"current_hot":bool}
 #
 # Why advisory: interactive Claude Code ties account identity (status line, /usage,
 # Remote Control, ~/.claude.json) to the keychain /login — a CLAUDE_CODE_OAUTH_TOKEN
@@ -25,12 +32,17 @@
 # reads a file; the probe runs in its own bounded process group.
 #
 # USAGE
-#   account-advice.sh [<live-login-email>] [--sync]
+#   account-advice.sh [<live-login-email>] [--model=<id>] [--sync]
 #     $1        the caller's LIVE keychain-login email (statusline passes the value
 #               it renders in the 👤 segment). The advisory is login-specific, so a
 #               cache computed for a different login is NEVER served (AC13) — a
 #               `/login` invalidates it the instant it happens. Without $1 the cache
 #               is pure-TTL (backward compatible).
+#     --model=<id>  the session's model (id or display name). A Fable model asks
+#               the producer for `--need fable` (rank on max(5h,7d,Fable), exclude
+#               Fable-rejected accounts); the advisory is then cached in its own
+#               file (`account-advice.fable.json`) so a Fable pane and an Opus pane
+#               on the same machine never serve each other's verdict.
 #     --sync    refresh inline (bounded), then serve — deterministic for tests.
 #
 # ENV
@@ -52,15 +64,17 @@
 
 set -u
 
-LIVE_EMAIL=""; MODE=serve
+LIVE_EMAIL=""; MODE=serve; MODEL_ID=""; NEED=any
 for a in "$@"; do
   case "$a" in
     --sync) MODE=sync ;;
     --refresh) MODE=refresh ;;
+    --model=*) MODEL_ID="${a#--model=}" ;;
     -*) ;;
     *) [ -z "$LIVE_EMAIL" ] && LIVE_EMAIL="$a" ;;
   esac
 done
+case "$MODEL_ID" in *[Ff][Aa][Bb][Ll][Ee]*) NEED=fable ;; esac
 
 PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)}"
 [ -z "$PROJECT_ROOT" ] && { echo '{}'; exit 0; }
@@ -76,6 +90,9 @@ if [ ! -x "$ACCOUNTS_CLI" ]; then
 fi
 
 CACHE="${PWT_ACCT_ADVICE_CACHE:-$HOME/.config/claude-pattern/account-advice.json}"
+# One cache per NEED: a Fable pane's verdict (Fable-rejected accounts excluded)
+# must never be served to an Opus pane, and vice versa.
+[ "$NEED" = "fable" ] && CACHE="${CACHE%.json}.fable.json"
 LOCK="$CACHE.lock"
 CACHE_TTL="${PWT_ACCT_ADVICE_TTL:-120}"
 STALE_CACHE_MAX="${PWT_ACCT_ADVICE_STALE_MAX:-1800}"
@@ -128,8 +145,8 @@ __timeout_bin() {
 __refresh() {  # under the lock; failures leave the cache untouched
   local out tb
   tb=$(__timeout_bin)
-  if [ -n "$tb" ]; then out=$("$tb" "${ADVICE_TIMEOUT}s" bash "$ACCOUNTS_CLI" advise 2>/dev/null) || out=""
-  else out=$(bash "$ACCOUNTS_CLI" advise 2>/dev/null) || out=""; fi
+  if [ -n "$tb" ]; then out=$("$tb" "${ADVICE_TIMEOUT}s" bash "$ACCOUNTS_CLI" advise --need "$NEED" 2>/dev/null) || out=""
+  else out=$(bash "$ACCOUNTS_CLI" advise --need "$NEED" 2>/dev/null) || out=""; fi
   [ -n "$out" ] || return 0
   printf '%s' "$out" | python3 -c 'import json,sys; json.loads(sys.stdin.read())' >/dev/null 2>&1 || return 0
   printf '%s' "$out" > "$CACHE.tmp.$$" 2>/dev/null && mv -f "$CACHE.tmp.$$" "$CACHE" 2>/dev/null
@@ -170,8 +187,8 @@ if __lock; then
   TB=$(__timeout_bin)
   (
     set -m 2>/dev/null
-    if [ -n "$TB" ]; then nohup "$TB" "$(( ADVICE_TIMEOUT + 5 ))s" bash "$0" "$LIVE_EMAIL" --refresh </dev/null >/dev/null 2>&1 &
-    else nohup bash "$0" "$LIVE_EMAIL" --refresh </dev/null >/dev/null 2>&1 & fi
+    if [ -n "$TB" ]; then nohup "$TB" "$(( ADVICE_TIMEOUT + 5 ))s" bash "$0" "$LIVE_EMAIL" "--model=$MODEL_ID" --refresh </dev/null >/dev/null 2>&1 &
+    else nohup bash "$0" "$LIVE_EMAIL" "--model=$MODEL_ID" --refresh </dev/null >/dev/null 2>&1 & fi
   ) 2>/dev/null
 fi
 # A not-too-stale cache for THIS login beats a blank segment while the refresh lands…

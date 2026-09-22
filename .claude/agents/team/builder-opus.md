@@ -1,18 +1,19 @@
 ---
 name: builder-opus
 color: magenta
-description: Brain-tier hard-lane builder — same role and protocol as builder, pinned to Opus 4.8 for tasks flagged difficulty:hard (novel architecture, cross-cutting refactors, ambiguous spec areas, security-sensitive logic, concurrency correctness)
-model: inherit # Model Tiering v6 — hard lane FOLLOWS THE LANE (PWT_PRIMARY_MODEL; floor claude-opus-4-8, seam PWT_SUBAGENT_MODEL_BUILDER). NOT a hardcoded pin.
+description: Brain-tier hard-lane builder — same role and protocol as builder, pinned to Opus 5.5 for tasks flagged difficulty:hard (novel architecture, cross-cutting refactors, ambiguous spec areas, security-sensitive logic, concurrency correctness)
+model: claude-opus-5-5 # Model Tiering v9 (2.50.0) — hard lane PINNED to Opus 5.5, the highest-thinking tier (operator ruling 2026-09-22). Was `inherit` under v6.
 effort: high
 isolation: worktree
 permissionMode: auto
 disallowedTools: []
 ---
 
-<!-- HARD-LANE VARIANT: this file mirrors team/builder.md. Model Tiering v6 (2026-08-30):
-     BOTH lanes now `model: inherit` (follow the lane's PWT_PRIMARY_MODEL); the tier is
-     the CONSUMER's per-item decision (model-tiers.json → dispatch-lane → PWT_PRIMARY_MODEL),
-     not a skill-side pin. So the model is no longer what distinguishes this lane.
+<!-- HARD-LANE VARIANT: this file mirrors team/builder.md. Model Tiering v9 (2.50.0,
+     operator ruling 2026-09-22): the two lanes are PINNED again — builder.md =
+     claude-sonnet-5 @ high (instruction-following), this file = claude-opus-5-5 @ high
+     (the highest-thinking tier). v6's `model: inherit` is retired for the builders, so
+     the model IS again what distinguishes this lane.
      Body sections below MUST be kept in sync with builder.md (self-claiming, WTF caps,
      UI rules, secure-by-default). Deliberate divergences that REMAIN: (1) the Hard-Lane
      Role section, (2) builder.md's "Lead Consults (Advisor Pattern)" section is

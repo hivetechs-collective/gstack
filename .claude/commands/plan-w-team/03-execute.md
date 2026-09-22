@@ -15,7 +15,7 @@
 
 **Opus 4.7/4.8 tips** (read `shared/opus-4-7-practices.md` before spawning):
 
-- §3 **Bounding subagent spawning** (INVERTED on Opus 5): the Brain-tier lead now fans out readily on its own, so your job is to BOUND it, not to push for it. Spawn only when the tracks touch disjoint files, each is more than a handful of tool calls, and the results don't need to be read together. Prefer one builder over several; for tightly-coupled work state "implement sequentially — do not spawn subagents". The batch cap below is a backstop, not a target.
+- §3 **Bounding subagent spawning** (INVERTED since Opus 5, holds on Opus 5.5): the Brain-tier lead now fans out readily on its own, so your job is to BOUND it, not to push for it. Spawn only when the tracks touch disjoint files, each is more than a handful of tool calls, and the results don't need to be read together. Prefer one builder over several; for tightly-coupled work state "implement sequentially — do not spawn subagents". The batch cap below is a backstop, not a target.
 - §4 **Uninterrupted execution + completion hooks**: builders run uninterrupted via the session's `bypassPermissions` default — do NOT pass `mode:` (deprecated and ignored at CLI 2.1.212) — and rely on `desktop-notify.sh` rather than polling.
 - §6 **Delegate outcomes**: give builders the acceptance criteria and files touched, not step-by-step instructions.
 
@@ -41,8 +41,8 @@
 > guidance, not a gate: a justified lead-direct is always legitimate.
 >
 > **`difficulty: hard` under lead-direct**: the task executes on the lead's own
-> Brain-tier session (Opus 4.8), so MODEL routing is not bypassed — but the hard-lane
-> `effort: high` pin does NOT auto-apply to the lead's own turns; raise your own
+> Brain-tier session (Opus 5.5), so MODEL routing is not bypassed — but the hard-lane
+> `effort: xhigh` pin does NOT auto-apply to the lead's own turns; raise your own
 > `/effort` for that task or note why not.
 
 **Default mode is `auto`** — builders execute without permission prompts for uninterrupted implementation. Use `mode: "plan"` only for security-critical work where each builder must submit an implementation plan via ExitPlanMode before coding starts.
@@ -307,19 +307,19 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
      description: "Implement alert rule engine",
      subagent_type: "builder",   // ← REQUIRED: the lane from task metadata
      //   (`builder-opus` when Step 2 flagged `difficulty: hard`)
-     // Model Tiering v6: builder / builder-opus carry `model: inherit`, so they
-     // FOLLOW THE LANE — this worker's model (PWT_PRIMARY_MODEL in an autonomous
-     // run = the consumer's per-item tier). Do NOT set `model:` here by default:
-     // the Agent enum accepts only aliases and the bare `opus` alias resolves to
-     // the FORBIDDEN Opus 5, so passing it would BOTH override the lane AND select
-     // a banned model. The ONLY sanctioned `model:` here is a VALIDATED seam —
+     // Model Tiering v9: builder is PINNED to claude-sonnet-5 and builder-opus to
+     // claude-opus-5-5 (both effort: high) in frontmatter — the subagent_type IS
+     // the model choice. Do NOT set `model:` here by default: the Agent enum
+     // accepts only aliases and the bare `opus` alias drifts with the CLI (Opus
+     // 5.5 from 2.1.280, the FORBIDDEN claude-opus-5 before), so passing it would
+     // override the pin AND may select a banned model. The ONLY sanctioned `model:` here is a VALIDATED seam —
      //   if PWT_SUBAGENT_MODEL_BUILDER is set AND is exactly `sonnet` or `haiku`,
      //   pass it (the consumer wants routine builders below the lane); ANY other
-     //   value (`opus`, `claude-opus-5*`, `fable`, `inherit`, a
-     //   full ID, empty) is REFUSED — omit `model:` and let the inherited lane
+     //   value (`opus`, any `claude-opus-*` ID, `fable`, `inherit`, a
+     //   full ID, empty) is REFUSED — omit `model:` and let the frontmatter pin
      //   stand. `difficulty: hard` tasks arrive as agent_type "builder-opus" —
-     //   dispatch as-is; their model still follows the lane. See the Model Strategy
-     //   table + the v6 generation note in the skill manifest (plan-w-team.md).
+     //   dispatch as-is (Opus 5.5). See the Model Strategy table + the v6 + v9
+     //   generation notes in the skill manifest (plan-w-team.md).
      prompt: "You are rules-builder. Claim tasks from the pool and implement them.
 
      Read `.claude/commands/plan-w-team/shared/self-regulation.md` for WTF-likelihood

@@ -54,7 +54,7 @@ When invoked via the Skill mechanism, the agent should:
 | `--force`               | Run even if no version change                            |
 | `--dry-run`             | Print classification, do not write state/report          |
 | `--since=VERSION`       | Override the "previous" version (e.g. `--since=2.1.139`) |
-| `--to=VERSION`          | Override the "current" version (testing)                 |
+| `--to=VERSION`          | Override the "current" version (testing; never persisted) |
 | `--changelog-file=PATH` | Use a local changelog markdown instead of mirror/fixture |
 | `--allow-fixture`       | Fall through to the bundled test fixture if no source    |
 | `--report-dir=PATH`     | Override report output directory                         |
@@ -78,6 +78,25 @@ A sibling `<basename>.json` file carries the same data in machine-readable form.
 | `candidate-for-adoption`   | Surface matched but no repo probe matched (not yet used in this repo).        | Open a `/plan-w-team` ticket to adopt.           |
 | `not-applicable`           | No integration-point keyword matched (IDE plugins, billing, telemetry, etc.). | Ignore.                                          |
 | `breaking-change-required` | Surface IS in use AND changelog marks `BREAKING`.                             | Schedule a migration `/plan-w-team` immediately. |
+
+## Context-cost gate (before enabling anything)
+
+A changelog entry says what a feature DOES, never what it INJECTS. Re-enabling the Task
+tools (2.1.268, `CLAUDE_CODE_ENABLE_TODO_TOOLS=1`, 2026-09-18) also turned on a
+`task_reminder` attachment that carries the whole shared task list: in cleanscale that was
+969 tasks per reminder, compaction every ~20 min instead of hourly, for three days.
+
+So for every `candidate-for-adoption` or `breaking-change-required` entry that is adopted by
+**enabling** something (env flag, settings key, tool family, MCP server, hook):
+
+1. `.claude/scripts/compaction-health.sh --census` — the baseline, by attachment type.
+2. Enable it; work a normal hour in the busiest repo.
+3. Census again. A NEW row, or a row whose `≈tok/hour` grew, is the feature's standing cost.
+4. Record both tables in the adoption commit / report. If the cost scales with something
+   unbounded (a list, a directory, a log), the adoption ships WITH the bound (retention,
+   cap) — not after the first regression.
+
+Full procedure: `docs/operations/version-uplift.md` → "Context-cost gate".
 
 ## Integration points
 

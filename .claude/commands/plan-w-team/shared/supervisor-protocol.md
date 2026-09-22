@@ -596,7 +596,7 @@ item, **elevate the reasoning budget for the recovery turn** — interleaved-thi
 / `ultrathink` / `/effort xhigh` — rather than retrying at default effort.
 (Pin caveat, skill 1.52.3: `/effort xhigh` raises YOUR turn only — pinned team
 subagents (builder, builder-opus, evaluator, validator, silent-failure-hunter)
-keep `effort: high`; `ultrathink` in a re-spawn prompt deepens thinking within
+keep `effort: high` (v9, 2026-09-22); `ultrathink` in a re-spawn prompt deepens thinking within
 that pin. The effective per-task escalation for a re-spawn is the model bump —
 hard-lane re-dispatch per 04-fix-first REQ-3.) Trade
 tokens for depth in place. This is the bg-autonomous equivalent of "an operator

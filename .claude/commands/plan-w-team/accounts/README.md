@@ -90,8 +90,8 @@ refuses to load on loose perms or a symlink. `accounts.sh` refuses to mint a tok
 | `accounts.sh`      | operator CLI (headless, bash 3.2) — the only entry point you run             |
 | `lib.sh`           | shared shell helpers (path/perms/dormancy/python resolution)                 |
 | `registry.py`      | durable identity store (`accounts.json`, `0600`, `flock`, `O_NOFOLLOW`)      |
-| `probe.py`         | usage measurement (rate-limit header parse + fail-open cache + model-scoped weekly gauge from `plan-usage.sh` samples) |
-| `selector.py`      | pure lowest-`max(5h%,7d%)` selection with pinning + rotation                 |
+| `probe.py`         | usage measurement: one `max_tokens:1` Fable-model probe per account per TTL → 5h/7d + per-window statuses + the LIVE Fable weekly bucket (`7d_oi-*`, `scoped_source: ratelimit-header`); window-checked `plan-usage.sh` sample fallback; `limited_until` on a rejected window; prev-sample burn fields; fail-open cache v2 |
+| `selector.py`      | pure lowest-`max(5h%,7d%)` selection with pinning + rotation; `--model`/`--need fable` ranks on `max(5h,7d,Fable)` and excludes Fable-rejected accounts |
 | `import_stores.py` | discover/validate/bulk-register saved tokens; `secrets.env` source; scaffold |
 | `lane_cred.py`     | spawn-time per-lane token writer (`settings.local.json` env block)           |
 | `session_cred.py`  | interactive helpers: `advise` (status-line nudge), `which-account`, `launch` |
@@ -100,3 +100,23 @@ refuses to load on loose perms or a symlink. `accounts.sh` refuses to mint a tok
 Full operator procedure and the Phase-2 design:
 [`docs/operations/pwt-multi-account-onboarding-and-phase2.md`](../../../../docs/operations/pwt-multi-account-onboarding-and-phase2.md).
 Test coverage: `tests/skill/cases/pwt-accounts.bats` (AC1–AC13, 54 cases).
+
+## Reset-aware selection (2.45.0)
+
+The selector looks FORWARD, not only at current headroom. Design agreed with the
+cleanscale governor session (cleanscale #5266); the governor keeps its own logic in
+`account-forest.sh` and reads the same `usage-cache.json` fields. Every rule is additive,
+has its own switch, and fails open to the plain "lowest max(5h,7d[,Fable])" ranking on a
+missing or stale field. None can admit an account the HOLD/limit exclusions rejected, and a
+Fable-shut account stays eligible for `need=any`.
+
+| Rule | What it does | Knobs |
+| --- | --- | --- |
+| R1 expose | Every `classify` result and `advise` answer carries `fable_next_open` = `{label, at_epoch}`, the earliest future Fable reset among Fable-shut accounts. `advise` also carries `best_scoped_reset` / `current_scoped_reset` and the selector `reason`. | — |
+| R2 hold or downgrade | `need=fable` with nothing eligible: `fable_wait` = `hold` when the opening is near, else `downgrade`, plus `recheck_at`. Advisory only. | `PWT_ACCT_FABLE_HOLD_MIN` (45) |
+| R3 use it or lose it | Weekly headroom (7d; Fable too under `need=fable`) expiring inside the horizon earns a bounded bonus off the rank score: `headroom × (1 − left/horizon) × 0.25`, capped. The 5h window never earns it. | `PWT_ACCT_EXPIRY_HORIZON_H` (12), `PWT_ACCT_EXPIRY_BONUS_MAX` (15), off: `PWT_ACCT_DISABLE_EXPIRY_BONUS=1` |
+| R5 projection | A window whose `*_burn_ppm` carries it to `HOLD_HARD` within the lookahead, and before it resets, sorts with the soft-penalized tier. Still picked when it is the only account. | `PWT_ACCT_PROJECT_MIN` (45), off: `PWT_ACCT_DISABLE_PROJECTION=1` |
+| R4 Fable reserve | DEFAULT OFF. Under `need=any`, when exactly one eligible account has Fable headroom and its Fable reset is known and beyond the horizon, it sorts after the other unpenalized accounts. Never when it is the only unpenalized account. | on: `PWT_ACCT_FABLE_RESERVE=1` |
+
+The winning `reason` names the rules that fired: `[expiry-bonus 12.5]`, `[projected-hot]`,
+`[soft-penalized]`.

@@ -7,7 +7,7 @@ description: |
   design test strategies, or improve test coverage. Specializes in Jest, pytest,
   JUnit, test design patterns, and property-based testing. Examples:
 color: green
-model: claude-opus-4-8
+model: claude-opus-5-5
 context: fork
 sdk_utilization: 60%
 sdk_features:

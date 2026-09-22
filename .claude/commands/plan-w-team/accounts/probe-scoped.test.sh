@@ -62,18 +62,18 @@ os.remove(os.path.join(os.environ["PLAN_USAGE_CACHE_DIR"],"bbbb.json")); os.remo
 gs={g["label"]:g for g in probe.resolve_usage(reg,ttl=0,transport=hdr)}
 print(gs["knox"].get("scoped"), bool(gs["knox"].get("scoped_at")))
 c=json.load(open(probe.resolve_cache_path())); print(c["gauges"]["knox"]["scoped"], "sk-ant" in open(probe.resolve_cache_path()).read())')
-[ "$r" = "{'Fable': 86.0} {'Fable': 34.0} None False False
+[ "$r" = "{'Fable': 86.0} {'Fable': 34.0} {} False False
 {'Fable': 86.0} True
-{'Fable': 86.0} False" ] && ok "resolve_usage: scoped attached per account, retained from cache when the sample is gone, cache token-free" || bad "resolve_usage scoped" "$r"
+{'Fable': 86.0} False" ] && ok "resolve_usage: scoped attached per account ({} when none), retained from cache when the sample is gone, cache token-free" || bad "resolve_usage scoped" "$r"
 # 5. status table: FABLE% column after 7d%, '?' when absent, '-' for deactivated, age tag past PWT_ACCT_SCOPED_TTL
 sample bbbb knox@example.com $((NOW-60)) 86
 export PWT_ACCT_USAGE_TTL=99999   # gauges above are fresh in the cache ⇒ no header probe (no network)
 OUT=$(bash ./accounts.sh status 2>&1); rc=$?
-echo "$OUT" | grep -q '^PIN  LABEL  *EMAIL  *5h%  *7d%  *FABLE%  *WINDOW' && ok "status header: FABLE% column sits after 7d%" || bad "status header" "$OUT"
-echo "$OUT" | grep -E '^\*  *knox  .*  86\.0  +-  ' >/dev/null && ok "status row: knox shows a fresh Fable 86.0 with no age tag" || bad "knox row" "$OUT"
-echo "$OUT" | grep -E '^ +ministry  .*  34\.0 ~1d2h  +-  ' >/dev/null && ok "status row: a 26h-old sample is shown tagged ~1d2h" || bad "ministry age tag" "$OUT"
-echo "$OUT" | grep -E '^ +ops  .*  \?  +-  ' >/dev/null && ok "status row: no sample ⇒ ?" || bad "ops ? cell" "$OUT"
-echo "$OUT" | grep -E '^ +old  .*  -  +-  +-  +-  +-  +deactivated' >/dev/null && ok "status row: deactivated pads the scoped column with -" || bad "deactivated row" "$OUT"
+echo "$OUT" | grep -q '^PIN  LABEL  *EMAIL  *5h%  *7d%  *FABLE%  *FABLE-ST  *FABLE-RESET  *WINDOW' && ok "status header: FABLE% + FABLE-ST + FABLE-RESET columns sit after 7d%" || bad "status header" "$OUT"
+echo "$OUT" | grep -E '^\*  *knox  .*  86\.0  +sample  +-  ' >/dev/null && ok "status row: knox shows a fresh Fable 86.0 (sample-sourced) with no age tag" || bad "knox row" "$OUT"
+echo "$OUT" | grep -E '^ +ministry  .*  34\.0 ~1d2h  +sample  +-  ' >/dev/null && ok "status row: a 26h-old sample is shown tagged ~1d2h" || bad "ministry age tag" "$OUT"
+echo "$OUT" | grep -E '^ +ops  .*  \?  +-  +-  +-  ' >/dev/null && ok "status row: no sample ⇒ ?" || bad "ops ? cell" "$OUT"
+echo "$OUT" | grep -E '^ +old  .*  -  +-  +-  +-  +-  +-  +-  +deactivated' >/dev/null && ok "status row: deactivated pads the scoped column with -" || bad "deactivated row" "$OUT"
 echo "$OUT" | grep -q 'sk-ant' && bad "status leaks a token" || ok "status output carries no token"
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ $FAIL -eq 0 ] || { printf '  - %s\n' "${NOTES[@]}"; exit 1; }

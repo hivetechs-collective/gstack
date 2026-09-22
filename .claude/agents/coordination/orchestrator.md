@@ -9,7 +9,7 @@ description: |
   Use this agent when you have complex, multi-faceted goals that require coordination
   between multiple specialist agents working simultaneously. Coordinates the full
   roster of spawnable specialists across modern tech stacks. Examples:
-model: claude-opus-4-8
+model: claude-opus-5-5
 
 # ============================================================================
 # TOOL CONFIGURATION
@@ -328,7 +328,7 @@ this file coordinates.
 | `evaluator`             | Read-only; tests output against acceptance criteria |
 | `validator`             | Read-only code inspector                            |
 | `silent-failure-hunter` | Read-only; Pass-1 reviewer slot                     |
-| `fable-spec-consult`    | Read-only spec consult — the one Fable pin          |
+| `fable-spec-consult`    | Read-only spec consult (Opus 5.5; name historical)  |
 
 ### Mechanical (3, Haiku-pinned + write-denied)
 
@@ -416,7 +416,7 @@ Spawn a named agent when — and only when — you need one of these four things
 2. **A binding tool restriction** — read-only auditors, or the narrow
    `tools: Read,Write` writers (`stagehand-expert`, `ui-designer`).
 3. **A model or effort pin** — the `builder` / `builder-opus` lanes, the Haiku
-   mechanical tier, the one Fable consult.
+   mechanical tier, the Opus 5.5 judges and spec consult.
 4. **A synced spawn mandate** — a slot a stage file names by hand.
 
 If none of the four applies, it is a skill, and it is already loaded.

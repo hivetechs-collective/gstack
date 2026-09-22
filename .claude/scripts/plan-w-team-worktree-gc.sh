@@ -1308,6 +1308,21 @@ if [ "$MODE_EXECUTE" = "1" ]; then
     git -C "$MAIN_CHECKOUT" worktree prune 2>/dev/null || true
 fi
 
+# ─── expire old preserve-then-reap backups ────────────────────────────────
+# `preserve_then_reap` writes to .claude/state/hygiene-backups/ and nothing else ever
+# removed them (32 backups / 890 MB in eight days on one host, 2026-09-21). Periodic sweep
+# only — a per-merge or per-subagent run has no business expiring anything — and it follows
+# this run's own mode: dry-run reports, --execute removes. Output goes to stderr so --json
+# stays parseable. Retention rule + invariants: plan-w-team-hygiene-backup-prune.sh.
+HYGIENE_BACKUP_PRUNE="$GC_SCRIPT_DIR/plan-w-team-hygiene-backup-prune.sh"
+if [ "$SCOPE_KIND" = "all" ] && [ "$MODE_INTERACTIVE" = "0" ] && [ -x "$HYGIENE_BACKUP_PRUNE" ]; then
+    if [ "$MODE_EXECUTE" = "1" ]; then
+        "$HYGIENE_BACKUP_PRUNE" --root "$MAIN_CHECKOUT" --execute >&2 || true
+    else
+        "$HYGIENE_BACKUP_PRUNE" --root "$MAIN_CHECKOUT" >&2 || true
+    fi
+fi
+
 # ─── export totals/context for the JSON serializer (MUST precede output) ──
 export MAIN_CHECKOUT WORKTREES_DIR DEFAULT_BRANCH MERGE_SOURCE GH_AVAILABLE \
     MODE_EXECUTE MODE_INTERACTIVE MODE_ORPHANS_OK SCOPE_KIND SCOPE_SID SCOPE_BRANCH \

@@ -10,7 +10,7 @@
 #   --force                  Run even if version unchanged.
 #   --dry-run                Do not write state or report; emit to stdout only.
 #   --since=VERSION          Override "previous" version detection.
-#   --to=VERSION             Override "current" version detection.
+#   --to=VERSION             Override "current" version detection (never persisted).
 #   --changelog-file=PATH    Use a local changelog file instead of mirror/fixture.
 #   --allow-fixture          Allow fall-through to bundled test fixture.
 #   --report-dir=PATH        Override report output directory.
@@ -79,7 +79,12 @@ done
 DETECT_ARGS=()
 [ "$FORCE" -eq 1 ] && DETECT_ARGS+=(--force)
 [ "$DRY_RUN" -eq 1 ] && DETECT_ARGS+=(--no-persist)
-[ -n "$TO" ] && DETECT_ARGS+=(--mock-current="$TO")
+# --to= replaces the INSTALLED version with a replay/testing value, so it must never
+# persist: the marker (.claude/state/last-claude-version.json) records what the CLI
+# really is. Before this, tests/version-uplift TP-6 (`--to=2.1.148`, run from the
+# real checkout) rewound the marker on every suite run, and the next session start
+# "detected" 2.1.148→current and wrote a whole-history report into docs/ (2026-09-22).
+[ -n "$TO" ] && DETECT_ARGS+=(--mock-current="$TO" --no-persist)
 
 DETECTION=$("$DETECT" "${DETECT_ARGS[@]}")
 log "detect: $DETECTION"
@@ -97,6 +102,14 @@ fi
 if [ "$CHANGED" != "true" ]; then
     log "uplift: version unchanged ($CURRENT). Pass --force to regenerate."
     exit 0
+fi
+
+# A forced run whose range collapsed to current→current evaluates nothing. Say so
+# on stderr (never suppressed by --quiet) — this is the shape the session-start
+# chain produced when it ran uplift AFTER detect had persisted the new version.
+if [ "$PREVIOUS" = "$CURRENT" ] && [ -z "$SINCE" ]; then
+    printf 'uplift: WARNING empty changelog range (%s→%s) — pass --since=<last-evaluated-version> to cover the versions in between\n' \
+        "$PREVIOUS" "$CURRENT" >&2
 fi
 
 # --- Step 2: fetch changelog ---

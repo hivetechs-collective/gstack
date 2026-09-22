@@ -14,6 +14,368 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.50.0] — 2026-09-22 (feat: Model Tiering v8→v9 — Opus 5.5 rollover, then tiers by thinking depth: Opus 5.5 @ high / Sonnet 5 / Haiku; Fable retired; fallback chain 5.5 → 4.8 → Sonnet 5; CLI 2.1.280 uplift) (PENDING_SHA)
+
+**Release history (read first).** Model Tiering v8 was committed locally as `2.49.0` (520b0bd)
+but never pushed; origin meanwhile shipped an unrelated `2.49.0` (9393dc9, Step 5/6
+self-attestation hardening). The identical VERSION string auto-merged, so v8 is folded into
+this release instead. Its `xhigh` effort default never reached a consumer — v9's `high` is
+the first effort change the fleet sees.
+
+Operator ruling 2026-09-22 (supersedes the same-day v8 xhigh order): "we are going to use
+Opus 5.5 on high for all automated sessions that need the highest level of thinking effort
+... Opus 5.5 for the highest thinking, then Sonnet 5 for medium thinking, and then Haiku for
+no thinking. And Opus 5.5 will only be set to high on automated effort." Interactive CLI
+sessions are the operator's own override (Ultra Code). No Fable anywhere, fallbacks included;
+the availability chain matches cleanscale #6254.
+
+- **Every lane pinned again (v6 `model: inherit` reversed).** Hands (routine,
+  instruction-following) = `claude-sonnet-5`: `builder`, `react-typescript-specialist`,
+  `rust-backend-specialist`. Brain = `claude-opus-5-5`: `builder-opus` (hard lane),
+  `silent-failure-hunter`, `test-gap-analyzer`, `security-gap-analyzer`, the evaluator /
+  validator / supervisor floor, and the design agents (`system-architect`, `ui-designer`,
+  `style-theme-expert`). Mechanical stays `haiku`. No agent inherits: an Opus bg session no
+  longer carries its model onto the Hands lane.
+- **Effort `high` for automated work.** Every pipeline frontmatter pin `xhigh` → `high`; bg
+  `PWT_BG_EFFORT` default → `high` (argv + daemon env refresh; precedence `PWT_BG_EFFORT` →
+  `CLAUDE_CODE_EFFORT_LEVEL` → `high`). Settings snapshot: `effortLevel: high` plus
+  `modelSettings.claude-opus-5-5.effortLevel: high`.
+- **Fallback chain resolved, never hardcoded.** New `pwt_fallback_model` (pwt-governor-lib.sh):
+  `claude-opus-5-5` (incl. `[1m]`) → `claude-opus-4-8,claude-sonnet-5`; any other primary →
+  itself; an explicit `PWT_FALLBACK_MODEL` naming Fable or the forbidden `claude-opus-5` is
+  refused with a warning and the default chain is used. `pwt-goal.sh` + `pwt-steer.sh` resolve
+  it AFTER the governed override so the chain follows the final primary. `--fallback-model`
+  fires only on overload/unavailability, never on rate limits. Opus 4.8 is an availability
+  step-down only — the governor still refuses it as the intelligent primary.
+- **Fable retired.** `fable-spec-consult` (name historical — renaming would add a
+  retired-paths delete in every consumer) runs on `claude-opus-5-5` @ `high` and is spawned by
+  §1b-pre's `RUN_FANOUT` with no guard call. The Step-5 Fable fix rung is gone: Opus 5.5 tops
+  the ladder, then hard-gate / human escalation. `plan-w-team-fable-guard.sh` SKIPs every call
+  with `reason=fable-retired-v9` unless `PLAN_W_TEAM_FABLE_REENABLE=1` (the dormant rollback;
+  v3's gating tests pin that path). Governor design tier: default `claude-opus-5-5`, allow-list
+  `claude-opus-5-5|claude-sonnet-5|claude-haiku-4-5` (Fable refused).
+- **Operator shell.** `claude-pattern.zsh` lead model `CP_LEAD_MODEL` → `claude-opus-5-5` (the
+  one-lead-per-host lock and lead window stand; lock var name kept). `operator-shell-setup.sh`
+  seeds the full ordered `fallbackModel` chain, and `--unattended` now pins the LEAD (v7 pinned
+  the fallback tier, which under v9 would be Opus 4.8); a leftover Fable lead lands on Opus 5.5.
+- **Tests.** New `model-tiering-v9.bats` (14 guards: no Fable pin, no inherit, per-tier pins,
+  effort high, resolver CALLED incl. refusals, call sites, guard retired by default, governor
+  design tier, shell + snapshot, unattended model). v2/v3/v5/v8, governor-budget,
+  claude-launcher-wrapper, plugin-integration, the two gap-analyzer scenarios,
+  operator-shell-setup and pwt-steer realigned to v9; v8's two xhigh tests moved to v9 as high.
+- **Residuals (not changed here).** The plan-usage / accounts Fable quota probes stay — they
+  MEASURE the Fable weekly bucket (1-token header probe), they do not spawn work. The
+  session-level `fallbackModel` chain is shared by that session's subagents.
+
+**Model Tiering v8 (the Opus 5.5 rollover, carried forward).** Operator orders 2026-09-22:
+replace every underpinned Opus 4.8 with Opus 5.5; "There should no longer be a ban on Opus 5.5".
+Uplift report: `docs/operations/version-uplift-reports/2026-09-22-2.1.280.md`.
+
+- **Brain floor `claude-opus-4-8` → `claude-opus-5-5`** in every ACTIVE site: evaluator /
+  validator / supervisor + Brain-tier reviewer frontmatter, the `pwt-goal.sh` + `pwt-steer.sh`
+  `PWT_PRIMARY_MODEL` defaults, `pwt-governor-lib.sh` intelligent default + allow-list
+  (`claude-opus-5-5|claude-sonnet-5|claude-haiku-4-5` — 4.8 dropped as a primary), the
+  rate-limit-resume step-down rung, `claude-pattern.zsh` `CP_NONLEAD_MODEL`, agent/skill
+  templates, the `/create-agent` default.
+- **Opus 5 ban narrowed to the exact id `claude-opus-5`**, never a `claude-opus-5*` glob (it
+  would catch `claude-opus-5-5`). Two v5 negative guards (v5-4 agent sweep, v5-6 corpus sweep)
+  were prefix matches and are now exact-terminated.
+- **Doctrine**: manifest Model Strategy + v8 generation note, 03-execute / 04-fix-first /
+  agent-roster / gotchas G4 / governance-tags / supervisor-protocol; `opus-4-7-practices.md`
+  gains an Opus 5.5 banner (breaking + behavioral deltas: thinking cannot be disabled, forced
+  `tool_choice` returns 400, unattended end-turn progress reports match the evaluator's
+  text-only-end_turn-is-not-done rule).
+- **CLI 2.1.280**: the bare `opus` alias now resolves to `claude-opus-5-5` (older CLIs → the
+  forbidden `claude-opus-5`), so the Agent-call seams still refuse the alias; `TaskOutput`
+  removed. Uplift auto-detect fix: session-start passes `--since=<last-evaluated>` and
+  `uplift.sh` warns on an empty current→current range (end-to-end bats AC4/4b/4c).
+- **Tests**: `tests/skill/cases/model-tiering-v8.bats` (no active 4.8 pin/default, exact Opus 5
+  ban, no ban glob catches 5.5, governor CALLED accepts 5.5 and refuses 4.8/opus-5).
+
+**Fixes found while landing this release.**
+
+- **`uplift.sh --to=` never persists.** `--to` replaces the installed version with a
+  replay/testing value, so it now implies `--no-persist`. Before this, tests/version-uplift
+  TP-6 (`--to=2.1.148`, run from the real checkout) rewound
+  `.claude/state/last-claude-version.json` on every suite run, and the next session start
+  "detected" 2.1.148→current and wrote a whole-history report (1.1 MB JSON / 843 KB md) into
+  `docs/`. New TP-6.e asserts the real marker is byte-identical after the run (negative
+  control: fails on the old code). The 2.1.280 report is regenerated from the real delta
+  (2.1.277 / 2.1.278 / 2.1.280: 31 already-adopted, 172 not-applicable, 0 candidate, 0
+  breaking).
+- **Suite ratchets.** The operator-shell-setup fixture uses the bare `fable` alias (same
+  `claude-fable*|fable*` arm) so the fable-fanout sweep stays clean; the two re-pinned
+  gap-analyzer scenario tests carry BDD names and their stale r10 legacy-allowlist lines are
+  removed.
+- **`plan-usage.test.sh` load flake (root cause in the test).** Step 8 stamped history rows
+  with the test's own `date +%s` while the helper stamped its sample with a later one, so the
+  ETA came back 1202 s instead of 1200 s whenever a second boundary fell between them (~5 % of
+  lone runs, more under full-suite load; it turned the 2.50.0 gate run red). Step 8 now runs on
+  an injected clock (a `date` shim answering a pinned far-from-real epoch, so a helper that
+  stops honoring it fails loudly, never intermittently). Also hermetic against an ambient
+  `CLAUDE_CODE_OAUTH_TOKEN` (fleet/bg sessions): unset in every helper call — it deterministically
+  failed 20 assertions there and sent the real token to curl.
+
+## [2.49.0] — 2026-09-22 (fix: Step 5/6 self-attestation hardening — fail-closed §5h findings template + C6-compliant §6a message that no longer teaches its own bypass) (9393dc9)
+
+Closes recursive-followups row 26 (`pwt-grounding-eval` residual #3, deep-evaluation
+2026-07-02): the review→ship handoff rests on one self-attested artifact
+(`plan-w-team-review-findings-$SLUG.md`, key `all_critical_resolved`), and two sites made
+that attestation forgeable by a worker under pressure. Both are the C6 class — "gates that
+teach their own bypasses" / "a blocked autonomous worker is not handed its own escape hatch"
+(`shared/grounding.md`). → `docs/operations/pwt-grounding-evaluation-2026-07-02.md`.
+
+- **§5h review-findings template is now born fail-closed** (`04-fix-first-review.md`): the
+  heredoc initializes `all_critical_resolved: false`, not `true`. A template written and
+  then abandoned (compaction, drift, a worker that never reaches the reconciliation pass)
+  now BLOCKS ship instead of silently passing it — "did no review" is no longer
+  byte-indistinguishable from "reviewed and clean." Flipping to `true` is an affirmative
+  act, set only after the reconciliation pass confirms every Pass-1 CRITICAL carries a
+  resolution marker. Counts stay `0` (a clean zero-finding review is the honest common
+  case; the boolean is the gate). Prose reframed from downgrade-to-false to upgrade-to-true.
+- **§6a missing-file failure message no longer teaches the bypass** (`05-ship.md`): the
+  blocked-worker echo previously read "write the file by hand and set all_critical_resolved:
+  true." That incantation is removed. The only remedy the echo now names is the real one —
+  run Step 5 (fix-first review) — and it states plainly that hand-authoring a green file
+  ships unreviewed code. The genuine operator-owned review-waiver capability is unchanged
+  (§6c-ter back-compat), but per C6 its procedure is intentionally not scripted in the echo.
+- **New lock test** `tests/skill/cases/self-attestation-hardening.bats` (4 prose invariants)
+  pins both — enforcement/self-bypass drift is a documented regrowth class, so detection is
+  deterministic, not LLM-only.
+- **Incidental deflake** (`tests/skill/cases/statusline-segments.bats`): two `cache:` tests
+  pinned exact time boundaries (`NOW-30`→"30s ago"; `NOW+120`→"cold in 2m") that flip on a
+  single second of clock drift between fixture capture and the script's own clock read —
+  latent flakes this run's slow shell exposed. Moved both fixtures into the middle of their
+  60s-wide render bucket (test-only; production `statusline.sh` untouched; each test's intent
+  preserved). Per the standing "fix flaky immediately, never advance past red" rule.
+
+## [2.48.0] — 2026-09-21 (fix: hygiene-backups retention — preserve-then-reap backups expire by age + size ceiling; nothing ever pruned them) (a5fb868)
+
+Reported by the cleanscale lead session: `preserve_then_reap` writes
+`.claude/state/hygiene-backups/<worktree>-<ts>.patch|.files/|.manifest.txt` before a forced
+worktree removal and NOTHING expired them — 32 backups / 890 MB in eight days on one host,
+and a stale copy of a consumer script inside a `.files/` tree was picked up by that repo's
+lint and turned its default branch red for ~45 min. → `docs/operations/worktree-lifecycle.md`.
+
+- **New `plan-w-team-hygiene-backup-prune.sh`**, called by `plan-w-team-worktree-gc.sh` under
+  `--scope all` only (never a per-merge / per-subagent run, never `--interactive`), following
+  the run's own mode: dry-run reports, `--execute` removes; stderr only, so `--json` stays
+  parseable. AGE: older than `PWT_HYGIENE_BACKUP_KEEP_DAYS` (14). SIZE: while the directory
+  exceeds `PWT_HYGIENE_BACKUP_MAX_MB` (1024) the oldest go first, never below
+  `PWT_HYGIENE_BACKUP_MIN_KEEP_HOURS` (48); an unmet ceiling is reported even with `--quiet`.
+  "Old" needs the name's UTC stamp AND every mtime in the backup to agree; a backup's
+  patch + files + manifest expire as one unit. Kill switch `PWT_DISABLE_HYGIENE_BACKUP_PRUNE=1`.
+- **Deliberately NOT a retention signal: "the lane's PR merged"** (the requested rule). A
+  backup exists BECAUSE its content was never committed, so a merge says nothing about it.
+- **Every uncertainty is a KEEP.** Only direct, backup-shaped, non-symlink children of a
+  `hygiene-backups` dir whose realpath is exactly `<root>/.claude/state/hygiene-backups` (a
+  symlinked leaf OR parent is refused outright); near-miss / unparseable names are counted and
+  left; python3 missing, a crashing python3, NaN / negative / non-numeric env → nothing
+  removed; always exits 0 with empty stdout.
+- **Security review (read-only `security-expert`; a new unattended delete capability in every
+  consumer): APPROVE WITH CHANGES, all three applied.** MEDIUM (the only wrong-DELETE) —
+  `KEEP_DAYS=0` + `MIN_KEEP_HOURS=0` made the floor 0, so the prune could expire the backup the
+  SAME GC run had just written, turning preserve-then-reap into plain reap while the header
+  promised otherwise → the floor has a HARD minimum of 1 h (a smaller value is raised, and
+  said so). LOW — `cp -p` preserves source mtimes into `.files/`, so one future-dated file made
+  a backup immortal against both rules → a future mtime INSIDE a tree is ignored as evidence
+  (a future NAME / top-level mtime still reads as young → KEEP). INFO — `shutil.rmtree`'s
+  symlink-attack resistance was assumed → `avoids_symlink_attacks` is asserted; if False,
+  directory backups are kept. Ruled out with reasoning: rmtree escape via in-tree or swapped-in
+  symlinks, realpath bypass (`..`, trailing slash, symlinked root, APFS case), greedy-regex
+  mis-grouping, NaN/inf env, empty `MAIN_CHECKOUT`, stdout pollution / non-zero exit.
+- **Tests:** `plan-w-team-hygiene-backup-prune.test.sh` 52 (P1–P8: dry-run default, unit
+  expiry, both-clocks, ceiling + floor + hard minimum, never-touched set incl. symlink entry
+  and in-tree symlink, redirected dir refused, fail-closed inputs + crashing python, GC wiring
+  + writer/parser timestamp-format pin). Unchanged and green: worktree-gc 146, gc-shipped 15,
+  on-merge 74, dirty-ignore-lib 66. Sync allowlist lines added for both new files.
+
+## [2.47.0] — 2026-09-21 (fix: compaction regression hardening — linear janitor (397 s → 2 s), non-blocking SessionStart, shared task-list retention + cap, compaction-health alarm + context census, uplift context-cost gate) (bc7ef5f)
+
+Incident (cleanscale, 2026-09-18 → 09-21): a lead session compacted every 18–22 min instead
+of hourly and sat 6–10 min in "Running SessionStart hooks…" after each compaction, for three
+days. Two causes, both ordinary growth crossing a cliff: the never-pruned SHARED task list
+(969 tasks in every `task_reminder` once 2.1.268's `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` went
+fleet-wide) and this skill's stale-state janitor, quadratic and run INLINE by
+`session-start.sh` — which also fires on `source=compact`. cleanscale hot-fixed its own copy
+(#5989, #5991); this release is the upstream root-cause fix plus the guards that keep it fixed.
+→ `docs/operations/compaction-health.md`.
+
+- **Janitor PASS 2 is one scan, not families × entries.** `__family_newest_mtime` rescanned
+  the state dir once per candidate family with ≥3 forks per file (`basename`,
+  `$(__slug_of_file)`, `$(__longest_reap_prefix)`): ~85 families × 1,356 entries ≈ 350K forks
+  = 397 s to reap nothing. Now: fork-free `_v` cores, ONE directory walk → temp index, ONE
+  batched `stat`, an awk join → newest-mtime per family. Verdicts are unchanged — old and new
+  run back to back on one copy of cleanscale's state dir: 101 identical lines, 15
+  would-remove, 466 s vs 2 s. Fail-CLOSED additions: a member name with a tab/newline keeps
+  its whole family; no temp dir / unindexable state path reaps nothing; every path is
+  re-attributed to its slug and re-checked as a direct child of the state dir at delete time.
+- **Step-5 security review of the janitor diff (governance-forced; read-only `security-expert`):
+  APPROVE WITH CHANGES, both applied.** MEDIUM — the mtime temp file was a name DERIVED from
+  the mktemp'd index and opened with a plain `>`; in a shared `$TMPDIR` a pre-planted
+  symlink/file could feed spoofed mtimes to the headless arm (the one arm with no second
+  liveness check) → both files now live in one `mktemp -d` (0700) directory, symlink-checked.
+  LOW — `awk … | sort` let sort's 0 mask an awk failure (still fail-closed, but the function
+  lied about it) → awk's status is checked on its own; a missing mtime file skips the pass.
+  Coverage gap — the delete-time re-attribution guard had no adversarial test → S5 drives
+  `__reap_family` (lifted verbatim from the script) with a poisoned index: 8 lines, 1 honest,
+  exactly 1 deletion. Ruled out with reasoning: path traversal, tab/newline/glob names,
+  xargs/stat and awk injection, `_v` global leakage, trap interaction, BSD/GNU stat.
+- **SessionStart never blocks on hygiene.** The janitor call is `nohup … &` like its
+  siblings; all 5 SessionStart hooks in `settings.json` carry an explicit `timeout`
+  (≤ 120 s; the default ceiling is 600 s). This repo's own post-compaction
+  `session-start.sh`: 60.9 s → 3.0 s.
+- **`task-list-retention.sh` (new)** — bounds the shared per-repo task list. ARCHIVES, never
+  deletes (`~/.claude/tasks-archive/<list>/<date>/{completed,stale-open,over-cap}/`):
+  completed untouched 2 d, open untouched 30 d, then oldest completed down to a cap of 150.
+  Never moves `.highwatermark`/`.lock`, the highest-id task, a blocker a kept open task still
+  names, anything unparseable / non-regular; never moves live open work to meet the cap
+  (reports it instead); refuses climbing list ids and `session-*` lists. Detached from
+  session start. Kill switch `PWT_DISABLE_TASK_LIST_RETENTION=1`.
+- **`compaction-health.sh` (new)** — the alarm that was missing. Read-only over this
+  project's transcripts (tail-bounded: a lead transcript reaches 1 GB): C1 > 3 compactions in
+  a rolling hour · C2 `SessionStart:compact` hook > 30 s · C3 `task_reminder` > 150 items ·
+  C4 context on the first call after a compaction > 110K (NOT `postTokens`, which is only
+  the summary; healthy 77–82K, regressed 120–130K) · C5 `.claude/state` > 3000 entries.
+  Scan is detached; session start only `cat`s the banner the previous scan left, which exists
+  only while alarming. Replayed on cleanscale it raises C1–C4 for the regression window and
+  nothing after the fix. `--census` writes nothing and ranks what is injected into context by
+  attachment type. Kill switch `PWT_DISABLE_COMPACTION_HEALTH=1`.
+- **version-uplift: context-cost gate.** Report "Next Steps" §5, SKILL.md and
+  `docs/operations/version-uplift.md`: nothing from an uplift report is ENABLED without a
+  before/after `--census`, and a cost that scales with something unbounded ships with its
+  bound. (The census over cleanscale's regressed day: `task_reminder` ≈ 76K tokens/hour, 3×
+  the next row.)
+- **Deliberately not done** (rationale in the ops doc): auto-archiving
+  `plan-w-team-directive-*` (content-addressed + reused, not named by the goal-state → a
+  dangling-pointer risk for ~2 MB), and a per-run task-list id for bg lanes (a run-contract
+  change behind the launch-env parity harness, not a hygiene fix).
+- Known follow-up, NOT changed here: `pwt-lane-alive-memo-<slug>.json` is not in the
+  janitor's reap set, so it outlives its reaped family (cleanscale: 83). Adding a reap prefix
+  widens a delete capability and is its own governed change.
+- Tests: `plan-w-team-cleanup-scale.test.sh` (38: 1,614-entry fixture, 60 s budget — 5–6 s
+  observed at load ~47 —, static pins against the per-file forks, fail-closed cases,
+  poisoned-index re-attribution, private-temp pins);
+  `session-start-nonblocking.test.sh` (7; negative control fails on HEAD~);
+  `task-list-retention.test.sh` (30); `compaction-health.test.sh` (26). Existing janitor
+  suites unchanged and green (22 / 75 / 4); version-uplift 46/46.
+
+## [2.46.0] — 2026-09-21 (feat: calendar date on every non-today reset — `Sun 9/27 1:00am`; statusline 1.8.0) (73e9bb5)
+
+Founder ask (2026-09-21): `▸Fable 68% (resets Sun 1:00am)` does not say WHICH Sunday. A
+weekly bucket read late in its window can be a day or a week out, and the weekday alone
+cannot tell the two apart.
+
+- **statusline 1.8.0** — `fmt_time_dhm` renders `<Dow> <M>/<D> <time>` for any reset that
+  is not today (`Sun 9/27 1:00am`): unpadded US month/day to match the 12-hour clock,
+  zeros stripped in shell (no non-portable `%-m`). Same-day resets stay a bare time. Both
+  callers inherit it: the scoped bucket on `📊 Plan` and the `Fable opens …` advisory.
+- `accounts.sh status` is unchanged — `FABLE-RESET` is a countdown, already unambiguous.
+- Tests: statusline-plan-usage §1b ×3 (helper-matched render, helper-independent shape
+  regex, same-day stays bare).
+
+## [2.45.0] — 2026-09-18 (feat: reset-aware account selection — next Fable opening, hold-or-downgrade advice, use-it-or-lose-it bonus, burn projection, opt-in Fable reserve; statusline 1.7.0) (90ea41e)
+
+Founder direction (2026-09-18): even with 5h/7d headroom, a Fable week about to reopen —
+or a week about to expire unused — changes the right next account/model. "When it can
+foresee what's coming, it can influence the right plan to move to." Design agreed with the
+cleanscale governor session (cleanscale #5266): upstream owns `selector.py` + `advise` +
+status; the governor half stays in cleanscale's `account-forest.sh` (it reads
+`usage-cache.json` directly, prefers its own measured burn slope, never sums with ours).
+The v2 gauge-cache field contract is UNCHANGED — every input already existed.
+
+- **R1 expose** — `classify` + `advise` carry `fable_next_open {label, at_epoch}`;
+  `advise` adds `best_scoped_reset`, `current_scoped_reset`, `reason`.
+- **R2 hold-or-downgrade (advisory, interactive lead only)** — `need=fable`, nothing
+  eligible: `fable_wait` `hold` (opening ≤ `PWT_ACCT_FABLE_HOLD_MIN` 45 min) or
+  `downgrade`, with `recheck_at`. `advise` then answers WITHOUT a `best` key (plus
+  `current_email`, which `account-advice.sh` keys cache validity on).
+- **R3 use-it-or-lose-it** — bounded bonus (≤ 15 points) for WEEKLY headroom expiring
+  inside 12 h. Applied after the HOLD exclusions and inside the soft tier, so it can never
+  admit or promote a hot account. Off: `PWT_ACCT_DISABLE_EXPIRY_BONUS=1`.
+- **R5 projection** — `*_burn_ppm` × 45 min lookahead (clamped to the window's own reset)
+  ≥ `HOLD_HARD` sorts the account with the soft tier. Off: `PWT_ACCT_DISABLE_PROJECTION=1`.
+- **R4 Fable reserve — DEFAULT OFF** (`PWT_ACCT_FABLE_RESERVE=1`): the sole account with
+  Fable headroom and a far Fable reset yields to calm peers under `need=any`.
+- **statusline 1.7.0** — grey `· Fable opens <time> on <label>` tail beside a pick when the
+  opening is within 12 h; `⏳ Fable opens … · hold for it | use Opus until then` when there
+  is no pick.
+- Every rule FAILS OPEN on missing/stale fields; a Fable-shut account stays eligible for
+  `need=any`; `limited_until` semantics untouched.
+- Tests: pwt-accounts AC14 ×6 (one per rule + advise), statusline-account-advice §15 ×7.
+
+## [2.44.0] — 2026-09-18 (feat: Fable reset shown on the plan line and in `accounts.sh status`; statusline 1.6.0) (50301a0)
+
+Founder ask (2026-09-18): the Fable bucket's reset was captured (`scoped_reset`, 2.43.0)
+and used by the selector's wait-until, but never SHOWN — and a Fable week about to reopen
+changes which account/model is the right next move even when 5h/7d have headroom.
+
+- **statusline 1.6.0** — each scoped bucket on `📊 Plan` prints `(resets <time>)` from its
+  own `resets_at`: bare time the same local day, `<Dow> <time>` otherwise (`fmt_time_dhm`);
+  nothing when missing or past.
+- **`accounts.sh status`** — new `FABLE-RESET` column after `FABLE-ST` (countdown from
+  `scoped_reset[name]`; `-` without a live bucket; deactivated rows pad three cells per
+  bucket). TABLE SHAPE CHANGE for anything that parses the table by column position.
+- **fix(test)** — `statusline-plan-usage.test.sh` failed 24 checks under /bin/bash 3.2:
+  `${1:-{…}}` with nested braces closes at the first `}` there, corrupting the default
+  stdin JSON so the plan segment never rendered. Default built in a separate variable.
+  Harness-only; `statusline.sh` itself was unaffected.
+- Tests: statusline-plan-usage §1b (far/past reset), probe-scoped header + rows,
+  pwt-accounts AC4 status FABLE-RESET.
+
+## [2.43.0] — 2026-09-18 (feat: live Fable bucket for every account — Fable-model header probe, per-window statuses, `limited_until` on a rejected window, Fable-aware advisory; statusline 1.5.0) (ba5d94b)
+
+Founder incident (2026-09-18): the `👉 next` advisory recommended personal "(Fable 95%)"
+two days after that account's week had reset — the haiku header probe carries no Fable
+bucket, so `probe.py` fell back to the newest `plan-usage` sample for the email with no
+window check, and cleanscale's Shipyard governor (which moves lanes on the same
+`usage-cache.json`) saw the same stale number. Contract agreed with the CleanRev session
+(cleanscale #5266 pins its consumer ACs on these field names).
+
+**Live source.** A `max_tokens:1` `/v1/messages` probe answered for `claude-fable-5-1`
+returns `anthropic-ratelimit-unified-7d_oi-{utilization,status,reset}` = the Fable weekly
+bucket, for ANY token kind (verified on five accounts). `probe.py` (`PWT_ACCT_PROBE_MODEL`)
+and `plan-usage.sh` (`PLAN_USAGE_PROBE_MODEL`) now probe that model — the SAME single
+request as before, so zero added cost and the existing TTL cadence (no new timer). The
+user-agent carries the INSTALLED CLI version (`claude --version`, cached 24 h;
+`PWT_ACCT_CLI_VERSION` / `PLAN_USAGE_CLI_VERSION` override) — the old hard-coded
+`claude-cli/2.1.0` is refused for Fable (HTTP 400 `claude_code_version_too_old`); a
+refusal with no measurement re-probes with the haiku fallback in the same tick.
+
+**Gauge schema (cache `version: 2`, additive).** `five_hour_status` / `seven_day_status`;
+`status` = worst of the two (the top-level header is the fallback only — a
+Fable-exhausted account answers `status: rejected` while both windows are `allowed`, and
+stays usable for Opus/Sonnet lanes; `binding_pct` is null for
+`seven_day_overage_included`); `scoped` / `scoped_status` / `scoped_reset` /
+`scoped_source` (`ratelimit-header` | `plan-usage-sample` | `unavailable`) / `scoped_at`;
+`probe_model` (+ `probe_fallback_from` / `probe_fallback_http`); `prev_five_hour_pct` /
+`prev_seven_day_pct` / `prev_scoped` / `prev_measured_at` / `five_hour_burn_ppm` /
+`seven_day_burn_ppm` (CleanRev ask: burn vs reset). A REJECTED 5h/7d window writes
+`limited_until` = that window's reset (epoch string, later wins; CleanRev ask so v1
+`af_pick` holds a rejected account with no consumer change); the reactive `mark_limited`
+(ISO8601) merges later-wins and every reader accepts both forms. A scoped sample that
+predates `seven_day_reset − 7 d` is discarded (`scoped_sample_in_window`).
+
+**Selector / advisory.** `selector.classify(..., need="fable")` (`--need fable` /
+`--model <id>`, `need_from_model`) ranks on `max(5h,7d,Fable)` and hard-excludes a
+Fable-rejected account; `need=any` is byte-identical to before. `accounts.sh advise
+--model|--need` → `session_cred.advise` adds `need`, `best_scoped_status`,
+`current_scoped_status`, `best_scoped_source`, `current_scoped_source`. `accounts.sh
+status` prints `FABLE%` + `FABLE-ST` (`ok`/`warn`/`rejected`/`sample`). `account-advice.sh
+--model=<id>` derives the need and caches per need (`account-advice.fable.json`).
+
+**Statusline 1.5.0.** Passes `.model.id` to the advisory; renders `⛔` on a rejected
+bucket and `~` on a sample-sourced number; `plan-usage.sh` synthesizes the own-login
+`weekly_scoped` Fable limit (severity from the bucket status) from the live headers.
+
+Tests: `pwt-accounts.bats` AC9 fable ×12 (new fixtures
+`headers_fable_rejected_7d_allowed.json`, `headers_7d_rejected_fable_warning.json`,
+`headers_fable_healthy.json`), `statusline-segments.bats` advisory (1.5.0) ×3,
+`.claude/scripts/plan-usage-fable-probe.test.sh` (new, 22), `accounts/probe-scoped.test.sh`
+(FABLE-ST column), `statusline-account-advice.test.sh` re-aligned to the 1.4.0 labelled
+form (had been red since 34cf9ca). Docs: `plan-w-team-multi-account.md`,
+`statusline-usage-reporting.md`, `accounts/README.md`.
+
 ## [2.42.0] — 2026-09-18 (feat: statusline 1.4.0 — `💾 Cache` prompt-cache segment; `👉 next:` nudge labels 5h · 7d · Fable) (34cf9ca)
 
 Founder request (2026-09-18), two parts. **(1)** "anything we can do to enhance our status

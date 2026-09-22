@@ -221,6 +221,11 @@ fi
 if [ "${PLAN_W_TEAM_DISABLE_FABLE:-}" = "1" ]; then skip "disabled"; fi
 if [ "$KIND" = "consult" ] && [ "${PLAN_W_TEAM_DISABLE_FABLE_CONSULT:-}" = "1" ]; then skip "disabled"; fi
 if [ "$KIND" = "escalation" ] && [ "${PLAN_W_TEAM_DISABLE_FABLE_ESCALATION:-}" = "1" ]; then skip "disabled"; fi
+# Model Tiering v9 (2.50.0, operator ruling 2026-09-22): Fable 5.1 is retired — no Fable
+# anywhere. Both kinds SKIP unless the operator re-enables the trial rollback for a run with
+# PLAN_W_TEAM_FABLE_REENABLE=1 (the budget/cap/ledger machinery below is kept dormant for
+# exactly that). The Step-1 consult no longer calls this guard: it runs on Opus 5.5.
+if [ "${PLAN_W_TEAM_FABLE_REENABLE:-}" != "1" ]; then skip "fable-retired-v9"; fi
 
 # --- 2. consult gating -------------------------------------------------------
 # The trigger is §1b-pre's EXISTING non-triviality classifier, passed in by the

@@ -117,6 +117,15 @@ table row (a cross-scope row would expand the checker's parse surface):
   from the registry-parity comparison as the documented exception). It is reaped with the rest
   of a provably-orphaned / headless family, so it no longer accumulates (SA-4, row 18).
 
+Two repo-level (NOT per-run, NOT slug-keyed) artifacts are likewise outside the
+`plan-w-team-*` scope and documented here only:
+
+- **`.claude/state/compaction-health.json`** / **`compaction-health.txt`** — latest verdict
+  (schema `compaction-health/1`) and the alarm banner of `compaction-health.sh`. Writer: that
+  script (atomic temp + rename; the `.txt` exists ONLY while the verdict is `alarm`). Reader:
+  `session-start.sh` `cat`s the banner. Regenerated every session start; gitignored; never
+  reaped by the janitor (no reap prefix matches). → `docs/operations/compaction-health.md`.
+
 ## Claude Code interactions (2.1.139+)
 
 - **`claude project purge [path]`** removes all `.claude/state/plan-w-team-*` artifacts including in-flight baselines, scope-locks, AC snapshots, and retros. Treat purge mid-feature as equivalent to abandoning the SLUG — the workflow lock dir is removed but the workflow itself cannot detect this. If a user purges mid-run, instruct them to start a new SLUG rather than resume.

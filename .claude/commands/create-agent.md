@@ -72,7 +72,7 @@ Counter-examples — these are **skills**, and `/create-agent` should refuse the
 ## Notes
 
 - All agents are created with proper YAML frontmatter
-- Model defaults to `claude-opus-4-8` (explicit id; never the bare `opus` alias, which resolves to Opus 5) unless specified otherwise
+- Model defaults to `claude-opus-5-5` (explicit id; never the bare `opus` alias, which drifts with the CLI and resolved to the forbidden `claude-opus-5` before 2.1.280) unless specified otherwise
 - Disallowed tools are set based on the agent's intended role — and if there is no
   restriction to express, that is a signal it should have been a skill
 - The meta-agent checks for existing similar agents **and skills** before creating

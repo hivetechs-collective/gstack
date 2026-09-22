@@ -2,7 +2,7 @@
 name: builder
 color: red
 description: Engineering agent that writes production code with automated validation
-model: inherit # Model Tiering v6 — routine lane FOLLOWS THE LANE (PWT_PRIMARY_MODEL; floor claude-opus-4-8, seam PWT_SUBAGENT_MODEL_BUILDER). NOT a hardcoded pin.
+model: claude-sonnet-5 # Model Tiering v9 (2.50.0) — instruction-following build work = Sonnet 5 (operator ruling 2026-09-22). PINNED, not inherit: an inheriting builder would take the lane's Opus model and effort. Seam PWT_SUBAGENT_MODEL_BUILDER (sonnet|haiku) still applies.
 effort: high
 isolation: worktree
 permissionMode: auto

@@ -200,10 +200,15 @@ FINDINGS=".claude/state/plan-w-team-review-findings-$SLUG.md"
 if [ ! -f "$FINDINGS" ]; then
   cat <<'EOF'
 ✗ SHIP BLOCKED: no review-findings artifact found.
-  Step 5 must have written .claude/state/plan-w-team-review-findings-$SLUG.md
-  before Step 6 runs. Either re-run Step 5, or — if you intentionally skipped
-  review — write the file by hand and set all_critical_resolved: true
-  and access_control_high_unresolved: 0 (the §6c-ter access-control gate keys off it).
+  Step 5 §5h must persist .claude/state/plan-w-team-review-findings-$SLUG.md
+  (with every Pass-1 CRITICAL resolved) before Step 6 can ship.
+  Remedy: run Step 5 (fix-first review). That is the only path that earns a
+  verified pass. Do NOT hand-author this artifact to satisfy the gate — a green
+  file with no review behind it ships unreviewed code.
+  (A deliberate, operator-owned review waiver is a documented escape hatch, not a
+  step in an autonomous run. Per the C6 precedent — a blocked worker is not handed
+  its own bypass — the waiver procedure is intentionally NOT scripted in this echo;
+  see 04-fix-first-review.md §5h and shared/grounding.md.)
 EOF
   exit 1
 fi

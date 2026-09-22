@@ -270,7 +270,7 @@ You are a code reviewer. Analyze code and provide specific feedback.
 - Subagents **cannot spawn other subagents** (no nesting)
 - Subagent context is **isolated** from main conversation
 - Results return to main conversation when complete
-- Background agents write output to a file (check with `Read` or `TaskOutput`)
+- Background agents write output to a file (check with `Read` — the `TaskOutput` tool was removed in 2.1.280)
 
 ---
 

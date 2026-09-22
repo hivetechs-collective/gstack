@@ -2409,43 +2409,49 @@ if [ "$LAUNCH" = "1" ]; then
     if type __pwt_nice_prefix >/dev/null 2>&1; then NICE_PREFIX=$(__pwt_nice_prefix); else NICE_PREFIX=""; fi
     if type __pwt_governed_nice_value >/dev/null 2>&1; then NICE_VAL=$(__pwt_governed_nice_value); else NICE_VAL=""; fi
 
-    # Model pinning for bg spawns (Model Tiering v4, skill 1.58.0):
+    # Model pinning for bg spawns (Model Tiering v4 → v9, skill 2.50.0):
     #   --model pins the PRIMARY explicitly so bg fleets NEVER silently inherit
     #   an expensive interactive session default (2026-07 incident: a Fable 5
     #   user default silently upgraded every bg worker/supervisor — ~2x Opus
-    #   burn per token, two-account weekly-limit lockout). Brain tier = Opus 4.8
-    #   (`claude-opus-4-8`). Model Tiering v5 (founder order 2026-08-29): Opus 5
-    #   (`claude-opus-5`) is FORBIDDEN everywhere — it proved unreliable in fleet
-    #   use; the only permitted models are Fable 5 at its guard-gated sites and
-    #   Opus 4.8. Opus 4.8 is ALSO the Fable-skip / Fable-refusal landing
-    #   tier — when plan-w-team-fable-guard.sh returns SKIP the run continues
-    #   on this model, so it must always name the current Brain generation.
-    #   --fallback-model: BEST-EFFORT only — `claude --help` documents the flag
-    #   for print/headless runs and the 2026-06-28 regression probe recorded it
-    #   as likely inert under --bg. Do NOT rely on it for capacity exhaustion;
-    #   the load-bearing protection is the explicit --model primary pin above.
-    #   Default fallback claude-opus-4-8 (founder doctrine 2026-08-29: a fallback
-    #   that takes over the lead is intelligent work — never Sonnet); the durable
-    #   lever, if degradation is ever needed, is settings.json fallbackModel.
+    #   burn per token, two-account weekly-limit lockout). Brain tier = Opus 5.5
+    #   (`claude-opus-5-5`, Model Tiering v8, operator order 2026-09-22 — it
+    #   supersedes the v5-v7 Opus 4.8 floor). Opus 5 (`claude-opus-5`, EXACTLY
+    #   that id) stays FORBIDDEN — it proved unreliable in fleet use (v5,
+    #   2026-08-29); Opus 5.5 is a different model and was never under that ban.
+    #   Model Tiering v9 (operator ruling 2026-09-22): Fable 5.1 is retired —
+    #   no Fable anywhere, fallbacks included — and Opus 5.5 is the
+    #   highest-thinking tier.
+    #   --fallback-model: BEST-EFFORT only — the 2026-06-28 regression probe
+    #   recorded it as likely inert under --bg. Do NOT rely on it for capacity
+    #   exhaustion; the load-bearing protection is the explicit --model primary
+    #   pin above. It is RESOLVED from the final primary by pwt_fallback_model
+    #   (pwt-governor-lib.sh): Opus 5.5 → the fleet chain
+    #   claude-opus-4-8,claude-sonnet-5 (cleanscale #6254); any other primary →
+    #   itself. An explicit Fable or claude-opus-5 fallback is refused. Without
+    #   the lib the fallback is the primary itself.
     #   Override via PWT_PRIMARY_MODEL / PWT_FALLBACK_MODEL. Threaded into both
     #   bg spawn sites below (worker + supervisor).
     # Governor Contract phase 3 (C2/R4): capture whether the operator explicitly pinned the
     # model via env BEFORE the default resolves — an explicit env pin (dispatch-lane.sh) beats
     # the governed models.intelligent override.
     __pwt_primary_env_set=0; [ -n "${PWT_PRIMARY_MODEL:-}" ] && __pwt_primary_env_set=1
-    __pwt_fallback_env_set=0; [ -n "${PWT_FALLBACK_MODEL:-}" ] && __pwt_fallback_env_set=1
-    PWT_PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-4-8}"
-    PWT_FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-opus-4-8}"
-    # Governed intelligent-tier override (downward-only, NEVER opus-5 — see pwt_governor_model).
-    # Applied ONLY where the operator did not pin the env; empty ungoverned ⇒ the opus-4-8 default
+    __pwt_fallback_explicit="${PWT_FALLBACK_MODEL:-}"
+    PWT_PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-5-5}"
+    # Governed intelligent-tier override (downward-only, NEVER claude-opus-5 — see pwt_governor_model).
+    # Applied ONLY where the operator did not pin the env; empty ungoverned ⇒ the opus-5-5 default
     # stands (parity). __PWT_APPLIED_MODEL records what actually took, for applied_budget.
     __PWT_APPLIED_MODEL=""
     if type pwt_governor_model >/dev/null 2>&1; then
         __pwt_gov_int=$(pwt_governor_model intelligent)
-        if [ -n "$__pwt_gov_int" ] && [ "$__pwt_gov_int" != "claude-opus-4-8" ]; then
+        if [ -n "$__pwt_gov_int" ] && [ "$__pwt_gov_int" != "claude-opus-5-5" ]; then
             [ "$__pwt_primary_env_set" = "0" ] && { PWT_PRIMARY_MODEL="$__pwt_gov_int"; __PWT_APPLIED_MODEL="$__pwt_gov_int"; }
-            [ "$__pwt_fallback_env_set" = "0" ] && PWT_FALLBACK_MODEL="$__pwt_gov_int"
         fi
+    fi
+    # v9: the fallback follows the FINAL primary (after any governed override above).
+    if type pwt_fallback_model >/dev/null 2>&1; then
+        PWT_FALLBACK_MODEL=$(pwt_fallback_model "$PWT_PRIMARY_MODEL" "$__pwt_fallback_explicit")
+    else
+        PWT_FALLBACK_MODEL="$PWT_PRIMARY_MODEL"
     fi
 
     # ── bg-launch argv: permission posture + effort/compaction (items 2 & 3) ────
@@ -2470,7 +2476,10 @@ if [ "$LAUNCH" = "1" ]; then
     #
     #   item 2 (defect a — effort/compaction argv, belt-and-suspenders): --effort
     #   is one of the three argv channels the operator confirmed crosses (F1), so
-    #   pass it explicitly; default high (Brain-tier doctrine), override
+    #   pass it explicitly; default high (Model Tiering v9, operator ruling
+    #   2026-09-22: Opus 5.5 runs at high in every automated session — its API
+    #   default is only medium; xhigh/ultracode is the operator's own interactive
+    #   override), override
     #   PWT_BG_EFFORT / CLAUDE_CODE_EFFORT_LEVEL, disable entirely with
     #   PWT_DISABLE_BG_EFFORT_ARGV=1 (defensive, for a CLI that rejects --effort
     #   under --bg). --autocompact is passed ONLY when a window is explicitly set
@@ -3475,7 +3484,7 @@ SUPEOF
     if [ -n "$SUP_OUT_FILE" ]; then
         # #1957: scrub the inherited secrets store before the supervisor spawn too —
         # the supervisor is an AI agent spawned exactly like a lane worker.
-        ( pwt_lane_env_scrub; exec env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" $BG_EXTRA_ARGS "$SUPERVISOR_BOOTSTRAP" ) >"$SUP_OUT_FILE" 2>&1
+        ( pwt_lane_env_scrub; exec env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-5-5}" --fallback-model "${PWT_FALLBACK_MODEL:-${PWT_PRIMARY_MODEL:-claude-opus-5-5}}" $BG_EXTRA_ARGS "$SUPERVISOR_BOOTSTRAP" ) >"$SUP_OUT_FILE" 2>&1
         SUP_RC=$?
         SUPERVISOR_SID=""
         if [ -s "$SUP_OUT_FILE" ]; then
@@ -3489,7 +3498,7 @@ SUPEOF
         SUPERVISOR_SID=""
         SUP_RC=1
         echo "WARN: mktemp failed for supervisor; spawning anyway" >&2
-        ( pwt_lane_env_scrub; exec env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-4-8}" --fallback-model "${PWT_FALLBACK_MODEL:-claude-opus-4-8}" $BG_EXTRA_ARGS "$SUPERVISOR_BOOTSTRAP" ) >&2 || true
+        ( pwt_lane_env_scrub; exec env $LAUNCH_ENV $NICE_PREFIX "$CLAUDE_BIN" --bg --model "${PWT_PRIMARY_MODEL:-claude-opus-5-5}" --fallback-model "${PWT_FALLBACK_MODEL:-${PWT_PRIMARY_MODEL:-claude-opus-5-5}}" $BG_EXTRA_ARGS "$SUPERVISOR_BOOTSTRAP" ) >&2 || true
     fi
 
     if [ -n "$SUPERVISOR_SID" ]; then

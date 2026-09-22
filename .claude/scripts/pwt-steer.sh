@@ -56,8 +56,8 @@
 #                  list, so the rule cannot rot as new switches are added.
 #
 # ENV
-#   PWT_PRIMARY_MODEL   (default claude-opus-4-8)  — pinned; never inherit the CLI default; claude-opus-5 is FORBIDDEN (founder order 2026-08-29)
-#   PWT_FALLBACK_MODEL  (default claude-opus-4-8)  — a fallback doing the lead's work is intelligent work, never Sonnet (founder doctrine 2026-08-29)
+#   PWT_PRIMARY_MODEL   (default claude-opus-5-5)  — pinned; never inherit the CLI default; claude-opus-5 (exactly) stays FORBIDDEN (founder order 2026-08-29); Opus 5.5 is the Brain tier (v8, 2026-09-22)
+#   PWT_FALLBACK_MODEL  (default: resolved from the primary by pwt_fallback_model — Opus 5.5 → claude-opus-4-8,claude-sonnet-5; never Fable — Model Tiering v9)
 #   PWT_STEER_POLL_S    (default 1)                — verification poll interval
 #   CLAUDE_PROJECTS_DIR (default ~/.claude/projects)
 #
@@ -110,11 +110,10 @@ MESSAGE_SET=0
 EXTRA_ENV=()
 
 __steer_primary_env_set=0; [ -n "${PWT_PRIMARY_MODEL:-}" ] && __steer_primary_env_set=1
-__steer_fallback_env_set=0; [ -n "${PWT_FALLBACK_MODEL:-}" ] && __steer_fallback_env_set=1
-PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-4-8}"
-FALLBACK_MODEL="${PWT_FALLBACK_MODEL:-claude-opus-4-8}"
+__steer_fallback_explicit="${PWT_FALLBACK_MODEL:-}"
+PRIMARY_MODEL="${PWT_PRIMARY_MODEL:-claude-opus-5-5}"
 # Governor Contract phase 3 (C2/R4): governed intelligent-tier override at resume (downward-only,
-# NEVER opus-5). An explicit env pin wins; empty ungoverned ⇒ the opus-4-8 default stands (parity).
+# NEVER claude-opus-5). An explicit env pin wins; empty ungoverned ⇒ the opus-5-5 default stands (parity).
 __steer_gov_lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/pwt-governor-lib.sh"
 [ -r "$__steer_gov_lib" ] && { . "$__steer_gov_lib" 2>/dev/null || true; }
 # #1957 lane-env scrub: the resume below `exec`s a fresh `claude --bg` from THIS
@@ -127,10 +126,17 @@ __steer_scrub_lib="$(cd "$(dirname "$0")/../../scripts/ops/lib" 2>/dev/null && p
 command -v pwt_lane_env_scrub >/dev/null 2>&1 || pwt_lane_env_scrub() { :; }
 if type pwt_governor_model >/dev/null 2>&1; then
     __steer_gov_int=$(pwt_governor_model intelligent)
-    if [ -n "$__steer_gov_int" ] && [ "$__steer_gov_int" != "claude-opus-4-8" ]; then
+    if [ -n "$__steer_gov_int" ] && [ "$__steer_gov_int" != "claude-opus-5-5" ]; then
         [ "$__steer_primary_env_set" = "0" ] && PRIMARY_MODEL="$__steer_gov_int"
-        [ "$__steer_fallback_env_set" = "0" ] && FALLBACK_MODEL="$__steer_gov_int"
     fi
+fi
+# Model Tiering v9 (2.50.0): the fallback follows the FINAL primary — Opus 5.5 → the fleet
+# chain claude-opus-4-8,claude-sonnet-5; any other primary → itself; never Fable. Same
+# resolver as pwt-goal.sh (pwt-governor-lib.sh); without the lib the fallback is the primary.
+if type pwt_fallback_model >/dev/null 2>&1; then
+    FALLBACK_MODEL=$(pwt_fallback_model "$PRIMARY_MODEL" "$__steer_fallback_explicit")
+else
+    FALLBACK_MODEL="$PRIMARY_MODEL"
 fi
 # #1673 (Model Tiering v6 item 3): a RESUMED bg worker inherits no bypass grant, so it wedges at its
 # first Bash/Edit (`waiting` in the roster, forever) unless the resume passes --permission-mode. A

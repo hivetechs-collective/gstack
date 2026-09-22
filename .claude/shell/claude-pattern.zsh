@@ -46,13 +46,15 @@ git() {
 _CP_SHELL_SELF="${(%):-%x}"
 _CP_ACCOUNTS_CLI="${_CP_SHELL_SELF:A:h:h}/commands/plan-w-team/accounts/accounts.sh"
 
-# ── Model Tiering v7 (2026-09-02): ONE Fable lead session per host ─────────────
-# Fable is the design tier only. Every interactive session takes the model in
-# ~/.claude/settings.json (claude-opus-4-8 under v7); the ONE session that needs
-# Fable is launched with CLAUDE_LEAD=1, which adds `--model claude-fable-5-1` and
-# holds a pid lock (CP_FABLE_LEAD_LOCK, default ~/.config/claude-pattern/fable-lead.pid).
-# A second CLAUDE_LEAD=1 launch while that lead is live is downgraded to Opus 4.8
-# with a notice — never a second Fable. An explicit --model in argv always wins.
+# ── ONE lead session per host (Model Tiering v7 2026-09-02; v9 2.50.0) ──────────
+# Every interactive session takes the model in ~/.claude/settings.json (Opus 5.5).
+# Model Tiering v9 (operator ruling 2026-09-22) retired Fable 5.1 — no Fable
+# anywhere — so CLAUDE_LEAD=1 now adds `--model claude-opus-5-5`; what still sets
+# the lead apart is its larger compaction window (CP_LEAD_WINDOW, below). It holds
+# a pid lock (CP_FABLE_LEAD_LOCK — name kept for compatibility, default
+# ~/.config/claude-pattern/fable-lead.pid); a second CLAUDE_LEAD=1 launch while that
+# lead is live gets the non-lead model and window with a notice. An explicit
+# --model in argv always wins.
 # The lead compacts at CP_LEAD_WINDOW (300000, 2026-09-08); every other terminal
 # at 250000; an explicit CLAUDE_CODE_AUTO_COMPACT_WINDOW wins over both.
 # Seams: CP_LEAD_MODEL, CP_NONLEAD_MODEL, CP_LEAD_WINDOW, CP_FABLE_LEAD_LOCK; tests override
@@ -66,11 +68,11 @@ _cp_fable_lead_gate() {   # prints the --model args to add (nothing when not a l
   local lock="${CP_FABLE_LEAD_LOCK:-$HOME/.config/claude-pattern/fable-lead.pid}"
   mkdir -p "${lock:h}" 2>/dev/null
   if _cp_fable_lead_live "$lock" && [ "$(cat "$lock" 2>/dev/null)" != "$$" ]; then
-    echo "⚠️  A Fable lead session is already live (pid $(cat "$lock")) — one Fable lead per host (Model Tiering v7). Launching this one on ${CP_NONLEAD_MODEL:-claude-opus-4-8}." >&2
-    printf -- "--model\n%s\n" "${CP_NONLEAD_MODEL:-claude-opus-4-8}"
+    echo "⚠️  A lead session is already live (pid $(cat "$lock")) — one lead per host (Model Tiering v7/v9). Launching this one as a non-lead on ${CP_NONLEAD_MODEL:-claude-opus-5-5}." >&2
+    printf -- "--model\n%s\n" "${CP_NONLEAD_MODEL:-claude-opus-5-5}"
   else
     printf "%s\n" "$$" > "$lock"
-    printf -- "--model\n%s\n" "${CP_LEAD_MODEL:-claude-fable-5-1}"
+    printf -- "--model\n%s\n" "${CP_LEAD_MODEL:-claude-opus-5-5}"
   fi
 }
 _cp_fable_lead_release() {
@@ -189,7 +191,7 @@ claude-account() {
 export CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=200
 
 # CLI 2.1.268 gated the task-tracking tools (TaskCreate/Get/Update/List, TodoWrite)
-# to pre-Claude-5 models. Every /plan-w-team tier runs on Opus 5 / Sonnet 5 /
+# to pre-Claude-5 models. Every /plan-w-team tier runs on Opus 5.5 / Sonnet 5 /
 # Fable 5.1 and the Step 2-8 task graph is built on those tools, so re-enable
 # them explicitly (mirrors .claude/settings.json env; uplift 2026-09-18).
 export CLAUDE_CODE_ENABLE_TODO_TOOLS=1

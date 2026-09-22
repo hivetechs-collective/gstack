@@ -236,58 +236,145 @@ __json_str_field() {  # $1=file $2=key → string value ("" if absent)
     fi
     printf '%s' "$v"
 }
-__mtime_of() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo ""; }
 
 # ── collision-proof attribution + reaping helpers (row 18) ────────────────────
-__longest_reap_prefix() {  # $1=basename → the LONGEST reap prefix it starts with ("")
-    local base="$1" best="" p
+# The `_v` forms return through a GLOBAL (__BEST / __SLUG) instead of stdout so the
+# one-scan index below can attribute a file WITHOUT a `$(…)` subshell. That is a cost
+# fix, not a style one: the 2026-09-21 cleanscale regression was this script forking
+# ≥3 times per file per family (~350K forks over a 1,356-entry state dir = 397 s, to
+# reap nothing), synchronously, on every post-compaction SessionStart. The printf
+# wrappers stay so the classification has ONE body and cannot drift from itself.
+__BEST=""
+__SLUG=""
+__longest_reap_prefix_v() {  # $1=basename → __BEST = the LONGEST reap prefix it starts with ("")
+    local base="$1" p
+    __BEST=""
     for p in $PER_SLUG_REAP_PREFIXES; do
         case "$base" in
-            "$p"*) [ "${#p}" -gt "${#best}" ] && best="$p" ;;
+            "$p"*) [ "${#p}" -gt "${#__BEST}" ] && __BEST="$p" ;;
         esac
     done
-    printf '%s' "$best"
+    return 0
 }
+__longest_reap_prefix() { __longest_reap_prefix_v "$1"; printf '%s' "$__BEST"; }
 
-# __slug_of_file: echo the slug a state file belongs to, or "" if it is a global /
+# __slug_of_file: the slug a state file belongs to, or "" if it is a global /
 # unmanaged / charset-invalid file. Longest-prefix-wins + denylist + charset guard —
 # the single attribution point shared by discovery, age, and reap so they cannot
 # disagree.
-__slug_of_file() {  # $1=basename → slug ("" = not a reapable per-slug file)
-    local base="$1" p rest slug
-    __in_global_denylist "$base" && { printf ''; return; }
-    p="$(__longest_reap_prefix "$base")"
-    [ -z "$p" ] && { printf ''; return; }
-    rest="${base#"$p"}"
+__slug_of_file_v() {  # $1=basename → __SLUG ("" = not a reapable per-slug file)
+    local base="$1" rest slug
+    __SLUG=""
+    __in_global_denylist "$base" && return 0
+    __longest_reap_prefix_v "$base"
+    [ -z "$__BEST" ] && return 0
+    rest="${base#"$__BEST"}"
     slug="$rest"
     case "$rest" in *.*) slug="${rest%.*}" ;; esac   # strip one trailing extension
     case "$slug" in
-        ""|*[!A-Za-z0-9_-]*) printf ''; return ;;    # charset guard (no dots/metachars)
+        ""|*[!A-Za-z0-9_-]*) return 0 ;;             # charset guard (no dots/metachars)
     esac
-    printf '%s' "$slug"
+    __SLUG="$slug"
+    return 0
+}
+__slug_of_file() { __slug_of_file_v "$1"; printf '%s' "$__SLUG"; }
+
+# ── ONE-SCAN family index ─────────────────────────────────────────────────────
+# PASS 2 used to rescan ALL of $STATE_DIR once per candidate family (newest-mtime)
+# and again per reaped family — O(families × entries). The index walks the directory
+# ONCE, attributes each entry in-shell, and takes every mtime from ONE batched stat:
+#   FAMILY_INDEX   "slug<TAB>path" per attributed entry        (temp file, outside STATE_DIR)
+#   FAMILY_INDEX_MT "mtime path" per indexed path               (temp file, same private dir)
+#   FAMILY_NEWEST  "slug newest-mtime" per family, sorted      (-1 = some member unreadable)
+# Every uncertainty stays a KEEP, exactly as before: a member whose mtime cannot be
+# read marks its family -1 (the old `echo -1`), and a member whose NAME carries a tab
+# or newline — which a line-based index cannot represent faithfully — marks its family
+# unindexable and the family is kept whole. An index that cannot be built at all
+# (no mktemp, control characters in $STATE_DIR itself) skips PASS 2 entirely.
+#
+# Both temp files live in ONE `mktemp -d` directory (0700, atomically created): the
+# mtime file decides whether a HEADLESS family counts as aged, and that arm has no second
+# liveness check — so it must never be a guessable name opened with a plain `>` in a
+# shared $TMPDIR, where a pre-planted symlink/file could feed it spoofed mtimes
+# (Step-5 security review, 2.47.0).
+FAMILY_INDEX_DIR=""
+FAMILY_INDEX=""
+FAMILY_INDEX_MT=""
+FAMILY_NEWEST=""
+UNINDEXABLE_SLUGS=" "
+__TAB="$(printf '\t')"
+__NL='
+'
+__cleanup_family_index() {
+    [ -n "$FAMILY_INDEX_DIR" ] || return 0
+    rm -f "$FAMILY_INDEX" "$FAMILY_INDEX_MT" 2>/dev/null
+    rmdir "$FAMILY_INDEX_DIR" 2>/dev/null
+    return 0
 }
 
-__family_newest_mtime() {  # $1=slug → newest mtime across its family (-1 unreadable, 0 none)
-    local slug="$1" f base newest=0 m
+__build_family_index() {  # → 0 when FAMILY_INDEX/FAMILY_NEWEST are usable, 1 = fail-CLOSED (skip pass 2)
+    local f base joined
+    case "$STATE_DIR" in *"$__TAB"*|*"$__NL"*) return 1 ;; esac
+    FAMILY_INDEX_DIR="$(mktemp -d "${TMPDIR:-/tmp}/pwt-janitor-index.XXXXXX" 2>/dev/null)" || { FAMILY_INDEX_DIR=""; return 1; }
+    # A real directory we own, not a symlink to one: only then are the names inside it ours.
+    [ -n "$FAMILY_INDEX_DIR" ] && [ -d "$FAMILY_INDEX_DIR" ] && [ ! -L "$FAMILY_INDEX_DIR" ] || { FAMILY_INDEX_DIR=""; return 1; }
+    trap __cleanup_family_index EXIT
+    FAMILY_INDEX="$FAMILY_INDEX_DIR/index"
+    FAMILY_INDEX_MT="$FAMILY_INDEX_DIR/mtimes"
+
     for f in "$STATE_DIR"/*; do
         [ -e "$f" ] || continue
-        base="$(basename "$f")"
-        [ "$(__slug_of_file "$base")" = "$slug" ] || continue
-        m="$(__mtime_of "$f")"
-        [ -n "$m" ] || { echo "-1"; return; }
-        [ "$m" -gt "$newest" ] 2>/dev/null && newest="$m"
-    done
-    echo "$newest"
+        base="${f##*/}"
+        __slug_of_file_v "$base"
+        [ -n "$__SLUG" ] || continue
+        case "$base" in
+            *"$__TAB"*|*"$__NL"*) UNINDEXABLE_SLUGS="$UNINDEXABLE_SLUGS$__SLUG " ; continue ;;
+        esac
+        printf '%s\t%s\n' "$__SLUG" "$f"
+    done > "$FAMILY_INDEX" || return 1
+    [ -s "$FAMILY_INDEX" ] || return 0        # nothing attributable → nothing to classify
+
+    # One batched stat for every indexed path (BSD `-f '%m %N'`, GNU `-c '%Y %n'`).
+    if stat -f %m / >/dev/null 2>&1; then
+        cut -f2- "$FAMILY_INDEX" | tr '\n' '\0' | xargs -0 stat -f '%m %N' > "$FAMILY_INDEX_MT" 2>/dev/null
+    else
+        cut -f2- "$FAMILY_INDEX" | tr '\n' '\0' | xargs -0 stat -c '%Y %n' > "$FAMILY_INDEX_MT" 2>/dev/null
+    fi
+
+    # xargs exits non-zero when ANY stat fails (a member vanished mid-run): that is a
+    # per-family -1 below, not a reason to drop the pass. A missing mtime FILE is.
+    [ -f "$FAMILY_INDEX_MT" ] || return 1
+
+    # Join: a member with no readable numeric mtime poisons its family to -1 (KEEP).
+    # awk's status is checked on its own — piped straight into sort, sort's 0 would mask it.
+    joined="$(awk '
+        NR == FNR { sp = index($0, " "); if (sp > 1) mt[substr($0, sp + 1)] = substr($0, 1, sp - 1); next }
+        {
+            tb = index($0, "\t"); if (tb < 2) next
+            slug = substr($0, 1, tb - 1); path = substr($0, tb + 1); seen[slug] = 1
+            if (!(path in mt) || mt[path] !~ /^[0-9]+$/) bad[slug] = 1
+            else if (mt[path] + 0 > newest[slug] + 0) newest[slug] = mt[path]
+        }
+        END { for (s in seen) print s, ((s in bad) ? -1 : newest[s] + 0) }
+    ' "$FAMILY_INDEX_MT" "$FAMILY_INDEX" 2>/dev/null)" || return 1
+    [ -n "$joined" ] || return 1
+    FAMILY_NEWEST="$(printf '%s\n' "$joined" | sort)"
+    return 0
 }
 
 REAPED_FILES=0
 REAPED_FAMILIES=0
 __reap_family() {  # $1=slug (already charset-validated + confirmed reapable)
-    local slug="$1" f base
-    for f in "$STATE_DIR"/*; do
+    local slug="$1" f
+    [ -n "$FAMILY_INDEX" ] && [ -f "$FAMILY_INDEX" ] || return 0
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
         [ -e "$f" ] || continue
-        base="$(basename "$f")"
-        [ "$(__slug_of_file "$base")" = "$slug" ] || continue
+        # Re-attribute at the moment of deletion: the index is a work list, never an
+        # authority. Must still sit DIRECTLY in $STATE_DIR and still classify to $slug.
+        [ "${f%/*}" = "$STATE_DIR" ] || continue
+        __slug_of_file_v "${f##*/}"
+        [ "$__SLUG" = "$slug" ] || continue
         if [ "$DRY_RUN" = "1" ]; then
             echo "[dry-run] would remove $f (orphan/headless family $slug)"
         else
@@ -295,7 +382,9 @@ __reap_family() {  # $1=slug (already charset-validated + confirmed reapable)
             REAPED_FILES=$((REAPED_FILES + 1))
             [ "$VERBOSE" = "1" ] && echo "removed $f (family $slug)"
         fi
-    done
+    done <<EOF
+$(awk -v s="$slug" '{ tb = index($0, "\t"); if (tb > 1 && substr($0, 1, tb - 1) == s) print substr($0, tb + 1) }' "$FAMILY_INDEX" 2>/dev/null)
+EOF
     [ "$DRY_RUN" = "1" ] || REAPED_FAMILIES=$((REAPED_FAMILIES + 1))
 }
 
@@ -356,23 +445,25 @@ if [ "${PLAN_W_TEAM_DISABLE_ORPHAN_GC:-}" != "1" ]; then
     HEADLESS_MAX_AGE=$(( ${PWT_HEADLESS_STALE_HOURS:-168} * 3600 ))
     NOW=$(date -u +%s)
 
-    # 1) Discover candidate slugs (longest-prefix-wins attribution, denylist + charset).
-    CAND_SLUGS=""
-    for f in "$STATE_DIR"/*; do
-        [ -e "$f" ] || continue
-        slug="$(__slug_of_file "$(basename "$f")")"
-        [ -n "$slug" ] || continue
-        CAND_SLUGS="$CAND_SLUGS
-$slug"
-    done
-    CAND_SLUGS="$(printf '%s\n' "$CAND_SLUGS" | grep -v '^$' | sort -u)"
+    # 1) Discover candidate slugs + each family's newest mtime in ONE directory scan
+    #    (longest-prefix-wins attribution, denylist + charset). An index that cannot be
+    #    built is fail-CLOSED: FAMILY_NEWEST stays empty and nothing below reaps.
+    if ! __build_family_index; then
+        FAMILY_NEWEST=""
+        [ "$VERBOSE" = "1" ] && echo "orphan-GC: family index unavailable → fail-CLOSED, reaped nothing"
+    fi
 
     # 2) Classify each candidate → PRESERVE / HEADLESS (age-only) / NULL (liveness).
     HEADLESS_CAND=""
     NULL_CAND=""      # "slug<SPACE>sid,sid" lines
-    while IFS= read -r slug; do
+    while IFS=' ' read -r slug newest; do
         [ -z "$slug" ] && continue
-        newest="$(__family_newest_mtime "$slug")"
+        case "$UNINDEXABLE_SLUGS" in
+            *" $slug "*)
+                [ "$VERBOSE" = "1" ] && echo "kept family $slug (member name not indexable → fail-closed)"
+                continue ;;
+        esac
+        case "$newest" in ""|*[!0-9-]*) continue ;; esac     # malformed index row → keep
         [ "$newest" -le 0 ] 2>/dev/null && continue          # unreadable / none → keep
         age=$(( NOW - newest ))
         [ "$age" -lt "$MAX_AGE" ] 2>/dev/null && continue    # fresh → keep (protects live + just-finished)
@@ -418,7 +509,7 @@ $slug"
         NULL_CAND="$NULL_CAND
 ${slug} ${sids}"
     done <<EOF
-$CAND_SLUGS
+$FAMILY_NEWEST
 EOF
 
     # 3) Reap HEADLESS families — aged is sufficient (no live run lacks all control state).
