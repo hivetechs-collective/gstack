@@ -14,6 +14,47 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.51.5] — 2026-09-23 (fix: session-start's regen path stamped the sync marker when sync-to-project.sh SKIPPED a dirty .claude/ — a skipped sync read as done) (6649851)
+
+The 2.51.4 fleet sync's independent verifier found `.claude/.sync-version` changed but
+uncommitted in the working trees of two consumers whose sync had not run.
+
+Cause:
+- The regen path of `session-start.sh` (`mode=regen`, or a consumer with no origin)
+  ran `sync-to-project.sh`, then copied the source marker itself whenever it exited 0.
+- `sync-to-project.sh` also exits 0 on its dirty-`.claude/` safety SKIP (by design, so
+  batch loops continue), and on its setup path.
+- So a skipped sync was recorded as done:
+  - the screen said "✅ Sync complete";
+  - nothing retried until the next source bump;
+  - the stamp was left as tracked dirt in the consumer's working tree.
+- `sync-to-project.sh` already stamps the marker itself, last, only on a completed
+  sync (its retired-path abort and post-copy verification both keep it unbumped for
+  that reason). The hook's copy was redundant on success and wrong on a skip.
+
+Fix:
+- The regen path no longer writes the marker. It captures the sync output and
+  judges the outcome:
+  - non-zero exit: "Sync failed (exit N)";
+  - a `🛑 SKIP` line: "Sync skipped … retries next session", plus the `git status`
+    to review;
+  - marker now equals the source: "✅ Sync complete";
+  - otherwise: "Sync did not complete (marker not updated)".
+- Pull mode (`claude-pattern-pull.sh`) was already right. It refuses a SKIP in its
+  worktree with exit 5 before stamping.
+- Tests: four cases in `sync-target-dirty-guard.bats` drive the hook's real
+  `auto_sync_from_pattern` (and its path definitions) against a stub sync script in
+  an origin-less consumer: skip, completed, silent exit 0 and failure.
+  - Negative control: the old hook stamps the marker and prints "✅ Sync complete"
+    in the skip and silent cases.
+  - End to end: a dirty scratch consumer run against the real `sync-to-project.sh`
+    keeps its old marker, with only its own edit left dirty.
+- `docs/operations/consumer-pull-sync.md` documents the marker rule.
+
+Reach: consumers on the regen path pick this up with their next skill sync.
+Statusline-only repos run frozen hooks and never get it. There the false stamp
+happens to suppress a skill sync those repos should not take anyway.
+
 ## [2.51.4] — 2026-09-23 (fix: the first hook-launched post-push confirm went red — an inherited PROJECT_ROOT pointed every statusline test sandbox at the main checkout) (57713aa)
 
 The post-push confirm of 204245ca (2.51.3) was the first one the push hook actually

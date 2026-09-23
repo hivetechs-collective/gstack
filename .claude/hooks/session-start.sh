@@ -210,14 +210,26 @@ auto_sync_from_pattern() {
 
     # Legacy regen path (mode=regen only): regenerate in place; the caller is
     # expected to commit+push so consumers can pull.
+    #
+    # The marker is sync-to-project.sh's to write: it stamps .sync-version LAST,
+    # only after a sync that completed. This hook used to copy it on ANY exit 0,
+    # and sync-to-project.sh also exits 0 on its dirty-.claude/ safety SKIP, so a
+    # skipped sync was recorded as done — no retry until the next source bump,
+    # "✅ Sync complete" on screen, and the stamp left as tracked dirt in the
+    # working tree (/plan-w-team 2.51.5). Judge the outcome by the marker.
     echo "   Syncing from claude-pattern (local regen — commit+push to share)..."
-    if "$SYNC_SCRIPT" "$PROJECT_ROOT" >/dev/null 2>&1; then
-        if [ -f "$SOURCE_VERSION_FILE" ]; then
-            cp "$SOURCE_VERSION_FILE" "$LOCAL_VERSION_FILE"
-        fi
+    local sync_out="" sync_rc=0
+    sync_out="$("$SYNC_SCRIPT" "$PROJECT_ROOT" 2>&1)" || sync_rc=$?
+    if [ "$sync_rc" -ne 0 ]; then
+        echo "   ⚠️  Sync failed (exit $sync_rc) - continuing with existing config"
+    elif printf '%s\n' "$sync_out" | grep -q '🛑 SKIP'; then
+        echo "   ⚠️  Sync skipped: .claude/ has uncommitted changes — nothing written, retries next session"
+        echo "   Review: git -C $PROJECT_ROOT status -- .claude/"
+    elif [ ! -f "$SOURCE_VERSION_FILE" ] \
+        || [ "$(cat "$LOCAL_VERSION_FILE" 2>/dev/null)" = "$(cat "$SOURCE_VERSION_FILE" 2>/dev/null)" ]; then
         echo "   ✅ Sync complete"
     else
-        echo "   ⚠️  Sync failed - continuing with existing config"
+        echo "   ⚠️  Sync did not complete (marker not updated) - retries next session"
     fi
     echo ""
 }
