@@ -14,6 +14,45 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.51.4] — 2026-09-23 (fix: the first hook-launched post-push confirm went red — an inherited PROJECT_ROOT pointed every statusline test sandbox at the main checkout) (57713aa)
+
+The post-push confirm of 204245ca (2.51.3) was the first one the push hook actually
+launched. Earlier confirms were started by hand. It went red on four
+`statusline-segments.bats` advisory cases and four statusline shell tests
+(`account-advice`, `dots`, `plan-usage`, `project-root`). The same files passed when
+run directly.
+
+Cause:
+- `post-git-push.sh` sources `.claude/lib/config.sh`, which EXPORTS `PROJECT_ROOT`
+  and `CONFIG_FILE` pointing at the main checkout.
+- The detached confirm inherits the hook's environment.
+- `statusline.sh` only assigned `PROJECT_ROOT` inside a git repo. Otherwise it fell
+  back with `[ -n "${PROJECT_ROOT:-}" ] || PROJECT_ROOT="$PWD"`, which kept the
+  inherited value.
+- So every sandboxed render read the checkout's `account-advice.sh` and
+  `bg-agents-cache.json` instead of the sandbox's. That explains the missing nudge,
+  the fake helper that was never called, and the live `👤 main wf ● (1 running)`
+  line in a test render.
+- Reproduced exactly: exporting `PROJECT_ROOT=<repo>` fails those 8 files and
+  nothing else.
+
+- `.claude/statusline.sh` 1.8.1: `PROJECT_ROOT=""` before the git-root probe, so an
+  inherited value is never trusted. This is a product fix, not only a test fix: any
+  statusline launched from an env that exports `PROJECT_ROOT` rendered against the
+  wrong tree when its cwd was outside git.
+- `plan-w-team-post-push-confirm.sh --run`: `env -u PROJECT_ROOT -u CONFIG_FILE`
+  beside the existing suite-seam scrub. A suite that honours them would test the
+  checkout, not the pushed sha.
+- Tests:
+  - `statusline-project-root.test.sh` case 6: a decoy inherited `PROJECT_ROOT` loses
+    in both a plain and a git cwd. The plain case fails against 1.8.0 (negative
+    control run).
+  - `plan-w-team-post-push-confirm.test.sh` P13: the stub runner fails on either
+    leaked variable (positive control included). A `--run` launched with both
+    exported comes back green. `_env` now scrubs both, so the file is hermetic
+    under a hook env.
+- `docs/operations/test-green-retest.md` §Post-push full confirm documents the scrub.
+
 ## [2.51.3] — 2026-09-23 (fix: delete the ten PermissionRequest hook groups — argument-syntax matchers that never fired, echoing an undocumented output shape) (2cec92b)
 
 2.51.1 left the PermissionRequest groups alone because they decide permissions. The

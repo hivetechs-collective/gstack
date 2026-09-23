@@ -268,7 +268,12 @@ if [ "$MODE" = "run" ]; then
     ln -s "$ROOT/node_modules" "$WT/node_modules" 2>/dev/null || true
   fi
 
+  # PROJECT_ROOT/CONFIG_FILE: post-git-push.sh sources .claude/lib/config.sh,
+  # which EXPORTS both pointing at the main checkout, and this run inherits the
+  # hook's env. A suite that honours them tests the checkout, not the pushed sha:
+  # the 204245ca confirm went red on the statusline tests that way (2.51.4).
   ( cd "$WT" && env -u PWT_TEST_GREEN_SUITE_CMD -u PWT_TEST_GREEN_RETEST_CMD \
+      -u PROJECT_ROOT -u CONFIG_FILE \
       CLAUDE_PROJECT_DIR="$WT" PWT_PROJECT_ROOT_OVERRIDE="$WT" \
       bash "$WT/.claude/scripts/plan-w-team-test-green.sh" --slug "$SLUG" ) > /dev/null 2>&1
 
