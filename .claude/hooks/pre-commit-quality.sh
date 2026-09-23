@@ -157,6 +157,14 @@ done <<< "$STAGED_FILES"
 #   - tree_digest   — recomputed here from STAGED content, so the suite must have
 #                     seen exactly what is about to be committed;
 #   - age window    — belt to the digest's braces (PWT_TEST_GREEN_MAX_AGE_S).
+#   - what ran      — the verdict's `mode` + `suite_cmd` and the log's single
+#                     SUITE_MODE= line: a SKILL_SKIP_* partial run, a single-file
+#                     run, or a substituted suite command never passes (2.51.0).
+# A `mode=retest` verdict (plan-w-team-test-green.sh --retest) is accepted only
+# when its full BASE verdict passes every check above, is the one beside it and
+# unreplaced, and the rerun set the gate REBUILDS from base → staged (same lib, not
+# the retest's own list) is a subset of the files the retest log says ran.
+# See docs/operations/test-green-retest.md.
 # The one allow-without-verdict path is the consumer carve-out below: a checkout
 # with no harness has no suite to have run.
 #
@@ -198,50 +206,91 @@ EOF
     return 1
 }
 
-# Recompute the watched-tree digest the way test-green.sh records it, but sourcing
-# STAGED content for staged files: the gate must corroborate what is about to be
-# committed, not what happens to be sitting in the working tree. Unstaged watched
-# files use their working-tree blob (or HEAD's, if deleted) — the same content the
-# suite saw. Prints an empty string on any failure; the caller fails closed.
-_pwt_staged_tree_digest() {
-    local root="$1" g
-    local globs=()
-    while IFS= read -r g; do
-        [ -n "$g" ] || continue
-        globs+=("$g")
-    done <<EOF
-$PWT_WATCHED_GLOBS
-EOF
-    (
-      set +e
-      cd "$root" 2>/dev/null || exit 0
-      staged_list=$(mktemp -t pwt-gate-staged.XXXXXX) || exit 0
-      git diff --cached --name-only --diff-filter=ACMR > "$staged_list" 2>/dev/null
-      files=$(git ls-files --cached --others --exclude-standard -- "${globs[@]}" 2>/dev/null | LC_ALL=C sort)
-      # Fail closed on an empty watched set — see the matching guard in
-      # plan-w-team-test-green.sh. Both sides would otherwise agree on the digest
-      # of nothing, so a broken enumeration would corroborate itself.
-      if [ -z "$files" ]; then rm -f "$staged_list" 2>/dev/null; exit 0; fi
-      printf '%s\n' "$files" \
-        | while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            h=""
-            if grep -qFx -- "$f" "$staged_list" 2>/dev/null; then
-                h=$(git rev-parse ":$f" 2>/dev/null)
-            fi
-            if [ -z "$h" ]; then
-                if [ -f "$f" ]; then
-                    h=$(git hash-object --path "$f" -- "$f" 2>/dev/null)
-                else
-                    h=$(git rev-parse "HEAD:$f" 2>/dev/null)
-                fi
-            fi
-            [ -n "$h" ] || h="-"
-            printf '%s:%s\n' "$f" "$h"
-          done \
-        | shasum -a 256 2>/dev/null | awk '{print $1}'
-      rm -f "$staged_list" 2>/dev/null
-    )
+# The shared retest lib: the manifest/digest the gate recomputes and every
+# "is this retest honest?" rule. Sourced lazily — only a harness checkout that is
+# committing a watched path needs it, and a missing lib there BLOCKS (below).
+PWT_RT_LIB="$SCRIPT_DIR/../scripts/plan-w-team-retest-lib.sh"
+
+# _pwt_gate_retest <art> <staged_manifest> <tmpdir> — corroborates a mode=retest
+# verdict (docs/operations/test-green-retest.md, rules R1–R7). The gate does NOT
+# trust the retest's own `required` list: it rebuilds R itself from the base and
+# the STAGED tree through the same lib, and requires R ⊆ RETEST_RAN of the log.
+# Prints a block reason, or nothing when the retest is acceptable.
+_pwt_gate_retest() {
+    local art="$1" man="$2" tmpd="$3"
+    local cmd lmode bslug bts bdig bfile chain rt_max_age n
+    cmd=$(jq -r '.suite_cmd // ""' "$art" 2>/dev/null || echo "")
+    lmode=$(pwt_rt_log_mode "$TG_LOG" 2>/dev/null || echo "")
+    # R0 — the retest log is the very log the verdict was written from: RETEST_RAN
+    # rows read below are the witness for R ⊆ ran, so an appended row must not count.
+    if ! pwt_rt_log_bound "$art" "$TG_LOG"; then
+        echo "the retest verdict's log is not bound to it: $PWT_RT_ERR"; return 0
+    fi
+    # R1 — the log is a retest log, produced by the canonical retest command.
+    if [ "$lmode" != "retest" ]; then
+        echo "the retest verdict's log does not carry exactly one SUITE_MODE=retest"; return 0
+    fi
+    if [ "$cmd" != "$PWT_RT_DEFAULT_RETEST_CMD" ]; then
+        echo "the retest verdict ran a substituted command, not the canonical retest runner"; return 0
+    fi
+    # R2 — the base it names is the full verdict sitting beside it, unreplaced.
+    bslug=$(jq -r '.base.slug // ""' "$art" 2>/dev/null || echo "")
+    if ! pwt_rt_is_safe_slug "$bslug"; then
+        echo "the retest verdict names no usable base slug"; return 0
+    fi
+    if [ "$(basename "$art")" != "plan-w-team-test-green-${bslug}--retest.json" ] \
+       || [ "$(jq -r '.slug // ""' "$art" 2>/dev/null || echo "")" != "${bslug}--retest" ]; then
+        echo "the retest verdict's file name / slug do not match its base '${bslug}'"; return 0
+    fi
+    bfile="$TG_STATE_DIR/plan-w-team-test-green-${bslug}.json"
+    bts=$(jq -r '.base.ts // ""' "$art" 2>/dev/null || echo "")
+    bdig=$(jq -r '.base.tree_digest // ""' "$art" 2>/dev/null || echo "")
+    if [ ! -f "$bfile" ] || ! jq -e . "$bfile" >/dev/null 2>&1; then
+        echo "the retest's base full verdict is gone ($bfile)"; return 0
+    fi
+    if [ "$(jq -r '.ts // ""' "$bfile" 2>/dev/null || echo "")" != "$bts" ] \
+       || [ "$(jq -r '.tree_digest // ""' "$bfile" 2>/dev/null || echo "")" != "$bdig" ]; then
+        echo "the retest's base full verdict has been replaced since the retest ran"; return 0
+    fi
+    # R3–R5 — the base is itself a full, witnessed, fresh, self-verifying run.
+    rt_max_age="${PWT_TEST_RETEST_BASE_MAX_AGE_S:-$TG_MAX_AGE}"
+    if ! pwt_rt_check_base "$bfile" "$rt_max_age"; then
+        echo "the retest's base is not acceptable: $PWT_RT_ERR"; return 0
+    fi
+    # R6 — rebuild R from base → STAGED and require every file of it to have run.
+    if ! pwt_rt_delta "$PWT_RT_BASE_MANIFEST" "$man" > "$tmpd/delta" 2>/dev/null; then
+        echo "the change set since the base could not be computed"; return 0
+    fi
+    if n=$(pwt_rt_needs_full "$tmpd/delta"); then
+        echo "the staged change set touches the harness or gate machinery ($n) — only a full run can certify it"; return 0
+    fi
+    # Fail closed exactly as the wrapper does: a base failure the runner could not
+    # tie to a file cannot be retested by file (pwt_rt_check_base already refuses it;
+    # this is the second, independent refusal — never a swallowed `|| true`).
+    if ! pwt_rt_parse_failures "$PWT_RT_BASE_LOG" > "$tmpd/basefailed" 2>/dev/null; then
+        echo "the base log has an unattributed or leak failure, or could not be parsed — only a full run can clear it"; return 0
+    fi
+    if ! pwt_rt_required "$TG_ROOT" "$tmpd/basefailed" "$tmpd/delta" "$PWT_RT_BASE_GREEN" \
+            "$PWT_RT_BASE_MANIFEST" "$man" > "$tmpd/required" 2>/dev/null || [ ! -s "$tmpd/required" ]; then
+        echo "the rerun set for the staged tree could not be built — only a full run can certify it"; return 0
+    fi
+    n=$(grep -c . "$tmpd/required" 2>/dev/null || echo 0)
+    if [ "$n" -gt "$PWT_RT_MAX_FILES" ]; then
+        echo "the rerun set has $n files (> PWT_TEST_RETEST_MAX_FILES=$PWT_RT_MAX_FILES)"; return 0
+    fi
+    pwt_rt_ran "$TG_LOG" > "$tmpd/ran" 2>/dev/null || true
+    LC_ALL=C comm -23 "$tmpd/required" "$tmpd/ran" > "$tmpd/missing" 2>/dev/null || true
+    if [ -s "$tmpd/missing" ]; then
+        n=$(grep -c . "$tmpd/missing" 2>/dev/null || echo 0)
+        echo "the retest did not run $n file(s) the staged change requires (first: $(head -1 "$tmpd/missing" | cut -c1-120))"; return 0
+    fi
+    # R7 — bounded chain of retests on one full base.
+    chain=$(jq -r '.chain // ""' "$art" 2>/dev/null || echo "")
+    case "$chain" in ""|*[!0-9]*) chain=999999 ;; esac
+    if [ "$chain" -lt 1 ] || [ "$chain" -gt "$PWT_RT_MAX_CHAIN" ]; then
+        echo "the retest chain is out of bounds (chain=${chain}, PWT_TEST_RETEST_MAX_CHAIN=$PWT_RT_MAX_CHAIN) — run a full run"; return 0
+    fi
+    return 0
 }
 
 PLAN_TEAM_STAGED=false
@@ -271,6 +320,7 @@ if [ "$PLAN_TEAM_STAGED" = "true" ]; then
         TG_MAX_AGE="${PWT_TEST_GREEN_MAX_AGE_S:-86400}"
         TG_SLUG=""
         TG_BLOCK=""
+        TG_HINT_RETEST=false
 
         # Newest verdict in THIS checkout's state dir only. Never the dual-write set:
         # a sibling worktree's verdict describes a different tree.
@@ -284,6 +334,8 @@ if [ "$PLAN_TEAM_STAGED" = "true" ]; then
             TG_BLOCK="jq is required to consult the test-green verdict and is not on PATH"
         elif ! command -v shasum >/dev/null 2>&1; then
             TG_BLOCK="shasum is required to corroborate the test-green verdict and is not on PATH"
+        elif [ ! -f "$PWT_RT_LIB" ] || ! . "$PWT_RT_LIB" 2>/dev/null; then
+            TG_BLOCK="the shared retest lib is missing or broken ($PWT_RT_LIB), so no verdict can be corroborated"
         elif [ -z "$TG_ART" ]; then
             TG_BLOCK="no test-green verdict in $TG_STATE_DIR — the skill suite has not been run for this checkout"
         elif ! jq -e . "$TG_ART" >/dev/null 2>&1; then
@@ -293,6 +345,11 @@ if [ "$PLAN_TEAM_STAGED" = "true" ]; then
             TG_GREEN=$(jq -r '.green // false' "$TG_ART" 2>/dev/null || echo "false")
             TG_DIGEST=$(jq -r '.tree_digest // ""' "$TG_ART" 2>/dev/null || echo "")
             TG_LOG=$(jq -r '.log_path // ""' "$TG_ART" 2>/dev/null || echo "")
+            # `.mode` is a trust-boundary field: shape it before it reaches a message.
+            TG_MODE=$(jq -r '.mode // ""' "$TG_ART" 2>/dev/null | tr -cd 'a-z' | cut -c1-12 || echo "")
+            # A retest's re-run hint names its BASE slug (the `--retest` suffix is
+            # reserved and refused by the wrapper).
+            TG_SLUG="${TG_SLUG%--retest}"
 
             TG_MTIME=$(_file_mtime "$TG_ART")
             TG_AGE=""
@@ -306,6 +363,7 @@ if [ "$PLAN_TEAM_STAGED" = "true" ]; then
                 # reaches the block payload.
                 TG_REASON=$(jq -r '.reason // "?"' "$TG_ART" 2>/dev/null | tr -d '"\\' | tr -d '\n\r' | cut -c1-40)
                 TG_BLOCK="the archived test-green verdict is RED (${TG_REASON:-?})"
+                [ "$TG_MODE" = "full" ] && TG_HINT_RETEST=true
             elif [ -z "$TG_DIGEST" ]; then
                 TG_BLOCK="the verdict carries no tree_digest, so it cannot be tied to the staged content"
             elif [ -z "$TG_LOG" ] || [ ! -r "$TG_LOG" ]; then
@@ -319,17 +377,47 @@ if [ "$PLAN_TEAM_STAGED" = "true" ]; then
             elif [ "$TG_AGE" -gt "$TG_MAX_AGE" ]; then
                 TG_BLOCK="the verdict is stale (${TG_AGE}s old > ${TG_MAX_AGE}s; tune PWT_TEST_GREEN_MAX_AGE_S)"
             else
-                TG_ACTUAL=$(_pwt_staged_tree_digest "$TG_ROOT")
+                TG_TMP=$(mktemp -d -t pwt-gate.XXXXXX 2>/dev/null || echo "")
+                TG_ACTUAL=""
+                if [ -n "$TG_TMP" ] \
+                   && pwt_rt_manifest "$TG_ROOT" staged "$PWT_WATCHED_GLOBS" > "$TG_TMP/staged.man" 2>/dev/null; then
+                    TG_ACTUAL=$(pwt_rt_digest "$TG_TMP/staged.man" 2>/dev/null || echo "")
+                fi
                 if [ -z "$TG_ACTUAL" ]; then
                     TG_BLOCK="the staged-content digest could not be computed, so the verdict cannot be corroborated"
                 elif [ "$TG_ACTUAL" != "$TG_DIGEST" ]; then
                     TG_BLOCK="tree_digest mismatch — the suite ran against different content than what is staged (verdict ${TG_DIGEST%"${TG_DIGEST#??????????}"}…, staged ${TG_ACTUAL%"${TG_ACTUAL#??????????}"}…)"
+                else
+                    # WHAT ran, not only that something ended green (P3): a
+                    # SKILL_SKIP_* partial run or a substituted suite command is
+                    # never gate-acceptable, and a retest is corroborated whole.
+                    case "$TG_MODE" in
+                        full)
+                            if ! pwt_rt_log_bound "$TG_ART" "$TG_LOG"; then
+                                TG_BLOCK="the verdict's suite log is not bound to it: $PWT_RT_ERR"
+                            elif [ "$(pwt_rt_log_mode "$TG_LOG" 2>/dev/null || echo "")" != "full" ]; then
+                                TG_BLOCK="the verdict's log does not carry exactly one SUITE_MODE=full — a partial (SKILL_SKIP_*) or single-file run is not a suite run"
+                            elif [ "$(jq -r '.suite_cmd // ""' "$TG_ART" 2>/dev/null || echo "")" != "$PWT_RT_DEFAULT_SUITE_CMD" ]; then
+                                TG_BLOCK="the verdict was produced by a substituted suite command, not the skill suite"
+                            fi ;;
+                        retest)
+                            TG_BLOCK=$(_pwt_gate_retest "$TG_ART" "$TG_TMP/staged.man" "$TG_TMP" || echo "the retest verdict could not be corroborated")
+                            ;;
+                        "")
+                            TG_BLOCK="legacy verdict (no mode field — it predates the 2.51.0 retest gate) — run one full run" ;;
+                        *)
+                            TG_BLOCK="the verdict's mode '${TG_MODE}' is not gate-acceptable (only full or retest)" ;;
+                    esac
                 fi
+                [ -n "$TG_TMP" ] && rm -rf "$TG_TMP" 2>/dev/null || true
             fi
         fi
 
         if [ -n "$TG_BLOCK" ]; then
             ERRORS+=("plan-w-team commit gate: $TG_BLOCK — run the suite out of band: .claude/scripts/plan-w-team-test-green.sh --slug ${TG_SLUG:-<slug>}   then re-commit")
+            if [ "$TG_HINT_RETEST" = "true" ]; then
+                ERRORS+=("  after fixing the failing file(s), a targeted retest is enough: .claude/scripts/plan-w-team-test-green.sh --slug ${TG_SLUG:-<slug>} --retest")
+            fi
         fi
     fi
 fi

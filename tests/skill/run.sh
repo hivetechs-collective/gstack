@@ -17,11 +17,29 @@
 # (Filtering specific files for local dev iteration is supported via $1, but
 # `make test-skill` always runs everything.)
 #
+# `--retest <list>` is NOT a second runner and NOT a new Makefile target: it is a
+# GATE-OWNED mode of this one runner, invoked only by
+# `.claude/scripts/plan-w-team-test-green.sh --retest`, which decides WHICH files
+# must rerun (plan-w-team-retest-lib.sh) against one full base run. Discovery stays
+# here — `--list` prints it for the lib — so there is still exactly one place that
+# decides what the corpus is. See docs/operations/test-green-retest.md.
+#
+# Machine-readable rows (the log IS the witness the commit gate reads), all printed
+# immediately before the final SUITE_EXIT line:
+#   SUITE_MODE=full|file|retest|partial   exactly once; partial = any SKILL_SKIP_*
+#   RETEST_RAN <bats|shell|ts> <rel>      retest mode: each listed file that ran
+#   SUITE_FAILED <bats|shell|ts> <rel>    each failing file
+#   SUITE_FAILED unattributed -           a failure that could not be tied to a file
+#   SUITE_FAILED leak state|session       a state / session-registry leak
+#
 # Usage:
 #   tests/skill/run.sh                        # run all cases
 #   tests/skill/run.sh cases/secret-scan.bats # run a single file (DEV ONLY)
 #   tests/skill/run.sh --no-archive           # skip JSON write (CI smoke runs)
 #   tests/skill/run.sh --setup                # bootstrap bats only, exit
+#   tests/skill/run.sh --list                 # print the corpus as `kind rel`, exit
+#   tests/skill/run.sh --retest <file>        # rerun ONLY the `kind rel` lines in
+#                                             # <file> (gate-owned; never archives)
 #
 # Exit codes:
 #   0 — all tests passed
@@ -42,13 +60,20 @@ set -euo pipefail
 # --help/--setup do NOT emit: they are not suite runs (no verdict to report),
 # and the wrapper's NO-SUITE guard covers "no suite here" separately.
 __SUITE_EXIT_EMITTED=0
+SUITE_MODE=""
+__SUITE_ROWS=""
 __suite_exit() {
   if [ "$__SUITE_EXIT_EMITTED" -eq 0 ]; then
     __SUITE_EXIT_EMITTED=1
+    # The machine-readable rows ride immediately ahead of the marker so a log that
+    # ends in SUITE_EXIT=0 also carries its own mode and file-level results.
+    [ -n "$SUITE_MODE" ] && echo "SUITE_MODE=$SUITE_MODE"
+    [ -n "$__SUITE_ROWS" ] && printf '%s' "$__SUITE_ROWS"
     echo "SUITE_EXIT=$1"
   fi
   exit "$1"
 }
+__suite_row() { __SUITE_ROWS="${__SUITE_ROWS}$*"$'\n'; }
 
 # ── Sanitize inherited /plan-w-team worker env (test-hygiene) ─────────────────
 # When pwt-goal.sh spawns a worker (claude --bg), it exports PLAN_W_TEAM_FORCE_SPAWN=1,
@@ -82,15 +107,134 @@ RUNS_DIR="$RESULTS_DIR/runs"
 ARCHIVE=1
 SETUP_ONLY=0
 TARGET=""
+LIST_ONLY=0
+RETEST_LIST=""
+RETEST_FLAG=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-archive) ARCHIVE=0; shift ;;
     --setup)      SETUP_ONLY=1; shift ;;
-    -h|--help)    grep '^#' "$0" | head -30; exit 0 ;;
+    --list)       LIST_ONLY=1; shift ;;
+    --retest)     RETEST_FLAG=1; RETEST_LIST="${2:-}"; shift; [ $# -gt 0 ] && shift ;;
+    -h|--help)    grep '^#' "$0" | head -50; exit 0 ;;
     *)            TARGET="$1"; shift ;;
   esac
 done
+
+# ── Discovery (the ONE definition of the corpus) ─────────────────────────────
+# Absolute paths, sorted. Every phase — and `--list`, which the retest lib reads —
+# enumerates through these, so a retest can only ever name files a full run runs.
+__discover_bats() {
+  {
+    find "$CASES_DIR" -name '*.bats' -type f 2>/dev/null
+    [ -d "$SCENARIOS_DIR" ] && find "$SCENARIOS_DIR" -name '*.bats' -type f 2>/dev/null
+    [ -d "$SCENARIOS_LOCAL_DIR" ] && find "$SCENARIOS_LOCAL_DIR" -name '*.bats' -type f 2>/dev/null
+    true
+  } | sort
+  return 0
+}
+__discover_shell() {
+  {
+    [ -d "$REPO_ROOT/.claude/scripts" ] && find "$REPO_ROOT/.claude/scripts" -name '*.test.sh' -type f 2>/dev/null
+    [ -d "$REPO_ROOT/.claude/hooks" ]   && find "$REPO_ROOT/.claude/hooks"   -name '*.test.sh' -type f 2>/dev/null
+    [ -d "$REPO_ROOT/tests/version-uplift" ] && find "$REPO_ROOT/tests/version-uplift" -name '*.test.sh' -type f 2>/dev/null
+    [ -d "$REPO_ROOT/.claude/commands/plan-w-team/accounts" ] && find "$REPO_ROOT/.claude/commands/plan-w-team/accounts" -name '*.test.sh' -type f 2>/dev/null
+    true
+  } | sort
+  return 0
+}
+__discover_ts() {
+  {
+    [ -d "$REPO_ROOT/.claude/scripts" ] && find "$REPO_ROOT/.claude/scripts" -name '*.test.ts' -type f 2>/dev/null
+    [ -d "$REPO_ROOT/.claude/hooks" ]   && find "$REPO_ROOT/.claude/hooks"   -name '*.test.ts' -type f 2>/dev/null
+    true
+  } | sort
+  return 0
+}
+# `kind rel` for the whole corpus.
+__list_corpus() {
+  local f
+  __discover_bats  | while IFS= read -r f; do if [ -n "$f" ]; then echo "bats ${f#"$REPO_ROOT"/}"; fi; done
+  __discover_shell | while IFS= read -r f; do if [ -n "$f" ]; then echo "shell ${f#"$REPO_ROOT"/}"; fi; done
+  __discover_ts    | while IFS= read -r f; do if [ -n "$f" ]; then echo "ts ${f#"$REPO_ROOT"/}"; fi; done
+  return 0
+}
+
+# --list: not a suite run — no bootstrap, no marker.
+if [ "$LIST_ONLY" = "1" ]; then
+  if [ ! -d "$CASES_DIR" ]; then
+    echo "✗ cases directory missing: $CASES_DIR" >&2
+    exit 2
+  fi
+  __list_corpus
+  exit 0
+fi
+
+# ── Suite mode (witnessed in the log as SUITE_MODE=…) ────────────────────────
+# full   — the whole corpus, nothing skipped: the only mode a full verdict accepts
+# file   — single-file dev target
+# retest — the gate-owned --retest list
+# partial — full or retest with any phase/guard skipped (never gate-acceptable)
+if [ "$RETEST_FLAG" = "1" ]; then
+  SUITE_MODE="retest"
+elif [ -n "$TARGET" ]; then
+  SUITE_MODE="file"
+else
+  SUITE_MODE="full"
+fi
+if [ "$SUITE_MODE" != "file" ]; then
+  for __skip in "${SKILL_SKIP_SHELL_TESTS:-0}" "${SKILL_SKIP_TS_TESTS:-0}" \
+                "${SKILL_SKIP_STATE_LEAK_GUARD:-0}" "${SKILL_SKIP_SESSION_LEAK_GUARD:-0}"; do
+    [ "$__skip" = "1" ] && SUITE_MODE="partial"
+  done
+fi
+
+# ── --retest list validation (fail closed: exit 2 on anything unknown) ───────
+# Every entry must be `bats|shell|ts <rel>` AND appear verbatim in this runner's
+# own discovery for that kind — a path outside the corpus roots (or a `..` walk)
+# can never be "retested". An empty list is a usage error, not a green run.
+RT_BATS=()
+RT_SHELL=()
+RT_TS=()
+if [ "$SUITE_MODE" = "retest" ] || [ "$RETEST_FLAG" = "1" ]; then
+  ARCHIVE=0
+  if [ -n "$TARGET" ]; then
+    echo "✗ --retest cannot be combined with a single-file target ($TARGET)" >&2
+    __suite_exit 2
+  fi
+  if [ -z "$RETEST_LIST" ] || [ ! -f "$RETEST_LIST" ]; then
+    echo "✗ --retest needs a readable list file (got: '${RETEST_LIST}')" >&2
+    __suite_exit 2
+  fi
+  __RT_CORPUS="$(__list_corpus)"
+  __rt_n=0
+  while IFS= read -r __rt_line || [ -n "$__rt_line" ]; do
+    __rt_line="${__rt_line%%#*}"
+    __rt_line="$(printf '%s' "$__rt_line" | sed 's/[[:space:]]*$//; s/^[[:space:]]*//')"
+    [ -n "$__rt_line" ] || continue
+    __rt_kind="${__rt_line%% *}"
+    __rt_rel="${__rt_line#* }"
+    case "$__rt_kind" in
+      bats|shell|ts) ;;
+      *) echo "✗ --retest: unknown kind '$__rt_kind' in: $__rt_line" >&2; __suite_exit 2 ;;
+    esac
+    if ! printf '%s\n' "$__RT_CORPUS" | grep -qFx -- "$__rt_kind $__rt_rel"; then
+      echo "✗ --retest: '$__rt_line' is not in the corpus this runner discovers" >&2
+      __suite_exit 2
+    fi
+    case "$__rt_kind" in
+      bats)  RT_BATS+=("$REPO_ROOT/$__rt_rel") ;;
+      shell) RT_SHELL+=("$REPO_ROOT/$__rt_rel") ;;
+      ts)    RT_TS+=("$REPO_ROOT/$__rt_rel") ;;
+    esac
+    __rt_n=$((__rt_n + 1))
+  done < "$RETEST_LIST"
+  if [ "$__rt_n" -eq 0 ]; then
+    echo "✗ --retest: the list is empty — nothing to retest is a usage error, never a green run" >&2
+    __suite_exit 2
+  fi
+fi
 
 # ── Bootstrap bats-core ──────────────────────────────────────────────────────
 # Vendored under .bats/ (gitignored). One-time clone on first run.
@@ -126,6 +270,8 @@ if [ -n "$TARGET" ]; then
     __suite_exit 2
   fi
   TEST_FILES=("$TARGET_PATH")
+elif [ "$SUITE_MODE" = "retest" ] || [ "$RETEST_FLAG" = "1" ]; then
+  TEST_FILES=(${RT_BATS[@]:+"${RT_BATS[@]}"})
 else
   if [ ! -d "$CASES_DIR" ]; then
     echo "✗ cases directory missing: $CASES_DIR" >&2
@@ -140,17 +286,11 @@ else
   # MUST be discovered here too — a consumer's pre-commit runs run-scenarios.sh
   # (which also discovers it), but this canonical runner is what gates them.
   while IFS= read -r f; do
-    TEST_FILES+=("$f")
-  done < <(
-    {
-      find "$CASES_DIR" -name '*.bats' -type f 2>/dev/null
-      [ -d "$SCENARIOS_DIR" ] && find "$SCENARIOS_DIR" -name '*.bats' -type f 2>/dev/null
-      [ -d "$SCENARIOS_LOCAL_DIR" ] && find "$SCENARIOS_LOCAL_DIR" -name '*.bats' -type f 2>/dev/null
-    } | sort
-  )
+    [ -n "$f" ] && TEST_FILES+=("$f")
+  done < <(__discover_bats)
 fi
 
-if [ "${#TEST_FILES[@]}" -eq 0 ]; then
+if [ "${#TEST_FILES[@]}" -eq 0 ] && [ "$RETEST_FLAG" != "1" ]; then
   echo "⚠ no .bats files found under $CASES_DIR or $SCENARIOS_DIR — nothing to run"
   __suite_exit 0
 fi
@@ -160,7 +300,8 @@ mkdir -p "$RUNS_DIR"
 TIMESTAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
 TAP_LOG=$(mktemp)
 TS_LOG=""
-trap 'rm -f "$TAP_LOG" ${TS_LOG:+"$TS_LOG"}' EXIT
+SHELL_OUT_LOG=""
+trap 'rm -f "$TAP_LOG" ${TS_LOG:+"$TS_LOG"} ${SHELL_OUT_LOG:+"$SHELL_OUT_LOG"}' EXIT
 
 echo "→ running ${#TEST_FILES[@]} bats file(s) under tests/skill/{cases,scenarios}/"
 
@@ -208,10 +349,18 @@ fi
 # Use --tap to get machine-parseable output AND tee it to terminal for dev UX.
 # `bats` exits non-zero on any failure; capture exit independently of the tee
 # pipeline so PIPESTAT does not mask it.
+BATS_EXIT=0
+if [ "${#TEST_FILES[@]}" -gt 0 ]; then
 set +e
 "$BATS_BIN" --tap "${TEST_FILES[@]}" | tee "$TAP_LOG"
 BATS_EXIT=${PIPESTATUS[0]}
 set -e
+fi
+if [ "$RETEST_FLAG" = "1" ]; then
+  for __f in ${TEST_FILES[@]:+"${TEST_FILES[@]}"}; do
+    __suite_row "RETEST_RAN bats ${__f#"$REPO_ROOT"/}"
+  done
+fi
 
 # ── State-leak guard: AFTER snapshot + additive diff (R6) ────────────────────
 if [ "$STATE_GUARD_ACTIVE" = "1" ]; then
@@ -248,7 +397,13 @@ SHELL_TOTAL=0
 SHELL_PASSED=0
 SHELL_FAILED=0
 SHELL_FAILED_NAMES=""
-if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ]; then
+SHELL_FILES=""
+if [ "$RETEST_FLAG" = "1" ]; then
+  for __f in ${RT_SHELL[@]:+"${RT_SHELL[@]}"}; do SHELL_FILES="${SHELL_FILES}${__f}"$'\n'; done
+elif [ -z "$TARGET" ]; then
+  SHELL_FILES="$(__discover_shell)"
+fi
+if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ] && [ -n "$SHELL_FILES" ]; then
   TIMEOUT_BIN=""
   if command -v timeout >/dev/null 2>&1; then TIMEOUT_BIN="timeout"
   elif command -v gtimeout >/dev/null 2>&1; then TIMEOUT_BIN="gtimeout"; fi
@@ -289,19 +444,27 @@ if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ]; then
   # write nor want (it would only add appearance-window latency and never fire). Off
   # by default here; the dedicated pwt-goal-spawn-liveness-probe.test.sh re-enables it
   # (PWT_DISABLE_SPAWN_LIVENESS_PROBE=0) against a controlled fake transcript.
+  # A full run discards per-test output (dozens of files); a retest keeps the
+  # failing one's output and prints it INDENTED, so nothing a test prints can ever
+  # land at column 0 and forge a SUITE_*/RETEST_RAN row.
+  SHELL_OUT=/dev/null
+  if [ "$RETEST_FLAG" = "1" ]; then
+    SHELL_OUT_LOG=$(mktemp)
+    SHELL_OUT="$SHELL_OUT_LOG"
+  fi
   run_one_shell_test() {
     if [ -n "$TIMEOUT_BIN" ]; then
       env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE -u PLAN_W_TEAM_AUTO_APPROVE_PUSH \
           -u PLAN_W_TEAM_FORCE_SPAWN -u PLAN_W_TEAM_DISABLE_GOAL \
           PWT_DISABLE_SPAWN_LIVENESS_PROBE=1 \
           CLAUDE_PROJECT_DIR="$REPO_ROOT" \
-          "$TIMEOUT_BIN" "$SHELL_TEST_TIMEOUT" bash "$1" >/dev/null 2>&1
+          "$TIMEOUT_BIN" "$SHELL_TEST_TIMEOUT" bash "$1" >"$SHELL_OUT" 2>&1
     else
       env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE -u PLAN_W_TEAM_AUTO_APPROVE_PUSH \
           -u PLAN_W_TEAM_FORCE_SPAWN -u PLAN_W_TEAM_DISABLE_GOAL \
           PWT_DISABLE_SPAWN_LIVENESS_PROBE=1 \
           CLAUDE_PROJECT_DIR="$REPO_ROOT" \
-          bash "$1" >/dev/null 2>&1
+          bash "$1" >"$SHELL_OUT" 2>&1
     fi
   }
 
@@ -332,15 +495,12 @@ if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ]; then
       SHELL_FAILED=$((SHELL_FAILED + 1))
       SHELL_FAILED_NAMES="${SHELL_FAILED_NAMES}${rel}"$'\n'
       echo "  FAIL $rel"
+      [ "$RETEST_FLAG" = "1" ] && sed 's/^/       /' "$SHELL_OUT"
     fi
-  done < <(
-    {
-      [ -d "$REPO_ROOT/.claude/scripts" ] && find "$REPO_ROOT/.claude/scripts" -name '*.test.sh' -type f 2>/dev/null
-      [ -d "$REPO_ROOT/.claude/hooks" ]   && find "$REPO_ROOT/.claude/hooks"   -name '*.test.sh' -type f 2>/dev/null
-      [ -d "$REPO_ROOT/tests/version-uplift" ] && find "$REPO_ROOT/tests/version-uplift" -name '*.test.sh' -type f 2>/dev/null
-      [ -d "$REPO_ROOT/.claude/commands/plan-w-team/accounts" ] && find "$REPO_ROOT/.claude/commands/plan-w-team/accounts" -name '*.test.sh' -type f 2>/dev/null
-    } | sort
-  )
+    [ "$RETEST_FLAG" = "1" ] && __suite_row "RETEST_RAN shell $rel"
+  done <<EOF_SHELL_FILES
+$SHELL_FILES
+EOF_SHELL_FILES
   echo "→ shell integration tests: $SHELL_PASSED/$SHELL_TOTAL passed"
 
   # ── State-leak guard: Phase-2 AFTER snapshot + additive diff (R6 extension) ──
@@ -394,15 +554,14 @@ TS_SKIPPED_NO_RUNNER=0
 TS_SKIPPED_NO_DEP=0
 if [ "${SKILL_SKIP_TS_TESTS:-0}" != "1" ]; then
   TS_TEST_FILES=()
-  while IFS= read -r f; do
-    [ -z "$f" ] && continue
-    TS_TEST_FILES+=("$f")
-  done < <(
-    {
-      [ -d "$REPO_ROOT/.claude/scripts" ] && find "$REPO_ROOT/.claude/scripts" -name '*.test.ts' -type f 2>/dev/null
-      [ -d "$REPO_ROOT/.claude/hooks" ]   && find "$REPO_ROOT/.claude/hooks"   -name '*.test.ts' -type f 2>/dev/null
-    } | sort
-  )
+  if [ "$RETEST_FLAG" = "1" ]; then
+    TS_TEST_FILES=(${RT_TS[@]:+"${RT_TS[@]}"})
+  else
+    while IFS= read -r f; do
+      [ -z "$f" ] && continue
+      TS_TEST_FILES+=("$f")
+    done < <(__discover_ts)
+  fi
   if [ "${#TS_TEST_FILES[@]}" -gt 0 ]; then
     # Resolve a tsx runner: global tsx, then repo-local node_modules/.bin.
     # The repo's node_modules/.bin is prepended to PATH at run time so the
@@ -474,6 +633,9 @@ if [ "${SKILL_SKIP_TS_TESTS:-0}" != "1" ]; then
           echo "  FAIL $rel"
           sed 's/^/       /' "$TS_LOG"
         fi
+        # Only a file that actually RAN is witnessed: a [SKIP] above never is, so a
+        # retest whose required TS file was skipped cannot come back green.
+        [ "$RETEST_FLAG" = "1" ] && __suite_row "RETEST_RAN ts $rel"
       done
       echo "→ TypeScript tests: $TS_PASSED/$TS_TOTAL file(s) passed"
     fi
@@ -596,6 +758,62 @@ if [ "$SESSION_GUARD_ACTIVE" = "1" ]; then
   fi
 fi
 
+# ── File-level failure attribution (SUITE_FAILED rows) ───────────────────────
+# bats TAP names the failing file in the comment block after each `not ok`:
+#   not ok 7 foo: given …
+#   # (in test file tests/skill/cases/foo.bats, line 42)
+# (a helper frame comes first as `# (from function … in file …,` and the test
+# file follows as `#  in test file …, line N)`). Any `not ok` with no such line —
+# or a nonzero bats exit with no `not ok` at all (a crash) — is `unattributed`,
+# which a retest can never clear: the gate and the wrapper then demand a full run.
+__rel_to_repo() {
+  local p="$1" rr d
+  case "$p" in
+    "$REPO_ROOT"/*) printf '%s\n' "${p#"$REPO_ROOT"/}"; return 0 ;;
+    /*) ;;
+    *) if [ -f "$REPO_ROOT/$p" ]; then printf '%s\n' "$p"; return 0; fi
+       p="$PWD/$p" ;;
+  esac
+  rr="$(cd "$REPO_ROOT" 2>/dev/null && pwd -P)"
+  d="$(cd "$(dirname "$p")" 2>/dev/null && pwd -P)" || return 1
+  p="$d/$(basename "$p")"
+  case "$p" in "$rr"/*) printf '%s\n' "${p#"$rr"/}"; return 0 ;; esac
+  return 1
+}
+__emit_failed_rows() {
+  local attributed unattr=0 f rel ran_rel=""
+  if [ "$BATS_EXIT" -ne 0 ]; then
+    for f in ${TEST_FILES[@]:+"${TEST_FILES[@]}"}; do ran_rel="${ran_rel}${f#"$REPO_ROOT"/}"$'\n'; done
+    attributed="$(awk '
+      /^not ok [0-9]/ { if (pending) un = 1; pending = 1; n++; next }
+      /^ok [0-9]/     { if (pending) un = 1; pending = 0; next }
+      pending && /^#/ && /in test file / {
+        s = $0; sub(/.*in test file /, "", s); sub(/, line [0-9]+.*$/, "", s)
+        print s; pending = 0; next
+      }
+      END { if (pending) un = 1; if (n == 0) un = 1; if (un) print "__UNATTRIBUTED__" }
+    ' "$TAP_LOG" 2>/dev/null)"
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if [ "$f" = "__UNATTRIBUTED__" ]; then unattr=1; continue; fi
+      rel="$(__rel_to_repo "$f" || true)"
+      if [ -n "$rel" ] && printf '%s' "$ran_rel" | grep -qFx -- "$rel"; then
+        printf 'SUITE_FAILED bats %s\n' "$rel"
+      else
+        unattr=1
+      fi
+    done <<EOF_ATTR
+$attributed
+EOF_ATTR
+  fi
+  printf '%s' "$SHELL_FAILED_NAMES" | grep -v '^$' | sed 's/^/SUITE_FAILED shell /'
+  printf '%s' "$TS_FAILED_NAMES" | grep -v '^$' | sed 's/^/SUITE_FAILED ts /'
+  [ "$unattr" = "1" ] && echo "SUITE_FAILED unattributed -"
+  [ "${STATE_LEAK:-0}" -ne 0 ] && echo "SUITE_FAILED leak state"
+  [ "${SESSION_LEAK:-0}" -ne 0 ] && echo "SUITE_FAILED leak session"
+  return 0
+}
+
 # Final summary line for human eyes. The suite is green only when the bats
 # phase, the shell-integration phase, the TypeScript phase all pass AND no test
 # leaked into the live .claude/state tree (R6 state-leak guard) or the session
@@ -623,4 +841,6 @@ if [ "${SESSION_LEAK:-0}" -ne 0 ]; then
   printf '%s\n' "$SESSION_LEAKED" | grep -v '^$' | sed 's/^/    /'
   echo "  stop them (claude stop <handle>) and stub PWT_CLAUDE_BIN (or set PWT_CLAUDE_BIN_STRICT=1) in the offending spawn test."
 fi
+__FAILED_ROWS="$(__emit_failed_rows | awk '!seen[$0]++')"
+[ -n "$__FAILED_ROWS" ] && __SUITE_ROWS="${__SUITE_ROWS}${__FAILED_ROWS}"$'\n'
 __suite_exit 1

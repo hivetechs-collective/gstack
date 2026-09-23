@@ -13,6 +13,21 @@ fi
 
 PROJECT_NAME="${PROJECT_NAME:-$(get_project_name 2>/dev/null || echo 'Project')}"
 
+# Post-push full-suite confirm (2.51.0, docs/operations/test-green-retest.md): a
+# commit may have passed the gate on a targeted retest, so a push that leaves the
+# default branch without a matching FULL green verdict gets one detached, niced
+# full run of the pushed commit. Launch-and-return; it never blocks the push or
+# this hook. Runs BEFORE the gh check below, which exits early without gh.
+# Kill switch: PWT_DISABLE_POST_PUSH_CONFIRM=1.
+PWT_POST_PUSH_CONFIRM="$PROJECT_ROOT/.claude/scripts/plan-w-team-post-push-confirm.sh"
+if [ -x "$PWT_POST_PUSH_CONFIRM" ] && [ "${PWT_DISABLE_POST_PUSH_CONFIRM:-0}" != "1" ]; then
+    PWT_PUSH_CMD=""
+    if [ ! -t 0 ] && command -v jq >/dev/null 2>&1; then
+        PWT_PUSH_CMD=$(jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
+    fi
+    "$PWT_POST_PUSH_CONFIRM" --launch --root "$PROJECT_ROOT" --command "$PWT_PUSH_CMD" 2>/dev/null || true
+fi
+
 echo ""
 echo "==============================================================="
 echo "  CI MONITORING (Auto-triggered after git push)"

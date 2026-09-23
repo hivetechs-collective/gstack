@@ -51,10 +51,12 @@ echo "Required:"
 # Claude Code CLI (install command is identical on every platform)
 if command -v claude >/dev/null 2>&1; then
   CV=$(claude --version 2>/dev/null | awk '{print $1}')
-  if [ -n "$CV" ] && version_ge "$CV" "2.1.221"; then
-    ok "Claude Code $CV (has the wake-from-sleep auth-race fix, 2.1.221+)"
+  # 2.1.280 ships Opus 5.5 (the primary model) and points the bare `opus` alias at it;
+  # it also carries the 2.1.221 wake-from-sleep auth-race fix.
+  if [ -n "$CV" ] && version_ge "$CV" "2.1.280"; then
+    ok "Claude Code $CV (ships Opus 5.5, the primary model — 2.1.280+)"
   else
-    bad "Claude Code $CV is older than 2.1.221 (auth-race fix missing)" "run: claude update"
+    bad "Claude Code $CV is older than 2.1.280 (no Opus 5.5; the bare opus alias still means Opus 5)" "run: claude update"
   fi
 else
   bad "Claude Code not installed" "run: curl -fsSL https://claude.ai/install.sh | bash"

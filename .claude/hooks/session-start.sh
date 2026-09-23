@@ -714,6 +714,18 @@ if [ -x "$COMPACTION_HEALTH" ] && [ "${PWT_DISABLE_COMPACTION_HEALTH:-}" != "1" 
 fi
 
 # =================================================================
+# Post-push confirm: surface a RED detached full-suite run of the last push
+# =================================================================
+# post-git-push.sh launches the confirm detached; this only READS its one small
+# record (no scan, no run) and prints one line when it is red or died. Silent when
+# green, running or absent. → docs/operations/test-green-retest.md
+# Kill switch: PWT_DISABLE_POST_PUSH_CONFIRM=1.
+PWT_POST_PUSH_SURFACE="$PROJECT_ROOT/.claude/scripts/plan-w-team-post-push-confirm.sh"
+if [ -x "$PWT_POST_PUSH_SURFACE" ] && [ "${PWT_DISABLE_POST_PUSH_CONFIRM:-}" != "1" ]; then
+    "$PWT_POST_PUSH_SURFACE" --surface --root "$PROJECT_ROOT" 2>/dev/null || true
+fi
+
+# =================================================================
 # DISK GOVERNANCE: auto-install the worktree-GC timer (E3) + pressure sweep
 # Root cause #2 of the 2026-05-29 cleanscale ENOSPC incident was that the GC
 # launchd/systemd timer was never installed (manual template), so no periodic

@@ -416,14 +416,17 @@
         ]
       },
       {
-        "matcher": "Bash(git push*)",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-git-push.sh"
+            "if": "Bash(git push*)",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-git-push.sh",
+            "timeout": 60
           },
           {
             "type": "command",
+            "if": "Bash(git push*)",
             "command": "uv run --script \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/send_event.py 2>/dev/null || true"
           }
         ]

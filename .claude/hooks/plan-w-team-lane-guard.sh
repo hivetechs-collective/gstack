@@ -545,6 +545,11 @@ EXEC_MUTATOR_RE="-(exec|execdir)[[:space:]]+(rm|mv|cp)([[:space:]]|;)|xargs([[:s
 # edit at a command-word boundary classifies. Both alternatives sit INSIDE the
 # group so the anchor applies to each.
 INPLACE_RE="${SEP}(sed[[:space:]]+(-[a-zA-Z]*i|--in-place)|perl[[:space:]]+[^|;&]*-[a-zA-Z]*i([[:space:]]|$))"
+# Trusted-artifact family variant (2.51.0): the in-place flag may sit ANYWHERE among
+# the options (`sed -E -i …`, `perl -0 -pi …`, `sed --in-place=.bak …`), but only as a
+# whole whitespace-delimited option token — a file name such as `…-fix-it.log` carries
+# `-fi` mid-token and must not read as an in-place edit of a family file being READ.
+FAM_INPLACE_RE="${SEP}(g?sed|perl)[[:space:]]+([^|;&]*[[:space:]])?(-[a-zA-Z]*i[^[:space:]]*|--in-place[^[:space:]]*)([[:space:]]|$)"
 # Host hygiene (F4c): process control is not lane work. These were never denied
 # — the incident's `pkill` was allowed — so this class adds EVIDENCE, not
 # authority: a supervisor that kills its own lane is now provable after the fact.
@@ -573,6 +578,9 @@ __git_write_text() {
 __protected_basename() {  # $1=basename $2=slug → 0 if trusted family for slug
     case "$1" in
         "plan-w-team-ship-verdict-$2.json"|"plan-w-team-test-green-$2.json"|\
+        "plan-w-team-test-green-$2--retest.json"|"plan-w-team-test-green-$2.manifest"|\
+        "plan-w-team-test-green-$2--retest.manifest"|"plan-w-team-test-green-$2.log"|\
+        "plan-w-team-test-green-$2--retest.log"|"plan-w-team-test-green-$2--retest.list"|\
         "plan-w-team-goal-$2.json"|"plan-w-team-lane-release-$2.json"|\
         "pwt-lane-alive-memo-$2.json") return 0 ;;
         # The confirmed-dead memo AUTHORISES a lane release (this hook reads it, and exit 1 releases
@@ -846,6 +854,17 @@ for GF in "$STATE_DIR"/plan-w-team-goal-*.json; do
                 __deny_artifact "$SLUG" "$BASE" "Step 6 writes it only after every §6 ENFORCING gate passes" ;;
             "plan-w-team-test-green-${SLUG}.json")
                 __deny_artifact "$SLUG" "$BASE" "plan-w-team-test-green.sh writes it from a real suite run" ;;
+            # 2.51.0: the retest verdict the commit gate accepts, the manifests that
+            # prove what each verdict's tree_digest hashed, and the suite logs + rerun
+            # list — the gate rebuilds a retest's rerun set from the BASE LOG's
+            # SUITE_FAILED rows and reads RETEST_RAN from the retest log, so an edited
+            # log is a forged verdict (docs/operations/test-green-retest.md). Both logs
+            # are also sha256-bound in their json, which is the hard wall; this is the
+            # lane-scoped tool-layer wall in front of it.
+            "plan-w-team-test-green-${SLUG}--retest.json"|"plan-w-team-test-green-${SLUG}.manifest"|\
+            "plan-w-team-test-green-${SLUG}--retest.manifest"|"plan-w-team-test-green-${SLUG}.log"|\
+            "plan-w-team-test-green-${SLUG}--retest.log"|"plan-w-team-test-green-${SLUG}--retest.list")
+                __deny_artifact "$SLUG" "$BASE" "plan-w-team-test-green.sh writes it from a real suite run" ;;
         esac
         # (3) Bound supervisor: goal-state + release valve are also off-limits,
         #     and so is the rest of the repo outside .claude/state/.
@@ -893,6 +912,16 @@ $(__redirect_targets)
 EOF_FAMR
             if [ "$FORGE" = "0" ] \
                && printf '%s' "$CMD_SCAN" | grep -qE "(mv|cp|rm|touch|tee)[[:space:]][^;|&]*${FAM}"; then
+                FORGE=1
+            fi
+            # 2.51.0: an in-place editor (`sed -i`, `perl -pi`) rewrites a family file
+            # without any verb or redirect above — the retest-gate forgery was exactly
+            # `sed -i` deleting a SUITE_FAILED row from the base log. The editor is
+            # classified on the masked text (a quoted "sed -i" is prose); the family
+            # name is looked for in the RAW command, so quoting the path cannot hide it.
+            if [ "$FORGE" = "0" ] \
+               && printf '%s' "$CMD_SCAN" | grep -qE "$FAM_INPLACE_RE" \
+               && printf '%s' "$CMD" | grep -qF "$FAM"; then
                 FORGE=1
             fi
             [ "$FORGE" = "1" ] && __deny_artifact "$SLUG" "${FAM}.json" "only the pipeline's own gates may produce it"

@@ -14,7 +14,84 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
-## [2.50.0] — 2026-09-22 (feat: Model Tiering v8→v9 — Opus 5.5 rollover, then tiers by thinking depth: Opus 5.5 @ high / Sonnet 5 / Haiku; Fable retired; fallback chain 5.5 → 4.8 → Sonnet 5; CLI 2.1.280 uplift) (PENDING_SHA)
+## [2.51.1] — 2026-09-23 (fix: post-push full confirm never launched — hook wired with an argument-syntax `matcher`, which matches tool names only) (c3e7dce)
+
+The 2.51.0 post-push full confirm never ran after a real push. `.claude/settings.json`
+wired `post-git-push.sh` under `"matcher": "Bash(git push*)"`. A hook `matcher` is
+compared against the TOOL NAME only (exact, `|` list or regex), so that group matched
+nothing. The same was true of the CI summary the hook has always printed. The script
+and the hook body were correct. P9 drives the hook directly, so the suite never saw
+the gap. It showed up on the first real push after 2.51.0 (97cea93): no record was
+written. Running `--launch` by hand made the correct decision.
+
+- The group now uses `"matcher": "Bash"`, with `"if": "Bash(git push*)"` on each
+  handler. `if` uses permission-rule syntax and is checked per subcommand, so
+  `cd repo && git push` matches. `post-git-push.sh` also gets `"timeout": 60`
+  (bounded `gh` calls).
+- `plan-w-team-post-push-confirm.test.sh` P12 pins the wiring:
+  - no PreToolUse or PostToolUse group matcher uses argument syntax;
+  - `post-git-push.sh` sits under `matcher: Bash` with `if: Bash(git push*)`.
+  P12 fails on the 2.51.0 settings.
+- Not changed, on purpose: the PermissionRequest groups (`Bash(git status*)`,
+  `Bash(*)`, `Read(*)`, …) use the same inert form. They are permission-decision
+  hooks, so they are left for an explicit owner decision.
+- Docs: `test-green-retest.md` §Post-push full confirm; README hook table.
+
+## [2.51.0] — 2026-09-22 (fix: commit-gate targeted retest — rerun only the failing + affected files against one trusted full run; full-run verdict hardening P1–P3; non-blocking post-push full confirm) (413e058)
+
+Ported from cleanscale. A red `make test-skill` (11–15 min) used to cost a second full
+run just to commit the one-line fix of the test that failed. Now
+`plan-w-team-test-green.sh --slug S --retest` reruns only R — the base run's failing
+files, changed corpus files, sibling tests of changed sources, corpus files naming a
+changed file, and `tests/skill/retest-always.list` — and writes `…-S--retest.json`, which
+the commit gate accepts after re-deriving every claim itself. Full doc:
+`docs/operations/test-green-retest.md`.
+
+**Full-run hardening (makes a full verdict a trustworthy base).** P1: make's
+`Error N` trailer after `SUITE_EXIT=N` no longer erases the exit code. P2: the
+watched-set manifest is frozen BEFORE the run and compared AFTER it — an edit made while
+the suite ran is red (`tree-changed-during-run`) and carries no digest (the digest used
+to be hashed after the run). P3: the verdict records `mode` (run.sh's new single
+`SUITE_MODE=` row), `suite_cmd` and a `…-S.manifest` whose sha256 IS `tree_digest`.
+
+**Gate.** `pre-commit-quality.sh` accepts `mode=full` only from a full-mode log of the
+default `make test-skill`, and `mode=retest` only when: the log says retest with the
+default retest command; the named base exists unchanged (ts + digest) and passes the
+base checks (fresh, full, default command, no unattributed/leak failures, manifest hashes
+to its digest); R recomputed from base→STAGED is a subset of the log's `RETEST_RAN` rows
+and within `PWT_TEST_RETEST_MAX_FILES` (40); the chain is within
+`PWT_TEST_RETEST_MAX_CHAIN` (3). Harness/gate changes, stale or tampered bases and cap
+overflows are NEED-FULL (wrapper exit 5). A legacy verdict without `mode` now blocks —
+run one full run after upgrading. A green base whose delta is only a SHA backfill of this
+CHANGELOG (every changed line a `## [x.y.z] … (PENDING_SHA)` header turned `(<hex>)`, checked
+against the manifests' blobs) reruns just the always-list; any other CHANGELOG edit takes the
+normal R, which reruns the cases that pin CHANGELOG content. Each verdict records
+`log_sha256` (and a full one `failed[]`): the wrapper and the gate refuse a suite log that no
+longer hashes to it, so an edited base log cannot shrink R and an appended `RETEST_RAN` row
+cannot widen what "ran".
+
+**run.sh.** `--list` prints the corpus; `--retest <list>` runs exactly the listed files
+(fail-closed: out-of-corpus entry, unknown kind or empty list is exit 2) and emits
+`RETEST_RAN` / `SUITE_FAILED <kind> <rel>` / `SUITE_FAILED unattributed -` rows before
+the literal last `SUITE_EXIT=N`. Also fixed: `__discover_*` returned 1 under
+`pipefail` when a discovery dir was missing, killing the run after the bats phase.
+
+**Post-push full confirm (replaces the brief's blocking push gate D5).**
+`post-git-push.sh` → `plan-w-team-post-push-confirm.sh --launch`: when HEAD is what
+`origin/<default>` points at and the newest verdict is `mode=retest` or no green full
+verdict matches HEAD's watched tree, a detached `nohup nice -n 10` full run of the pushed
+sha starts in a temporary worktree (its verdict never lands in the checkout). Record:
+`.claude/state/pwt-post-push-confirm.json {sha, slug, started, status, …}`. A red result
+notifies (osascript) and prints one line at the next SessionStart. Never blocks the push.
+Kill switch `PWT_DISABLE_POST_PUSH_CONFIRM=1`.
+
+**Unchanged by design:** the goal evaluator reads only `…-<slug>.json` (a retest verdict
+can never satisfy it) and ship gate 6b-skill still runs the full suite. The lane guard now
+protects `…-<slug>--retest.json`, the `.manifest` files, both suite logs and the
+`--retest.list` like the test-green verdict, and denies in-place editors (`sed -i`,
+`perl -pi`) aimed at any of them.
+
+## [2.50.0] — 2026-09-22 (feat: Model Tiering v8→v9 — Opus 5.5 rollover, then tiers by thinking depth: Opus 5.5 @ high / Sonnet 5 / Haiku; Fable retired; fallback chain 5.5 → 4.8 → Sonnet 5; CLI 2.1.280 uplift) (d07dae2)
 
 **Release history (read first).** Model Tiering v8 was committed locally as `2.49.0` (520b0bd)
 but never pushed; origin meanwhile shipped an unrelated `2.49.0` (9393dc9, Step 5/6
