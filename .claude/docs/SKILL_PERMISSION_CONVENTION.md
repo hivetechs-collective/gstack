@@ -51,7 +51,7 @@ The base `.claude/settings.json` shipped by `claude-pattern` covers all common s
 | Agent tools   | `Agent(*)`, `TaskCreate`, `TaskList`, `TaskGet`, `TaskUpdate`, `TaskStop`, `SendMessage` (`TeamCreate`/`TeamDelete` removed in 2.1.178) |
 | Catch-all     | `Bash(*)` — broad safety net; `PreToolUse` hooks (damage-control, pre-commit-quality, block-protected-paths) still fire as guardrails   |
 
-`PermissionRequest` hooks also auto-approve `Read/Write/Edit/Glob/Grep/Bash/Agent(*)` as a second-layer safety net in case Claude Code's built-in sensitive-path classifier would otherwise prompt.
+There are no `PermissionRequest` hooks. The ten auto-allow groups this page used to describe were removed in /plan-w-team 2.51.3. They had never fired: a hook `matcher` is compared against the tool name only, so `Bash(*)`/`Read(*)`-style matchers match nothing. They also echoed an undocumented output shape. Auto-approval comes from this allow-list and the session's permission mode; nothing else sits behind it.
 
 ## Safety is in the hooks, not the allow-list
 

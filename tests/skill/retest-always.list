@@ -1,0 +1,21 @@
+# tests/skill/retest-always.list
+#
+# The smoke set every targeted retest reruns, whatever changed
+# (.claude/scripts/plan-w-team-test-green.sh --retest; docs/operations/test-green-retest.md).
+# One `kind rel` per line — kind is bats | shell | ts, rel is repo-relative and must
+# be a file tests/skill/run.sh --list discovers (a stale entry forces a full run).
+#
+# Pick FAST, BROAD tests: corpus-wide lints and parity sweeps that a change anywhere
+# can break without naming them. Keep it small — every entry is paid on every retest.
+# Editing this file is itself a harness change: the next retest demands a full run.
+bats tests/skill/cases/r10-naming-ratchet.bats
+bats tests/skill/cases/changelog-sha.bats
+bats tests/skill/cases/skills-shape.bats
+bats tests/skill/cases/no-stale-agent-refs.bats
+bats tests/skill/cases/sync-script-references.bats
+bats tests/skill/cases/symmetry-check.bats
+bats tests/skill/cases/model-tiering-v9.bats
+bats tests/skill/cases/agent-tool-key-canonical.bats
+bats tests/skill/cases/pre-commit-hook-timeout.bats
+shell .claude/scripts/plan-w-team-cleanup-registry-parity.test.sh
+shell .claude/scripts/plan-w-team-sync-allowlist-check.test.sh

@@ -14,6 +14,75 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.51.3] — 2026-09-23 (fix: delete the ten PermissionRequest hook groups — argument-syntax matchers that never fired, echoing an undocumented output shape) (2cec92b)
+
+2.51.1 left the PermissionRequest groups alone because they decide permissions. The
+founder settled it with CleanRev Current's recommendation (option B, 2026-09-23): delete
+all ten.
+
+Why they were dead:
+- Each used an argument-syntax `matcher` (`Bash(git status*)`, `Bash(git diff*)`,
+  `Bash(git log*)`, `Read(*)`, `Glob(*)`, `Grep(*)`, `Write(*)`, `Edit(*)`, `Bash(*)`,
+  `Agent(*)`). A hook matcher is compared against the tool name only, so none of them
+  ever fired.
+- Each also echoed `{"decision": "allow"}`. That is not the documented shape, which is
+  `hookSpecificOutput.decision.behavior`.
+
+Why fixing them instead would have been worse:
+- Fixing the matchers would turn them into blanket auto-approval of every tool.
+- Under `bypassPermissions`, the mode every lane and interactive session runs in,
+  that changes nothing.
+- Under `PWT_BG_PERMISSION_MODE=default|auto` it would silently void the permission
+  model.
+- Deleting them matches what has actually been running.
+
+- `.claude/settings.json`: the `hooks.PermissionRequest` key is removed, leaving 12 hook
+  events. The removal was checked equal to `jq 'del(.hooks.PermissionRequest)'` of the
+  2.51.2 file.
+- `plan-w-team-post-push-confirm.test.sh` P12 widens from Pre/PostToolUse to every hook
+  event: no group `matcher` may carry argument syntax. A new assertion also refuses any
+  PermissionRequest handler that echoes the legacy top-level `{"decision"` shape. A
+  future, correctly shaped hook (`matcher: "Bash"` + `if`) is still allowed. Test it in a
+  non-bypass session first, because bypass masks whether it decides anything.
+- Docs that taught the inert form are corrected:
+  - `README.md` hook section: 13 → 12 events, and the PermissionRequest node and table
+    row are gone.
+  - `SKILL_PERMISSION_CONVENTION.md` had claimed a "second-layer safety net".
+  - `AGENT_TEAMS_AND_OBSERVABILITY.md`.
+  - The `SETTINGS_BEST_PRACTICES.md` and `CLAUDE_CODE_CLI_REFERENCE.md` examples now use
+    `matcher: "Bash"` + `if` + the documented output shape. The CLI reference's hook
+    `matcher` row now reads "tool name only".
+  - `claude-code-compatibility.md` notes the removal.
+- cleanscale carries the same ten groups. Adoption is CleanRev Current's call.
+
+## [2.51.2] — 2026-09-23 (fix: sync commit left tests/skill/retest-always.list untracked in every consumer — writer list now covers every tracked harness file) (bb5b225)
+
+The 2.51.1 fleet sync showed that `tests/skill/retest-always.list`, new in 2.51.0, was
+rsync'd into every consumer but never committed. `sync-commit-lib.sh` stages
+`tests/skill/` files only through the exact-file `SYNC_COMMIT_WRITER_PATHS` list, and
+the new file had no entry. It stayed untracked in all 15 skill-synced consumers on both
+machines. A worktree built from a consumer's HEAD lacked it, so
+`plan-w-team-retest-lib.sh` failed safe to NEED-FULL, and a targeted retest there always
+became a full run.
+
+Four more tracked harness files had the same gap. They were already tracked in the
+consumers, so nothing broke yet, but a future edit to them would have left every
+consumer dirty:
+- `tests/skill/helpers/parity_helper.bash`
+- `tests/skill/helpers/retired_paths_fixture.bash`
+- `tests/skill/parity/launch-env-autopush.golden`
+- `tests/skill/parity/pwt-status-json.golden`
+
+- All five are now listed as exact files. No directory entries: the consumer-ownership
+  rule still holds.
+- `sync-commit-lib.bats` gets a new case: every file the source tracks under
+  `tests/skill/` must be on the writer list. The exceptions are the consumer-gitignored
+  corpus (`cases/`, `scenarios/`) and the consumer-owned `scenarios.local/` (except its
+  README). The case fails on the 2.51.1 lib and names the five files.
+- Rollout: the next sync commits the file on the laptop. A mini consumer that still has
+  the untracked copy refuses the fast-forward. Remove that copy only when it is
+  byte-identical to the incoming blob, then fast-forward.
+
 ## [2.51.1] — 2026-09-23 (fix: post-push full confirm never launched — hook wired with an argument-syntax `matcher`, which matches tool names only) (c3e7dce)
 
 The 2.51.0 post-push full confirm never ran after a real push. `.claude/settings.json`

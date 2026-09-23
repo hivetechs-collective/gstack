@@ -231,18 +231,23 @@ Options: `"stable"` | `"beta"` | `"disabled"`
 
 ### PermissionRequest Hooks
 
-Automate permission decisions:
+Automate permission decisions. `matcher` is compared against the **tool name only**
+(exact, `|` list, or regex). Filter on the command with the handler's `if` field, which
+uses permission-rule syntax and is checked per subcommand. A matcher like
+`"Bash(git status*)"` never fires. Output uses `hookSpecificOutput`; a bare
+`{"decision": "allow"}` is not the documented shape.
 
 ```json
 {
   "hooks": {
     "PermissionRequest": [
       {
-        "matcher": "Bash(git status*)",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "echo '{\"decision\": \"allow\"}'"
+            "if": "Bash(git status*)",
+            "command": "echo '{\"hookSpecificOutput\": {\"hookEventName\": \"PermissionRequest\", \"decision\": {\"behavior\": \"allow\"}}}'"
           }
         ]
       }
@@ -250,6 +255,9 @@ Automate permission decisions:
   }
 }
 ```
+
+For plain auto-approval, prefer a `permissions.allow` rule (for example
+`"Bash(git status *)"`) over a hook.
 
 ---
 

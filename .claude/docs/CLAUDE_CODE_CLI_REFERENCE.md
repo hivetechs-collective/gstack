@@ -485,17 +485,21 @@ hook_event_name}` and contains **no worktree path**. Do **not** register a passi
 
 ```json
 {
-  "decision": "allow"
+  "hookSpecificOutput": {
+    "hookEventName": "PermissionRequest",
+    "decision": { "behavior": "allow" }
+  }
 }
 ```
 
-Valid decisions: `"allow"`, `"deny"`, or omit to show normal permission dialog.
+`behavior` is `"allow"` or `"deny"` (optional `updatedInput`, `message`, `interrupt`).
+Omit the output to show the normal permission dialog.
 
 ### Hook Options
 
 | Field     | Description                         |
 | --------- | ----------------------------------- |
-| `matcher` | Tool name or glob pattern to match  |
+| `matcher` | Tool name only (exact, `\|` list, regex); filter arguments with a handler `if` |
 | `once`    | Run only once per session (boolean) |
 | `hooks`   | Array of hook commands              |
 
@@ -1023,23 +1027,33 @@ Teammates discover each other via `~/.claude/teams/{team-name}/config.json`:
 
 ### PermissionRequest Hook
 
-Automate permission decisions:
+Automate permission decisions. `matcher` is compared against the **tool name only**
+(exact, `|` list, or regex). Filter on the command with the handler's `if` field, which
+uses permission-rule syntax and is checked per subcommand. A matcher like
+`"Bash(git status*)"` never fires. Output uses `hookSpecificOutput`; a bare
+`{"decision": "allow"}` is not the documented shape.
 
 ```json
 {
-  "PermissionRequest": [
-    {
-      "matcher": "Bash(git status*)",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "echo '{\"decision\": \"allow\"}'"
-        }
-      ]
-    }
-  ]
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(git status*)",
+            "command": "echo '{\"hookSpecificOutput\": {\"hookEventName\": \"PermissionRequest\", \"decision\": {\"behavior\": \"allow\"}}}'"
+          }
+        ]
+      }
+    ]
+  }
 }
 ```
+
+For plain auto-approval, prefer a `permissions.allow` rule (for example
+`"Bash(git status *)"`) over a hook.
 
 ---
 
