@@ -376,27 +376,27 @@ Hooks tie deterministic code to specific moments in Claude Code's lifecycle.
 
 ### Hook Events
 
-| Event                | Matcher    | When                                        | Can Block    |
-| -------------------- | ---------- | ------------------------------------------- | ------------ |
-| `PreToolUse`         | Tool name  | Before tool execution                       | Yes (exit 2) |
-| `PostToolUse`        | Tool name  | After tool execution                        | No           |
-| `UserPromptSubmit`   | -          | Before processing user input                | Yes (exit 2) |
-| `Notification`       | -          | When Claude sends alerts                    | No           |
-| `Stop`               | -          | When response finishes                      | No           |
-| `SubagentStart`      | Agent name | When subagent begins                        | No           |
-| `SubagentStop`       | Agent name | When subagent completes                     | No           |
-| `SessionStart`       | -          | Session initialization                      | No           |
-| `SessionEnd`         | -          | Session termination                         | No           |
-| `PreCompact`         | -          | Before auto-compaction                      | No           |
-| `Setup`              | -          | With `--init`/`--maintenance`               | No           |
-| `PermissionRequest`  | Tool name  | Permission dialog shown                     | Yes          |
-| `TeammateIdle`       | -          | When a teammate goes idle                   | No           |
-| `TaskCompleted`      | -          | When a task is marked completed             | No           |
-| `WorktreeCreate`     | -          | _Replaces_ git worktree creation (see note) | Yes\*        |
-| `WorktreeRemove`     | -          | When a git worktree is removed              | No           |
-| `ConfigChange`       | -          | When settings/config changes                | No           |
-| `PostToolUseFailure` | Tool name  | After tool execution fails                  | No           |
-| `InstructionsLoaded` | -          | When instructions/rules are loaded          | No           |
+| Event                | Matcher                                          | When                                        | Can Block    |
+| -------------------- | ------------------------------------------------ | ------------------------------------------- | ------------ |
+| `PreToolUse`         | Tool name                                        | Before tool execution                       | Yes (exit 2) |
+| `PostToolUse`        | Tool name                                        | After tool execution                        | No           |
+| `UserPromptSubmit`   | -                                                | Before processing user input                | Yes (exit 2) |
+| `Notification`       | -                                                | When Claude sends alerts                    | No           |
+| `Stop`               | -                                                | When response finishes                      | No           |
+| `SubagentStart`      | Agent name                                       | When subagent begins                        | No           |
+| `SubagentStop`       | Agent name                                       | When subagent completes                     | No           |
+| `SessionStart`       | Source (`startup`\|`resume`\|`clear`\|`compact`) | Session initialization                      | No           |
+| `SessionEnd`         | -                                                | Session termination                         | No           |
+| `PreCompact`         | Trigger (`manual`\|`auto`)                       | Before compaction                           | No           |
+| `Setup`              | -                                                | With `--init`/`--maintenance`               | No           |
+| `PermissionRequest`  | Tool name                                        | Permission dialog shown                     | Yes          |
+| `TeammateIdle`       | -                                                | When a teammate goes idle                   | No           |
+| `TaskCompleted`      | -                                                | When a task is marked completed             | No           |
+| `WorktreeCreate`     | -                                                | _Replaces_ git worktree creation (see note) | Yes\*        |
+| `WorktreeRemove`     | -                                                | When a git worktree is removed              | No           |
+| `ConfigChange`       | -                                                | When settings/config changes                | No           |
+| `PostToolUseFailure` | Tool name                                        | After tool execution fails                  | No           |
+| `InstructionsLoaded` | -                                                | When instructions/rules are loaded          | No           |
 
 > **⚠️ `WorktreeCreate` is a creation _provider_, not a notification.** It fires
 > **before** the worktree directory exists (when an Agent uses `isolation:"worktree"`
@@ -497,11 +497,13 @@ Omit the output to show the normal permission dialog.
 
 ### Hook Options
 
-| Field     | Description                         |
-| --------- | ----------------------------------- |
-| `matcher` | Tool name only (exact, `\|` list, regex); filter arguments with a handler `if` |
-| `once`    | Run only once per session (boolean) |
-| `hooks`   | Array of hook commands              |
+| Field     | Description                                                                                                                                                                                                                                                                                        |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `matcher` | For tool events: tool name only (exact, `\|` list, regex; never `Tool(args)`). Other events match their own field (see the per-event table).                                                                                                                                                       |
+| `if`      | Per handler. Permission-rule syntax (`Bash(git push*)`), checked per subcommand (quotes resolved), so `cd x && git push` and `(cd x && git push)` match. CLI ≥ 2.1.85; compound commands and env-var prefixes ≥ 2.1.89. Unlike permission rules, a hook `if` does NOT strip wrappers: `timeout 60 git push`, `nohup`/`time`/`nice`/`sudo … git push` do not match (checked on 2.1.281). A command the CLI cannot parse safely always matches. `git -C dir push` does NOT match `Bash(git push*)`, and `git -c k=v push` matches neither that nor `Bash(git -C *)`: add `Bash(git -C *)` and `Bash(git -c *)` handlers and re-check the command inside the hook (see `docs/operations/post-push-confirm.md`). |
+| `timeout` | Per handler, in **seconds** (not ms). Tool-event default is 600 s (10 min, since 2.1.3).                                                                                                                                                                                                           |
+| `once`    | Run only once per session (boolean)                                                                                                                                                                                                                                                                |
+| `hooks`   | Array of hook commands                                                                                                                                                                                                                                                                             |
 
 ---
 

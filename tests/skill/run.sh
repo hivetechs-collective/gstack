@@ -27,10 +27,19 @@
 # Machine-readable rows (the log IS the witness the commit gate reads), all printed
 # immediately before the final SUITE_EXIT line:
 #   SUITE_MODE=full|file|retest|partial   exactly once; partial = any SKILL_SKIP_*
+#                                         OR an automatic TS-phase [SKIP] (no tsx,
+#                                         or a missing runtime dep) outside file mode
 #   RETEST_RAN <bats|shell|ts> <rel>      retest mode: each listed file that ran
 #   SUITE_FAILED <bats|shell|ts> <rel>    each failing file
 #   SUITE_FAILED unattributed -           a failure that could not be tied to a file
 #   SUITE_FAILED leak state|session       a state / session-registry leak
+#   SUITE_SKIPPED ts <rel>                a TS test file the phase could not run
+#
+# The rows form ONE contiguous trailer block ending in SUITE_EXIT. The wrapper and
+# the gate read them from that block only, and reject a log that carries any of
+# these prefixes at column 0 above it (plan-w-team-retest-lib.sh pwt_rt_trailer).
+# Output this runner relays must therefore never start a line with one — the
+# retest shell phase indents captured test output for exactly that reason.
 #
 # Usage:
 #   tests/skill/run.sh                        # run all cases
@@ -593,13 +602,19 @@ if [ "${SKILL_SKIP_TS_TESTS:-0}" != "1" ]; then
       echo ""
       for tf in "${TS_TEST_FILES[@]}"; do
         echo "[SKIP] ${tf#"$REPO_ROOT"/}: no TS runner (tsx not found — npm install in repo root to enable)"
+        __suite_row "SUITE_SKIPPED ts ${tf#"$REPO_ROOT"/}"
       done
+      # A phase that did not run is not a full (or retest) run however green the
+      # rest was: the gate must never read `full` over skipped files (review -6).
+      if [ "$SUITE_MODE" != "file" ]; then SUITE_MODE="partial"; fi
     elif [ -n "$TS_MISSING_DEP" ]; then
       TS_SKIPPED_NO_DEP="${#TS_TEST_FILES[@]}"
       echo ""
       for tf in "${TS_TEST_FILES[@]}"; do
         echo "[SKIP] ${tf#"$REPO_ROOT"/}: missing npm dep '$TS_MISSING_DEP' (runner found, but the analyzer imports it at runtime — npm install in repo root to enable)"
+        __suite_row "SUITE_SKIPPED ts ${tf#"$REPO_ROOT"/}"
       done
+      if [ "$SUITE_MODE" != "file" ]; then SUITE_MODE="partial"; fi
     else
       # Per-file hang protection, mirroring Phase 2 (timeout/gtimeout if
       # present, else bare). Not a suite cap — only a stuck-process guard.

@@ -56,6 +56,18 @@ else
 fi
 
 LOCK_DIR="$STATE_DIR/plan-w-team-workflow-${SLUG}.lock"
+
+# Kill-switch bypass ledger (recursive-followup row 27): this is the per-stage
+# chokepoint every stage already calls, so snapshotting the session's active
+# kill switches here covers the whole family with no per-gate edit. The first
+# snapshot also writes the ledger's init row (tamper evidence for the retro).
+# Resolved beside THIS script (not $PROJECT_ROOT) so a worktree run never calls
+# the main checkout's copy. Every byte of output is discarded and failure is
+# ignored: the status block below must stay byte-identical — the goal evaluator
+# reads it.
+"$(dirname "$0")/plan-w-team-killswitch-ledger.sh" snapshot \
+    --slug "$SLUG" --state-dir "$STATE_DIR" --site "$STAGE" >/dev/null 2>&1 || true
+
 SUP_LOG="$STATE_DIR/plan-w-team-supervisor-actions-${SLUG}.jsonl"
 FLEET_LOG="$STATE_DIR/plan-w-team-fleet-${SLUG}.jsonl"
 QUERY_SH="$PROJECT_ROOT/.claude/scripts/plan-w-team-fleet-query.sh"

@@ -82,6 +82,10 @@ PROG="plan-w-team-grounding-gate"
 # ── Kill switch ──────────────────────────────────────────────────────────────
 if [ "${PLAN_W_TEAM_DISABLE_GROUNDING:-}" = "1" ]; then
   echo "[$PROG] PLAN_W_TEAM_DISABLE_GROUNDING=1 — grounding gate disabled (exit 0)"
+  # Record the bypass in the run's kill-switch ledger (row 27). The ledger scans
+  # our argv for --spec/--slug/--root; output discarded, failure ignored.
+  "$(dirname "$0")/plan-w-team-killswitch-ledger.sh" record \
+    --switch PLAN_W_TEAM_DISABLE_GROUNDING --site grounding-gate -- ${1+"$@"} >/dev/null 2>&1 || true
   exit 0
 fi
 

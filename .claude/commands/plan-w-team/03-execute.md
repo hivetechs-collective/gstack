@@ -42,8 +42,8 @@
 >
 > **`difficulty: hard` under lead-direct**: the task executes on the lead's own
 > Brain-tier session (Opus 5.5), so MODEL routing is not bypassed — but the hard-lane
-> `effort: xhigh` pin does NOT auto-apply to the lead's own turns; raise your own
-> `/effort` for that task or note why not.
+> `effort: high` pin (Model Tiering v9) does NOT auto-apply to the lead's own turns; if your
+> session runs below `high`, raise your own `/effort` for that task or note why not.
 
 **Default mode is `auto`** — builders execute without permission prompts for uninterrupted implementation. Use `mode: "plan"` only for security-critical work where each builder must submit an implementation plan via ExitPlanMode before coding starts.
 

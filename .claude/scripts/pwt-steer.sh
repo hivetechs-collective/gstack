@@ -56,7 +56,7 @@
 #                  list, so the rule cannot rot as new switches are added.
 #
 # ENV
-#   PWT_PRIMARY_MODEL   (default claude-opus-5-5)  — pinned; never inherit the CLI default; claude-opus-5 (exactly) stays FORBIDDEN (founder order 2026-08-29); Opus 5.5 is the Brain tier (v8, 2026-09-22)
+#   PWT_PRIMARY_MODEL   (default claude-opus-5-5)  — pinned; never inherit the CLI default; claude-opus-5 (exactly) stays FORBIDDEN (founder order 2026-08-29); Opus 5.5 is the Brain tier (v8, 2026-09-22); a Fable / claude-opus-5 / bare-opus value is refused (pwt_primary_model, one warning) and treated as UNSET → the governed intelligent tier, else claude-opus-5-5
 #   PWT_FALLBACK_MODEL  (default: resolved from the primary by pwt_fallback_model — Opus 5.5 → claude-opus-4-8,claude-sonnet-5; never Fable — Model Tiering v9)
 #   PWT_STEER_POLL_S    (default 1)                — verification poll interval
 #   CLAUDE_PROJECTS_DIR (default ~/.claude/projects)
@@ -124,6 +124,13 @@ __steer_gov_lib="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/pwt-governor-lib.sh"
 __steer_scrub_lib="$(cd "$(dirname "$0")/../../scripts/ops/lib" 2>/dev/null && pwd)/pwt-lane-env-allowlist.sh"
 [ -r "$__steer_scrub_lib" ] && { . "$__steer_scrub_lib" 2>/dev/null || true; }
 command -v pwt_lane_env_scrub >/dev/null 2>&1 || pwt_lane_env_scrub() { :; }
+# Model Tiering v9 hardening: the env pin is refusal-checked BEFORE the governed override
+# (pwt_primary_model). A Fable / claude-opus-5 / bare-opus pin warns once and counts as UNSET,
+# so the governed tier below, else the claude-opus-5-5 default, applies — same as pwt-goal.sh.
+if [ "$__steer_primary_env_set" = "1" ] && type pwt_primary_model >/dev/null 2>&1; then
+    PRIMARY_MODEL=$(pwt_primary_model "$PRIMARY_MODEL" "")
+    [ -n "$PRIMARY_MODEL" ] || { __steer_primary_env_set=0; PRIMARY_MODEL="claude-opus-5-5"; }
+fi
 if type pwt_governor_model >/dev/null 2>&1; then
     __steer_gov_int=$(pwt_governor_model intelligent)
     if [ -n "$__steer_gov_int" ] && [ "$__steer_gov_int" != "claude-opus-5-5" ]; then

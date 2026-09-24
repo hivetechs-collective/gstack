@@ -14,6 +14,216 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.54.0] — 2026-09-24 (feat: 7-day reset on the plan line — `▸7d 71% (resets Wed 9/30 3:59am)`; a Fable reset equal to it is not repeated; statusline 1.9.0) (1d05f966)
+
+The operator asked for the 7-day window to show when it resets, in the same form as the
+Fable bucket. The 5h reset was already on the line; the 7d reset, which is days out and
+the one that decides whether an account is usable this week, was not.
+
+- **statusline 1.9.0** — the 7d gauge prints `(resets <Dow> <M>/<D> <time>)` from its own
+  `resets_at` (helper first, stdin gauge second, the same precedence as the 5h reset).
+  A reset later today is a bare clock time; a missing or already-past reset prints nothing.
+- **Fable dedupe.** On all five accounts measured (2026-09-24) the Fable bucket's
+  `resets_at` equals the 7d one to the millisecond, so the line would print one date twice:
+  `7d 71% (resets Wed 9/30 3:59am) · Fable 2% (resets Wed 9/30 3:59am)`. A scoped bucket's
+  reset is now shown only when it differs from the reset already on the 7d gauge. "Same" uses
+  the existing 120 s `same_window` tolerance, because the helper and stdin sources can
+  round the same reset a second apart (3:59:59 vs 4:00:00). If the 7d gauge shows no reset,
+  the Fable reset renders exactly as before.
+- **Test harness, bash 3.2.** `statusline-plan-usage.test.sh` failed 26 checks under the
+  mac-mini's stock `/bin/bash` 3.2. `meta()`'s `${2:-{\}}` default is now built separately.
+  The stdin-gauge checks also went through `$(plain "$(render "{…}")")`, and bash 3.2
+  brace-expands a quoted JSON argument nested two levels deep: `render` received only
+  `"workspace":{…}`. The `stdin reset drop` check passed only because of that bug. A
+  `render_plain` helper makes them one level; the test is now 50/50 under bash 3.2 and 5.
+- **Same-day checks need room (review finding).** The "reset later today" checks for Fable
+  (1.6.0) and 7d compared 23:59 against the clock at test START; the render reads its own
+  clock seconds later and drops a reset it sees as passed, so a run starting at 23:58:57 went
+  red with correct code (reproduced with a clock shim). Both checks now run only with 5 min
+  of room, measured at the check.
+
+## [2.53.0] — 2026-09-24 (fix: cleanscale review of 2.50.0–2.52.0 — 41 verified findings across the lane guard, kill-switch ledger, model resolvers, post-push confirm, targeted retest and session-start sync) (16344b2b)
+
+CleanRev Current (the cleanscale agent) reviewed 2.50.0–2.52.0 before adoption and returned 41
+verified findings. Each area was fixed, re-reviewed by an independent adversarial pass, and
+approved in a second round. Nothing here changes the Model Tiering v9 ruling.
+
+**Upgrade cost (one-time).** The first `--retest` after upgrading is NEED-FULL: pre-2.53.0
+verdicts carry no `subject_digest`, so they cannot be a retest base. Run one full
+`plan-w-team-test-green.sh --slug <slug>` first. A checkout without `node_modules`
+(`tsx` / `typescript`) now yields `SUITE_MODE=partial`, never a full green.
+
+### Lane guard (`plan-w-team-lane-guard.sh`)
+
+- **Per-segment in-place check.** The in-place forgery check is decided per command segment: the
+  segment that runs `sed -i` / `perl -pi` must itself name a trusted-family file. A one-pass awk
+  scanner with real shell quote state finds that segment. Harmless reads are no longer denied (an
+  unrelated `sed -i` beside a family read, `perl -Mstrict -ne`, `-MList::Util=sum -lne`, `-Ilib`,
+  quoted "sed -i" prose). Denies now also catch `sed -I ''` (BSD), `LC_ALL=C` / `sudo` / `env`
+  prefixes, `sed "-i"`, `find -exec sed -i` and `find … | xargs sed -i`. A scanner failure denies.
+- **Anchored family names.** A trusted-family prefix names a member only when `.`, `--`, an
+  expansion/glob character, `}`, `)`, `,` or `\` follows it, so lane `fix-6090` no longer claims
+  sibling `fix-6090-2`'s logs, verdicts or decision files. The anchor applies to the redirect,
+  write-verb, in-place and C4 decision-file checks; write verbs also need a word boundary.
+- **Quoted words are not verbs.** `grep -c 'rm' <family>.log`, `jq '.tee' <family>.json` and a
+  worker's `grep 'cp' <slug>.<gate>.decision.json` are allowed again.
+- **Expansion spellings deny.** The scanner re-wraps closed substitutions and decodes
+  `$'…\xHH…'` / `\NNN`, so edits through `${LOG:-$D/<family>}.log`, `$(… <family>).log`,
+  backticks, `$'…\x2elog'` and `{<family>,x}.log` deny. C4 adds `gcp` / `gmv` / `ginstall` and the
+  `{<slug>,x}` / `${V:-<slug>}` spellings.
+- **Variable carry.** `NAME=`, `export` / `local` / `readonly` / `declare` / `typeset NAME=` and
+  `for NAME in …` naming a family member carry to later segments, so
+  `f=<family>.log; sed -i '' 1d "$f"` denies.
+- **bash 3.2 cost.** The dequoted command text is built once per call with `LC_ALL=C tr` and
+  shared by every live lane, replacing quadratic `${v//pat/}`. A 13 KB heredoc brief with two live
+  lanes: 15 s → 0.25 s; 30 KB: 180 s → 0.25 s. A bats pin runs `/bin/bash` and requires < 2 s.
+- `PWT_DISABLE_LANE_GUARD_HYGIENE=1` restores the 2.51.0 whole-token in-place regex ANDed with an
+  anchored member — strict, never looser. Deny messages name the member actually touched. The
+  `.subject-manifest` pair is a protected test-green member on every path.
+
+### Kill-switch ledger (`plan-w-team-killswitch-ledger.sh`)
+
+- **Init marker moved** beside the ledger (`plan-w-team-killswitch-ledger-<slug>.init`). The
+  pre-flight wipes the lock dir on every resume, which deleted the marker and let a deleted ledger
+  score clean. A 2.52.0 lock-dir marker still blocks a second init row and is copied forward.
+- **Marker after verify.** `snapshot` writes the marker only after re-reading the `init` row with
+  `score`'s fixed-format check, so a refused path or failed write retries next stage instead of
+  sticking at `status=missing`.
+- **Sidecar from the main checkout.** In a linked worktree (beside or nested under
+  `.claude/worktrees/`) the sanctioned set also reads the main checkout's
+  `killswitch-sanctioned.local.conf`, found via `git rev-parse --git-common-dir` with
+  `GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` / `GIT_INDEX_FILE` scrubbed. Only a common dir
+  named `.git` counts. The ops doc lists every switch the lane launcher sets.
+- Follow-up (b) of recursive-followups row 180 marked done in 2.52.0; (a), (c), (d) stay queued.
+
+### Model resolvers (Model Tiering v9 hardening)
+
+- `pwt_fallback_model` and the new pure `pwt_primary_model` match ids in a normalized form
+  (whitespace and non-ASCII stripped, lower-cased — mirroring the CLI 2.1.281 resolver), refusing a
+  disguised Fable, the exact `claude-opus-5` / `claude-opus-5[...]`, or bare `opus`; a passing id is
+  emitted trimmed in its own case. Fallback lists drop empty, primary-equal and duplicate entries;
+  any refused entry falls back to `claude-opus-4-8,claude-sonnet-5` with one warning.
+- A refused `PWT_PRIMARY_MODEL` counts as unset (`pwt-goal.sh`, `pwt-steer.sh`), so the governed
+  `intelligent` tier still applies, else `claude-opus-5-5`.
+- **Rate-limit resume.** Attempt 2 steps the lead to the first `pwt_fallback_model` rung for its
+  transcript model (`/model claude-opus-4-8` for a 5.5 lead) instead of the no-op
+  `/model claude-opus-5-5`; no rung / unreadable model / missing resolver each get a truthful
+  message. New `--fallback-rung <transcript>` mode.
+- Docs: `03-execute.md` names the v9 `effort: high` hard-lane pin; `claude-pattern.zsh` drops Fable
+  as a tier; the manifest's v9 note describes the final resolver and the dynamic rung.
+
+### Post-push confirm (`plan-w-team-post-push-confirm.sh`, `post-git-push.sh`)
+
+- **Launch from git state**, not command flags: only when `origin/<default>` has an
+  `update by push` reflog entry within `PWT_POST_PUSH_CONFIRM_PUSH_WINDOW_S` (900 s), else
+  HEAD == TARGET. Dry runs, deletes, feature/tag/mirror pushes no longer misfire.
+- **Strict green.** `--run` executes under `env -i` plus an allowlist (extend by name via
+  `PWT_POST_PUSH_CONFIRM_ENV_PASS`; replaces the 2.51.4 per-name scrub). Green requires
+  `mode=full`, the default `suite_cmd` and a matching `tree_digest`; coverage honours
+  `subject_digest` when present.
+- **Bounded and clean.** Watchdog (`PWT_POST_PUSH_CONFIRM_TIMEOUT_S`, 2700 s; verify-run →
+  timeout/gtimeout → inline poll), process-group kill, EXIT/TERM/HUP/INT trap (`died`), stale
+  `running` expiry, disk preflight (`skipped-disk`), log capped at 20 `launch:` notes.
+- **Single-flight** owner-token lock with race-safe stale reclaim and portable lock age (GNU and
+  BSD `stat`); relaunches when origin moved past the tested sha.
+- **Right repo.** Candidates: the push segment's `git -C` / `cd` dir (resolved once), hook cwd,
+  `CLAUDE_PROJECT_DIR`, `--root`. The parser covers env/wrapper prefixes, shell keywords, groups,
+  mid-word quotes and newlines; notes never log command text.
+- `error` / `died` / `skipped-disk` are distinct from `red` (a full-mode suite failure) and retry
+  on the next push.
+- `post-git-push.sh` runs under three `if` handlers — `Bash(git push*)`, `Bash(git -C *)`,
+  `Bash(git -c *)` — each with a 60 s timeout, re-checks with a quote-aware ERE, and exits at once
+  with no push segment or no stdin. The gh Actions poll is opt-in
+  (`PWT_POST_PUSH_CI_POLL_ENABLE=1`). The P12 guards parse JSON and flag only `Tool(args)` matchers.
+- New single contract: `docs/operations/post-push-confirm.md`.
+
+### Targeted retest (`plan-w-team-test-green.sh`, retest lib, `run.sh`)
+
+- **Subject manifest.** Every verdict records `subject_digest` over every tracked or
+  untracked-not-ignored file under `.claude/` and `tests/` (minus runtime paths). Changed unwatched
+  paths feed R; the gate refuses a retest whose subject differs (naming the first path) or has none.
+- **Staged means the index** (`git ls-files -s` blobs); the gate refuses "stage or stash first" on
+  an index/worktree split or an untracked watched file.
+- **Flaky is not a fix.** A red base with no watched change is NEED-FULL (exit 5) unless
+  `PWT_TEST_RETEST_ALLOW_FLAKY=1`, which the gate must also carry.
+- R carries one transitive hop (sibling test + naming corpus cases of a source that names a changed
+  file). Trailer rows are parsed only from the final trailer block; rows outside it are red.
+- run.sh's automatic TS skip emits `SUITE_SKIPPED ts` rows and `SUITE_MODE=partial`.
+- TERM/INT/HUP reap the suite's whole process tree (`pgrep -P` snapshot, grace
+  `PWT_TEST_GREEN_REAP_GRACE_S`, then KILL), release the lock and exit 143/130/129 with no
+  verdict. Kill switch `PWT_DISABLE_TEST_GREEN_SIGNAL_REAP=1`.
+- Symlinks hash by link text and gitlinks by commit on all three sides.
+- The new `.subject-manifest` files are gitignored and pinned by
+  `plan-w-team-state-gitignore-hygiene.test.sh` (with the rest of the test-green family).
+- The gate is inert in a repo with no `test-skill` target (NO-SUITE carve-out).
+
+### Session-start sync (`session-start.sh`)
+
+- Checkout topology comes from `git rev-parse`, not `[ -d .git ]`: lane worktrees take pull mode;
+  a linked worktree whose `origin/<default>` already has the stamp is left alone; only a checkout
+  toplevel (physical `show-toplevel == pwd -P`) takes the origin/ff path — a nested monorepo
+  consumer keeps its in-place regen.
+- A session party to a live /plan-w-team lane (worker SID, lane-zone PROJECT_ROOT, or bound
+  supervisor — the same identity the lane guard uses) does not act on a sync. Override:
+  `CLAUDE_PATTERN_SYNC_IN_LANE=1`. `PLAN_W_TEAM_DISABLE_PROMPT_ROUTE` no longer affects the sync.
+- The regen SKIP banner is matched at line start; claude-pattern's own linked worktrees are never
+  synced from its primary.
+- Tests: `sync-target-dirty-guard.bats` (16 cases, `${HOOK_BASH:-/bin/bash}`, no sleeps);
+  `statusline-project-root.test.sh` case 6 adds a stale-`GIT_DIR` subcase and a working-git mirror.
+
+## [2.52.0] — 2026-09-23 (feat: kill-switch bypass ledger — every PLAN_W_TEAM_DISABLE_* / PWT_DISABLE_* bypass is recorded per run and scored at retro; recursive-followup row 27) (32a2ca5)
+
+Resolves recursive-followups row 27 (`pwt-grounding-eval` residual #4). A kill-switched gate
+used to exit 0 with at most a transcript notice: nothing reached `.claude/state`, the retro
+never saw it, and because `pwt-goal.sh` spawns with `env $LAUNCH_ENV claude` an operator's
+exported switch flowed into every unattended worker. Spec:
+`docs/specs/resolve-recursive-followup-row-27-pwt-grounding-eval-kill-switch-bypass-ledger-f-f8ec413d.md`.
+Operator reference: `docs/operations/killswitch-bypass-ledger.md`.
+
+- **`plan-w-team-killswitch-ledger.sh` (new)** — `record` / `snapshot` / `score` /
+  `sanctioned`. Durable per-run ledger `.claude/state/plan-w-team-killswitch-ledger-<slug>.jsonl`.
+  Family membership by name pattern (`PLAN_W_TEAM_DISABLE_*`, `PWT_DISABLE_*`, suffix-style
+  `PWT_*_DISABLE`, `*_FORCE_SPAWN`), active only at value `1` — switches added later are covered
+  with no edit.
+- **Attribution rule.** A row is written only for an explicit slug (`--slug`, or a
+  `--spec …/docs/specs/<slug>.md` argument) whose workflow lock exists in the resolved state dir.
+  No "the only lock present" inference — stale locks made it wrong both ways. Test sandboxes and
+  unowned slugs are a silent no-op, so the suite cannot pollute a live run's ledger.
+- **Tamper evidence.** The first stage snapshot writes an `init` row and marks the run's lock
+  dir; no later snapshot re-mints it, and the retro's own snapshot passes `--no-init`. A ledger
+  deleted mid-run therefore scores `status=missing`, `score=null` — never a clean 5 (Step-5
+  security + silent-failure CRITICAL, fixed pre-ship). The retro folds in the live environment too.
+- **Input hardening (Step-5 review round).** Live switches are enumerated with `compgen -e` +
+  indirect expansion (a multi-line value cannot forge a switch); sidecar lines are read without
+  glob expansion and tolerate CRLF; a `--spec` counts only when it sits directly in `docs/specs`;
+  repeated passthrough flags resolve last-wins like the gates; a FIFO or symlink at the ledger
+  path is never read or appended through; `sid` is lowercased hex; the script's own repo is a
+  state-dir candidate, matching surface-status's fallback.
+- **One row definition, no jq.** Dedup and score both accept only the writer's exact fixed-format
+  line, so a hand-planted look-alike can neither suppress a real row nor be counted, and the result
+  never depends on the host's tools (evaluator iteration-1 finding).
+- **Per-stage snapshot** from `plan-w-team-surface-status.sh` (every stage emission, output
+  discarded — the status block the goal evaluator reads stays byte-identical, test-locked against a
+  failing noisy stub).
+- **Gate hit rows** from the grounding, path-existence and regression gates' kill branches — exit
+  codes and notice text unchanged (test-locked, incl. the failing-stub control).
+- **Consumer sanctioning sidecar** `.claude/killswitch-sanctioned.local.conf` (never shipped by
+  sync). Sanctioned switches are recorded and reported (`sanctioned_active`), not scored. The
+  built-in list (`PLAN_W_TEAM_DISABLE_PROMPT_ROUTE`) is test-locked for EXACT equality with the
+  launcher's spawn environment.
+- **Retro §8j-octies-bis** persists `quality_signals.killswitch_bypass` and prints a grep-able
+  `killswitch-bypass:` line. Deliberately NOT in the §8j-decies cross-run regression comparison:
+  the score measures the launch environment, not run quality.
+- **No kill switch of its own** — an audit the audited environment could turn off is
+  self-defeating; fail-open instead (every path exits 0, every caller discards output).
+- Registry row (`shared/state-artifacts.md`) with the matching janitor reap prefix in
+  `plan-w-team-cleanup-stale-goal-states.sh` (registry⇔janitor parity), sync allowlist,
+  `.gitignore` pattern, `shared/grounding.md` residual note updated.
+- Tests: `tests/skill/cases/killswitch-ledger.bats` — 57 hermetic cases (`env -i`, sandbox state,
+  live-ledger checksum guard, bash 3.2, truthy-form lint with a positive control, C6 grep, the
+  §8j-octies-bis block executed end to end, every stage-file call shape, absent/non-executable
+  ledger fail-open at all four call sites).
+
 ## [2.51.5] — 2026-09-23 (fix: session-start's regen path stamped the sync marker when sync-to-project.sh SKIPPED a dirty .claude/ — a skipped sync read as done) (6649851)
 
 The 2.51.4 fleet sync's independent verifier found `.claude/.sync-version` changed but

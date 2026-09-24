@@ -139,6 +139,7 @@ plan-w-team-fleet-intent- \
 plan-w-team-supervisor-actions- \
 plan-w-team-orchestrator-decisions- \
 plan-w-team-spec-fanout- \
+plan-w-team-killswitch-ledger- \
 plan-w-team-project-version- \
 plan-w-team-project-version-baseline- \
 plan-w-team-test-baseline- \

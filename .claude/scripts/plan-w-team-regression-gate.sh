@@ -62,6 +62,11 @@ WAIVER_FILE="$STATE_DIR/plan-w-team-regression-waiver-$SLUG"
 # ─── Kill switch ─────────────────────────────────────────────────────────────
 if [ "${PLAN_W_TEAM_DISABLE_REGRESSION_GATE:-0}" = "1" ]; then
     echo "regression gate disabled (PLAN_W_TEAM_DISABLE_REGRESSION_GATE=1)" >&2
+    # Record the bypass in the run's kill-switch ledger (row 27); output
+    # discarded, failure ignored.
+    "$(dirname "$0")/plan-w-team-killswitch-ledger.sh" record \
+        --switch PLAN_W_TEAM_DISABLE_REGRESSION_GATE --site regression-gate \
+        --slug "$SLUG" --state-dir "$STATE_DIR" >/dev/null 2>&1 || true
     exit 3
 fi
 

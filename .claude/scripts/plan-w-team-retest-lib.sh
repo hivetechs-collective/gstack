@@ -74,18 +74,27 @@ pwt_rt_is_safe_slug() {  # a slug that may be turned into a file name
 }
 
 # ─── MANIFEST ───────────────────────────────────────────────────────────────
-# pwt_rt_manifest <root> <worktree|staged|head> <globs>
+# pwt_rt_manifest <root> <worktree|staged|head> <globs> [excludes]
 #
 # Prints the watched-set manifest: one `path:blob` line per file, sorted by PATH
 # (LC_ALL=C), which is byte-for-byte the input the pre-2.51.0 tree_digest hashed —
 # so `pwt_rt_digest` of this output equals every digest recorded before the lib
 # existed. <globs> is the newline-separated PWT_WATCHED_GLOBS block, passed IN by
-# the caller so the two symmetry-locked copies stay where they are.
+# the caller so the two symmetry-locked copies stay where they are. [excludes] is an
+# optional newline-separated list of `case` patterns dropped from the enumeration
+# (the subject manifest's runtime paths); the watched manifest passes none.
 #
-#   worktree  working-tree content (untracked-not-ignored included; a deleted
-#             tracked file falls back to its HEAD blob, else `-`)
-#   staged    as worktree, but a staged file (ACMR) contributes its INDEX blob —
-#             what is about to be committed
+#   worktree  working-tree content: every cached path plus untracked-not-ignored
+#             files, hashed from disk. A tracked path missing from disk records `-`
+#             — never its HEAD blob, which let a run with the file deleted mint the
+#             digest of a tree that still had it (review -2). A symlink records the
+#             blob of its link text and a gitlink its commit, the objects git itself
+#             stores for them, so a clean tree hashes the same in all three modes.
+#   staged    the INDEX only: `git ls-files -s` blobs for every cached path — what
+#             is about to be committed. Untracked files are not in it; the gate
+#             refuses a commit while the index and the working tree disagree on a
+#             watched path or an untracked watched file exists, so on every path it
+#             accepts, staged == worktree for the same tree (review -2).
 #   head      the committed tree at HEAD only (git ls-tree), for the post-push
 #             confirm's "does a full verdict describe what was pushed?"
 #
@@ -93,7 +102,7 @@ pwt_rt_is_safe_slug() {  # a slug that may be turned into a file name
 # of nothing is a well-formed hash, so an empty enumeration must never be allowed to
 # corroborate itself.
 pwt_rt_manifest() {
-  local root="$1" mode="$2" globs_text="$3"
+  local root="$1" mode="$2" globs_text="$3" excl_text="${4:-}"
   (
     set +e
     set -f   # globs are pathspecs / case patterns here, never filesystem globs
@@ -106,9 +115,26 @@ pwt_rt_manifest() {
 $globs_text
 EOF
     [ "${#globs[@]}" -gt 0 ] || exit 1
+    excl=()
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      excl+=("$g")
+    done <<EOF
+$excl_text
+EOF
     tab="$(printf '\t')"
     tmpd=$(mktemp -d -t pwt-rt-man.XXXXXX) || exit 1
     trap 'rm -rf "$tmpd" 2>/dev/null' EXIT
+
+    # __excluded <path> — 0 when an [excludes] pattern matches (`*` matches `/`).
+    __excluded() {
+      [ "${#excl[@]}" -gt 0 ] || return 1
+      for x in "${excl[@]}"; do
+        # shellcheck disable=SC2254  # the pattern IS the glob
+        case "$1" in $x) return 0 ;; esac
+      done
+      return 1
+    }
 
     if [ "$mode" = "head" ]; then
       # `git ls-tree` does not honour glob pathspecs, so list the whole tree and
@@ -117,34 +143,90 @@ EOF
       while IFS="$tab" read -r meta path; do
         [ -n "$path" ] || continue
         set -- $meta
-        [ "${2:-}" = "blob" ] || continue
+        # A blob (file or symlink) or a commit (gitlink) — the same entries the
+        # staged and worktree modes record, so the three modes agree on one tree.
+        case "${2:-}" in blob|commit) ;; *) continue ;; esac
+        __excluded "$path" && continue
         for g in "${globs[@]}"; do
           # shellcheck disable=SC2254  # the glob IS the pattern
           case "$path" in $g) printf '%s%s%s\n' "$path" "$tab" "$3"; break ;; esac
         done
       done < "$tmpd/tree" > "$tmpd/pairs"
+    elif [ "$mode" = "staged" ]; then
+      # `<mode> <blob> <stage><TAB><path>`. A conflicted path (stage 1-3) cannot be
+      # committed, so it records `-` once instead of either side's blob.
+      git ls-files -s -- "${globs[@]}" 2>/dev/null > "$tmpd/index" || exit 1
+      while IFS="$tab" read -r meta path; do
+        [ -n "$path" ] || continue
+        __excluded "$path" && continue
+        set -- $meta
+        if [ "${3:-}" = "0" ]; then
+          printf '%s%s%s\n' "$path" "$tab" "$2"
+        else
+          printf '%s%s-\n' "$path" "$tab"
+        fi
+      done < "$tmpd/index" | LC_ALL=C sort -u > "$tmpd/pairs"
     else
       git ls-files --cached --others --exclude-standard -- "${globs[@]}" 2>/dev/null \
-        | LC_ALL=C sort -u > "$tmpd/files"
-      [ -s "$tmpd/files" ] || exit 1
-      : > "$tmpd/staged"
-      if [ "$mode" = "staged" ]; then
-        git diff --cached --name-only --diff-filter=ACMR 2>/dev/null | LC_ALL=C sort -u > "$tmpd/staged"
-      fi
-      : > "$tmpd/pairs"
-      : > "$tmpd/present"
+        | LC_ALL=C sort -u > "$tmpd/all"
       while IFS= read -r f; do
         [ -n "$f" ] || continue
-        if [ -s "$tmpd/staged" ] && grep -qFx -- "$f" "$tmpd/staged" 2>/dev/null; then
-          h=$(git rev-parse ":$f" 2>/dev/null)
-          if [ -n "$h" ]; then printf '%s%s%s\n' "$f" "$tab" "$h" >> "$tmpd/pairs"; continue; fi
-        fi
-        if [ -f "$f" ]; then
-          printf '%s\n' "$f" >> "$tmpd/present"
-        else
-          h=$(git rev-parse -q --verify "HEAD:$f" 2>/dev/null)
-          [ -n "$h" ] || h="-"
+        __excluded "$f" && continue
+        printf '%s\n' "$f"
+      done < "$tmpd/all" > "$tmpd/files"
+      [ -s "$tmpd/files" ] || exit 1
+      : > "$tmpd/pairs"
+      : > "$tmpd/present"
+      # Gitlinks (mode 160000, stage 0) — `<commit><TAB><path>`, read only when a
+      # listed path turns out to be a directory.
+      git ls-files -s -- "${globs[@]}" 2>/dev/null \
+        | awk -v t="$tab" '$1 == "160000" && $3 == "0" { split($0, a, t); print $2 t a[2] }' \
+        > "$tmpd/gitlinks"
+      while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        if [ -L "$f" ]; then
+          # A symlink is hashed by its LINK TEXT — the blob git stores for mode
+          # 120000 and the one `git ls-files -s` / `git ls-tree` report. Hashing the
+          # path (as --stdin-paths does) follows the link: a file link got its
+          # target's content and a directory link recorded `-`, so the worktree and
+          # staged sides never agreed and every retest with a tracked symlink in the
+          # subject was refused at the gate (round-2 review). --stdin applies no
+          # filters, as git does not to link text.
+          h="-"
+          if readlink -n "./$f" > "$tmpd/lt" 2>/dev/null; then
+            h=$(git hash-object --stdin < "$tmpd/lt" 2>/dev/null)
+            [ -n "$h" ] || h="-"
+          fi
           printf '%s%s%s\n' "$f" "$tab" "$h" >> "$tmpd/pairs"
+        elif [ -f "$f" ]; then
+          printf '%s\n' "$f" >> "$tmpd/present"
+        elif [ -d "$f" ]; then
+          # A gitlink (submodule) is recorded by COMMIT, as the index and HEAD record
+          # it: a checked-out one by its own HEAD (a new submodule commit is a change
+          # git reports too), an unpopulated one by the index commit (git reads an
+          # empty gitlink directory as unmodified). `$f/.git` is checked first —
+          # `git -C` in a plain directory would answer with the SUPERPROJECT's HEAD —
+          # and the repo-local GIT_* variables a hook environment exports are cleared
+          # for the same reason (git's own submodule code does both). A directory
+          # that is no gitlink (an untracked nested repo) records `-`.
+          h="-"
+          c=""
+          while IFS="$tab" read -r gc gp; do
+            [ "$gp" = "$f" ] && { c="$gc"; break; }
+          done < "$tmpd/gitlinks"
+          if [ -n "$c" ]; then
+            if [ -e "$f/.git" ]; then
+              # shellcheck disable=SC2046  # variable names, one per line
+              h=$(unset $(git rev-parse --local-env-vars 2>/dev/null)
+                  git -C "$f" rev-parse --verify -q HEAD 2>/dev/null)
+              [ -n "$h" ] || h="-"
+            else
+              h="$c"
+            fi
+          fi
+          printf '%s%s%s\n' "$f" "$tab" "$h" >> "$tmpd/pairs"
+        else
+          printf '%s%s-\n' "$f" "$tab" >> "$tmpd/pairs"
         fi
       done < "$tmpd/files"
       if [ -s "$tmpd/present" ]; then
@@ -174,6 +256,100 @@ EOF
     # historical path-sorted form.
     LC_ALL=C sort -t "$tab" -k1,1 "$tmpd/pairs" | tr "$tab" ':'
   )
+}
+
+# ─── SUBJECT MANIFEST (review -1) ───────────────────────────────────────────
+# The watched set above is what the GATE is consulted for; it is not everything the
+# suite exercises. The corpus reads hooks, scripts, skills and fixtures far outside
+# PWT_WATCHED_GLOBS, so a red base "fixed" by an edit to an unwatched hook used to
+# see an empty watched delta, classify as flaky, and certify a retest that never
+# re-ran the tests reading that hook. The subject manifest is the wider tracked
+# `.claude/**` + `tests/**` tree the suite is about. A verdict records its digest in
+# `subject_digest` BESIDE tree_digest, which keeps its historical meaning: every
+# recorded digest, head mode, and the post-push confirm's compare are unchanged.
+#
+# Runtime paths are excluded — they change on every run or every commit and are not
+# code under test. Fixed here, not env-tunable: a knob could narrow the subject back
+# down to the watched set.
+PWT_RT_SUBJECT_ROOTS='.claude
+tests'
+PWT_RT_SUBJECT_EXCLUDES='.claude/state/*
+.claude/worktrees/*
+.claude/.sync-version
+.claude/statusline.log
+.claude/agents.backup.*
+tests/skill/.bats/*
+tests/skill/results/*'
+
+# pwt_rt_subject_manifest <root> <worktree|staged> — the subject manifest, in the
+# same `path:blob` form and failure contract as pwt_rt_manifest.
+pwt_rt_subject_manifest() {
+  case "${2:-}" in worktree|staged) ;; *) return 1 ;; esac
+  pwt_rt_manifest "$1" "$2" "$PWT_RT_SUBJECT_ROOTS" "$PWT_RT_SUBJECT_EXCLUDES"
+}
+
+# pwt_rt_unstaged <root> <globs> — the commit gate's "stage or stash first" probe
+# (review -2). Prints `modified <path>` for a watched path whose working-tree
+# content differs from the index (unstaged edit or deletion) and `untracked <path>`
+# for an untracked, non-ignored watched file; returns 1 when it printed anything, 2
+# when git could not answer, 0 when the index IS the working tree for the watched
+# set. A suite verdict describes the working tree it ran on; the commit takes the
+# index; only when the two agree over the watched set does the staged digest the
+# gate compares stand for the tree the suite saw.
+pwt_rt_unstaged() {
+  local root="$1" globs_text="$2"
+  (
+    set +e
+    set -f
+    cd "$root" 2>/dev/null || exit 2
+    globs=()
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      globs+=("$g")
+    done <<EOF
+$globs_text
+EOF
+    [ "${#globs[@]}" -gt 0 ] || exit 2
+    mod=$(git diff --name-only -- "${globs[@]}" 2>/dev/null) || exit 2
+    unt=$(git ls-files --others --exclude-standard -- "${globs[@]}" 2>/dev/null) || exit 2
+    found=0
+    if [ -n "$mod" ]; then
+      printf '%s\n' "$mod" | LC_ALL=C sort -u | sed '/^$/d; s/^/modified /'
+      found=1
+    fi
+    if [ -n "$unt" ]; then
+      printf '%s\n' "$unt" | LC_ALL=C sort -u | sed '/^$/d; s/^/untracked /'
+      found=1
+    fi
+    [ "$found" = "0" ] || exit 1
+    exit 0
+  )
+}
+
+# pwt_rt_path_watched <path> <globs> — 0 when <path> matches a watched glob, read
+# the way the hook's gate trigger reads it (`case`, `*` matches `/`).
+pwt_rt_path_watched() {
+  local p="$1" g
+  while IFS= read -r g; do
+    [ -n "$g" ] || continue
+    # shellcheck disable=SC2254  # the glob IS the pattern
+    case "$p" in $g) return 0 ;; esac
+  done <<EOF
+$2
+EOF
+  return 1
+}
+
+# pwt_rt_unwatched <delta_file> <globs> — the delta's paths no watched glob covers,
+# one per line: the subject-only half of a subject delta.
+pwt_rt_unwatched() {
+  local p
+  [ -r "$1" ] || return 1
+  while IFS= read -r p; do
+    [ -n "$p" ] || continue
+    pwt_rt_path_watched "$p" "$2" || printf '%s\n' "$p"
+  done < "$1"
+  return 0
 }
 
 # pwt_rt_digest [file] — sha256 of a manifest (stdin when no file). Empty input →
@@ -232,39 +408,79 @@ pwt_rt_needs_full() {
 }
 
 # ─── LOG READERS (run.sh's machine-readable rows are the witness) ───────────
-# pwt_rt_log_mode <log> — the SUITE_MODE value when the log carries EXACTLY one
-# SUITE_MODE= line; nothing otherwise (absent = legacy, two = spliced logs).
-pwt_rt_log_mode() {
+# pwt_rt_trailer <log> — prints the machine-readable trailer block: the contiguous
+# run of SUITE_MODE= / RETEST_RAN / SUITE_FAILED / SUITE_SKIPPED rows directly above
+# the final SUITE_EXIT=N line (make's own `make: *** …` lines after it are skipped,
+# as pwt_rt_marker does). Returns 1 when there is no final marker, and 2 when any of
+# those prefixes — or a second SUITE_EXIT= — appears at column 0 ABOVE the block.
+#
+# Every reader below parses ONLY this block (review -5). Before it they grepped the
+# whole log, so a test that printed `RETEST_RAN bats <rel>` or `SUITE_FAILED …` at
+# column 0 anywhere in its output was read as the runner's own witness row: it could
+# fake coverage of a file the retest never ran, or plant a failure row. run.sh emits
+# its rows only in __suite_exit, immediately ahead of the marker. It DOES relay test
+# output (bats TAP via tee) at column 0, so a test that prints one of these prefixes
+# makes the log fail closed here (rc 2) — refused, never misread. No case in the
+# corpus prints them today; a case that must print one has to indent it.
+pwt_rt_trailer() {
   (
     set +e
     [ -r "$1" ] || exit 1
-    n=$(grep -c '^SUITE_MODE=' "$1" 2>/dev/null)
-    [ "$n" = "1" ] || exit 1
-    grep '^SUITE_MODE=' "$1" | head -1 | tr -d '\r' | sed 's/^SUITE_MODE=//'
+    tr -d '\r' < "$1" 2>/dev/null | awk '
+      { line[NR] = $0 }
+      function is_row(s) {
+        return (s ~ /^SUITE_MODE=/ || s ~ /^RETEST_RAN / || s ~ /^SUITE_FAILED / || s ~ /^SUITE_SKIPPED /)
+      }
+      END {
+        i = NR
+        while (i > 0 && line[i] ~ /^make(\[[0-9]+\])?: \*\*\* /) i--
+        if (i < 1 || line[i] !~ /^SUITE_EXIT=[0-9]+$/) exit 1
+        j = i - 1
+        while (j > 0 && is_row(line[j])) j--
+        for (k = 1; k <= j; k++)
+          if (is_row(line[k]) || line[k] ~ /^SUITE_EXIT=/) exit 2
+        for (k = j + 1; k < i; k++) print line[k]
+      }'
   )
 }
 
-# pwt_rt_parse_failures <log> — `kind rel` for every attributed failing file.
-# Returns 1 when the log carries an `unattributed` or `leak` row: a failure the
-# runner could not tie to a file cannot be retested by file, so it needs a full run.
+# pwt_rt_log_mode <log> — the SUITE_MODE value when the trailer block carries
+# EXACTLY one SUITE_MODE= line; nothing otherwise (absent = legacy, two = spliced,
+# a row above the trailer = forged).
+pwt_rt_log_mode() {
+  (
+    set +e
+    block=$(pwt_rt_trailer "$1") || exit 1
+    n=$(printf '%s\n' "$block" | grep -c '^SUITE_MODE=' 2>/dev/null)
+    [ "$n" = "1" ] || exit 1
+    printf '%s\n' "$block" | grep '^SUITE_MODE=' | head -1 | sed 's/^SUITE_MODE=//'
+  )
+}
+
+# pwt_rt_parse_failures <log> — `kind rel` for every attributed failing file in the
+# trailer block. Returns 1 when the block carries an `unattributed` or `leak` row (a
+# failure the runner could not tie to a file cannot be retested by file, so it needs
+# a full run), and when the log has no valid trailer block at all.
 pwt_rt_parse_failures() {
   (
     set +e
-    [ -r "$1" ] || exit 1
-    grep -E '^SUITE_FAILED (unattributed|leak)( |$)' "$1" >/dev/null 2>&1 && bad=1 || bad=0
-    grep -E '^SUITE_FAILED (bats|shell|ts) .' "$1" 2>/dev/null | tr -d '\r' \
+    block=$(pwt_rt_trailer "$1") || exit 1
+    printf '%s\n' "$block" | grep -E '^SUITE_FAILED (unattributed|leak)( |$)' >/dev/null 2>&1 && bad=1 || bad=0
+    printf '%s\n' "$block" | grep -E '^SUITE_FAILED (bats|shell|ts) .' 2>/dev/null \
       | sed 's/^SUITE_FAILED //' | LC_ALL=C sort -u
     [ "$bad" = "0" ]
   )
 }
 
-# pwt_rt_ran <log> — `kind rel` for every file the retest log says it ran.
+# pwt_rt_ran <log> — `kind rel` for every file the retest log's trailer block says
+# it ran. Returns 1 (and prints nothing) when the log has no valid trailer block.
 pwt_rt_ran() {
   (
     set +e
-    [ -r "$1" ] || exit 1
-    grep -E '^RETEST_RAN (bats|shell|ts) .' "$1" 2>/dev/null | tr -d '\r' \
+    block=$(pwt_rt_trailer "$1") || exit 1
+    printf '%s\n' "$block" | grep -E '^RETEST_RAN (bats|shell|ts) .' 2>/dev/null \
       | sed 's/^RETEST_RAN //' | LC_ALL=C sort -u
+    exit 0
   )
 }
 
@@ -316,16 +532,23 @@ pwt_rt_log_bound() {
 #
 # The one definition of "a full verdict a retest may be measured against", used by
 # the wrapper before a retest runs and by the gate before it accepts one. On success
-# returns 0 and sets PWT_RT_BASE_{SLUG,TS,DIGEST,LOG,MANIFEST,GREEN,EXIT}. On
-# failure returns 1 with the reason in PWT_RT_ERR. Requires jq + shasum.
+# returns 0 and sets PWT_RT_BASE_{SLUG,TS,DIGEST,LOG,MANIFEST,GREEN,EXIT} and
+# PWT_RT_BASE_SUBJECT_{DIGEST,MANIFEST}. On failure returns 1 with the reason in
+# PWT_RT_ERR. Requires jq + shasum.
+#
+# A base that predates the subject manifest (no `subject_digest`) is REFUSED, never
+# measured against the watched set alone: without the subject a retest cannot see an
+# edit to an unwatched file the corpus reads, which is the exact hole review -1
+# closed. The cost is one full run after the upgrade.
 pwt_rt_check_base() {
-  local f="$1" max now mt age mode cmd reason man_sha
+  local f="$1" max now mt age mode cmd reason man_sha sub_sha
   # Normalize the cap: a non-numeric value (e.g. a "24h" typo) must not turn the age
   # comparison into a test error that reads as "not stale" (fail open).
   max="$(pwt_rt_int "$2" 86400)"
   PWT_RT_ERR=""
   PWT_RT_BASE_SLUG=""; PWT_RT_BASE_TS=""; PWT_RT_BASE_DIGEST=""; PWT_RT_BASE_LOG=""
   PWT_RT_BASE_MANIFEST=""; PWT_RT_BASE_GREEN=""; PWT_RT_BASE_EXIT=""
+  PWT_RT_BASE_SUBJECT_DIGEST=""; PWT_RT_BASE_SUBJECT_MANIFEST=""
   if [ ! -f "$f" ]; then PWT_RT_ERR="no full verdict at $f"; return 1; fi
   if ! command -v jq >/dev/null 2>&1; then PWT_RT_ERR="jq is required"; return 1; fi
   if ! jq -e . "$f" >/dev/null 2>&1; then PWT_RT_ERR="the full verdict is not valid JSON"; return 1; fi
@@ -348,6 +571,9 @@ pwt_rt_check_base() {
   if ! pwt_rt_is_hex64 "$PWT_RT_BASE_DIGEST"; then PWT_RT_ERR="the base verdict carries no tree_digest"; return 1; fi
   if [ -z "$PWT_RT_BASE_LOG" ] || [ ! -r "$PWT_RT_BASE_LOG" ]; then PWT_RT_ERR="the base run's log is missing or unreadable"; return 1; fi
   if ! pwt_rt_log_bound "$f" "$PWT_RT_BASE_LOG"; then PWT_RT_ERR="the base log is not bound to the base verdict: $PWT_RT_ERR"; return 1; fi
+  if ! pwt_rt_trailer "$PWT_RT_BASE_LOG" >/dev/null; then
+    PWT_RT_ERR="the base log's machine-readable rows are not confined to its final trailer block (forged, spliced or truncated)"; return 1
+  fi
   if [ "$(pwt_rt_log_mode "$PWT_RT_BASE_LOG")" != "full" ]; then PWT_RT_ERR="the base log does not carry exactly one SUITE_MODE=full"; return 1; fi
   # Defense in depth beside the hash: the failing set R is built from must be exactly
   # the one the (lane-guard-protected) verdict recorded at archive time.
@@ -361,6 +587,14 @@ pwt_rt_check_base() {
   if [ -z "$PWT_RT_BASE_MANIFEST" ] || [ ! -r "$PWT_RT_BASE_MANIFEST" ]; then PWT_RT_ERR="the base run's manifest is missing or unreadable"; return 1; fi
   man_sha=$(pwt_rt_sha256_file "$PWT_RT_BASE_MANIFEST")
   if [ "$man_sha" != "$PWT_RT_BASE_DIGEST" ]; then PWT_RT_ERR="the base manifest does not hash to the base tree_digest (tampered or replaced)"; return 1; fi
+  PWT_RT_BASE_SUBJECT_DIGEST=$(jq -r '.subject_digest // ""' "$f" 2>/dev/null)
+  PWT_RT_BASE_SUBJECT_MANIFEST=$(jq -r '.subject_manifest_path // ""' "$f" 2>/dev/null)
+  if ! pwt_rt_is_hex64 "$PWT_RT_BASE_SUBJECT_DIGEST"; then
+    PWT_RT_ERR="the base verdict predates the subject manifest (no subject_digest, or the tree changed during that run) — run one full run"; return 1
+  fi
+  if [ -z "$PWT_RT_BASE_SUBJECT_MANIFEST" ] || [ ! -r "$PWT_RT_BASE_SUBJECT_MANIFEST" ]; then PWT_RT_ERR="the base run's subject manifest is missing or unreadable"; return 1; fi
+  sub_sha=$(pwt_rt_sha256_file "$PWT_RT_BASE_SUBJECT_MANIFEST")
+  if [ "$sub_sha" != "$PWT_RT_BASE_SUBJECT_DIGEST" ]; then PWT_RT_ERR="the base subject manifest does not hash to the base subject_digest (tampered or replaced)"; return 1; fi
   now=$(date +%s 2>/dev/null || echo 0)
   mt=$(pwt_rt_file_mtime "$f")
   if [ "$now" -le 0 ] || [ "$mt" -le 0 ] 2>/dev/null; then PWT_RT_ERR="the base verdict's age could not be determined"; return 1; fi
@@ -448,27 +682,37 @@ pwt_rt_changelog_is_backfill() {
 }
 
 # ─── THE RERUN SET ──────────────────────────────────────────────────────────
-# pwt_rt_required <root> <base_failed_file> <delta_file> <base_green> [<base_manifest> <current_manifest>]
+# pwt_rt_required <root> <base_failed_file> <delta_file> <base_green>
+#                 [<base_manifest> <current_manifest> [<unwatched_delta_file>]]
 #
 # Prints R — `kind rel`, sorted, deduplicated — the files a retest against this
 # base MUST rerun. Returns 3 (NEED-FULL, reason on stderr) when R cannot be built
-# honestly. R is the union of:
+# honestly. The CHANGED set is <delta_file> (the watched delta) plus
+# <unwatched_delta_file> (subject paths outside the watched globs — review -1). R is
+# the union of:
 #   1. the base run's failing files (a failing file that left the corpus → NEED-FULL);
 #   2. changed corpus files that still exist;
 #   3. the sibling test of a changed source (X.sh → X.test.sh, X.ts → X.test.ts);
 #   4. every corpus file naming a changed non-corpus file (its stem, or its full
 #      basename when the stem is under 6 characters) — one `grep -lF -f` pass;
+#   4b. ONE transitive hop (review -4): the watched non-corpus sources (from
+#      <current_manifest>; .sh/.bash/.ts/.js/.mjs/.py outside tests/skill/) that
+#      name a changed file are CALLERS, and each caller's sibling and name-mention
+#      hits join R — a helper exercised only through the script that sources it is
+#      retested through that script's tests. Without <current_manifest> there is no
+#      caller set and the hop is skipped;
 #   5. every entry in tests/skill/retest-always.list (missing/empty/stale → NEED-FULL).
-# Special case: a GREEN base whose delta is exactly the plan-w-team CHANGELOG AND whose
-# CHANGELOG change is nothing but `(PENDING_SHA)` → `(<sha>)` header backfills
-# (pwt_rt_changelog_is_backfill, checked against the two manifests' blobs) needs only
-# (1) ∪ (5): a backfill cannot change any entry a case pins. Any other CHANGELOG edit —
-# a reworded, added or deleted entry — takes the normal path, whose name-mention pass
-# reruns every case that asserts CHANGELOG content (opus48-uplift.bats,
-# model-tiering-v3.bats, the changelog-sha / doc-ship-gate / version-uplift tests).
-# Without both manifests the special case never applies.
+# Special case: a GREEN base whose WATCHED delta is exactly the plan-w-team CHANGELOG
+# AND whose CHANGELOG change is nothing but `(PENDING_SHA)` → `(<sha>)` header
+# backfills (pwt_rt_changelog_is_backfill, checked against the two manifests' blobs)
+# drops the CHANGELOG from the changed set: a backfill cannot change any entry a case
+# pins. Unwatched changes are never dropped. Any other CHANGELOG edit — a reworded,
+# added or deleted entry — takes the normal path, whose name-mention pass reruns every
+# case that asserts CHANGELOG content (opus48-uplift.bats, model-tiering-v3.bats, the
+# changelog-sha / doc-ship-gate / version-uplift tests). Without both manifests the
+# special case never applies.
 pwt_rt_required() {
-  local root="$1" basefailed="$2" delta="$3" base_green="$4" bman="${5:-}" cman="${6:-}"
+  local root="$1" basefailed="$2" delta="$3" base_green="$4" bman="${5:-}" cman="${6:-}" udelta="${7:-}"
   (
     set +e
     set -f
@@ -486,6 +730,22 @@ pwt_rt_required() {
 
     # corpus_line <rel> — the `kind rel` corpus line for a path, if any.
     corpus_line() { awk -v r="$1" 'substr($0, index($0, " ") + 1) == r { print; exit }' "$tmpd/corpus"; }
+    # sibling_of <rel> — the sibling test path of a source, if it has that shape.
+    sibling_of() {
+      case "$1" in
+        *.test.sh|*.test.ts) ;;
+        *.sh) printf '%s\n' "${1%.sh}.test.sh" ;;
+        *.ts) printf '%s\n' "${1%.ts}.test.ts" ;;
+      esac
+    }
+    # mention_of <rel> — the name-mention pattern: stem, or basename when stem < 6.
+    mention_of() {
+      local b s
+      b="${1##*/}"
+      s="${b%.*}"
+      [ -n "$s" ] && [ "${#s}" -ge 6 ] || s="$b"
+      [ -n "$s" ] && printf '%s\n' "$s"
+    }
 
     # (1) base failures
     if [ -s "$basefailed" ]; then
@@ -508,7 +768,12 @@ pwt_rt_required() {
       only_changelog=1
     fi
 
-    if [ "$only_changelog" = "0" ] && [ -s "$delta" ]; then
+    : > "$tmpd/changed"
+    if [ "$only_changelog" = "0" ] && [ -s "$delta" ]; then cat "$delta" >> "$tmpd/changed"; fi
+    if [ -n "$udelta" ] && [ -s "$udelta" ]; then cat "$udelta" >> "$tmpd/changed"; fi
+    LC_ALL=C sort -u "$tmpd/changed" | sed '/^$/d' > "$tmpd/changed.u"
+
+    if [ -s "$tmpd/changed.u" ]; then
       : > "$tmpd/patterns"
       while IFS= read -r p; do
         [ -n "$p" ] || continue
@@ -519,26 +784,49 @@ pwt_rt_required() {
           continue
         fi
         # (3) sibling test of a changed source
-        sib=""
-        case "$p" in
-          *.test.sh|*.test.ts) ;;
-          *.sh) sib="${p%.sh}.test.sh" ;;
-          *.ts) sib="${p%.ts}.test.ts" ;;
-        esac
+        sib=$(sibling_of "$p")
         if [ -n "$sib" ]; then
           cl=$(corpus_line "$sib")
           [ -n "$cl" ] && printf '%s\n' "$cl" >> "$tmpd/req"
         fi
         # (4) name-mention pattern
-        b="${p##*/}"
-        s="${b%.*}"
-        [ -n "$s" ] && [ "${#s}" -ge 6 ] || s="$b"
-        [ -n "$s" ] && printf '%s\n' "$s" >> "$tmpd/patterns"
-      done < "$delta"
+        mention_of "$p" >> "$tmpd/patterns"
+      done < "$tmpd/changed.u"
+
+      # (4b) one transitive hop through the watched sources that name a changed file.
+      if [ -s "$tmpd/patterns" ] && [ -n "$cman" ] && [ -r "$cman" ]; then
+        sed 's/:[^:]*$//' "$cman" | while IFS= read -r c; do
+          [ -n "$c" ] || continue
+          case "$c" in
+            tests/skill/*) continue ;;
+            *.sh|*.bash|*.ts|*.js|*.mjs|*.py) ;;
+            *) continue ;;
+          esac
+          grep -qFx -- "$c" "$tmpd/corpus.rel" && continue
+          grep -qFx -- "$c" "$tmpd/changed.u" && continue
+          [ -f "$root/$c" ] && printf '%s\n' "$c"
+        done > "$tmpd/callers.cand"
+        if [ -s "$tmpd/callers.cand" ]; then
+          (
+            cd "$root" 2>/dev/null || exit 0
+            tr '\n' '\0' < "$tmpd/callers.cand" | xargs -0 grep -lF -f "$tmpd/patterns" -- 2>/dev/null
+          ) > "$tmpd/callers"
+          while IFS= read -r c; do
+            [ -n "$c" ] || continue
+            sib=$(sibling_of "$c")
+            if [ -n "$sib" ]; then
+              cl=$(corpus_line "$sib")
+              [ -n "$cl" ] && printf '%s\n' "$cl" >> "$tmpd/req"
+            fi
+            mention_of "$c" >> "$tmpd/hop.patterns"
+          done < "$tmpd/callers"
+          [ -s "$tmpd/hop.patterns" ] && cat "$tmpd/hop.patterns" >> "$tmpd/patterns"
+        fi
+      fi
+
       if [ -s "$tmpd/patterns" ]; then
         (
           cd "$root" 2>/dev/null || exit 0
-          # shellcheck disable=SC2046
           tr '\n' '\0' < "$tmpd/corpus.rel" | xargs -0 grep -lF -f "$tmpd/patterns" -- 2>/dev/null
         ) | while IFS= read -r hit; do
               [ -n "$hit" ] || continue

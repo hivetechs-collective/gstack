@@ -151,9 +151,9 @@ exceeds the risk. It disables both the spec grounding gate AND the Step-2
 path-existence floor above. This switch is documented HERE for operator use and deliberately
 not echoed in gate failure messages (C6 precedent — a blocked autonomous worker is
 not handed its own escape hatch). When the gate runs disabled it prints a grep-able
-notice line; note the family-wide residual that a worker env exporting
-`PLAN_W_TEAM_DISABLE_*` silently weakens gates in unattended runs (tracked in the
-recursive-followups ledger).
+notice line and records the bypass in the run's kill-switch ledger; the retro scores
+the run's kill-switch activity (07-retro §8j-octies-bis). Operator reference:
+`docs/operations/killswitch-bypass-ledger.md`.
 
 ## Why this shape
 

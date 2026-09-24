@@ -35,6 +35,13 @@
 #       gate can refuse a one-file, SKILL_SKIP_*, or substituted-command green.
 #   The exact `path:blob` lines hashed are kept in …-S.manifest, so
 #   sha256(manifest) == tree_digest and a retest can compute what changed since.
+#   2.53.0: the wider SUBJECT manifest (tracked .claude/** + tests/**, runtime paths
+#   excluded) is frozen the same way into …-S.subject-manifest / `subject_digest`; a
+#   retest reruns what an unwatched change affects, and only a verdict carrying a
+#   subject_digest can be a retest base. Mode/failure rows are read from the log's
+#   final trailer block only (a row above it is `rows-outside-trailer`, red), and
+#   TERM/INT/HUP reap the suite's process tree and release the lock (exit 128+n);
+#   the suite stays in the caller's process group, so a group kill reaches it too.
 #
 # EXIT CODES (registry — keep in sync with tests/skill/cases/test-green-wrapper.bats)
 #   0  green     (--check: latest artifact is green; --retest: also "nothing to
@@ -44,8 +51,12 @@
 #   3  NO-SUITE  this repo carries no skill suite — no artifact written (consumers)
 #   4  busy      another run holds this checkout's lock
 #   5  NEED-FULL --retest only: no retest can be trusted here (no/stale/tampered
-#                base, harness or gate files changed, rerun set over the cap, chain
-#                cap reached) — run the full suite. No artifact written.
+#                base, a base without subject_digest, harness or gate files changed,
+#                a red base with no watched change and no PWT_TEST_RETEST_ALLOW_FLAKY,
+#                rerun set over the cap, chain cap reached) — run the full suite. No
+#                artifact written.
+#   129/130/143  interrupted by HUP/INT/TERM — the suite was reaped, the lock
+#                released, no artifact written.
 #
 # bash 3.2 (mac-mini /bin/bash): no `declare -A`, no `${v,,}`, no mapfile.
 
@@ -312,11 +323,130 @@ cleanup() {
   if [ "$LOCK_HELD" = "1" ] && [ -n "${LOCK_DIR:-}" ]; then
     rm -f "$LOCK_DIR/holder" 2>/dev/null || true
     rmdir "$LOCK_DIR" 2>/dev/null || true
+    LOCK_HELD=0
   fi
   [ -n "$TG_TMP" ] && rm -rf "$TG_TMP" 2>/dev/null
   return 0
 }
-trap cleanup EXIT INT TERM
+
+# ─── SIGNALS (retro row 185) ────────────────────────────────────────────────
+# The suite runs as a background job that this script `wait`s on, so a TERM / INT /
+# HUP is handled at once: the suite's whole process TREE is reaped (TERM, a grace
+# period, then KILL), then the per-checkout lock and the temp dir are released, and
+# the script exits 128+n WITHOUT writing a verdict. Before this, `trap cleanup … INT
+# TERM` ran cleanup and RETURNED: bash defers a trap until a foreground child exits,
+# so a killed wrapper left the suite running unowned, and when the trap did fire it
+# released the lock mid-run while the script carried on and wrote a verdict with no
+# lock held.
+#
+# The job stays in THIS script's process group (no `set -m`). Whoever owns the
+# wrapper's group can still take the suite down with it: plan-w-team-verify-run.sh's
+# `kill -KILL -PGID` after its grace period, `timeout -s KILL`, a tool hard-kill, a
+# terminal's Ctrl-C. A private suite group (the first 2.53.0 draft) survived every
+# one of those, orphaning a 15-minute suite on a host the F2 host-load protection
+# was trying to relieve. The trap therefore reaps by TREE (`pgrep -P`), never by
+# group: the group may hold the caller too, and a group some test created for itself
+# below the suite is still in the tree.
+#
+# PWT_DISABLE_TEST_GREEN_SIGNAL_REAP=1 runs the suite in the foreground as before
+# (no trap-time reap: the signal waits for the suite); the lock is still released.
+__TG_CHILD=""
+__TG_REAP_GRACE_S="$(pwt_rt_int "${PWT_TEST_GREEN_REAP_GRACE_S:-}" 5)"
+
+# __tg_tree <pid>... — every given pid that is still alive, each followed by its
+# descendants (a depth-first `pgrep -P` walk; plain recursion, bash 3.2). Without
+# pgrep the walk degrades to the given pids alone.
+__tg_tree() {
+  local p
+  for p in "$@"; do
+    kill -0 "$p" 2>/dev/null || continue
+    printf '%s\n' "$p"
+    # shellcheck disable=SC2046  # pids are digits; the word splitting is the point
+    __tg_tree $(pgrep -P "$p" 2>/dev/null)
+  done
+}
+
+__tg_reap_child() {
+  local c="$__TG_CHILD" pids i=0
+  __TG_CHILD=""
+  [ -n "$c" ] || return 0
+  # Snapshot the WHOLE tree before the first signal: a parent that dies first hands
+  # its children to init, where a walk from here could no longer find them.
+  pids=$(__tg_tree "$c" | LC_ALL=C sort -un)
+  [ -n "$pids" ] || return 0
+  # shellcheck disable=SC2086  # a list of pids
+  kill -TERM $pids 2>/dev/null
+  while :; do
+    # Walk again from every pid still alive: an orphaned subtree is reached from its
+    # own root, and anything forked since the TERM (a cleanup trap) joins the set.
+    # (A pid that died and was reused inside this few-second window is the accepted
+    # residual; a pid space does not wrap that fast.)
+    # shellcheck disable=SC2086
+    pids=$(__tg_tree $pids | LC_ALL=C sort -un)
+    [ -n "$pids" ] || return 0
+    [ "$i" -lt "$__TG_REAP_GRACE_S" ] || break
+    sleep 1
+    i=$((i + 1))
+  done
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2>/dev/null
+  return 0
+}
+__tg_on_signal() {  # __tg_on_signal <NAME> <exit code>
+  trap '' INT TERM HUP
+  echo "✗ test-green: interrupted by SIG$1 — reaping the suite and releasing the lock; no verdict written" >&2
+  __tg_reap_child
+  cleanup
+  exit "$2"
+}
+trap cleanup EXIT
+trap '__tg_on_signal INT 130' INT
+trap '__tg_on_signal TERM 143' TERM
+trap '__tg_on_signal HUP 129' HUP
+
+# The suite's SIGINT / SIGQUIT go back to their defaults before it starts. POSIX
+# starts a background job of a shell without job control with both IGNORED, bash
+# 3.2 cannot undo that inside the job's subshell (`trap - INT` keeps the inherited
+# ignore), and no shell below can trap a signal ignored on entry. Without this, a
+# corpus case that interrupts its own child, or a runner's own Ctrl-C handler, would
+# behave differently under the wrapper than under a plain `make test-skill`. perl is
+# the exec shim (macOS and Debian's base system both ship it); without perl the
+# suite runs with both ignored, and this script's trap still reaps it on INT.
+# shellcheck disable=SC2016  # perl code, expanded by perl
+__TG_SIGDFL_PL='$SIG{INT} = $SIG{QUIT} = "DEFAULT"; exec { $ARGV[0] } @ARGV or exit 127;'
+__tg_exec_suite() {  # __tg_exec_suite <command> — (the job's subshell only) exec `sh -c`
+  if command -v perl >/dev/null 2>&1; then
+    exec perl -e "$__TG_SIGDFL_PL" -- sh -c "$1"
+  fi
+  exec sh -c "$1"
+}
+
+# __tg_run <log> <command> [retest_list] — run <command> (`sh -c`, from CUR_ROOT)
+# with stdout+stderr to <log> as a background job in this script's process group,
+# and wait for it. Returns the command's raw exit code (never the verdict — the log
+# decides that). stdin is /dev/null, as it is for any background job of a shell
+# without job control (and a bg worker's stdin is /dev/null anyway).
+__tg_run() {
+  local log="$1" cmd="$2" list="${3:-}" rc
+  if [ "${PWT_DISABLE_TEST_GREEN_SIGNAL_REAP:-0}" = "1" ]; then
+    if [ -n "$list" ]; then
+      ( cd "$CUR_ROOT" && PWT_RETEST_LIST="$list" sh -c "$cmd" ) > "$log" 2>&1
+    else
+      ( cd "$CUR_ROOT" && sh -c "$cmd" ) > "$log" 2>&1
+    fi
+    return $?
+  fi
+  if [ -n "$list" ]; then
+    ( cd "$CUR_ROOT" && PWT_RETEST_LIST="$list" __tg_exec_suite "$cmd" ) < /dev/null > "$log" 2>&1 &
+  else
+    ( cd "$CUR_ROOT" && __tg_exec_suite "$cmd" ) < /dev/null > "$log" 2>&1 &
+  fi
+  __TG_CHILD=$!
+  wait "$__TG_CHILD"
+  rc=$?
+  __TG_CHILD=""
+  return "$rc"
+}
 TG_TMP=$(mktemp -d -t pwt-test-green.XXXXXX 2>/dev/null) || TG_TMP=""
 
 # ─── LOAD ANNOTATION (F5, 2026-08-19 incident) ──────────────────────────────
@@ -407,8 +537,9 @@ __tg_json_list() {
 # cannot prove exits 5 NEED-FULL and writes nothing.
 # ════════════════════════════════════════════════════════════════════════════
 if [ "$RETEST" = "1" ]; then
-  __need_full() {
+  __need_full() {  # __need_full <reason> [hint line]
     echo "NEED-FULL: $1" >&2
+    [ -n "${2:-}" ] && echo "  $2" >&2
     echo "  a targeted retest cannot be trusted here — run the full suite:" >&2
     echo "    .claude/scripts/plan-w-team-test-green.sh --slug $SLUG" >&2
     exit 5
@@ -427,6 +558,14 @@ if [ "$RETEST" = "1" ]; then
   [ -s "$TG_TMP/cur.man" ] || __need_full "the watched-set manifest could not be computed"
   pwt_rt_delta "$PWT_RT_BASE_MANIFEST" "$TG_TMP/cur.man" > "$TG_TMP/delta" \
     || __need_full "the change set since the base could not be computed"
+  # 2b. the SUBJECT delta (review -1): tracked .claude/** + tests/** beyond the watched
+  # globs. Its unwatched half feeds the rerun set exactly like a watched change.
+  pwt_rt_subject_manifest "$CUR_ROOT" worktree > "$TG_TMP/cur.sman" 2>/dev/null
+  [ -s "$TG_TMP/cur.sman" ] || __need_full "the subject manifest could not be computed"
+  pwt_rt_delta "$PWT_RT_BASE_SUBJECT_MANIFEST" "$TG_TMP/cur.sman" > "$TG_TMP/sdelta" \
+    || __need_full "the subject change set since the base could not be computed"
+  pwt_rt_unwatched "$TG_TMP/sdelta" "$PWT_WATCHED_GLOBS" > "$TG_TMP/udelta" \
+    || __need_full "the unwatched change set could not be computed"
 
   # 3. harness / gate machinery in Δ → a partial run never certifies its own gate
   if RT_OFFENDER="$(pwt_rt_needs_full "$TG_TMP/delta")"; then
@@ -437,21 +576,38 @@ if [ "$RETEST" = "1" ]; then
     || __need_full "the base log has an unattributed or leak failure"
 
   # 6 (early). Nothing changed and nothing failed: the full verdict IS the verdict.
-  if [ ! -s "$TG_TMP/delta" ] && [ ! -s "$TG_TMP/basefailed" ]; then
+  if [ ! -s "$TG_TMP/delta" ] && [ ! -s "$TG_TMP/udelta" ] && [ ! -s "$TG_TMP/basefailed" ]; then
     echo "test-green --retest: nothing to retest — the green full verdict '$SLUG' already covers this exact tree"
     # An older retest verdict for this base (from a since-reverted tweak) would still be
     # the newest verdict by mtime and make the gate block this exact, fully-green tree.
     RT_STALE="$STATE_DIR/${STATE_FILE_PREFIX}-${SLUG}--retest.json"
     if [ -f "$RT_STALE" ]; then
-      rm -f "$RT_STALE" "${RT_STALE%.json}.manifest" 2>/dev/null || true
+      rm -f "$RT_STALE" "${RT_STALE%.json}.manifest" "${RT_STALE%.json}.subject-manifest" 2>/dev/null || true
       echo "test-green --retest: removed the superseded retest verdict for '$SLUG'"
     fi
     exit 0
   fi
 
+  # 3b. a red base with NO watched change is a flaky pass, not a fix (review -3). The
+  # gate is consulted only for watched paths, so an unwatched edit cannot be what a
+  # watched-set commit is certified by: NEED-FULL unless the operator opts in, and the
+  # verdict then records classification=flaky, which the gate refuses without the
+  # same opt-in in ITS environment.
+  RT_CLASS="fix"
+  if [ "$PWT_RT_BASE_GREEN" != "true" ] && [ ! -s "$TG_TMP/delta" ]; then
+    RT_CLASS="flaky"
+    if [ "${PWT_TEST_RETEST_ALLOW_FLAKY:-0}" != "1" ]; then
+      RT_WHY="the full run '$SLUG' is red and no watched file changed since — a pass now would be a flaky pass, not a fix"
+      if [ -s "$TG_TMP/udelta" ]; then
+        RT_WHY="$RT_WHY (only unwatched files changed: $(head -5 "$TG_TMP/udelta" | tr '\n' ' '))"
+      fi
+      __need_full "$RT_WHY" "to accept a flaky pass knowingly: PWT_TEST_RETEST_ALLOW_FLAKY=1 (the commit gate needs it too)"
+    fi
+  fi
+
   # 4. the rerun set R
   pwt_rt_required "$CUR_ROOT" "$TG_TMP/basefailed" "$TG_TMP/delta" "$PWT_RT_BASE_GREEN" \
-      "$PWT_RT_BASE_MANIFEST" "$TG_TMP/cur.man" \
+      "$PWT_RT_BASE_MANIFEST" "$TG_TMP/cur.man" "$TG_TMP/udelta" \
     > "$TG_TMP/required" 2> "$TG_TMP/required.err"
   RT_RC=$?
   if [ "$RT_RC" -ne 0 ] || [ ! -s "$TG_TMP/required" ]; then
@@ -479,27 +635,35 @@ if [ "$RETEST" = "1" ]; then
   RT_LIST="$STATE_DIR/${STATE_FILE_PREFIX}-${SLUG}--retest.list"
   RT_LOG="$STATE_DIR/${STATE_FILE_PREFIX}-${SLUG}--retest.log"
   RT_MANIFEST="$STATE_DIR/${STATE_FILE_PREFIX}-${SLUG}--retest.manifest"
+  RT_SMANIFEST="$STATE_DIR/${STATE_FILE_PREFIX}-${SLUG}--retest.subject-manifest"
   cp "$TG_TMP/required" "$RT_LIST" 2>/dev/null || __need_full "could not write $RT_LIST"
   RT_CMD="${PWT_TEST_GREEN_RETEST_CMD:-$PWT_RT_DEFAULT_RETEST_CMD}"
   echo "→ test-green --retest: $RT_N file(s) against full run '$SLUG' (log: $RT_LOG)"
   sed 's/^/    /' "$TG_TMP/required"
   START_EPOCH=$(date +%s)
-  ( cd "$CUR_ROOT" && PWT_RETEST_LIST="$RT_LIST" sh -c "$RT_CMD" ) > "$RT_LOG" 2>&1
+  __tg_run "$RT_LOG" "$RT_CMD" "$RT_LIST"
   echo "→ test-green --retest: finished (raw exit $?)"
   DURATION=$(( $(date +%s) - START_EPOCH ))
 
-  # 8. freeze check — an edit while the retest ran means it tested something else
+  # 8. freeze check — an edit while the retest ran means it tested something else.
+  # Both manifests: an unwatched file the rerun set was built from counts too.
   __tg_manifest "$CUR_ROOT" > "$TG_TMP/after.man" 2>/dev/null
+  pwt_rt_subject_manifest "$CUR_ROOT" worktree > "$TG_TMP/after.sman" 2>/dev/null
   RT_TREE_CHANGED=0
   cmp -s "$TG_TMP/cur.man" "$TG_TMP/after.man" || RT_TREE_CHANGED=1
+  cmp -s "$TG_TMP/cur.sman" "$TG_TMP/after.sman" || RT_TREE_CHANGED=1
 
   # 9. decide
   __tg_verdict_from_log "$RT_LOG"
+  RT_TRAILER_RC=0
+  pwt_rt_trailer "$RT_LOG" >/dev/null 2>&1 || RT_TRAILER_RC=$?
   RT_MODE="$(__tg_shape_mode "$(pwt_rt_log_mode "$RT_LOG")")"
   pwt_rt_ran "$RT_LOG" > "$TG_TMP/ran"
   LC_ALL=C comm -23 "$TG_TMP/required" "$TG_TMP/ran" > "$TG_TMP/missing"
   if [ "$RT_TREE_CHANGED" = "1" ]; then
     GREEN="false"; REASON="tree-changed-during-run"
+  elif [ "$GREEN" = "true" ] && [ "$RT_TRAILER_RC" = "2" ]; then
+    GREEN="false"; REASON="rows-outside-trailer"
   elif [ "$GREEN" = "true" ] && [ "$RT_MODE" != "retest" ]; then
     GREEN="false"; REASON="mode-mismatch"
   elif [ "$GREEN" = "true" ] && [ -s "$TG_TMP/missing" ]; then
@@ -508,17 +672,27 @@ if [ "$RETEST" = "1" ]; then
 
   RT_CHAIN="$RT_PREV_CHAIN"
   [ "$GREEN" = "true" ] && RT_CHAIN=$((RT_PREV_CHAIN + 1))
-  if [ -s "$TG_TMP/delta" ]; then RT_CLASS="fix"; else RT_CLASS="flaky"; fi
+  # RT_CLASS was decided at 3b (flaky = red base, no watched change).
   RT_DIGEST=""
+  RT_SDIGEST=""
   if [ "$RT_TREE_CHANGED" = "0" ]; then
     RT_DIGEST="$(pwt_rt_digest "$TG_TMP/cur.man")"
     pwt_rt_is_hex64 "$RT_DIGEST" || RT_DIGEST=""
+    RT_SDIGEST="$(pwt_rt_digest "$TG_TMP/cur.sman")"
+    pwt_rt_is_hex64 "$RT_SDIGEST" || RT_SDIGEST=""
   fi
   RT_MANIFEST_PATH=""
   if [ -n "$RT_DIGEST" ] && cp "$TG_TMP/cur.man" "$RT_MANIFEST" 2>/dev/null; then
     RT_MANIFEST_PATH="$RT_MANIFEST"
   else
     rm -f "$RT_MANIFEST" 2>/dev/null
+  fi
+  RT_SMANIFEST_PATH=""
+  if [ -n "$RT_SDIGEST" ] && cp "$TG_TMP/cur.sman" "$RT_SMANIFEST" 2>/dev/null; then
+    RT_SMANIFEST_PATH="$RT_SMANIFEST"
+  else
+    RT_SDIGEST=""
+    rm -f "$RT_SMANIFEST" 2>/dev/null
   fi
   pwt_rt_parse_failures "$RT_LOG" > "$TG_TMP/rtfailed" 2>/dev/null || true
   # Bind the log to the verdict: the gate reads RETEST_RAN rows from this log, and
@@ -542,12 +716,16 @@ if [ "$RETEST" = "1" ]; then
       --arg log_sha256 "$RT_LOG_SHA256" \
       --arg tree_digest "$RT_DIGEST" \
       --arg manifest_path "$RT_MANIFEST_PATH" \
+      --arg subject_digest "$RT_SDIGEST" \
+      --arg subject_manifest_path "$RT_SMANIFEST_PATH" \
       --arg classification "$RT_CLASS" \
       --arg b_slug "$SLUG" \
       --arg b_ts "$PWT_RT_BASE_TS" \
       --arg b_digest "$PWT_RT_BASE_DIGEST" \
       --arg b_log "$PWT_RT_BASE_LOG" \
       --arg b_manifest "$PWT_RT_BASE_MANIFEST" \
+      --arg b_sdigest "$PWT_RT_BASE_SUBJECT_DIGEST" \
+      --arg b_smanifest "$PWT_RT_BASE_SUBJECT_MANIFEST" \
       --argjson b_green "$PWT_RT_BASE_GREEN" \
       --argjson suite_exit "$JSON_EXIT" \
       --argjson green "$GREEN" \
@@ -556,17 +734,21 @@ if [ "$RETEST" = "1" ]; then
       --argjson required "$(__tg_json_list "$TG_TMP/required")" \
       --argjson retested "$(__tg_json_list "$TG_TMP/ran")" \
       --argjson delta "$(__tg_json_list "$TG_TMP/delta")" \
+      --argjson delta_unwatched "$(__tg_json_list "$TG_TMP/udelta")" \
       --argjson failed "$(__tg_json_list "$TG_TMP/rtfailed")" \
       --argjson load_1m "$LOAD_1M" \
       --argjson ncpu "$NCPU" \
       --argjson load_suspect "$LOAD_SUSPECT" \
       '{ts:$ts, slug:$slug, mode:"retest", suite_cmd:$suite_cmd, suite_exit:$suite_exit,
         green:$green, reason:$reason, log_path:$log_path, log_sha256:$log_sha256,
-        duration_s:$duration_s, tree_digest:$tree_digest, manifest_path:$manifest_path, chain:$chain,
+        duration_s:$duration_s, tree_digest:$tree_digest, manifest_path:$manifest_path,
+        subject_digest:$subject_digest, subject_manifest_path:$subject_manifest_path, chain:$chain,
         classification:$classification,
         base:{slug:$b_slug, ts:$b_ts, tree_digest:$b_digest, log_path:$b_log,
-              manifest_path:$b_manifest, green:$b_green},
-        required:$required, retested:$retested, delta:$delta, failed:$failed}
+              manifest_path:$b_manifest, subject_digest:$b_sdigest,
+              subject_manifest_path:$b_smanifest, green:$b_green},
+        required:$required, retested:$retested, delta:$delta,
+        delta_unwatched:$delta_unwatched, failed:$failed}
        + (if $load_suspect == null and $load_1m == null and $ncpu == null then {}
           else {load_1m:$load_1m, ncpu:$ncpu, load_suspect:$load_suspect} end)' \
       > "$RT_TMPF" 2>/dev/null && mv -f "$RT_TMPF" "$RT_FILE" 2>/dev/null; then
@@ -580,16 +762,19 @@ if [ "$RETEST" = "1" ]; then
   if [ "$GREEN" = "true" ]; then
     echo "✓ test-green --retest: GREEN ($RT_N file(s), chain $RT_CHAIN/$PWT_RT_MAX_CHAIN, ${DURATION}s)"
     if [ "$RT_CLASS" = "flaky" ]; then
-      echo "⚠ FLAKY: nothing changed since the full run '$SLUG' and its failing file(s) now pass:"
+      echo "⚠ FLAKY (accepted via PWT_TEST_RETEST_ALLOW_FLAKY=1): no watched file changed since the full run '$SLUG' and its failing file(s) now pass:"
       sed 's/^/    /' "$TG_TMP/basefailed"
-      echo "  the commit is allowed, but a flaky test is a defect — fix it now, not later."
+      echo "  the commit gate refuses this verdict unless PWT_TEST_RETEST_ALLOW_FLAKY=1 is set for it too."
+      echo "  a flaky test is a defect — fix it now, not later."
     fi
     echo "  the push to the default branch still gets a full confirm run (post-push, detached)."
     exit 0
   fi
   case "$REASON" in
     tree-changed-during-run)
-      echo "✗ test-green --retest: RED — watched files changed while the retest ran; it tested something else. Re-run it on a still tree." >&2 ;;
+      echo "✗ test-green --retest: RED — watched or subject files changed while the retest ran; it tested something else. Re-run it on a still tree." >&2 ;;
+    rows-outside-trailer)
+      echo "✗ test-green --retest: RED — the log carries SUITE_MODE / RETEST_RAN / SUITE_FAILED / SUITE_SKIPPED rows outside its final trailer block (a test printed one, or the log was spliced): $RT_LOG" >&2 ;;
     required-not-run)
       echo "✗ test-green --retest: RED — required file(s) did not run (a TS [SKIP] counts as not run):" >&2
       sed 's/^/    /' "$TG_TMP/missing" >&2 ;;
@@ -612,8 +797,10 @@ fi
 # RUN mode only. In --log mode this script never saw the tree the log came from, so
 # it must not assert one — the empty digest makes the gate fail closed instead.
 MANIFEST_PATH_OUT="$STATE_DIR/${STATE_FILE_PREFIX}-${SLUG}.manifest"
+SMANIFEST_PATH_OUT="$STATE_DIR/${STATE_FILE_PREFIX}-${SLUG}.subject-manifest"
 if [ -z "$LOG_IN" ] && [ -n "$TG_TMP" ]; then
   __tg_manifest "$CUR_ROOT" > "$TG_TMP/before.man" 2>/dev/null || : > "$TG_TMP/before.man"
+  pwt_rt_subject_manifest "$CUR_ROOT" worktree > "$TG_TMP/before.sman" 2>/dev/null || : > "$TG_TMP/before.sman"
 fi
 
 # ─── RUN (or adopt) THE LOG ─────────────────────────────────────────────────
@@ -631,7 +818,7 @@ else
   echo "→ test-green: running '$SUITE_CMD' (log: $LOG_PATH)"
   # The VERDICT comes from the log, never from this pipeline's exit code — a killed
   # suite exits nonzero with no marker, and a marker-less log is red anyway.
-  ( cd "$CUR_ROOT" && sh -c "$SUITE_CMD" ) > "$LOG_PATH" 2>&1
+  __tg_run "$LOG_PATH" "$SUITE_CMD"
   echo "→ test-green: suite finished (raw exit $?)"
 fi
 DURATION=$(( $(date +%s) - START_EPOCH ))
@@ -639,6 +826,13 @@ DURATION=$(( $(date +%s) - START_EPOCH ))
 # ─── VERDICT ────────────────────────────────────────────────────────────────
 __tg_verdict_from_log "$LOG_PATH"
 MODE="$(__tg_shape_mode "$(pwt_rt_log_mode "$LOG_PATH" 2>/dev/null)")"
+# Rows at column 0 above the trailer block (review -5): the witness cannot be told
+# apart from test output, so the log certifies nothing — red, whatever its marker.
+TRAILER_RC=0
+pwt_rt_trailer "$LOG_PATH" >/dev/null 2>&1 || TRAILER_RC=$?
+if [ "$GREEN" = "true" ] && [ "$TRAILER_RC" = "2" ]; then
+  GREEN="false"; REASON="rows-outside-trailer"
+fi
 TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 __tg_load_annotation
 
@@ -648,6 +842,8 @@ __tg_load_annotation
 # ran (the suite saw a mix of old and new content) is red, never stamped as tested.
 TREE_DIGEST=""
 MANIFEST_PATH=""
+SUBJECT_DIGEST=""
+SMANIFEST_PATH=""
 if [ -z "$LOG_IN" ]; then
   if [ -n "$TG_TMP" ] && [ -s "$TG_TMP/before.man" ]; then
     __tg_manifest "$CUR_ROOT" > "$TG_TMP/after.man" 2>/dev/null || : > "$TG_TMP/after.man"
@@ -672,9 +868,30 @@ if [ -z "$LOG_IN" ]; then
   if [ -z "$TREE_DIGEST" ] && [ "$REASON" != "tree-changed-during-run" ]; then
     echo "  test-green: tree_digest unavailable (no git/shasum, empty watched set, or not a work tree) — the commit gate will block until a digest-bearing verdict exists" >&2
   fi
+  # The SUBJECT digest (review -1) is frozen the same way, but it never colours this
+  # verdict: the full-mode gate governs the watched set only. A subject that moved
+  # during the run (an unwatched edit) just leaves subject_digest empty, and a
+  # verdict without one can never be a retest base — the next retest asks for a
+  # full run instead of measuring against a tree nobody tested.
+  if [ -n "$TREE_DIGEST" ] && [ -s "$TG_TMP/before.sman" ]; then
+    pwt_rt_subject_manifest "$CUR_ROOT" worktree > "$TG_TMP/after.sman" 2>/dev/null || : > "$TG_TMP/after.sman"
+    if cmp -s "$TG_TMP/before.sman" "$TG_TMP/after.sman"; then
+      SUBJECT_DIGEST="$(pwt_rt_digest "$TG_TMP/before.sman")"
+      pwt_rt_is_hex64 "$SUBJECT_DIGEST" || SUBJECT_DIGEST=""
+      if [ -n "$SUBJECT_DIGEST" ] && cp "$TG_TMP/before.sman" "$SMANIFEST_PATH_OUT" 2>/dev/null; then
+        SMANIFEST_PATH="$SMANIFEST_PATH_OUT"
+      else
+        SUBJECT_DIGEST=""
+      fi
+    else
+      echo "  test-green: unwatched .claude/ or tests/ files changed while the suite ran — no subject_digest, so this verdict cannot be a retest base:" >&2
+      pwt_rt_delta "$TG_TMP/before.sman" "$TG_TMP/after.sman" 2>/dev/null | head -5 | sed 's/^/    /' >&2
+    fi
+  fi
 fi
 # A manifest never outlives the verdict it belongs to.
 [ -n "$MANIFEST_PATH" ] || rm -f "$MANIFEST_PATH_OUT" 2>/dev/null
+[ -n "$SMANIFEST_PATH" ] || rm -f "$SMANIFEST_PATH_OUT" 2>/dev/null
 
 # The log is the witness a later retest reads its base failures from, and it sits
 # outside the lane guard's trusted-artifact json: record its hash so an edited log
@@ -712,6 +929,8 @@ write_artifact() {
       --arg mode "$MODE" \
       --arg suite_cmd "$SUITE_CMD" \
       --arg manifest_path "$MANIFEST_PATH" \
+      --arg subject_digest "$SUBJECT_DIGEST" \
+      --arg subject_manifest_path "$SMANIFEST_PATH" \
       --argjson failed "$FAILED_JSON" \
       --argjson suite_exit "$JSON_EXIT" \
       --argjson green "$GREEN" \
@@ -720,7 +939,8 @@ write_artifact() {
       --argjson ncpu "$NCPU" \
       --argjson load_suspect "$LOAD_SUSPECT" \
       '{ts:$ts, slug:$slug, suite_exit:$suite_exit, green:$green, reason:$reason, log_path:$log_path, log_sha256:$log_sha256, duration_s:$duration_s, tree_digest:$tree_digest,
-        mode:$mode, suite_cmd:$suite_cmd, manifest_path:$manifest_path, failed:$failed}
+        mode:$mode, suite_cmd:$suite_cmd, manifest_path:$manifest_path,
+        subject_digest:$subject_digest, subject_manifest_path:$subject_manifest_path, failed:$failed}
        + (if $load_suspect == null and $load_1m == null and $ncpu == null then {}
           else {load_1m:$load_1m, ncpu:$ncpu, load_suspect:$load_suspect} end)' \
       > "$tmp" 2>/dev/null || return 0
@@ -734,7 +954,7 @@ write_artifact() {
     # No user text is ever printf'd into JSON (the injection rule from the done-when
     # parser: jq --arg or nothing). `failed` is omitted rather than guessed: a retest
     # reads failures from the log, never from this field.
-    local safe_log="" safe_man="" safe_cmd=""
+    local safe_log="" safe_man="" safe_cmd="" safe_sman="" safe_sdig=""
     case "$LOG_PATH" in
       *'"'*|*'\'*|*$'\n'*) safe_log="" ;;
       *) safe_log="$LOG_PATH" ;;
@@ -743,6 +963,13 @@ write_artifact() {
       *'"'*|*'\'*|*$'\n'*) safe_man="" ;;
       *) safe_man="$MANIFEST_PATH" ;;
     esac
+    # The subject pair is emitted together or not at all: a digest whose manifest
+    # path had to be dropped could never be verified, so it must not be recorded.
+    case "$SMANIFEST_PATH" in
+      *'"'*|*'\'*|*$'\n'*) safe_sman="" ;;
+      *) safe_sman="$SMANIFEST_PATH" ;;
+    esac
+    [ -n "$safe_sman" ] && safe_sdig="$SUBJECT_DIGEST"
     if [ -z "$SUITE_CMD" ] || [ "$SUITE_CMD" = "$PWT_RT_DEFAULT_SUITE_CMD" ]; then
       safe_cmd="$SUITE_CMD"
     else
@@ -757,8 +984,8 @@ write_artifact() {
     if [ "$LOAD_1M" != "null" ] || [ "$NCPU" != "null" ] || [ "$LOAD_SUSPECT" != "null" ]; then
       load_frag=$(printf ',"load_1m":%s,"ncpu":%s,"load_suspect":%s' "$LOAD_1M" "$NCPU" "$LOAD_SUSPECT")
     fi
-    printf '{"ts":"%s","slug":"%s","suite_exit":%s,"green":%s,"reason":"%s","log_path":"%s","log_sha256":"%s","duration_s":%s,"tree_digest":"%s","mode":"%s","suite_cmd":"%s","manifest_path":"%s"%s}\n' \
-      "$TS" "$SLUG" "$JSON_EXIT" "$GREEN" "$REASON" "$safe_log" "$LOG_SHA256" "$DURATION" "$TREE_DIGEST" "$MODE" "$safe_cmd" "$safe_man" "$load_frag" \
+    printf '{"ts":"%s","slug":"%s","suite_exit":%s,"green":%s,"reason":"%s","log_path":"%s","log_sha256":"%s","duration_s":%s,"tree_digest":"%s","mode":"%s","suite_cmd":"%s","manifest_path":"%s","subject_digest":"%s","subject_manifest_path":"%s"%s}\n' \
+      "$TS" "$SLUG" "$JSON_EXIT" "$GREEN" "$REASON" "$safe_log" "$LOG_SHA256" "$DURATION" "$TREE_DIGEST" "$MODE" "$safe_cmd" "$safe_man" "$safe_sdig" "$safe_sman" "$load_frag" \
       > "$tmp" 2>/dev/null || return 0
   fi
   mv -f "$tmp" "$file" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 0; }
@@ -784,6 +1011,8 @@ case "$REASON" in
     echo "✗ test-green: RED — SUITE_EXIT=0 is not the literal last line of $LOG_PATH" >&2 ;;
   tree-changed-during-run)
     echo "✗ test-green: RED — the watched tree changed during the run; re-run on a still tree." >&2 ;;
+  rows-outside-trailer)
+    echo "✗ test-green: RED — $LOG_PATH carries SUITE_MODE / RETEST_RAN / SUITE_FAILED / SUITE_SKIPPED rows outside its final trailer block (a test printed one, or the log was spliced)." >&2 ;;
   *)
     echo "✗ test-green: RED — suite exited $SUITE_EXIT (log: $LOG_PATH)" >&2
     if [ -n "$TG_TMP" ] && [ -s "$TG_TMP/failed" ]; then

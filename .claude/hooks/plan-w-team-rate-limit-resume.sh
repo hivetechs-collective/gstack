@@ -11,9 +11,17 @@
 # that waits until the usage block resets, then re-engages the parked session
 # in its own tmux pane. Attempt ladder:
 #   1. plain "continue" after the gate lifts
-#   2. still parked → step the lead down a model rung (/model claude-opus-5-5 — the Brain tier, Model Tiering v8 2026-09-22; claude-opus-5 exactly stays forbidden, founder order 2026-08-29)
-#      and continue — the interactive-lead analog of the spawn sites'
-#      --fallback-model degradation
+#   2. still parked → step the lead down ONE model rung and continue — the
+#      interactive-lead analog of the spawn sites' --fallback-model degradation.
+#      The rung is the FIRST entry pwt_fallback_model (pwt-governor-lib.sh — the
+#      same resolver the bg spawn/steer sites use) resolves for the lead's CURRENT
+#      model, read from its transcript: /model claude-opus-4-8 for the Model
+#      Tiering v9 Opus 5.5 lead (chain claude-opus-5-5 → claude-opus-4-8 →
+#      claude-sonnet-5; no Fable, claude-opus-5 exactly stays forbidden). A lead
+#      with no lower rung (the chain resolves it to itself), an unreadable lead
+#      model, or a resolver that cannot be loaded (pwt-governor-lib.sh missing
+#      beside this hook, or too old to carry pwt_primary_model/pwt_fallback_model)
+#      gets NO /model inject, and the attempt-2 message says which of the three.
 #   3. still parked → one more wait + continue
 #   4. give up loudly (desktop + ntfy via stop-failure-notify.sh)
 #
@@ -29,13 +37,74 @@
 # Kill switch: PWT_RATE_RESUME_DISABLE=1
 # Test seams:  PWT_RATE_RESUME_TEST=1  → sleeper waits 2s, injections are
 #              echoed to the log instead of sent; PWT_RATE_RESUME_STATE_DIR
-#              overrides the state dir.
+#              overrides the state dir; `--fallback-rung <transcript>` is a
+#              pure mode that prints the attempt-2 decision
+#              ("lead=<model> rung=<model-or-empty>", plus " resolver=unavailable"
+#              when pwt-governor-lib.sh could not be loaded) and exits 0.
 
 MODE="${1:-hook}"
 
 STATE_DIR="${PWT_RATE_RESUME_STATE_DIR:-${CLAUDE_PROJECT_DIR:-$PWD}/.claude/state}"
 LOG="$STATE_DIR/rate-resume.log"
 log() { printf '%s | %s\n' "$(date "+%Y-%m-%d %H:%M:%S")" "$1" >> "$LOG" 2>/dev/null; }
+
+# ─── attempt-2 rung (Model Tiering v9; cleanscale review 2.50.0-2) ────────────
+# Resolved beside the hook, never from CLAUDE_PROJECT_DIR, so any consumer that
+# syncs .claude/ gets the same resolver its spawn sites use.
+GOVLIB="$(cd "$(dirname "$0")/../scripts" 2>/dev/null && pwd)/pwt-governor-lib.sh"
+
+lead_model() {   # $1 = transcript → echoes the model of the last MAIN-thread assistant turn
+  # `<synthetic>` records (Claude Code's own API-error turns) and sidechain records
+  # are skipped; the id must look like a model id, since it is typed into the pane.
+  [ -f "${1:-}" ] || return 0
+  tail -n 2000 "$1" 2>/dev/null | /usr/bin/python3 -c '
+import json,re,sys
+m=""
+for line in sys.stdin:
+    try: d=json.loads(line)
+    except Exception: continue
+    if not isinstance(d,dict) or d.get("type")!="assistant" or d.get("isSidechain"): continue
+    msg=d.get("message")
+    v=msg.get("model") if isinstance(msg,dict) else None
+    if isinstance(v,str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*(\[[A-Za-z0-9]+\])?",v): m=v
+print(m)
+' 2>/dev/null
+}
+
+fallback_rung() {   # $1 = transcript → echoes "<lead>|<rung>|<state>"; an empty rung = no /model inject
+  # <state>: step (a lower rung exists) | lowest (the chain resolves the lead to itself) |
+  #          no-lead (the lead model is unreadable) | unresolved (the resolver lib is missing,
+  #          or predates pwt_primary_model/pwt_fallback_model — the rung is UNKNOWN, not absent)
+  local lead rung="" rc state
+  lead=$(lead_model "${1:-}")
+  if [ -z "$lead" ]; then
+    state="no-lead"
+  else
+    rung=$(
+      [ -r "$GOVLIB" ] || exit 3
+      . "$GOVLIB" >/dev/null 2>&1
+      { type pwt_primary_model && type pwt_fallback_model; } >/dev/null 2>&1 || exit 3
+      p=$(pwt_primary_model "$lead" 2>/dev/null); [ -n "$p" ] || exit 3
+      r=$(pwt_fallback_model "$p" "" 2>/dev/null); r="${r%%,*}"; [ -n "$r" ] || exit 3
+      # The chain resolves a lead with nothing below it (Sonnet 5, Haiku, Opus 4.8) to itself.
+      [ "${r%%\[*}" != "${p%%\[*}" ] && printf '%s' "$r"
+      exit 0
+    ); rc=$?
+    if [ "$rc" -ne 0 ]; then rung=""; state="unresolved"
+    elif [ -n "$rung" ]; then state="step"
+    else state="lowest"
+    fi
+  fi
+  printf '%s|%s|%s\n' "$lead" "$rung" "$state"
+}
+
+if [ "$MODE" = "--fallback-rung" ]; then
+  __rr=$(fallback_rung "${2:-}"); __rest="${__rr#*|}"
+  printf 'lead=%s rung=%s' "${__rr%%|*}" "${__rest%%|*}"
+  [ "${__rest#*|}" = "unresolved" ] && printf ' resolver=unavailable'
+  printf '\n'
+  exit 0
+fi
 
 # ─── sleeper mode: runs detached; args: <sid8> <pane> <wait_secs> <transcript> ──
 if [ "$MODE" = "--sleeper" ]; then
@@ -86,10 +155,23 @@ if [ "$MODE" = "--sleeper" ]; then
     fi
     case $attempt in
       1) inject "continue — auto-resume: the rate-limit gate has lifted (plan-w-team rate-limit-resume, attempt 1)" ;;
-      2) # fallback-model rung: step the lead down a tier, then continue
-         inject "/model claude-opus-5-5"
-         sleep 5
-         inject "continue — auto-resume attempt 2: stepped down to claude-opus-5-5 (fallback rung) after the previous attempt stayed rate-limited; continue the pipeline" ;;
+      2) # fallback-model rung: step the lead down ONE rung of pwt_fallback_model, then continue.
+         # No lower rung, an unreadable lead model, or an unloadable resolver ⇒ no /model
+         # inject, and the message names which one.
+         rr=$(fallback_rung "$transcript"); lead="${rr%%|*}"; rr="${rr#*|}"; rung="${rr%%|*}"; rstate="${rr#*|}"
+         log "attempt 2 [$sid8]: lead=${lead:-unknown} rung=${rung:-none} state=$rstate"
+         case "$rstate" in
+           step)
+             inject "/model $rung"
+             sleep 5
+             inject "continue — auto-resume attempt 2: stepped the lead down from $lead to $rung (Model Tiering v9 fallback rung) after the previous attempt stayed rate-limited; continue the pipeline" ;;
+           lowest)
+             inject "continue — auto-resume attempt 2: the previous attempt stayed rate-limited; $lead has no lower fallback rung, so the model is unchanged; continue the pipeline" ;;
+           unresolved)
+             inject "continue — auto-resume attempt 2: the previous attempt stayed rate-limited; the fallback rung for $lead could not be resolved (pwt-governor-lib.sh is missing or too old beside this hook), so the model is unchanged; continue the pipeline" ;;
+           *)
+             inject "continue — auto-resume attempt 2: the previous attempt stayed rate-limited; the lead's model could not be read from its transcript, so the model is unchanged; continue the pipeline" ;;
+         esac ;;
       3) inject "continue — auto-resume: final attempt (plan-w-team rate-limit-resume, attempt 3)" ;;
     esac
     if woke_up; then

@@ -1202,6 +1202,54 @@ fi
 
 A `bypass_rate.score` below 5 means the lead skipped at least one stage-file Read outside the fast path — investigate whether the stage files need consolidation or the fast-path criterion (HOLD + ≤2 tasks) should widen.
 
+## 8j-octies-bis. Kill-Switch Bypass Ledger (quality signal — row 27)
+
+Scores the run's kill-switch activity from its bypass ledger — the environment snapshots
+`plan-w-team-surface-status.sh` took at every stage, plus any gate that took its kill-switch
+branch — and records a `killswitch_bypass` signal into the retro JSON. A final snapshot runs
+first (it never re-creates the ledger's `init` row — only stage emissions do), then the score.
+Advisory; never blocks the retro. Score semantics: `docs/operations/killswitch-bypass-ledger.md`.
+
+```bash
+SLUG="<feature-slug>"
+RETRO_STATE=".claude/state/plan-w-team-retro-${SLUG}.json"
+KS_MISSING='{"status":"missing","lock":"missing","distinct":0,"hits":0,"env":0,"switches":[],"sanctioned_active":[],"score":null,"source":"none"}'
+if [ -x .claude/scripts/plan-w-team-killswitch-ledger.sh ]; then
+  .claude/scripts/plan-w-team-killswitch-ledger.sh snapshot --slug "$SLUG" --site retro --no-init >/dev/null 2>&1 || true
+  KS_JSON=$(.claude/scripts/plan-w-team-killswitch-ledger.sh score --slug "$SLUG" 2>/dev/null)
+  case "$KS_JSON" in '{"status":'*) ;; *) KS_JSON="$KS_MISSING" ;; esac
+  if [ -f "$RETRO_STATE" ] && command -v jq >/dev/null 2>&1; then
+    TMP=$(mktemp "${RETRO_STATE}.tmp.XXXXXX")
+    jq --argjson k "$KS_JSON" '.quality_signals.killswitch_bypass = $k' \
+      "$RETRO_STATE" > "$TMP" 2>/dev/null && mv "$TMP" "$RETRO_STATE" || rm -f "$TMP"
+  fi
+  if command -v jq >/dev/null 2>&1; then
+    printf '%s' "$KS_JSON" | jq -r '"killswitch-bypass: status=\(.status) lock=\(.lock) distinct=\(.distinct) score=\(.score // "n/a")/5 switches=\(.switches | join(",")) sanctioned=\(.sanctioned_active | join(","))"'
+  else
+    echo "killswitch-bypass: $KS_JSON"
+  fi
+else
+  echo "killswitch-bypass: status=unavailable (plan-w-team-killswitch-ledger.sh not found from $(pwd) — run the retro from the repo root)"
+fi
+```
+
+How to read it:
+
+- `status=missing` (score `n/a`) means the ledger — or the `init` row the run's first stage
+  emission writes — is gone. Treat it as a finding, never as a clean run.
+- `status=unavailable` means the ledger script was not found; the signal was not measured.
+  Record it as a finding (a consumer sync gap or a retro run from the wrong directory).
+- `distinct` counts kill switches seen in the ledger or in this session's environment that the
+  launcher did not set on purpose. Any value above 0 goes into this retro's findings (§8i) with
+  the switch names, so the next operator can see which safety gates this run ran without.
+- `sanctioned` lists switches the launcher set on purpose; list them in the findings too, so
+  the sanctioning decision stays reviewable.
+
+The ledger is durable — do NOT delete it here (post-retro emitters and completeness-gate waves
+must not strand it). The signal is also deliberately kept out of the §8j-decies cross-run
+regression comparison: it measures the environment a run was launched into, not how well the
+run executed.
+
 ## 8j-nonies. Spec Fan-Out Catch-Rate (advisory — AUTO-mode keep/park signal)
 
 When the Step-1 multi-angle spec fan-out ran (§1b-pre — AUTO default fires it on

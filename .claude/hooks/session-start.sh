@@ -11,6 +11,29 @@ COMPACT_LOG="$STATE_DIR/compact-log.txt"
 HOOKS_DIR="$PROJECT_ROOT/.claude/hooks"
 UTILS_DIR="$PROJECT_ROOT/.claude/hooks/utils"
 
+# The SessionStart payload (stdin JSON) carries this session's id — the canonical
+# /plan-w-team lane identity (a worker IS the session whose id is its goal-state's
+# worker_sid; docs/operations/lane-enforcement.md). Read once, here, before any
+# child process can inherit and drain stdin; bounded (`read -t 1`, whole seconds
+# for bash 3.2) and skipped on a terminal, so a manual run never waits on it.
+# Only the 8-char prefix is kept (__SS_SELF8), lower-cased; empty = unknown.
+__SS_SELF8=""
+__SS_HOOK_READ=""
+__ss_hook_session() {
+    [ -n "${__SS_HOOK_READ:-}" ] && return 0
+    __SS_HOOK_READ=1
+    __SS_SELF8=""
+    [ -t 0 ] && return 0
+    local input="" sid=""
+    IFS= read -r -d '' -t 1 input 2>/dev/null || true
+    [ -n "$input" ] || return 0
+    command -v jq >/dev/null 2>&1 || return 0
+    sid=$(printf '%s' "$input" | jq -r '.session_id // "" | tostring' 2>/dev/null | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+    __SS_SELF8="${sid:0:8}"
+    return 0
+}
+__ss_hook_session
+
 # Resolve and export CLAUDE_BIN so transitively-spawned subscripts (e.g.
 # .claude/scripts/version-uplift/detect-version.sh, which calls
 # `claude --version`) don't fail with "env: claude: No such file or directory"
@@ -82,6 +105,121 @@ LOCAL_VERSION_FILE="$PROJECT_ROOT/.claude/.sync-version"
 SOURCE_VERSION_FILE="$CLAUDE_PATTERN/.claude/.sync-version"
 SYNC_SCRIPT="$CLAUDE_PATTERN/.claude/scripts/sync-to-project.sh"
 
+# Checkout topology, asked of git instead of `[ -d .git ]`. In a LINKED worktree
+# (and a submodule) .git is a FILE, so the old directory test read every lane
+# worktree as "not a git checkout": no origin, so mode=regen, so an in-place
+# regen of tracked files inside the lane's worktree (/plan-w-team 2.51.5 review).
+# `rev-parse --git-common-dir` answers for all three layouts; paths are made
+# absolute (git prints them relative to PROJECT_ROOT in a primary checkout) so a
+# PROJECT_ROOT below the git toplevel is not misread as a linked worktree.
+__ss_git_path() {   # <--git-dir|--git-common-dir> → absolute physical path, or nothing
+    local p
+    p=$(git -C "$PROJECT_ROOT" rev-parse "$1" 2>/dev/null) || return 1
+    [ -n "$p" ] || return 1
+    case "$p" in /*) ;; *) p="$PROJECT_ROOT/$p" ;; esac
+    (cd "$p" 2>/dev/null && pwd -P)
+}
+__ss_in_git_checkout() {   # 0 = PROJECT_ROOT is in a git checkout (primary, linked worktree or submodule)
+    command -v git >/dev/null 2>&1 && [ -n "$(__ss_git_path --git-common-dir)" ]
+}
+__ss_linked_worktree() {   # 0 = PROJECT_ROOT is a LINKED worktree (its git dir is not the common dir)
+    local gd cd
+    gd=$(__ss_git_path --git-dir) && cd=$(__ss_git_path --git-common-dir) || return 1
+    [ -n "$gd" ] && [ -n "$cd" ] && [ "$gd" != "$cd" ]
+}
+__ss_primary_checkout() {   # the PRIMARY checkout this one belongs to (claude-pattern-pull.sh's idiom)
+    local cd main
+    cd=$(__ss_git_path --git-common-dir) || return 1
+    main=$(cd "$cd/.." 2>/dev/null && pwd -P) || return 1
+    [ -d "$main/.git" ] && printf '%s' "$main"
+}
+__ss_checkout_toplevel() {   # 0 = PROJECT_ROOT IS its checkout's toplevel (primary, linked worktree or submodule root)
+    # A consumer nested BELOW a git toplevel (a monorepo's apps/<x>) is in a git
+    # checkout but is not one: origin, HEAD and `origin/<branch>:.claude/.sync-version`
+    # all describe the enclosing repository, and claude-pattern-pull.sh delivers to
+    # a checkout root. So it keeps the no-git behaviour (regen) — only a toplevel
+    # takes the origin/ff and pull-mode paths. Physical paths on both sides.
+    command -v git >/dev/null 2>&1 || return 1
+    local top me
+    top=$(git -C "$PROJECT_ROOT" rev-parse --show-toplevel 2>/dev/null) || return 1
+    [ -n "$top" ] || return 1
+    top=$(cd "$top" 2>/dev/null && pwd -P) || return 1
+    me=$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P) || return 1
+    [ "$top" = "$me" ]
+}
+# 0 = this session is party to a LIVE /plan-w-team lane, identified the way the
+# lane guard and plan-w-team-lane-context.sh identify it (lane-enforcement.md),
+# from on-disk state in the MAIN checkout's .claude/state — never from an env
+# marker a --bg session may not carry (a --bg session inherits the DAEMON's env,
+# not its launcher's) or that doubles as a user kill switch:
+#   worker     — this session's id (SessionStart stdin) is a live goal-state's worker_sid;
+#   lane zone  — PROJECT_ROOT is (inside) a live lane's manifest worktree_path;
+#   supervisor — bound: PLAN_W_TEAM_SUPERVISOR_SESSION=1, the goal-state's
+#                supervisor_sid, or a pwt-launches.jsonl row showing this session
+#                spawned the lane's worker.
+# Live = valid JSON, no terminal_state, a slug, no user lane-release file, an
+# 8-hex worker_sid, modified within PWT_GOAL_STALE_HOURS (default 24). Anything
+# unreadable or missing (no jq, no state dir) → 1, "not a lane".
+__ss_in_pwt_lane() {
+    command -v jq >/dev/null 2>&1 || return 1
+    local main sd me hours gf row term slug wsid ssid w8 wt
+    main=""
+    __ss_in_git_checkout && main=$(__ss_primary_checkout)
+    [ -n "$main" ] || main=$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P) || return 1
+    sd="$main/.claude/state"
+    [ -d "$sd" ] || return 1
+    __ss_hook_session
+    me=$(cd "$PROJECT_ROOT" 2>/dev/null && pwd -P) || return 1
+    hours="${PWT_GOAL_STALE_HOURS:-24}"
+    case "$hours" in ''|*[!0-9]*) hours=24 ;; esac
+    while IFS= read -r gf; do
+        [ -f "$gf" ] || continue
+        row=$(jq -r '[((.terminal_state // "") | tostring), ((.slug // "") | tostring),
+                      ((.worker_sid // "") | tostring), ((.supervisor_sid // "") | tostring)]
+                     | join("|")' "$gf" 2>/dev/null) || continue
+        IFS='|' read -r term slug wsid ssid <<EOF
+$row
+EOF
+        [ -z "$term" ] && [ -n "$slug" ] || continue
+        [ -f "$sd/plan-w-team-lane-release-${slug}.json" ] && continue
+        wsid=$(printf '%s' "$wsid" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+        case "$wsid" in
+            [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+            *) continue ;;
+        esac
+        w8="${wsid:0:8}"
+        [ -n "$__SS_SELF8" ] && [ "$__SS_SELF8" = "$w8" ] && return 0
+        wt=$(jq -r '.worktree_path // "" | tostring' "$sd/plan-w-team-manifest-${slug}.json" 2>/dev/null)
+        if [ -n "$wt" ] && wt=$(cd "$wt" 2>/dev/null && pwd -P) && [ "$wt" != "$main" ]; then
+            case "$me" in "$wt"|"$wt"/*) return 0 ;; esac
+        fi
+        [ "${PLAN_W_TEAM_SUPERVISOR_SESSION:-0}" = "1" ] && return 0
+        [ -n "$__SS_SELF8" ] || continue
+        ssid=$(printf '%s' "$ssid" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+        [ -n "$ssid" ] && [ "${ssid:0:8}" = "$__SS_SELF8" ] && return 0
+        if [ -f "$sd/pwt-launches.jsonl" ] \
+            && jq -r --arg w "$w8" 'select(((.sid // "") | tostring | ascii_downcase | startswith($w))) | ((.parent_sid // "") | tostring)' \
+                   "$sd/pwt-launches.jsonl" 2>/dev/null \
+               | tr '[:upper:]' '[:lower:]' | cut -c1-8 | grep -qFx "$__SS_SELF8"; then
+            return 0
+        fi
+    done <<EOF
+$(find "$sd" -maxdepth 1 -type f -name 'plan-w-team-goal-*.json' -mmin "-$((hours * 60))" 2>/dev/null)
+EOF
+    return 1
+}
+__ss_origin_default_branch() {   # origin's default branch from last-known refs (no fetch)
+    local b
+    b=$(git -C "$PROJECT_ROOT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+    if [ -z "$b" ]; then
+        for b in main master; do
+            git -C "$PROJECT_ROOT" rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null && break
+            b=""
+        done
+    fi
+    [ -n "$b" ] && printf '%s' "$b"
+}
+
 auto_sync_from_pattern() {
     # Skip if we ARE claude-pattern
     if [ "$PROJECT_ROOT" = "$CLAUDE_PATTERN" ]; then
@@ -91,6 +229,23 @@ auto_sync_from_pattern() {
     # Skip if sync script doesn't exist
     if [ ! -f "$SYNC_SCRIPT" ]; then
         return 0
+    fi
+
+    # ...or a linked worktree of it, whose primary IS the source: "syncing" it from
+    # that primary would regenerate its committed .claude/ work back to the
+    # primary's copy in the working tree. This self-skip asks the BROAD question
+    # (any git checkout, at any depth); everything git-driven below — the origin
+    # check, the ff-pull, the pull-mode default — asks the narrow one: is
+    # PROJECT_ROOT the TOPLEVEL of its checkout (git_top). A consumer nested in a
+    # monorepo is not, and keeps the regen behaviour it had before 2.53.0.
+    local git_top=false own_primary="" source_root=""
+    if __ss_in_git_checkout; then
+        own_primary=$(__ss_primary_checkout)
+        source_root=$(cd "$CLAUDE_PATTERN" 2>/dev/null && pwd -P)
+        if [ -n "$own_primary" ] && [ "$own_primary" = "$source_root" ]; then
+            return 0
+        fi
+        __ss_checkout_toplevel && git_top=true
     fi
 
     local needs_sync=false
@@ -131,24 +286,57 @@ auto_sync_from_pattern() {
     echo ""
     echo "🔄 AUTO-SYNC: $reason"
 
+    # Lane stand-down. A session party to a live /plan-w-team lane (its worker,
+    # any session in its worktree, or its bound supervisor — and SessionStart fires
+    # again on each resume and compaction) never acts on a claude-pattern sync: no
+    # detached pull launched per lane start, no ff-pull moving HEAD under a running
+    # pipeline, no in-place regen writing tracked files into the lane's diff. The
+    # sync is not lost — the next session outside the lane performs it. Identity is
+    # __ss_in_pwt_lane's (on-disk lane state), checked only when a sync is due.
+    # Operator override: CLAUDE_PATTERN_SYNC_IN_LANE=1, checked first (deliberately
+    # not named in the lane-facing line below).
+    if [ "${CLAUDE_PATTERN_SYNC_IN_LANE:-}" != "1" ] && __ss_in_pwt_lane; then
+        echo "   ↷ live /plan-w-team lane session — the sync is left to a session outside the lane"
+        echo ""
+        return 0
+    fi
+
     # OPTION B: Prefer pull-from-origin when origin already has this version.
     # Consumer machines (mac-mini, laptops) pull the committed sync — keeping the
     # working tree clean. Only the author machine (where the bump originated)
     # falls through to local regen, where a commit+push is expected to follow.
+    # A LINKED worktree is left to its branch and never pulled into here; what
+    # decides it is whether the sync already reached origin's DEFAULT branch —
+    # where claude-pattern-pull.sh delivers it — read from last-known refs with no
+    # fetch (the detached pull fetches for itself and no-ops if origin has it).
     local origin_has_version=false
-    local current_branch=""
-    if [ -d "$PROJECT_ROOT/.git" ] && command -v git >/dev/null 2>&1; then
-        current_branch=$(git -C "$PROJECT_ROOT" symbolic-ref --short HEAD 2>/dev/null || echo "")
-        if [ -n "$current_branch" ] && git -C "$PROJECT_ROOT" remote get-url origin >/dev/null 2>&1; then
-            git -C "$PROJECT_ROOT" fetch origin "$current_branch" --quiet 2>/dev/null || true
+    local current_branch="" check_branch="" linked_wt=false
+    if [ "$git_top" = true ]; then
+        __ss_linked_worktree && linked_wt=true
+        if [ "$linked_wt" = true ]; then
+            check_branch=$(__ss_origin_default_branch)
+        else
+            current_branch=$(git -C "$PROJECT_ROOT" symbolic-ref --short HEAD 2>/dev/null || echo "")
+            check_branch="$current_branch"
+            if [ -n "$current_branch" ] && git -C "$PROJECT_ROOT" remote get-url origin >/dev/null 2>&1; then
+                git -C "$PROJECT_ROOT" fetch origin "$current_branch" --quiet 2>/dev/null || true
+            fi
+        fi
+        if [ -n "$check_branch" ] && git -C "$PROJECT_ROOT" remote get-url origin >/dev/null 2>&1; then
             local origin_version
-            origin_version=$(git -C "$PROJECT_ROOT" show "origin/$current_branch:.claude/.sync-version" 2>/dev/null || echo "")
+            origin_version=$(git -C "$PROJECT_ROOT" show "origin/$check_branch:.claude/.sync-version" 2>/dev/null || echo "")
             local source_version
             source_version=$(cat "$SOURCE_VERSION_FILE" 2>/dev/null || echo "")
             if [ -n "$origin_version" ] && [ "$origin_version" = "$source_version" ]; then
                 origin_has_version=true
             fi
         fi
+    fi
+
+    if [ "$origin_has_version" = true ] && [ "$linked_wt" = true ]; then
+        echo "   ✓ origin/$check_branch already carries this version — this linked worktree takes it when its branch merges $check_branch"
+        echo ""
+        return 0
     fi
 
     if [ "$origin_has_version" = true ]; then
@@ -179,13 +367,14 @@ auto_sync_from_pattern() {
     # commit in a temporary worktree from claude-pattern's remote, delivers it
     # to origin (direct / pr / branch per .claude/.sync-policy), and only ever
     # fast-forwards a clean primary. The in-place regen survives solely for
-    # mode=regen (or a consumer with no origin to deliver to).
+    # mode=regen (or a consumer with no origin to deliver to, or one nested below
+    # its checkout's toplevel — the pull default needs a checkout root).
     local sync_mode=""
     if [ -f "$PROJECT_ROOT/.claude/.sync-policy" ]; then
         sync_mode=$(sed -n 's/^[[:space:]]*mode[[:space:]]*=[[:space:]]*//p' "$PROJECT_ROOT/.claude/.sync-policy" 2>/dev/null | tail -1 | tr -d '[:space:]')
     fi
     if [ -z "$sync_mode" ]; then
-        if [ -d "$PROJECT_ROOT/.git" ] && git -C "$PROJECT_ROOT" remote get-url origin >/dev/null 2>&1; then
+        if [ "$git_top" = true ] && git -C "$PROJECT_ROOT" remote get-url origin >/dev/null 2>&1; then
             sync_mode="pull"
         else
             sync_mode="regen"
@@ -198,7 +387,7 @@ auto_sync_from_pattern() {
             mkdir -p "$PROJECT_ROOT/.claude/state" 2>/dev/null || true
             local pull_log="$PROJECT_ROOT/.claude/state/claude-pattern-pull.log"
             echo "   ↓ consumer pull mode: delivering the claude-pattern sync to origin in the background"
-            echo "     (temporary worktree; this checkout is only ever fast-forwarded when clean)"
+            echo "     (temporary worktree; the primary checkout is only ever fast-forwarded when clean)"
             echo "     log: $pull_log"
             nohup "$puller" "$PROJECT_ROOT" --auto >> "$pull_log" 2>&1 < /dev/null &
         else
@@ -222,7 +411,7 @@ auto_sync_from_pattern() {
     sync_out="$("$SYNC_SCRIPT" "$PROJECT_ROOT" 2>&1)" || sync_rc=$?
     if [ "$sync_rc" -ne 0 ]; then
         echo "   ⚠️  Sync failed (exit $sync_rc) - continuing with existing config"
-    elif printf '%s\n' "$sync_out" | grep -q '🛑 SKIP'; then
+    elif printf '%s\n' "$sync_out" | grep -q '^🛑 SKIP'; then   # anchored, as claude-pattern-pull.sh reads it
         echo "   ⚠️  Sync skipped: .claude/ has uncommitted changes — nothing written, retries next session"
         echo "   Review: git -C $PROJECT_ROOT status -- .claude/"
     elif [ ! -f "$SOURCE_VERSION_FILE" ] \
@@ -248,12 +437,7 @@ refresh_statusline_bundle() {
     local b="$CLAUDE_PATTERN/.claude/scripts/sync-statusline-bundle.sh"
     case "$PROJECT_ROOT" in "$CLAUDE_PATTERN"|"$CLAUDE_PATTERN"/*) return 0 ;; esac
     [ -x "$b" ] && [ -f "$PROJECT_ROOT/.claude/statusline.sh" ] || return 0
-    if command -v git >/dev/null 2>&1 && git -C "$PROJECT_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
-        local gd cd
-        gd=$(git -C "$PROJECT_ROOT" rev-parse --git-dir 2>/dev/null)
-        cd=$(git -C "$PROJECT_ROOT" rev-parse --git-common-dir 2>/dev/null)
-        [ -n "$gd" ] && [ -n "$cd" ] && [ "$gd" != "$cd" ] && return 0   # linked worktree
-    fi
+    command -v git >/dev/null 2>&1 && __ss_linked_worktree && return 0   # linked worktree
     bash "$b" "$PROJECT_ROOT" --commit 2>/dev/null | grep -E '^(✓|⚠|status-line bundle: [1-9])' | sed 's/^/   📊 /' || true
 }
 refresh_statusline_bundle
@@ -726,11 +910,14 @@ if [ -x "$COMPACTION_HEALTH" ] && [ "${PWT_DISABLE_COMPACTION_HEALTH:-}" != "1" 
 fi
 
 # =================================================================
-# Post-push confirm: surface a RED detached full-suite run of the last push
+# Post-push confirm: surface a detached full-suite run of the last push that is
+# red or could not run
 # =================================================================
 # post-git-push.sh launches the confirm detached; this only READS its one small
-# record (no scan, no run) and prints one line when it is red or died. Silent when
-# green, running or absent. → docs/operations/test-green-retest.md
+# record (no scan, no run) and prints one line when it is red or could not run
+# (error / died / skipped-disk / stale — a run still marked running past its
+# bound). Silent when green, running within its bound, or absent.
+# → docs/operations/post-push-confirm.md
 # Kill switch: PWT_DISABLE_POST_PUSH_CONFIRM=1.
 PWT_POST_PUSH_SURFACE="$PROJECT_ROOT/.claude/scripts/plan-w-team-post-push-confirm.sh"
 if [ -x "$PWT_POST_PUSH_SURFACE" ] && [ "${PWT_DISABLE_POST_PUSH_CONFIRM:-}" != "1" ]; then

@@ -52,6 +52,10 @@ PROG="plan-w-team-path-existence-gate"
 # ── Kill switch ──────────────────────────────────────────────────────────────
 if [ "${PLAN_W_TEAM_DISABLE_GROUNDING:-}" = "1" ]; then
   echo "[$PROG] PLAN_W_TEAM_DISABLE_GROUNDING=1 — path-existence gate disabled (exit 0)"
+  # Record the bypass in the run's kill-switch ledger (row 27). The ledger scans
+  # our argv for --slug/--root; output discarded, failure ignored.
+  "$(dirname "$0")/plan-w-team-killswitch-ledger.sh" record \
+    --switch PLAN_W_TEAM_DISABLE_GROUNDING --site path-existence-gate -- ${1+"$@"} >/dev/null 2>&1 || true
   exit 0
 fi
 

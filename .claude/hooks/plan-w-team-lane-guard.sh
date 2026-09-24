@@ -156,7 +156,12 @@ FILE_ABS=""
 # ── F4 hygiene subsystem toggle ─────────────────────────────────────────────
 # PWT_DISABLE_LANE_GUARD_HYGIENE=1 reverts to the pre-2026-08-19 pure-deny
 # guard: no shell masking, no git-tag exemption, no host-hygiene ALLOW class,
-# deny-only auditing. A kill switch that only half-reverts is not a revert.
+# deny-only auditing — and no per-segment in-place scanner (retest-8). The
+# trusted-artifact in-place check falls back to the 2.51.0 whole-token form
+# (FAM_INPLACE_WT_RE: a command-word sed/perl carrying an in-place option TOKEN)
+# ANDed with an anchored family member anywhere in the command — strict, never
+# looser than the scanner, and a plain `sed -n 1p <family>.json` read still passes.
+# A kill switch that only half-reverts is not a revert.
 HYGIENE=1
 [ "${PWT_DISABLE_LANE_GUARD_HYGIENE:-0}" = "1" ] && HYGIENE=0
 
@@ -510,15 +515,25 @@ __decision_file_target() {  # $1=slug → 0 if this call targets a decision file
     fi
     case "${CMD:-}" in *".decision.json"*) : ;; *) return 1 ;; esac
     __ensure_cmd_scan
+    # Targets are dequoted (tr, linear — B1) so `> "$D/<slug>".push.decision.json` resolves; the
+    # slug may also sit in a brace list (`{<slug>,x}`) or a `${VAR:-<slug>}` default (B4).
     while IFS= read -r tgt; do
         [ -n "$tgt" ] || continue
-        base=$(basename "$tgt")
-        case "$base" in "$slug".*.decision.json) return 0 ;; esac
+        base=${tgt##*/}
+        case "$base" in
+            "$slug".*.decision.json|*[\{,]"$slug"[\},]*.decision.json|*:-"$slug"\}*.decision.json) return 0 ;;
+        esac
     done <<EOF_DECTGT
-$(__redirect_targets)
-$(__tee_targets)
+$( { __redirect_targets; __tee_targets; } | LC_ALL=C tr -d "\"'\\\\")
 EOF_DECTGT
-    printf '%s' "$CMD_SCAN" | grep -qE "(mv|cp|rm|touch|tee|install)[[:space:]][^;|&]*${slug}[^;|&]*\.decision\.json" && return 0
+    # confirm-8 anchor: the slug must be a whole path component prefix, `<slug>.<…>.decision.json`
+    # (the file-tool branch's `"$slug".*.decision.json`). Unanchored, lane fix-6090 also matched
+    # sibling fix-6090-2's and hotfix-6090's decision files — a C4 deny that binds even the worker.
+    # Round 2: the verb is matched on CMD_SCAN WITH its quotes (B2) — stripping them first turned
+    # the worker's own `grep 'cp' <slug>.push.decision.json` read into a `cp`. Quote chars and the
+    # closers `}` `)` may sit between the slug and `.`; the slug may follow `:-` (a `${V:-<slug>}`
+    # default) or open a brace list (`{<slug>,x}`); `g?` + `install` add gcp/gmv/grm/ginstall (B4).
+    printf '%s' "$CMD_SCAN" | grep -qE "(^|[^[:alnum:]_-])g?(mv|cp|rm|touch|tee|install)[[:space:]]([^;|&]*([^[:alnum:]_.;|&-]|:-))?${slug}(,[^};|&[:space:]]*)?[\"'}),]*\.[^;|&[:space:]/]*\.decision\.json" && return 0
     return 1
 }
 
@@ -545,11 +560,370 @@ EXEC_MUTATOR_RE="-(exec|execdir)[[:space:]]+(rm|mv|cp)([[:space:]]|;)|xargs([[:s
 # edit at a command-word boundary classifies. Both alternatives sit INSIDE the
 # group so the anchor applies to each.
 INPLACE_RE="${SEP}(sed[[:space:]]+(-[a-zA-Z]*i|--in-place)|perl[[:space:]]+[^|;&]*-[a-zA-Z]*i([[:space:]]|$))"
-# Trusted-artifact family variant (2.51.0): the in-place flag may sit ANYWHERE among
-# the options (`sed -E -i …`, `perl -0 -pi …`, `sed --in-place=.bak …`), but only as a
-# whole whitespace-delimited option token — a file name such as `…-fix-it.log` carries
-# `-fi` mid-token and must not read as an in-place edit of a family file being READ.
-FAM_INPLACE_RE="${SEP}(g?sed|perl)[[:space:]]+([^|;&]*[[:space:]])?(-[a-zA-Z]*i[^[:space:]]*|--in-place[^[:space:]]*)([[:space:]]|$)"
+# Trusted-artifact family variant (2.51.0; reworked LANEGUARD retest-8 / confirm-8): a
+# COARSE gate only — "an editor word, then anything, then something shaped like an
+# in-place option". It runs on CMD_DEQ (raw text minus quotes/backslashes, newlines as
+# spaces) so it is a SUPERSET of every shape the precise per-segment scanner below
+# (__inplace_family_segment) can flag: `LC_ALL=C sed`, `xargs perl`, `"-i"`, `/usr/bin/sed`,
+# a `\`-continued option line. The 2.51.0 whole-command form it replaces false-denied a
+# harmless READ whenever ANY sed/perl in the command carried an i-ish option token
+# (`sed -i … other.txt && sed -n 1p <family>.log`, `perl -Mstrict -ne … <family>.log`,
+# the `-fi` inside a `fix-it` slug); this gate only decides whether the scanner runs.
+FAM_INPLACE_RE='(^|[^[:alnum:]_.-])(g?sed|perl[0-9.]*)[[:space:]].*(-[[:alnum:]]*[iI]|--i)'
+# PWT_DISABLE_LANE_GUARD_HYGIENE=1 form (LANEGUARD round 2, B3): the 2.51.0 whole-token
+# regex, verbatim — a COMMAND-WORD sed/perl followed by an option TOKEN that starts `-…i`
+# or `--in-place`. Round 1 routed the switch through the coarse gate above instead, whose
+# `.*-[[:alnum:]]*i` matches the `-fi` of `…-guard-fixture` / the `-verdi` of
+# `…-ship-verdict-…` inside the family name itself — so under the switch EVERY
+# `sed -n 1p <family>.json` read denied, a kill switch stricter than the code it disables.
+# The caller ANDs this with an anchored family member (__fam_member_named), not HEAD's
+# bare substring, so the confirm-8 sibling fix holds with the switch set too.
+FAM_INPLACE_WT_RE="${SEP}(g?sed|perl)[[:space:]]+([^|;&]*[[:space:]])?(-[a-zA-Z]*i[^[:space:]]*|--in-place[^[:space:]]*)([[:space:]]|$)"
+# Family anchor (confirm-8): a family prefix names a MEMBER only when the next byte is `.`
+# (`.json` `.log` `.manifest`) or `--` (`--retest.*`) — or an expansion/glob metachar,
+# optionally after one `-`, that could expand to a member (`${FAM}*`, `${FAM}-*`, `$EXT`,
+# `{.log,.json}`). Slugs are kebab `[a-z0-9-]` without `--`, so lane fix-6090's prefix is
+# no longer "named" by sibling lane fix-6090-2's `…-fix-6090-2.log`. ERE form for the
+# write-verb greps; __fam_member_named is the same rule as a bash `case` (no spawn); the
+# awk scanner's META is the same set. Round 2 (B4) adds the CLOSERS `}` `)` — the family
+# name ends a `${VAR:-…/<family>}.log` default or a `$(… <family>).log` substitution and the
+# member suffix follows it — plus `,` (a `{<family>,…}` brace list) and `\` (an escaped
+# `\.log`). KEEP THE THREE IN SYNC: FAM_ANCHOR_ERE, the __fam_member_named case, awk META.
+FAM_ANCHOR_ERE='(\.|--|-?[*?[{$`}),\\])'
+__fam_member_named() {  # $1=ALREADY-DEQUOTED text $2=family prefix → 0 if text names a member
+    # No stripping here (B1): callers pass the tr-built CMD_DEQ/CMD_DEQB or a dequoted target.
+    case "$1" in
+        *"$2".*|*"$2"--*|*"$2"[\*\?\[\{\$\`\}\),\\]*|*"$2"-[\*\?\[\{\$\`\}\),\\]*) return 0 ;;
+    esac
+    return 1
+}
+# B1 (LANEGUARD round 2): the dequoted forms of the command are built ONCE per hook call with
+# LINEAR tools and shared by every live lane. Round 1 stripped with bash `${v//pat/}` — three
+# substitutions per string, per lane, per family — and that is QUADRATIC in bash 3.2, the
+# interpreter production runs (settings.json invokes the hook by its #!/bin/bash shebang, with
+# no timeout): a 12 KB heredoc brief cost seconds on EVERY Bash call while two lanes were live.
+# CMD_DEQ  = raw text minus " ' and \ , newlines → spaces (the round-1 CMD_DEQ, minus the cost)
+# CMD_DEQB = the same with backslashes KEPT (a `\.log`/`\x2elog` still reads as anchored)
+# Both come from the RAW command (heredoc bodies included), so the substring pre-filter stays a
+# superset of every anchored check after it. LC_ALL=C: macOS tr rejects non-UTF-8 bytes otherwise.
+# Fail CLOSED: an empty tr result on a non-empty command falls back to the raw text.
+FAM_TEXT_READY=0
+CMD_DEQ=""
+CMD_DEQB=""
+__ensure_fam_text() {
+    [ "$FAM_TEXT_READY" = "1" ] && return 0
+    __ensure_cmd_scan
+    FAM_TEXT_READY=1
+    # Nothing to strip (the common one-liner) → no spawn; the result is identical.
+    case "$CMD" in
+        *[\"\'\\]*|*$'\n'*) : ;;
+        *) CMD_DEQB="$CMD"; CMD_DEQ="$CMD"; return 0 ;;
+    esac
+    CMD_DEQB=$(printf '%s' "$CMD" | LC_ALL=C tr -d "\"'" | LC_ALL=C tr '\n' ' ')
+    CMD_DEQ=$(printf '%s' "$CMD_DEQB" | LC_ALL=C tr -d '\\')
+    [ -n "$CMD_DEQB" ] || CMD_DEQB="$CMD"
+    [ -n "$CMD_DEQ" ] || CMD_DEQ="$CMD_DEQB"
+    FAM_TEXT_READY=1
+}
+# Deny-message label (round 2): name the member the command actually touched — `…-<slug>.log`,
+# `…--retest.list` — not always `<family>.json`. $1 = the text that matched (a redirect target,
+# the write-verb match, the scanner's offending word), $2 = family prefix. A closer right after
+# the family (`${…/<family>}.log`, `$(… <family>).log`) is dropped so the label reads as the
+# file. No anchored member found → `<family>.json` (the round-1 label).
+__fam_member_label() {
+    local lbl
+    lbl=$(printf '%s' "$1" | LC_ALL=C tr -d "\"'\\\\" \
+        | LC_ALL=C grep -oE "${2}${FAM_ANCHOR_ERE}[^[:space:];|&<>()'\"\`]*" 2>/dev/null | head -n 1)
+    case "$lbl" in
+        "$2"[\}\)\`]*) lbl="$2${lbl#"$2"?}" ;;
+        "$2",*\}*) lbl="$2${lbl#*\}}" ;;
+    esac
+    [ -n "$lbl" ] || lbl="${2}.json"
+    printf '%s' "$lbl"
+}
+# Precise in-place classifier (retest-8): ONE pass over the heredoc-stripped RAW text with
+# real shell quote state, so the "which segment" correlation holds by construction — the
+# masked text is not length-preserving (heredoc bodies, D-mode `\x` → `__`, awk-vs-bash
+# character offsets under UTF-8), so mapping offsets between CMD_SCAN and CMD is unsound.
+# Words are dequoted as the shell would (a quoted `;` is word text, never a boundary);
+# segments end at unquoted `;` `&` `|` newline `(` `)` and at `$(`/backtick open and close
+# (a substitution is its own segment; its text is also appended to the enclosing word so
+# `sed -i x $(ls <family>.log)` still correlates). A segment DENIES only when its COMMAND
+# word (past assignments, `!`/`{`/if/then/do/…, and prefix commands such as sudo/env/xargs/
+# timeout with their option arguments; also the command after find -exec/-ok) is sed/gsed/
+# perl, its options say in-place, AND one of its own words names a family member (anchor
+# above) — or, when its command runs through `xargs`, an EARLIER segment of the same pipeline
+# does (`find … -name '<family>*' | xargs sed -i …`, the bulk-edit idiom the 2.51.0 form also
+# missed; it over-reaches only for `cat <family>.list | xargs sed -i`, which edits the files the
+# list NAMES — a non-worker editing the lane's rerun set is worth a deny anyway).
+# Options: sed — `i`/`I` in a short cluster before an argument-taking e/f (l takes only
+# digits), or a long option that is a prefix of `--in-place`; perl — `i` in a cluster, `0`
+# eats octal/hex digits, `l` eats octal digits, and M m I x d D F V e E C take the rest of
+# the token (so `-Mstrict`, `-MList::Util=sum`, `-Ilib`, `-ne` are not in-place). Both keep
+# scanning past operands (GNU sed permutes; perl reads switches after `-e CODE`) — the
+# conservative direction. Prints `OK`, or `DENY <word>` naming the offending word (the deny
+# message's label); the caller treats anything but OK (awk missing, a crash) as DENY.
+# Round 2 (LANEGUARD): (a) VARIABLE CARRY — a simple assignment (`NAME=…`, or after
+# export/local/readonly/declare/typeset) whose value names a member, or a `for NAME in …`
+# whose list does, carries NAME forward; a LATER segment of the same command that references
+# `$NAME`/`${NAME}` counts as naming the member (`f=<family>.log; sed -i '' 1d "$f"`,
+# `for f in <family>*; do sed -i … "$f"; done`). A carried name is never un-carried by a
+# later reassignment (conservative). (B4) a closed substitution re-enters its word as
+# `$(…)`/`` `…` `` without trailing blanks, so `$(… <family>).log` meets the `)` anchor, and
+# ANSI-C `$'…'` decodes `\xHH` / `\NNN` (a non-printable or `\u`/`\c` code becomes `$`, a
+# metachar — conservative). Residual, same threat model as the rest of the guard (natural
+# drift, not an adversary): a `bash -c`/eval string, a script fed on a heredoc, a
+# `while read f` loop, a value assembled from pieces (`f=$D/$NAME$EXT`); the file-tool deny
+# is the hard wall.
+__inplace_family_segment() {  # $1=family prefix → prints `DENY <word>` or OK
+    printf '%s\n' "${HDSTRIP:-$CMD}" | PWT_LG_FAM="$1" awk -v SQ="'" '
+    function bname(w) { sub(/.*\//, "", w); return w }
+    function addc(c) { CW[d] = CW[d] c; INW[d] = 1; if (d) FTX[d] = FTX[d] c }
+    function endword() {
+      if (INW[d]) { NW[d]++; W[d, NW[d]] = CW[d] }
+      CW[d] = ""; INW[d] = 0; if (d) FTX[d] = FTX[d] " "
+    }
+    function endseg(p) { endword(); evalseg(d, p); NW[d] = 0 }
+    function push(t) { d++; FT[d] = t; QS[d] = ""; PD[d] = 0; CW[d] = ""; INW[d] = 0; NW[d] = 0; FTX[d] = ""; PF[d] = 0; PFW[d] = "" }
+    function pop(   s, t) {
+      endseg(0); t = FTX[d]; sub(/[ ]+$/, "", t)
+      s = (FT[d] == "$(") ? "$(" t ")" : "`" t "`"
+      d--; CW[d] = CW[d] s; INW[d] = 1; FTX[d] = FTX[d] s
+    }
+    function fammatch(w,   p, c1, c2) {
+      while ((p = index(w, FAM)) > 0) {
+        c1 = substr(w, p + length(FAM), 1); c2 = substr(w, p + length(FAM) + 1, 1)
+        if (c1 == "." || (c1 == "-" && c2 == "-")) return 1
+        if (c1 != "" && index(META, c1)) return 1
+        if (c1 == "-" && c2 != "" && index(META, c2)) return 1
+        w = substr(w, p + 1)
+      }
+      return 0
+    }
+    function hasref(w, nm,   p, r, c, L) {   # w references $nm or ${nm… (whole name)
+      L = length(nm); r = w
+      while ((p = index(r, "$" nm)) > 0) {
+        c = substr(r, p + 1 + L, 1); if (c !~ /[A-Za-z0-9_]/) return 1; r = substr(r, p + 1)
+      }
+      r = w
+      while ((p = index(r, "${" nm)) > 0) {
+        c = substr(r, p + 2 + L, 1); if (c !~ /[A-Za-z0-9_]/) return 1; r = substr(r, p + 1)
+      }
+      return 0
+    }
+    function subref(w, nm, val,   p, r, L, out) {   # w with whole-name $nm / ${nm} replaced by val
+      out = ""; L = length(nm)
+      while ((p = index(w, "$")) > 0) {
+        out = out substr(w, 1, p - 1); r = substr(w, p)
+        if (substr(r, 2, L + 2) == "{" nm "}") { out = out val; w = substr(r, L + 4); continue }
+        if (substr(r, 2, L) == nm && substr(r, L + 2, 1) !~ /[A-Za-z0-9_]/) { out = out val; w = substr(r, L + 2); continue }
+        out = out "$"; w = substr(r, 2)
+      }
+      return out w
+    }
+    function named(w,   nm, x) {   # sets NMW to the text that names the member
+      if (fammatch(w)) { NMW = w; return 1 }
+      if (NV) for (nm in VARS) {
+        if (nm in VPRE) { x = subref(w, nm, FAM); if (x != w && fammatch(x)) { NMW = x; return 1 } }
+        else if (hasref(w, nm)) { NMW = VARS[nm]; return 1 }
+      }
+      return 0
+    }
+    function endfam(v) { return length(v) >= length(FAM) && substr(v, length(v) - length(FAM) + 1) == FAM }
+    function carry(dd, m,   k, j, w, nm, st, v) {
+      k = 1; while (k <= m && (W[dd, k] in KW)) k++
+      if (W[dd, k] == "for" && k + 2 <= m && W[dd, k + 2] == "in") {
+        for (j = k + 3; j <= m; j++) if (named(W[dd, j])) { if (!(W[dd, k + 1] in VARS)) NV++; VARS[W[dd, k + 1]] = NMW; break }
+        return
+      }
+      st = (W[dd, k] ~ /^(export|local|readonly|declare|typeset)$/); if (st) k++
+      for (; k <= m; k++) {
+        w = W[dd, k]
+        if (w !~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) { if (st) continue; break }
+        nm = w; sub(/\+?=.*/, "", nm); v = substr(w, index(w, "=") + 1)
+        if (named(v)) { if (!(nm in VARS)) NV++; VARS[nm] = NMW; delete VPRE[nm] }
+        else if (endfam(v) && !(nm in VARS)) { NV++; VARS[nm] = v; VPRE[nm] = 1 }   # the bare family PREFIX: `TG=$S/<family>; … "$TG.log"`
+      }
+    }
+    function hexv(h,   k, v) { v = 0; h = tolower(h); for (k = 1; k <= length(h); k++) v = v * 16 + index("0123456789abcdef", substr(h, k, 1)) - 1; return v }
+    function octv(o,   k, v) { v = 0; for (k = 1; k <= length(o); k++) v = v * 8 + substr(o, k, 1); return v }
+    function chrv(v) { return (v in CHR) ? CHR[v] : "$" }
+    function cmdpos(dd, s, e,   k, w, b, ao, dur) {
+      k = s
+      while (k <= e) {
+        w = W[dd, k]; b = bname(w)
+        if (w ~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/ || (w in KW)) { k++; continue }
+        if (w == "time") { k++; while (k <= e && W[dd, k] ~ /^-/) k++; continue }
+        if (!(b in PFX)) return k
+        if (b == "xargs") VIAX = 1
+        ao = PFX[b]; dur = (b ~ /timeout$/); k++
+        while (k <= e) {
+          w = W[dd, k]
+          if (w == "--") { k++; break }
+          if (w ~ /^--/) {
+            if (index(w, "=") == 0 && k < e && bname(W[dd, k + 1]) !~ EDRE && !(bname(W[dd, k + 1]) in PFX)) k++
+            k++; continue
+          }
+          if (w ~ /^-./) { if (ao != "" && index(ao, substr(w, length(w), 1)) && k < e) k++; k++; continue }
+          if (b == "env" && w ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { k++; continue }
+          if (dur) { dur = 0; k++; continue }
+          break
+        }
+      }
+      return 0
+    }
+    function sedscan(dd, s, e,   k, a, c, L, ch, nm, skip) {
+      skip = 0
+      for (k = s; k <= e; k++) {
+        a = W[dd, k]
+        if (skip) { skip = 0; continue }
+        if (a == "--") return 0
+        if (a ~ /^--./) {
+          nm = substr(a, 3); if (index(nm, "=")) nm = substr(nm, 1, index(nm, "=") - 1)
+          if (index("in-place", nm) == 1) return 1
+          if (index(a, "=") == 0 && (index("expression", nm) == 1 || (length(nm) > 1 && index("file", nm) == 1) || index("line-length", nm) == 1)) skip = 1
+          continue
+        }
+        if (a !~ /^-./) continue
+        L = length(a)
+        for (c = 2; c <= L; c++) {
+          ch = substr(a, c, 1)
+          if (ch == "i" || ch == "I") return 1
+          if (ch == "e" || ch == "f") { if (c == L) skip = 1; break }
+          if (ch == "l") {
+            if (substr(a, c + 1) ~ /^[0-9]+$/) break
+            if (c == L && k < e && W[dd, k + 1] ~ /^[0-9]+$/) skip = 1
+          }
+        }
+      }
+      return 0
+    }
+    function perlscan(dd, s, e,   k, a, c, L, ch, skip) {
+      skip = 0
+      for (k = s; k <= e; k++) {
+        a = W[dd, k]
+        if (skip) { skip = 0; continue }
+        if (a == "--" || a == "-") return 0
+        if (a !~ /^-[^-]/) continue
+        L = length(a); c = 2
+        while (c <= L) {
+          ch = substr(a, c, 1)
+          if (ch == "i") return 1
+          if (ch == "0") {
+            c++
+            if (substr(a, c, 1) == "x") { c++; while (c <= L && substr(a, c, 1) ~ /[0-9A-Fa-f]/) c++ }
+            else while (c <= L && substr(a, c, 1) ~ /[0-7]/) c++
+            continue
+          }
+          if (ch == "l") { c++; while (c <= L && substr(a, c, 1) ~ /[0-7]/) c++; continue }
+          if (index("MmIxdDFVeEC", ch)) { if (c == L && index("eEI", ch)) skip = 1; break }
+          c++
+        }
+      }
+      return 0
+    }
+    function edscan(dd, ci, e,   b, k, x, ci2) {
+      b = bname(W[dd, ci])
+      if (b ~ EDRE) return (b ~ /sed$/) ? sedscan(dd, ci + 1, e) : perlscan(dd, ci + 1, e)
+      if (b != "find") return 0
+      for (k = ci + 1; k <= e; k++) {
+        if (W[dd, k] !~ /^-(exec|execdir|ok|okdir)$/) continue
+        for (x = k + 1; x <= e && W[dd, x] != ";" && W[dd, x] != "+"; x++) ;
+        ci2 = cmdpos(dd, k + 1, x - 1)
+        if (ci2 > 0 && edscan(dd, ci2, x - 1)) return 1
+        k = x
+      }
+      return 0
+    }
+    function evalseg(dd, p,   k, m, ci, fh, fw) {
+      m = NW[dd]; fh = 0; fw = ""
+      if (m == 0) return
+      for (k = 1; k <= m; k++) if (named(W[dd, k])) { fh = 1; fw = NMW; break }
+      if (fh || PF[dd]) {
+        VIAX = 0; ci = cmdpos(dd, 1, m)
+        if (ci > 0 && (fh || VIAX) && edscan(dd, ci, m) && !FOUND) { FOUND = 1; FW = fh ? fw : PFW[dd] }
+      }
+      carry(dd, m)
+      if (p) { if (fh && !PF[dd]) PFW[dd] = fw; PF[dd] = (PF[dd] || fh) } else { PF[dd] = 0; PFW[dd] = "" }
+    }
+    { T = (NR == 1) ? $0 : T "\n" $0 }
+    END {
+      FAM = ENVIRON["PWT_LG_FAM"]; META = "*?[{$`}),"; EDRE = "^(g?sed|perl[0-9.]*)$"
+      if (FAM == "") { print "DENY"; exit }
+      for (k = 32; k < 127; k++) CHR[k] = sprintf("%c", k)
+      split("! { } if then else elif do while until", kw, " "); for (k in kw) KW[kw[k]] = 1
+      PFX["sudo"] = "CDghpRrtTUu"; PFX["doas"] = "uC"; PFX["env"] = "uCPS"; PFX["command"] = ""
+      PFX["exec"] = "a"; PFX["nohup"] = ""; PFX["nice"] = "n"; PFX["timeout"] = "sk"
+      PFX["gtimeout"] = "sk"; PFX["xargs"] = "IJLnPsEdaRS"; PFX["stdbuf"] = "ioe"; PFX["caffeinate"] = "tw"
+      d = 0; FT[0] = ""; QS[0] = ""; PD[0] = 0; CW[0] = ""; INW[0] = 0; NW[0] = 0; FTX[0] = ""; PF[0] = 0; PFW[0] = ""
+      NV = 0; FOUND = 0; FW = ""
+      n = length(T); i = 1
+      while (i <= n) {
+        c = substr(T, i, 1); nx = substr(T, i + 1, 1)
+        if (QS[d] == "S") {   # a single-quoted run is inert: copy it in one chunk (linear on long payloads)
+          j = index(substr(T, i), SQ)
+          if (j == 0) { addc(substr(T, i)); i = n + 1 } else { if (j > 1) addc(substr(T, i, j - 1)); QS[d] = ""; i += j }
+          continue
+        }
+        if (QS[d] == "A") {
+          if (c == "\\") {   # ANSI-C escapes: decode \xHH and \NNN so $'"'"'…\x2elog'"'"' still anchors
+            if (nx == "x" && substr(T, i + 2, 1) ~ /[0-9A-Fa-f]/) {
+              j = i + 2; h = ""; while (length(h) < 2 && substr(T, j, 1) ~ /[0-9A-Fa-f]/) { h = h substr(T, j, 1); j++ }
+              addc(chrv(hexv(h))); i = j; continue
+            }
+            if (nx ~ /^[0-7]$/) {
+              j = i + 1; h = ""; while (length(h) < 3 && substr(T, j, 1) ~ /[0-7]/) { h = h substr(T, j, 1); j++ }
+              addc(chrv(octv(h))); i = j; continue
+            }
+            if (nx == "u" || nx == "U" || nx == "c") { addc("$"); i += 2; continue }
+            addc(nx); i += 2; continue
+          }
+          if (c == SQ) QS[d] = ""; else addc(c)
+          i++; continue
+        }
+        if (QS[d] == "D") {
+          if (c == "\"") { QS[d] = ""; i++; continue }
+          if (c == "\\") { if (nx != "\n") addc(nx); i += 2; continue }
+          if (c == "$" && nx == "(") { push("$("); i += 2; continue }
+          if (c == "`") { if (FT[d] == "`") pop(); else push("`"); i++; continue }
+          addc(c); i++; continue
+        }
+        if (c == "\\") { if (nx != "\n") addc(nx); i += 2; continue }
+        if (c == SQ) { QS[d] = "S"; INW[d] = 1; i++; continue }
+        if (c == "\"") { QS[d] = "D"; INW[d] = 1; i++; continue }
+        if (c == "$" && nx == SQ) { QS[d] = "A"; INW[d] = 1; i += 2; continue }
+        if (c == "$" && nx == "(") { push("$("); i += 2; continue }
+        if (c == "$" && nx == "{") {
+          j = i + 2; lvl = 1
+          while (j <= n && lvl > 0) { cc = substr(T, j, 1); if (cc == "{") lvl++; else if (cc == "}") lvl--; j++ }
+          for (k = i; k < j; k++) addc(substr(T, k, 1))
+          i = j; continue
+        }
+        if (c == "`") { if (FT[d] == "`") pop(); else push("`"); i++; continue }
+        if (c == "#" && !INW[d]) { while (i <= n && substr(T, i, 1) != "\n") i++; continue }
+        if (c == " " || c == "\t") { endword(); i++; continue }
+        if (c == ">" || c == "<" || (c == "&" && nx == ">")) {
+          endword(); i++
+          while (i <= n && index("<>&|", substr(T, i, 1))) i++
+          continue
+        }
+        if (c == "|") {
+          if (nx == "|") { endseg(0); i += 2 } else { endseg(1); i += (nx == "&") ? 2 : 1 }
+          continue
+        }
+        if (c == "\n" || c == ";" || c == "&") { endseg(0); i++; continue }
+        if (c == "(") { PD[d]++; endseg(0); i++; continue }
+        if (c == ")") {
+          if (PD[d] > 0) { PD[d]--; endseg(0) } else if (FT[d] == "$(") pop(); else endseg(0)
+          i++; continue
+        }
+        addc(c); i++
+      }
+      while (d > 0) pop()
+      endseg(0)
+      if (FOUND) { gsub(/[\n\t]/, " ", FW); print "DENY " FW } else print "OK"
+    }' 2>/dev/null
+}
 # Host hygiene (F4c): process control is not lane work. These were never denied
 # — the incident's `pkill` was allowed — so this class adds EVIDENCE, not
 # authority: a supervisor that kills its own lane is now provable after the fact.
@@ -581,6 +955,7 @@ __protected_basename() {  # $1=basename $2=slug → 0 if trusted family for slug
         "plan-w-team-test-green-$2--retest.json"|"plan-w-team-test-green-$2.manifest"|\
         "plan-w-team-test-green-$2--retest.manifest"|"plan-w-team-test-green-$2.log"|\
         "plan-w-team-test-green-$2--retest.log"|"plan-w-team-test-green-$2--retest.list"|\
+        "plan-w-team-test-green-$2.subject-manifest"|"plan-w-team-test-green-$2--retest.subject-manifest"|\
         "plan-w-team-goal-$2.json"|"plan-w-team-lane-release-$2.json"|\
         "pwt-lane-alive-memo-$2.json") return 0 ;;
         # The confirmed-dead memo AUTHORISES a lane release (this hook reads it, and exit 1 releases
@@ -860,10 +1235,13 @@ for GF in "$STATE_DIR"/plan-w-team-goal-*.json; do
             # SUITE_FAILED rows and reads RETEST_RAN from the retest log, so an edited
             # log is a forged verdict (docs/operations/test-green-retest.md). Both logs
             # are also sha256-bound in their json, which is the hard wall; this is the
-            # lane-scoped tool-layer wall in front of it.
+            # lane-scoped tool-layer wall in front of it. The `.subject-manifest` pair
+            # (2.53.0: the frozen subject list each verdict's subject_digest is
+            # recomputed over) belongs to the same family — same forgery, same wall.
             "plan-w-team-test-green-${SLUG}--retest.json"|"plan-w-team-test-green-${SLUG}.manifest"|\
             "plan-w-team-test-green-${SLUG}--retest.manifest"|"plan-w-team-test-green-${SLUG}.log"|\
-            "plan-w-team-test-green-${SLUG}--retest.log"|"plan-w-team-test-green-${SLUG}--retest.list")
+            "plan-w-team-test-green-${SLUG}--retest.log"|"plan-w-team-test-green-${SLUG}--retest.list"|\
+            "plan-w-team-test-green-${SLUG}.subject-manifest"|"plan-w-team-test-green-${SLUG}--retest.subject-manifest")
                 __deny_artifact "$SLUG" "$BASE" "plan-w-team-test-green.sh writes it from a real suite run" ;;
         esac
         # (3) Bound supervisor: goal-state + release valve are also off-limits,
@@ -903,28 +1281,62 @@ for GF in "$STATE_DIR"/plan-w-team-goal-*.json; do
         # this lane is forgery. Reading it (cat/jq, even with 2>/dev/null fd
         # redirects) stays legal — only a redirect TARGET naming the family, or
         # a write-verb followed by it, denies.
+        # confirm-8: every family test below is ANCHORED (FAM_ANCHOR_ERE) — the bare
+        # substring made lane fix-6090 "own" sibling lane fix-6090-2's files.
+        # Round 2 (B1): the dequoted text is built ONCE (tr, linear) for every lane; a
+        # command whose dequoted text does not even CONTAIN a family prefix skips the
+        # block on a bash `case` — a plain substring, a superset of every anchored test
+        # below, so the pre-filter can only admit, never excuse.
+        __ensure_fam_text
         for FAM in "plan-w-team-ship-verdict-${SLUG}" "plan-w-team-test-green-${SLUG}"; do
-            FORGE=0
+            case "$CMD_DEQ" in *"$FAM"*) : ;; *) continue ;; esac
+            FORGE=0; FHIT=""
             while IFS= read -r TGT; do
-                case "$TGT" in *"$FAM"*) FORGE=1; break ;; esac
+                [ -n "$TGT" ] || continue
+                __fam_member_named "$TGT" "$FAM" && { FORGE=1; FHIT="$TGT"; break; }
             done <<EOF_FAMR
-$(__redirect_targets)
+$(__redirect_targets | LC_ALL=C tr -d "\"'")
 EOF_FAMR
-            if [ "$FORGE" = "0" ] \
-               && printf '%s' "$CMD_SCAN" | grep -qE "(mv|cp|rm|touch|tee)[[:space:]][^;|&]*${FAM}"; then
-                FORGE=1
+            # The verb needs a left word boundary: unanchored, `grep confirm <family>.log`
+            # and `transform …` read as `rm`. Round 2 (B2): matched on CMD_SCAN WITH its
+            # quotes — round 1 stripped them first, which turned the READ `grep -c 'rm'
+            # <family>.log` / `jq '.tee' <family>.json` into an `rm`/`tee`. Instead quote chars
+            # (and a `\`) may sit between the family and its anchor, so `cp x "$D/<family>".json`
+            # still meets it; `g?` keeps GNU coreutils' gcp/gmv/grm.
+            if [ "$FORGE" = "0" ]; then
+                FHIT=$(printf '%s' "$CMD_SCAN" | LC_ALL=C grep -oE "(^|[^[:alnum:]_-])g?(mv|cp|rm|touch|tee)[[:space:]][^;|&]*${FAM}[\"'\\\\]*${FAM_ANCHOR_ERE}[^[:space:];|&<>]*" 2>/dev/null | head -n 1)
+                [ -n "$FHIT" ] && FORGE=1
             fi
             # 2.51.0: an in-place editor (`sed -i`, `perl -pi`) rewrites a family file
             # without any verb or redirect above — the retest-gate forgery was exactly
-            # `sed -i` deleting a SUITE_FAILED row from the base log. The editor is
-            # classified on the masked text (a quoted "sed -i" is prose); the family
-            # name is looked for in the RAW command, so quoting the path cannot hide it.
-            if [ "$FORGE" = "0" ] \
-               && printf '%s' "$CMD_SCAN" | grep -qE "$FAM_INPLACE_RE" \
-               && printf '%s' "$CMD" | grep -qF "$FAM"; then
-                FORGE=1
+            # `sed -i` deleting a SUITE_FAILED row from the base log. retest-8: the verdict
+            # is PER SEGMENT — the one segment that runs the in-place editor must itself
+            # name a family member (__inplace_family_segment, raw text, real quote state:
+            # a quoted "sed -i" is prose, a quoted path is still a path). The coarse
+            # FAM_INPLACE_RE only decides whether that scanner runs; scanner failure → DENY.
+            # Under PWT_DISABLE_LANE_GUARD_HYGIENE=1 (the guard's "no text analysis" switch)
+            # the scanner is skipped and the 2.51.0 WHOLE-TOKEN form decides (round 2, B3):
+            # a command-word sed/perl carrying an in-place option token, ANDed with an
+            # anchored family member anywhere in the command — the strict 2.51.0 posture,
+            # never a looser one, and never stricter than it either (round 1's coarse
+            # `.*-…i` matched the family NAME, so the switch denied every `sed -n 1p` read).
+            if [ "$FORGE" = "0" ]; then
+                if [ "$HYGIENE" = "1" ]; then
+                    if printf '%s' "$CMD_DEQ" | grep -qE "$FAM_INPLACE_RE"; then
+                        FSEG=$(__inplace_family_segment "$FAM")
+                        case "$FSEG" in OK) : ;; *) FORGE=1; FHIT="${FSEG#DENY}" ;; esac
+                    fi
+                # "Named" here also admits the BARE prefix at a word end (`TG=$S/<family>;
+                # sed -i … "$TG.log"` — HEAD's substring caught it; there is no scanner
+                # under the switch to carry the variable). A sibling's `<family>-2` is
+                # still not named: `-` then a digit is neither an anchor nor a word end.
+                elif printf '%s' "$CMD" | grep -qE "$FAM_INPLACE_WT_RE" \
+                     && { __fam_member_named "$CMD_DEQ" "$FAM" || __fam_member_named "$CMD_DEQB" "$FAM" \
+                          || case "$CMD_DEQ " in *"$FAM"[\ \;\&\|]*) true ;; *) false ;; esac; }; then
+                    FORGE=1; FHIT="$CMD_DEQ"
+                fi
             fi
-            [ "$FORGE" = "1" ] && __deny_artifact "$SLUG" "${FAM}.json" "only the pipeline's own gates may produce it"
+            [ "$FORGE" = "1" ] && __deny_artifact "$SLUG" "$(__fam_member_label "$FHIT" "$FAM")" "only the pipeline's own gates may produce it"
         done
         # (1') Any non-worker session: mutating Bash aimed into the lane's
         # worktree — a git-write/mutator naming its literal path, or a redirect

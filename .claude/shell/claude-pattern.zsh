@@ -191,7 +191,7 @@ claude-account() {
 export CLAUDE_CODE_STOP_HOOK_BLOCK_CAP=200
 
 # CLI 2.1.268 gated the task-tracking tools (TaskCreate/Get/Update/List, TodoWrite)
-# to pre-Claude-5 models. Every /plan-w-team tier runs on Opus 5.5 / Sonnet 5 /
-# Fable 5.1 and the Step 2-8 task graph is built on those tools, so re-enable
+# to pre-Claude-5 models. Every /plan-w-team tier runs on Opus 5.5 / Sonnet 5
+# and the Step 2-8 task graph is built on those tools, so re-enable
 # them explicitly (mirrors .claude/settings.json env; uplift 2026-09-18).
 export CLAUDE_CODE_ENABLE_TODO_TOOLS=1

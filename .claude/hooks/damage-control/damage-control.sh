@@ -54,7 +54,10 @@ respond() {
     #     The reason now goes to STDERR.
     #  2. `ask` emitted a legacy TOP-LEVEL {"decision":"ask"} and exit 0. For
     #     PreToolUse the schema is hookSpecificOutput.permissionDecision
-    #     (hooks.md:249-262); the top-level form is PermissionRequest's
+    #     (hooks.md:249-262). A top-level `decision` belongs to Stop-style
+    #     events (Stop/SubagentStop/UserPromptSubmit/PostToolUse "block");
+    #     PermissionRequest is NOT one — it uses
+    #     hookSpecificOutput.decision.behavior
     #     (CLAUDE_CODE_CLI_REFERENCE.md:484-492). Exit 0 with an unrecognized
     #     payload means ALLOW, so the whole ask tier — DROP/TRUNCATE TABLE,
     #     gcloud/az delete, docker system prune, redis-cli FLUSHDB, and the

@@ -218,13 +218,18 @@ PWT_RT_LIB="$SCRIPT_DIR/../scripts/plan-w-team-retest-lib.sh"
 # Prints a block reason, or nothing when the retest is acceptable.
 _pwt_gate_retest() {
     local art="$1" man="$2" tmpd="$3"
-    local cmd lmode bslug bts bdig bfile chain rt_max_age n
+    local cmd lmode bslug bts bdig bfile chain rt_max_age n sdig sactual class
     cmd=$(jq -r '.suite_cmd // ""' "$art" 2>/dev/null || echo "")
     lmode=$(pwt_rt_log_mode "$TG_LOG" 2>/dev/null || echo "")
     # R0 — the retest log is the very log the verdict was written from: RETEST_RAN
     # rows read below are the witness for R ⊆ ran, so an appended row must not count.
     if ! pwt_rt_log_bound "$art" "$TG_LOG"; then
         echo "the retest verdict's log is not bound to it: $PWT_RT_ERR"; return 0
+    fi
+    # R0b — the witness rows are read from the log's final trailer block only; a row
+    # printed above it (by a test, or a splice) makes the whole log unreadable.
+    if ! pwt_rt_trailer "$TG_LOG" >/dev/null 2>&1; then
+        echo "the retest log carries machine-readable rows outside its final trailer block (forged or spliced)"; return 0
     fi
     # R1 — the log is a retest log, produced by the canonical retest command.
     if [ "$lmode" != "retest" ]; then
@@ -257,12 +262,49 @@ _pwt_gate_retest() {
     if ! pwt_rt_check_base "$bfile" "$rt_max_age"; then
         echo "the retest's base is not acceptable: $PWT_RT_ERR"; return 0
     fi
+    # R5b — the SUBJECT the retest ran on is the subject being committed (review -1).
+    # The watched digest above says nothing about an unwatched hook or script the
+    # rerun set was built from; the retest records the subject digest it ran on, and
+    # the staged (index) subject must hash to it. A retest verdict without one
+    # predates the subject manifest and is refused — re-run the retest.
+    sdig=$(jq -r '.subject_digest // ""' "$art" 2>/dev/null || echo "")
+    if ! pwt_rt_is_hex64 "$sdig"; then
+        echo "the retest verdict records no subject_digest (it predates the subject manifest, or the tree moved during it) — re-run the retest"; return 0
+    fi
+    if ! pwt_rt_subject_manifest "$TG_ROOT" staged > "$tmpd/staged.sman" 2>/dev/null; then
+        echo "the staged subject manifest could not be computed"; return 0
+    fi
+    sactual=$(pwt_rt_digest "$tmpd/staged.sman" 2>/dev/null || echo "")
+    if [ "$sactual" != "$sdig" ]; then
+        # Name the first differing path when the retest's own subject manifest is
+        # still there and still hashes to the digest it recorded.
+        n=$(jq -r '.subject_manifest_path // ""' "$art" 2>/dev/null || echo "")
+        if [ -n "$n" ] && [ -r "$n" ] && [ "$(pwt_rt_sha256_file "$n")" = "$sdig" ]; then
+            n=$(pwt_rt_delta "$n" "$tmpd/staged.sman" 2>/dev/null | head -1 | tr -d '"\\' | cut -c1-120)
+        else
+            n=""
+        fi
+        echo "the retest ran on a different .claude/ + tests/ tree than the one staged${n:+ (first difference: $n)} — stage or stash the difference, or re-run the retest"; return 0
+    fi
     # R6 — rebuild R from base → STAGED and require every file of it to have run.
     if ! pwt_rt_delta "$PWT_RT_BASE_MANIFEST" "$man" > "$tmpd/delta" 2>/dev/null; then
         echo "the change set since the base could not be computed"; return 0
     fi
     if n=$(pwt_rt_needs_full "$tmpd/delta"); then
         echo "the staged change set touches the harness or gate machinery ($n) — only a full run can certify it"; return 0
+    fi
+    if ! pwt_rt_delta "$PWT_RT_BASE_SUBJECT_MANIFEST" "$tmpd/staged.sman" > "$tmpd/sdelta" 2>/dev/null \
+       || ! pwt_rt_unwatched "$tmpd/sdelta" "$PWT_WATCHED_GLOBS" > "$tmpd/udelta" 2>/dev/null; then
+        echo "the unwatched change set since the base could not be computed"; return 0
+    fi
+    # R6b — a red base with no watched change is a flaky pass, never a fix (review -3):
+    # refused unless the operator opts in here too. Recomputed from base → staged,
+    # AND read from the verdict — either one saying flaky is enough.
+    class=$(jq -r '.classification // ""' "$art" 2>/dev/null || echo "")
+    if [ "${PWT_TEST_RETEST_ALLOW_FLAKY:-0}" != "1" ]; then
+        if [ "$class" = "flaky" ] || { [ "$PWT_RT_BASE_GREEN" != "true" ] && [ ! -s "$tmpd/delta" ]; }; then
+            echo "the retest is a FLAKY pass — its base is red and no watched file changed since — set PWT_TEST_RETEST_ALLOW_FLAKY=1 to accept it knowingly, or run a full run"; return 0
+        fi
     fi
     # Fail closed exactly as the wrapper does: a base failure the runner could not
     # tie to a file cannot be retested by file (pwt_rt_check_base already refuses it;
@@ -271,7 +313,7 @@ _pwt_gate_retest() {
         echo "the base log has an unattributed or leak failure, or could not be parsed — only a full run can clear it"; return 0
     fi
     if ! pwt_rt_required "$TG_ROOT" "$tmpd/basefailed" "$tmpd/delta" "$PWT_RT_BASE_GREEN" \
-            "$PWT_RT_BASE_MANIFEST" "$man" > "$tmpd/required" 2>/dev/null || [ ! -s "$tmpd/required" ]; then
+            "$PWT_RT_BASE_MANIFEST" "$man" "$tmpd/udelta" > "$tmpd/required" 2>/dev/null || [ ! -s "$tmpd/required" ]; then
         echo "the rerun set for the staged tree could not be built — only a full run can certify it"; return 0
     fi
     n=$(grep -c . "$tmpd/required" 2>/dev/null || echo 0)
@@ -379,11 +421,28 @@ if [ "$PLAN_TEAM_STAGED" = "true" ]; then
             else
                 TG_TMP=$(mktemp -d -t pwt-gate.XXXXXX 2>/dev/null || echo "")
                 TG_ACTUAL=""
-                if [ -n "$TG_TMP" ] \
+                # Stage or stash first (review -2): the suite ran on the working tree,
+                # the commit takes the index. The staged manifest is the index alone,
+                # so it stands for the tested tree only while the two agree over the
+                # watched set — a partially staged file, an unstaged deletion, or an
+                # untracked watched file each break that, with its own reason.
+                TG_UNSTAGED_RC=0
+                TG_UNSTAGED=""
+                if [ -n "$TG_TMP" ]; then
+                    TG_UNSTAGED=$(pwt_rt_unstaged "$TG_ROOT" "$PWT_WATCHED_GLOBS" 2>/dev/null) || TG_UNSTAGED_RC=$?
+                fi
+                if [ -n "$TG_TMP" ] && [ "$TG_UNSTAGED_RC" = "0" ] \
                    && pwt_rt_manifest "$TG_ROOT" staged "$PWT_WATCHED_GLOBS" > "$TG_TMP/staged.man" 2>/dev/null; then
                     TG_ACTUAL=$(pwt_rt_digest "$TG_TMP/staged.man" 2>/dev/null || echo "")
                 fi
-                if [ -z "$TG_ACTUAL" ]; then
+                TG_UNSTAGED_FIRST=$(printf '%s\n' "$TG_UNSTAGED" | head -1 | tr -d '"\\' | cut -c1-140)
+                if [ "$TG_UNSTAGED_RC" = "2" ]; then
+                    TG_BLOCK="git could not compare the index with the working tree for the watched set, so the verdict cannot be tied to what is staged"
+                elif [ "$TG_UNSTAGED_RC" != "0" ] && printf '%s\n' "$TG_UNSTAGED" | grep -q '^modified '; then
+                    TG_BLOCK="watched files differ between the index and the working tree (first: ${TG_UNSTAGED_FIRST#modified }) — the suite ran on the working tree but the commit takes the index: stage or stash first"
+                elif [ "$TG_UNSTAGED_RC" != "0" ]; then
+                    TG_BLOCK="an untracked watched file exists (first: ${TG_UNSTAGED_FIRST#untracked }) — the suite ran with it but the commit leaves it out: stage or stash first (or ignore it)"
+                elif [ -z "$TG_ACTUAL" ]; then
                     TG_BLOCK="the staged-content digest could not be computed, so the verdict cannot be corroborated"
                 elif [ "$TG_ACTUAL" != "$TG_DIGEST" ]; then
                     TG_BLOCK="tree_digest mismatch — the suite ran against different content than what is staged (verdict ${TG_DIGEST%"${TG_DIGEST#??????????}"}…, staged ${TG_ACTUAL%"${TG_ACTUAL#??????????}"}…)"
