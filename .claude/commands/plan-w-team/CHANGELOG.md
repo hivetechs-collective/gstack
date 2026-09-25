@@ -14,6 +14,52 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.56.1] — 2026-09-25 (fix: lazy session-start lane check at the three write sites; legacy workflow locks whose pid names no process are reclaimed again; pwt-status test hermetic) (d91f0c17)
+
+Parity with the cleanscale adoption of 2.56.0 (CleanRev Current's verdicts). Reviewed
+adversarially, repaired, then re-reviewed with no blocking finding.
+
+### Session start asks the lane question only where it writes
+
+- `session-start.sh` no longer scans goal-state at the top of `auto_sync_from_pattern`. The new
+  `__ss_lane_stands_down` runs right before the three sites that write: the in-place
+  `git pull --ff-only`, the in-place regen, and (inside the detached process, off the SessionStart
+  path) the `claude-pattern-pull.sh` launch, because a puller run delivers a sync commit to origin
+  and may fast-forward a clean primary. The scan runs a `jq` per goal-state, so a start that
+  returns before all three sites, or pulls in the background, no longer pays for it.
+- The foreground pull-mode line now claims no delivery: `starting the claude-pattern pull in the
+  background (it stands down inside a live /plan-w-team lane)`. A lane's stand-down line goes to
+  the pull log.
+- Ordering, stated in the hook and `docs/operations/consumer-pull-sync.md`: on a primary, the
+  synchronous `git fetch origin <branch>` runs before any gate, lane or not. It writes objects,
+  `refs/remotes/origin/*` and `FETCH_HEAD`, never `HEAD` or the working tree. When origin lacks
+  the stamp, a dirty `.claude/` under `mode=regen` still reaches the regen gate.
+- Tests (existing cases in `sync-target-dirty-guard.bats`): the linked-worktree no-scan case, and
+  two assertions on the bound-supervisor pull-mode case (the new line; never "delivering").
+
+### Legacy workflow locks (row 191 follow-through)
+
+- The Step-0 pre-flight reclaims a pre-row-191 lock (a `pid` file, no owner `pid=`) whose raw pid
+  holds a character that is neither a digit nor whitespace (`abc`, `-1`, `+5`, `-`, `+`), with the
+  reason "legacy pid names no process". Empty or whitespace-only pids still conflict (the lock may
+  be being created right now), and so does a padded decimal (` 123` may be a live pid). The
+  janitor (`__lock_hold_v`) still counts such a lock as held (fail-closed); only the pre-flight
+  reclaims it. `plan-w-team.md`, `gotchas.md`, `state-artifacts.md` and the janitor's header say so.
+- Test: the one existing 2.56.1 case in `workflow-lock-owner.bats` runs the extracted block under
+  `/bin/bash` and `/bin/zsh -f` over both value classes.
+
+### pwt-status.test.sh is hermetic
+
+- `PWT_LANE_ALIVE_BIN` points at a stub that exits 2 and writes nothing. An EXIT trap, set before
+  the stub is written, removes it and the T14 alive stub; HUP, INT and TERM become exits so the
+  trap runs on those paths too. T14's cannot-determine case reuses the global stub.
+
+### Follow-up (not in this release)
+
+- For a legacy pid-only lock, `__lock_hold_v` strips whitespace and the pre-flight does not, so a
+  padded dead decimal is not held for the janitor while the pre-flight conflicts on it. This
+  predates 2.56.1; filed as a ledger row.
+
 ## [2.56.0] — 2026-09-25 (fix: R255 — the 2.53.0 review residuals, rows 191–195: workflow-lock owner, model-id matching, bash 3.2 test runs, retest manifest bytes, post-push confirm directory) (a831c7ed)
 
 CleanRev Current's review of 2.53.0 left five residual rows (191–195). Each area was built and

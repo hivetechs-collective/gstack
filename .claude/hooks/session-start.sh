@@ -208,6 +208,19 @@ $(find "$sd" -maxdepth 1 -type f -name 'plan-w-team-goal-*.json' -mmin "-$((hour
 EOF
     return 1
 }
+# 0 = stand down: this session is party to a live lane and the operator override
+# CLAUDE_PATTERN_SYNC_IN_LANE=1 is not set. Prints the lane-facing line (which
+# deliberately does not name the override); the caller returns. Asked right before
+# the in-place ff-pull and the in-place regen, and by the detached process before
+# the puller, never earlier: the scan runs a jq per goal-state, so its cost grows
+# with the state dir, and it is paid even to learn "not a lane".
+__ss_lane_stands_down() {
+    [ "${CLAUDE_PATTERN_SYNC_IN_LANE:-}" = "1" ] && return 1
+    __ss_in_pwt_lane || return 1
+    echo "   ↷ live /plan-w-team lane session — the sync is left to a session outside the lane"
+    echo ""
+    return 0
+}
 __ss_origin_default_branch() {   # origin's default branch from last-known refs (no fetch)
     local b
     b=$(git -C "$PROJECT_ROOT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
@@ -289,17 +302,29 @@ auto_sync_from_pattern() {
     # Lane stand-down. A session party to a live /plan-w-team lane (its worker,
     # any session in its worktree, or its bound supervisor — and SessionStart fires
     # again on each resume and compaction) never acts on a claude-pattern sync: no
-    # detached pull launched per lane start, no ff-pull moving HEAD under a running
+    # pull run per lane start, no ff-pull moving HEAD under a running
     # pipeline, no in-place regen writing tracked files into the lane's diff. The
     # sync is not lost — the next session outside the lane performs it. Identity is
-    # __ss_in_pwt_lane's (on-disk lane state), checked only when a sync is due.
+    # __ss_in_pwt_lane's (on-disk lane state). It is asked lazily, through
+    # __ss_lane_stands_down (2.56.1), at the three sites that act: right before the
+    # in-place ff-pull, in the detached pull-mode process right before it runs
+    # claude-pattern-pull.sh (its stand-down line lands in the pull log), and right
+    # before the in-place regen. The cleanscale port gates two sites (ff-pull and
+    # regen). Upstream gates the pull-mode launch too, because a claude-pattern-pull.sh
+    # run is itself a write the stand-down exists to block (it delivers a sync commit
+    # to origin and may fast-forward a clean primary); that gate stays inside the
+    # detached process, off the SessionStart critical path. So a start that pulls in
+    # the background, or returns before all three sites (a linked worktree whose
+    # origin already carries the stamp, a dirty .claude/ when origin carries it, no
+    # puller), never waits on the goal-state scan; when origin lacks the stamp, a
+    # dirty .claude/ in mode=regen does, since it reaches the regen gate before
+    # sync-to-project.sh's dirty SKIP.
+    # Ordering: on a primary the synchronous `git fetch origin <branch>` below runs
+    # before any gate, lane or not. It writes objects, refs/remotes/origin/* and
+    # FETCH_HEAD, but never moves HEAD or the working tree. A path that returns
+    # before the three sites prints its own line, not the lane's.
     # Operator override: CLAUDE_PATTERN_SYNC_IN_LANE=1, checked first (deliberately
-    # not named in the lane-facing line below).
-    if [ "${CLAUDE_PATTERN_SYNC_IN_LANE:-}" != "1" ] && __ss_in_pwt_lane; then
-        echo "   ↷ live /plan-w-team lane session — the sync is left to a session outside the lane"
-        echo ""
-        return 0
-    fi
+    # not named in the lane-facing line).
 
     # OPTION B: Prefer pull-from-origin when origin already has this version.
     # Consumer machines (mac-mini, laptops) pull the committed sync — keeping the
@@ -348,6 +373,7 @@ auto_sync_from_pattern() {
             echo ""
             return 0
         fi
+        __ss_lane_stands_down && return 0
         echo "   ↓ pulling from origin/$current_branch (origin has this version)"
         if git -C "$PROJECT_ROOT" pull --ff-only origin "$current_branch" --quiet 2>/dev/null; then
             echo "   ✅ Pulled from origin"
@@ -386,10 +412,20 @@ auto_sync_from_pattern() {
         if [ -x "$puller" ]; then
             mkdir -p "$PROJECT_ROOT/.claude/state" 2>/dev/null || true
             local pull_log="$PROJECT_ROOT/.claude/state/claude-pattern-pull.log"
-            echo "   ↓ consumer pull mode: delivering the claude-pattern sync to origin in the background"
+            # One line, true for a lane session too: it claims no delivery, because the
+            # detached process may stand down.
+            echo "   ↓ consumer pull mode: starting the claude-pattern pull in the background (it stands down inside a live /plan-w-team lane)"
             echo "     (temporary worktree; the primary checkout is only ever fast-forwarded when clean)"
             echo "     log: $pull_log"
-            nohup "$puller" "$PROJECT_ROOT" --auto >> "$pull_log" 2>&1 < /dev/null &
+            # The second of the three lane gates (see "Lane stand-down" above) is asked
+            # by the detached process, before the puller runs, so a lane still never runs
+            # a pull and this start never waits on the scan; a lane's stand-down line
+            # goes to the log. The hook already read stdin at its top; this call covers
+            # callers that skip that read (the test harness). The detached process
+            # gets /dev/null.
+            __ss_hook_session
+            ( trap '' HUP; __ss_lane_stands_down && exit 0; exec "$puller" "$PROJECT_ROOT" --auto ) \
+                >> "$pull_log" 2>&1 < /dev/null &
         else
             echo "   ⚠️  claude-pattern-pull.sh not found — not regenerating in place (set mode=regen in .claude/.sync-policy to opt back in)"
         fi
@@ -406,6 +442,7 @@ auto_sync_from_pattern() {
     # skipped sync was recorded as done — no retry until the next source bump,
     # "✅ Sync complete" on screen, and the stamp left as tracked dirt in the
     # working tree (/plan-w-team 2.51.5). Judge the outcome by the marker.
+    __ss_lane_stands_down && return 0
     echo "   Syncing from claude-pattern (local regen — commit+push to share)..."
     local sync_out="" sync_rc=0
     sync_out="$("$SYNC_SCRIPT" "$PROJECT_ROOT" 2>&1)" || sync_rc=$?

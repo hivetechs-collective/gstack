@@ -113,7 +113,11 @@ give two leads one owner. When that process is not recognised as `claude`, the o
 the lead), not a short-lived shell: the lock holds while it lives, and other sessions get a
 conflict. Only the same session id re-enters a `kind=parent` lock, so after `/clear` the lead
 conflicts with its own lock until the lock dir is deleted. Only a decimal pid above 1 decides
-anything: `kill -0 0` and `kill -0 -1` succeed.
+anything: `kill -0 0` and `kill -0 -1` succeed. The one exception is a pre-row-191 lock (only
+a `pid` file) whose RAW pid, as read (no sign or whitespace stripped), holds a character that
+is neither a digit nor whitespace (`abc`, `-1`, `-`): the pre-flight reclaims it ("legacy pid
+names no process"), while the janitor still counts it as held. An empty, whitespace-only or
+whitespace-padded decimal pid still conflicts.
 
 **Source**: `.claude/commands/plan-w-team.md` §Pre-Flight: Workflow Lock;
 `07-retro.md` §8i Self-Assessment (friction-log lock).

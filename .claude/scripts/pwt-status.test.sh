@@ -7,6 +7,18 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 SCRIPT="$PROJECT_ROOT/.claude/scripts/pwt-status.sh"
 
+# Hermetic: the real pwt-lane-alive.sh queries the live `claude agents` registry and,
+# when governed, appends plan-w-team-liveness-<slug>.jsonl to the MAIN checkout's real
+# .claude/state (its root comes from the cwd, not CLAUDE_PROJECT_DIR). Every run here is
+# stubbed to cannot-determine (exit 2); the C3 cases in T14 inject their own verdicts.
+# The stub goes on every exit path: the EXIT trap, with a signal turned into an exit.
+LA0=
+LA_STUB=$(mktemp -t pwt-status-la.XXXXXX) || exit 1
+trap 'rm -f "$LA_STUB" ${LA0:+"$LA0"}' EXIT
+trap 'exit 129' HUP; trap 'exit 130' INT; trap 'exit 143' TERM
+printf '#!/bin/bash\nexit 2\n' > "$LA_STUB"; chmod +x "$LA_STUB"
+export PWT_LANE_ALIVE_BIN="$LA_STUB"
+
 PASS=0
 FAIL=0
 
@@ -290,13 +302,11 @@ assert_contains "O1 one live lead prints no stale note" "1 lead, " "$OUT2"
 assert_not_contains "O1 no stale-registry note when all live" "stale-registry" "$OUT2"
 # C3 (Governor Contract phase 1): the lane-alive verdict line uses the ONE liveness truth via
 # PWT_LANE_ALIVE_BIN; exit 2 (cannot-determine) → "unknown" (fail-closed), exit 0 → "alive".
-LA2=$(mktemp -t pwt-status-la2.XXXXXX); printf '#!/bin/bash\nexit 2\n' > "$LA2"; chmod +x "$LA2"
-OUT3=$(PWT_STATUS_AGENTS_OVERRIDE="$AGENTS_LIVE" PWT_LANE_ALIVE_BIN="$LA2" "$SCRIPT" o1-run 2>&1)
+OUT3=$(PWT_STATUS_AGENTS_OVERRIDE="$AGENTS_LIVE" PWT_LANE_ALIVE_BIN="$LA_STUB" "$SCRIPT" o1-run 2>&1)
 assert_contains "C3 pwt-status: cannot-determine (exit 2) → lane-alive unknown (fail-closed)" "lane-alive: unknown" "$OUT3"
 LA0=$(mktemp -t pwt-status-la0.XXXXXX); printf '#!/bin/bash\nprintf %s "{\\"live_by_process\\":1,\\"live_by_registry\\":1}"\nexit 0\n' > "$LA0"; chmod +x "$LA0"
 OUT4=$(PWT_STATUS_AGENTS_OVERRIDE="$AGENTS_LIVE" PWT_LANE_ALIVE_BIN="$LA0" "$SCRIPT" o1-run 2>&1)
 assert_contains "C3 pwt-status: predicate alive (exit 0) → lane-alive alive" "lane-alive: alive" "$OUT4"
-rm -f "$LA2" "$LA0"
 teardown_fake_root
 
 echo ""

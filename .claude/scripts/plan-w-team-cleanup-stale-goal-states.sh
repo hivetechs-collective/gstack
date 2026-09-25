@@ -263,7 +263,8 @@ __json_str_field() {  # $1=file $2=key → string value ("" if absent)
 # confirmed gone. The owner pid is `owner` pid=, else (a pre-row-191 lock with no
 # `owner`) the legacy `pid` file. A usable pid is a decimal above 1, as the pre-flight
 # reads it (`kill -0 0` / `kill -0 -1` succeed, pid 1 is launchd). No usable pid → cannot
-# prove gone → HELD (fail-closed) but NOT alive. Gone = kill -0 fails AND ps lists no such
+# prove gone → HELD (fail-closed) but NOT alive; only the pre-flight reclaims a
+# legacy lock whose raw pid holds a non-digit, non-whitespace character. Gone = kill -0 fails AND ps lists no such
 # pid, or `owner` start= is recorded and the live pid's start time differs (the pid was
 # reused). The start stamp is formatted exactly as the pre-flight writes it (UTC, C
 # locale, single-spaced).
