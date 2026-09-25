@@ -48,11 +48,22 @@ esac
 # active /plan-w-team run lives in a worktree under .claude/worktrees/<name>/.
 # Use $PWD when it looks like a checkout (has its own .claude/) so writes land
 # alongside the run's other state files.
+#
+# PWT_PROJECT_ROOT_OVERRIDE (the test-only lever) wins over both, as it does at
+# pwt-goal.sh's own root sites (PROJECT_ROOT, WT_ROOT, GUARD_PROJECT_ROOT,
+# __pwt_main_repo_root) and in claim-abstraction / retro-capture. Without it, a
+# test that pinned pwt-goal.sh to its sandbox but did not also cd into it (run.sh
+# Phase 2 runs every .test.sh with cwd = the live checkout) had this ROW follow
+# $PWD: each `--launch` / `--worker-only` call minted a spawned-children-<slug>.jsonl
+# in the live .claude/state, gitignored and so invisible to the suite's porcelain
+# STATE_LEAK guard. Unset in production, so real-run resolution is unchanged.
 PWD_STATE_DIR="$PWD/.claude/state"
 FALLBACK_PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." 2>/dev/null && pwd)}"
 FALLBACK_STATE_DIR="${FALLBACK_PROJECT_ROOT}/.claude/state"
 
-if [ -d "$PWD/.claude" ]; then
+if [ -n "${PWT_PROJECT_ROOT_OVERRIDE:-}" ]; then
+    STATE_DIR="$PWT_PROJECT_ROOT_OVERRIDE/.claude/state"
+elif [ -d "$PWD/.claude" ]; then
     STATE_DIR="$PWD_STATE_DIR"
 elif [ -n "$FALLBACK_PROJECT_ROOT" ]; then
     STATE_DIR="$FALLBACK_STATE_DIR"

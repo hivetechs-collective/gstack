@@ -292,9 +292,20 @@ behavior) on trivial specs, where 3 Brain-tier reviewers cannot earn their cost.
 No env var, no per-run action, identical behavior on attended and bg runs.
 Overrides: `PLAN_W_TEAM_SPEC_FANOUT=0` → hard OFF (operator opt-out, forwarded
 to bg workers by `pwt-goal.sh` when set); `PLAN_W_TEAM_SPEC_FANOUT=1` → force ON
-even for trivial specs. The §8j-nonies retro signal keeps scoring every fired
-run — if `findings_folded ≈ 0` across ~5 auto-fired runs, that is the evidence
-to restore default-off (reverse this section + the §8j-nonies advice text).
+even for trivial specs.
+
+**Keep/park review CLOSED 2026-09-24 → KEEP** (recursive-followup row 29). The rule
+was: ≈0 folded across ~5 auto-fired runs → restore default-off; >0 → AUTO stays.
+Across 8 surviving records from 3 repos, 7 scored runs folded 184 findings (median 26,
+minimum 11, none at 0). The 8th was degraded: every reviewer failed and the lead
+self-reviewed. So AUTO stays. KEEP applies the pre-registered rule. It does not show
+that the fan-out beats a single-pass spec: the degraded self-review run still folded 3,
+so a raw folded count is close to unfalsifiable. That is why the record now carries
+`findings_folded_blocker`. The reversal criterion stands. To re-check, run
+`plan-w-team-spec-fanout-tally.sh --state-dir <dir>…` over the records you can
+gather; a `PARK` verdict is the evidence to restore default-off (reverse this section
+and the §8j-nonies text). Evidence, tracked snapshot and caveats:
+`docs/operations/pwt-parallelism-go-nogo-2026-07-02.md` (2026-09-24 addendum).
 
 Hard ordering rule: the fan-out MUST complete and its findings MUST be folded
 into the spec **strictly before** the freeze below, so the SHA256 snapshot
@@ -337,7 +348,14 @@ if [ "$RUN_FANOUT" = "1" ]; then
   # the Agent tool, NOT the dynamic-workflow tool, NOT the diff-based
   # security-gap-analyzer/test-gap-analyzer), collects findings,
   # FOLDS them into the draft spec, then writes the advisory record:
-  #   {"reviewers":[...],"verdicts":[...],"findings_folded":N,"findings_deferred":M}
+  #   {"reviewers":[...],"verdicts":[...],"findings_folded":N,"findings_deferred":M,
+  #    "findings_folded_blocker":B}
+  # N, M and B are integer counts, not lists: the retro reads them through
+  # plan-w-team-spec-fanout-tally.sh as counts. B (optional) is the BLOCKER-class
+  # subset of N. Put itemized text in optional "findings_folded_detail" /
+  # "findings_deferred_detail" arrays. If every reviewer failed and you reviewed
+  # the spec yourself, write "degraded": true so the run is not counted as a
+  # fan-out catch.
   # The fold-in happens HERE, before the freeze, so the contract chain stays intact.
   echo "[§1b-pre] fan-out complete; findings folded; advisory record → $FANOUT"
 fi

@@ -539,6 +539,30 @@ if ! grep -q "plan-w-team-untracked-baseline-" .gitignore 2>/dev/null; then
   printf '\n.claude/state/plan-w-team-untracked-baseline-*.txt\n.claude/state/plan-w-team-retro-*.json\n' >> .gitignore
   echo "✓ added /plan-w-team state patterns to .gitignore"
 fi
+# Kill-switch ledger files (recursive-followup row 180 item d) and the workflow lock dir,
+# which now lives for the whole run (row 191), each get their OWN check: a repo that
+# already carries the baseline patterns above never re-enters that block. A pattern is
+# skipped when its exact line is present or the REPO's own .gitignore files already
+# ignore a probe path it covers (a broader rule such as `.claude/state/`). Machine-local
+# rules do not count — core.excludesFile is switched off for the probe and a
+# .git/info/exclude match reads as "not covered" — because they do not travel with a
+# clone. Outside a git repo only the line check runs.
+for PWT_GI_ROW in \
+  '.claude/state/plan-w-team-killswitch-ledger-*.jsonl|.claude/state/plan-w-team-killswitch-ledger-pwt-probe.jsonl' \
+  '.claude/state/plan-w-team-killswitch-ledger-*.init|.claude/state/plan-w-team-killswitch-ledger-pwt-probe.init' \
+  '.claude/state/plan-w-team-workflow-*.lock/|.claude/state/plan-w-team-workflow-pwt-probe.lock/owner'; do
+  PWT_GI_PAT="${PWT_GI_ROW%%|*}"; PWT_GI_PROBE="${PWT_GI_ROW#*|}"
+  grep -qxF "$PWT_GI_PAT" .gitignore 2>/dev/null && continue
+  PWT_GI_V="$(git -c core.excludesFile=/dev/null check-ignore -v --no-index "$PWT_GI_PROBE" 2>/dev/null | head -n 1)"
+  PWT_GI_SRC="${PWT_GI_V%%:*}"; PWT_GI_HIT="${PWT_GI_V#*:}"; PWT_GI_HIT="${PWT_GI_HIT#*:}"
+  case "$PWT_GI_SRC" in
+    /*) ;;
+    .gitignore|*/.gitignore) case "$PWT_GI_HIT" in '!'*) ;; *) continue ;; esac ;;
+  esac
+  if [ -s .gitignore ] && [ -n "$(tail -c 1 .gitignore)" ]; then printf '\n' >> .gitignore; fi
+  printf '%s\n' "$PWT_GI_PAT" >> .gitignore
+  echo "✓ added $PWT_GI_PAT to .gitignore"
+done
 
 git ls-files --others --exclude-standard | sort \
   > .claude/state/plan-w-team-untracked-baseline-"$SLUG".txt
@@ -546,7 +570,7 @@ git ls-files --others --exclude-standard | sort \
 
 **Why this runs here, not later**: Capturing at preflight is the only point that reliably excludes pre-existing dirt. Any later capture would miss Step 0-4 artifacts as "new" and force unnecessary classification prompts, or (worse) misclassify the feature's own spec file as pre-existing.
 
-**Why this file lives under `.claude/state/`**: The baseline/retro patterns are gitignored (the preflight adds them if missing), the directory survives compaction, and the file is keyed by `<slug>` so parallel `/plan-w-team` runs on different features never collide.
+**Why this file lives under `.claude/state/`**: The baseline/retro patterns are gitignored (the preflight adds them if missing), the directory survives compaction, and the file is keyed by `<slug>` so parallel `/plan-w-team` runs on different features never collide. The kill-switch ledger's `plan-w-team-killswitch-ledger-*.jsonl` / `*.init` and the `plan-w-team-workflow-*.lock/` dir are added the same way, one idempotent check per pattern, so a consumer that already had the baseline patterns still gains them. A pattern is not added when its exact line is already there or when `git check-ignore -v` reports a probe path it covers as ignored by one of the repo's own `.gitignore` files (root or nested, not a `!` negation), so a broader rule such as `.claude/state/` gains no redundant lines. Machine-local ignore rules never suppress a line: the probe runs with `core.excludesFile` pointed at `/dev/null`, and a match reported from `.git/info/exclude` counts as "not covered", because neither travels with a clone — a pattern skipped on their account would leave the ledger and lock as untracked dirt on every other machine. When a machine-local rule shadows the repo's own (it excludes a parent directory first), the pattern is added anyway; the cost is one redundant line, never a missing one. Without them the ledger, and the workflow lock (held for the whole run since row 191, created after this baseline), show up as untracked dirt the run itself introduced.
 
 The baseline is consumed by Step 5 (Ship) and deleted by Step 8 (Retro) on successful completion. Failed runs leave it intact so `--resume` can read it.
 
@@ -559,36 +583,163 @@ Immediately after baseline capture, acquire a per-SLUG workflow lock. This preve
 ```bash
 WORKFLOW_LOCK_DIR=".claude/state/plan-w-team-workflow-${SLUG}.lock"
 
-# Stale-lock recovery: if the dir exists but its owner PID is dead, take it over.
+# Durable owner (recursive-followup row 191). Every Bash-tool call runs in a fresh shell,
+# so `$$` dies with this call: record the LEAD instead (its session id, and the pid and
+# start time of the lead `claude` process). No EXIT trap: a per-call trap released the
+# lock as soon as this call returned. The lock is held until retro-complete marks it
+# released, or its owner is gone. Runs under bash 3.2 and zsh (the Bash tool's shell).
+pwt_lk_is_claude() { # $1=pid → 0 when that process is a claude CLI (native, a versions/ build, or node/bun + script)
+  pwt_lk_c="$(ps -o comm= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')"
+  pwt_lk_a="$(ps -o args= -p "$1" 2>/dev/null | sed 's/^ *//')"
+  pwt_lk_a1="${pwt_lk_a%% *}"; pwt_lk_a2="${pwt_lk_a#* }"; pwt_lk_a2="${pwt_lk_a2%% *}"
+  # a bg or --resume session runs as ~/.local/share/claude/versions/<ver>
+  case "$pwt_lk_c" in */claude/versions/*) return 0 ;; esac
+  case "$pwt_lk_a1" in */claude/versions/*) return 0 ;; esac
+  case "${pwt_lk_c##*/}" in claude) return 0 ;; esac
+  case "${pwt_lk_a1##*/}" in claude) return 0 ;; node|bun) ;; *) return 1 ;; esac
+  case "$pwt_lk_a2" in claude|*/claude|*/claude-code/*) return 0 ;; esac
+  return 1
+}
+pwt_lk_is_shell() { # $1=pid → 0 when that process is a plain shell (the block ran in a nested one)
+  pwt_lk_c="$(ps -o comm= -p "$1" 2>/dev/null | sed 's/^ *//;s/ *$//')"
+  pwt_lk_c="${pwt_lk_c##*/}"; pwt_lk_c="${pwt_lk_c#-}"
+  case "$pwt_lk_c" in sh|bash|zsh|dash|ksh) return 0 ;; esac
+  return 1
+}
+pwt_lk_field() { sed -n "s/^$1=//p" "$WORKFLOW_LOCK_DIR/owner" 2>/dev/null | head -n 1; }
+# Process start time, UTC + C locale, single-spaced: the janitor compares the same form.
+pwt_lk_start() { TZ=UTC LC_ALL=C ps -o lstart= -p "$1" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//'; }
+# $1=pid $2=recorded start → 0 only when ps READ a start time for that pid and it differs.
+# An empty reading (ps failed, or the process vanished between two calls) proves nothing,
+# so it never reclaims: the janitor reads it the same way. Sets pwt_lk_s.
+pwt_lk_reused() { pwt_lk_s="$(pwt_lk_start "$1")"; [ -n "$pwt_lk_s" ] && [ "$pwt_lk_s" != "$2" ]; }
+# $1=pid → 0 only when ps READ that process's name and arguments and they are not claude.
+# An unreadable name is not "not claude" (a node-run claude is told apart only by its args).
+pwt_lk_not_claude() { pwt_lk_is_claude "$1" && return 1; [ -n "$pwt_lk_c" ] && [ -n "$pwt_lk_a" ]; }
+# $1=sid $2=answer → 0 when the answer lists that session (8-char prefix, as the janitor)
+pwt_lk_lists() { printf '%s\n' "$2" | awk -v s="$1" 'substr($0,1,8)==substr(s,1,8){f=1} END{exit !f}'; }
+
+PWT_LK_SID="${CLAUDE_CODE_SESSION_ID:-}"
+PWT_LK_PID=""; PWT_LK_KIND="parent"; PWT_LK_P="$PPID"; PWT_LK_N=0
+# The lead is this shell's parent: the Bash tool runs each call in a direct child of the
+# lead (its $PPID is CLAUDE_PID). One more hop is taken only when that parent is a plain
+# shell (the block ran in a nested bash or zsh), and never a third: a process higher up
+# (a bg pty host, the bg daemon, a terminal, tmux) hosts many leads, and recording it
+# would give two leads one owner. A hop is the lead when it is CLAUDE_PID (Claude Code
+# exports it to its tool shells; it also finds a renamed binary, and it is only matched
+# against these hops, never taken on its own) or a claude CLI by name, a
+# .../claude/versions/<ver> build included. Anything else ends the walk: kind=parent, $PPID.
+while [ "$PWT_LK_N" -lt 2 ] && [ "${PWT_LK_P:-0}" -gt 1 ] 2>/dev/null; do
+  if [ "$PWT_LK_P" = "${CLAUDE_PID:-x}" ] || pwt_lk_is_claude "$PWT_LK_P"; then
+    PWT_LK_PID="$PWT_LK_P"; PWT_LK_KIND="claude"; break
+  fi
+  pwt_lk_is_shell "$PWT_LK_P" || break
+  PWT_LK_P="$(ps -o ppid= -p "$PWT_LK_P" 2>/dev/null | tr -d ' ')"
+  PWT_LK_N=$((PWT_LK_N + 1))
+done
+[ -n "$PWT_LK_PID" ] || PWT_LK_PID="$PPID"
+PWT_LK_START="$(pwt_lk_start "$PWT_LK_PID")"
+PWT_LK_NOW="$(date +%s)"
+PWT_LK_BOUND_H="${PWT_WORKFLOW_LOCK_STALE_HOURS:-${PWT_GOAL_STALE_HOURS:-24}}"
+case "$PWT_LK_BOUND_H" in ''|*[!0-9]*) PWT_LK_BOUND_H=24 ;; esac
+
+PWT_LK_ACT="acquire"; PWT_LK_WHY=""; pwt_lk_s="-"; pwt_lk_c="-"; pwt_lk_a="-"
 if [ -d "$WORKFLOW_LOCK_DIR" ]; then
-  STALE_PID=$(cat "$WORKFLOW_LOCK_DIR/pid" 2>/dev/null || echo "")
-  if [ -n "$STALE_PID" ] && ! kill -0 "$STALE_PID" 2>/dev/null; then
-    echo "⚠ stale workflow lock from dead PID $STALE_PID — reclaiming"
-    rm -rf "$WORKFLOW_LOCK_DIR"
+  O_SID="$(pwt_lk_field session)"; O_PID="$(pwt_lk_field pid)"; O_START="$(pwt_lk_field start)"
+  O_KIND="$(pwt_lk_field kind)"; O_HB="$(pwt_lk_field heartbeat)"
+  O_STATE="$(cat "$WORKFLOW_LOCK_DIR/state" 2>/dev/null)"
+  if [ -z "$O_PID" ]; then O_PID="$(cat "$WORKFLOW_LOCK_DIR/pid" 2>/dev/null)"; O_KIND="legacy"; fi
+  # Only a decimal pid above 1 names one process (`kill -0 0` signals this process group,
+  # `kill -0 -1` every process of this user, and pid 1 is launchd). No pid arm decides any
+  # other value: it proves nothing either way, as the janitor reads it too.
+  PWT_LK_OK=1; case "$O_PID" in ''|0*|1|*[!0-9]*) PWT_LK_OK=0 ;; esac
+  PWT_LK_ACT="conflict"
+  if [ -n "$PWT_LK_SID" ] && [ "$O_SID" = "$PWT_LK_SID" ]; then
+    PWT_LK_ACT="reenter"                              # same session: --resume / --ship-only
+  elif [ "$O_KIND" = "claude" ] && [ "$PWT_LK_KIND" = "claude" ] && [ "$O_PID" = "$PWT_LK_PID" ] \
+       && { [ -z "$O_START" ] || [ "$O_START" = "$PWT_LK_START" ]; }; then
+    PWT_LK_ACT="reenter"                              # same claude process, whatever its session id
+  elif [ "$O_STATE" = "released" ]; then
+    PWT_LK_ACT="reclaim"; PWT_LK_WHY="its run reached retro-complete"
+  elif [ "$PWT_LK_OK" = 1 ] && ! kill -0 "$O_PID" 2>/dev/null \
+       && [ -z "$(ps -o pid= -p "$O_PID" 2>/dev/null)" ]; then
+    PWT_LK_ACT="reclaim"; PWT_LK_WHY="owner pid $O_PID is gone"
+  elif [ "$PWT_LK_OK" = 1 ] && [ -n "$O_START" ] && pwt_lk_reused "$O_PID" "$O_START"; then
+    PWT_LK_ACT="reclaim"; PWT_LK_WHY="pid $O_PID now belongs to a process that started after the owner"
+  elif [ "$PWT_LK_OK" = 1 ] && [ -z "$O_START" ] && [ "$O_KIND" = "claude" ] && pwt_lk_not_claude "$O_PID"; then
+    PWT_LK_ACT="reclaim"; PWT_LK_WHY="pid $O_PID is no longer a claude process"
+  elif [ -n "$O_SID" ] && [ "${O_HB:-x}" -gt 0 ] 2>/dev/null \
+       && [ $((PWT_LK_NOW - O_HB)) -ge $((PWT_LK_BOUND_H * 3600)) ]; then
+    # No stage for longer than the bound, owner process still up: ask the canonical
+    # live-session oracle about the owner SESSION, twice. Each answer must list THIS
+    # session (an answer that misses the asker is not trusted) and neither may list the
+    # owner. It fails CLOSED: any doubt keeps the lock.
+    PWT_LK_Q=0
+    [ -n "$PWT_LK_SID" ] || PWT_LK_WHY="older than ${PWT_LK_BOUND_H}h, but this session has no id to check the live-session answer with"
+    while [ -z "$PWT_LK_WHY" ] && [ "$PWT_LK_Q" -lt 2 ]; do
+      PWT_LK_Q=$((PWT_LK_Q + 1))
+      PWT_LK_LIVE="$(.claude/scripts/pwt-live-session-sids.sh 2>/dev/null || echo __QUERY_FAILED__)"
+      if printf '%s\n' "$PWT_LK_LIVE" | grep -qx '__QUERY_FAILED__'; then
+        PWT_LK_WHY="older than ${PWT_LK_BOUND_H}h, but the live-session query failed"
+      elif ! pwt_lk_lists "$PWT_LK_SID" "$PWT_LK_LIVE"; then
+        PWT_LK_WHY="older than ${PWT_LK_BOUND_H}h, but the live-session answer does not list this session"
+      elif pwt_lk_lists "$O_SID" "$PWT_LK_LIVE"; then
+        PWT_LK_WHY="older than ${PWT_LK_BOUND_H}h, but its session is still live"
+      fi
+    done
+    if [ -z "$PWT_LK_WHY" ]; then
+      PWT_LK_ACT="reclaim"; PWT_LK_WHY="session $O_SID is not live (asked twice) and the lock is older than ${PWT_LK_BOUND_H}h"
+    fi
+  fi
+  if [ "$PWT_LK_ACT" = "conflict" ] && [ "$PWT_LK_OK" = 0 ] && [ -z "$PWT_LK_WHY" ]; then
+    PWT_LK_WHY="owner pid '$O_PID' is not a usable process id, so it cannot be shown to be gone"
+  elif [ "$PWT_LK_ACT" = "conflict" ] && [ -z "$PWT_LK_WHY" ] && [ -z "$pwt_lk_s" ]; then
+    PWT_LK_WHY="ps could not read the start time of pid $O_PID, so a reused pid cannot be shown"
+  elif [ "$PWT_LK_ACT" = "conflict" ] && [ -z "$PWT_LK_WHY" ] && { [ -z "$pwt_lk_c" ] || [ -z "$pwt_lk_a" ]; }; then
+    PWT_LK_WHY="ps could not read the name of pid $O_PID, so it cannot be shown to be something other than claude"
   fi
 fi
 
-if ! mkdir "$WORKFLOW_LOCK_DIR" 2>/dev/null; then
-  OWNER_PID=$(cat "$WORKFLOW_LOCK_DIR/pid" 2>/dev/null || echo "unknown")
-  echo "✗ another /plan-w-team session is active on SLUG=$SLUG (PID $OWNER_PID)"
-  echo "  if that session is dead, run: rm -rf $WORKFLOW_LOCK_DIR"
-  exit 1
-fi
-echo "$$" > "$WORKFLOW_LOCK_DIR/pid"
-
-# Chain the release trap so it does NOT clobber any later EXIT handlers.
-# (See shared/shell-safety.md for the trap-chain rationale.)
-EXISTING_TRAP=$(trap -p EXIT | sed -E "s/^trap -- '(.*)' EXIT$/\\1/")
-trap "${EXISTING_TRAP:+${EXISTING_TRAP}; }rm -rf \"$WORKFLOW_LOCK_DIR\"" EXIT
+case "$PWT_LK_ACT" in
+  conflict)
+    echo "✗ another /plan-w-team session is active on SLUG=$SLUG (session ${O_SID:-unknown}, pid ${O_PID:-unknown}${PWT_LK_WHY:+; $PWT_LK_WHY})"
+    echo "  only that session re-enters this lock; if it is really gone, delete $WORKFLOW_LOCK_DIR"
+    exit 1 ;;
+  reclaim) echo "⚠ reclaiming the workflow lock on SLUG=$SLUG: $PWT_LK_WHY" ;;
+  acquire)
+    if ! mkdir "$WORKFLOW_LOCK_DIR" 2>/dev/null; then
+      echo "✗ another /plan-w-team session is active on SLUG=$SLUG (it took the lock first)"
+      echo "  if that session is really gone, delete $WORKFLOW_LOCK_DIR"
+      exit 1
+    fi ;;
+esac
+printf '%s\n' "$$" >| "$WORKFLOW_LOCK_DIR/pid"   # legacy field for pwt-status/run-state: this call's shell
+printf 'session=%s\npid=%s\nstart=%s\nkind=%s\nheartbeat=%s\n' \
+  "$PWT_LK_SID" "$PWT_LK_PID" "$PWT_LK_START" "$PWT_LK_KIND" "$PWT_LK_NOW" >| "$WORKFLOW_LOCK_DIR/owner"
+printf 'active\n' >| "$WORKFLOW_LOCK_DIR/state"
+echo "✓ workflow lock on SLUG=$SLUG: $PWT_LK_ACT (session ${PWT_LK_SID:-none}, $PWT_LK_KIND pid $PWT_LK_PID)"
 ```
 
 **Why per-SLUG and not global**: Two features can legitimately run in parallel (different specs, different worktrees). What must NOT race is two sessions both writing `plan-w-team-scope-lock-$SLUG.json`, `plan-w-team-retro-$SLUG.json`, etc. — the SLUG keying provides exclusivity per-feature.
 
 **Why mkdir and not flock**: macOS lacks `flock(1)`. `mkdir` is atomic on every POSIX filesystem and survives compaction. Same pattern as `plan-w-team-push.lock` in Step 5 and `plan-w-team-friction-log.lock` in Step 8.
 
-**Stale-lock recovery**: If a previous session crashed without releasing, the dir is reclaimed automatically when its owner PID is no longer alive. Manual override is the documented escape hatch in the error message.
+**Owner record**: `owner` holds `session=` (the lead's `CLAUDE_CODE_SESSION_ID`), `pid=` (the lead: this shell's parent, or its grandparent when the parent is a plain shell, whichever is `CLAUDE_PID` or a `claude` CLI by name, a `.../claude/versions/<ver>` build included; otherwise `$PPID` with `kind=parent`), `start=` (that process's start time, which tells a reused pid apart), `kind=` and `heartbeat=` (epoch of the last acquire or re-entry, refreshed by each stage emission the owner session makes through `plan-w-team-surface-status.sh`). `state` is `active`, or `released` once `plan-w-team-surface-status.sh <slug> retro-complete` emits `workflow_lock="done"`. That release, like the heartbeat, is written only by the owner (the same session id, or the same `claude` process by `CLAUDE_PID` and start time; an owner with no `session=` is released by anyone), so a retro-complete from another session never releases a live run's lock. `pid` keeps its old meaning, the shell that ran this block, because `pwt-status.sh` and `plan-w-team-run-state.sh` read it. It is not an ownership signal: a durable pid there would make the run-state router classify the lead's own run as `live-now` and stand down.
 
-**Resume contract**: `--resume` and `--ship-only` must reuse the same SLUG and re-acquire the lock here. If the lock is held by a different live PID, that's a real conflict — surface it; don't silently overwrite.
+**Why the owner walk stops after two hops**: the Bash tool runs every call in a direct child of the lead (the tool shell's `$PPID` is `CLAUDE_PID`), so the lead is `$PPID` when this block runs in the tool shell, and `$PPID`'s parent when it runs in one nested `bash` or `zsh`. The walk takes that second hop only through a plain shell, and never a third. Any process above a lead can be shared: a bg session (`~/.local/share/claude/versions/<ver>`, or `claude bg-spare`) runs under a bg pty host (`.../ClaudeCode.app/Contents/MacOS/claude`) under the bg daemon, and interactive leads share a terminal or tmux. A walk that climbed to the first `claude` it met recorded that shared host for every lead under it (before the versions build was recognised by name, a bg lead with no `CLAUDE_PID` did exactly that), and the second lead then re-entered the first one's lock. An unrecognised parent that is not a shell (a renamed binary, a wrapper) ends the walk, and is recorded as `kind=parent`.
+
+**Why there is no EXIT trap**: the Bash tool gives every call a fresh shell, so a release trap fired when this block's call returned. The lock existed only during the pre-flight call, every `--resume` saw a dead `$$` and "reclaimed", and `workflow_lock` read `missing` at retro-complete. The lock now lives for the run.
+
+**Re-entry, reclaim, conflict**:
+
+- **Re-enter** (refresh `owner`, `state` back to `active`): the same session id, or, for a `kind=claude` owner, the same `claude` process (same pid and start time) under any session id. `/clear` and `/resume` give the lead a new session id in the same process. `--resume`, `--ship-only` and a resume by session UUID come back in this way.
+- **Reclaim** (take over in place): `state=released`; the owner pid, a decimal above 1, is gone (`kill -0` fails and `ps` does not list it); the owner pid now belongs to a process that started after the owner (pid reuse; an owner record without `start=` falls back to "a `kind=claude` pid that is no longer claude"); or no stage has refreshed the heartbeat for `PWT_WORKFLOW_LOCK_STALE_HOURS` (default `PWT_GOAL_STALE_HOURS`, else 24) and `pwt-live-session-sids.sh`, asked twice, lists this session both times and the owner session neither time. The oracle is consulted only past that bound, because `claude agents --json` cannot see Agent-tool subagents, lists only busy or idle sessions (one parked at a permission prompt reads as not live), and sometimes answers empty. An answer that does not list the asking session is not trusted. Both pid-reuse arms decide only on a reading `ps` actually gave: an empty start time, or an empty name or argument list (`ps` failed, or the process left between two calls), proves nothing, so it never reclaims a live owner's lock. The janitor reads it the same way.
+- **Conflict** (exit 1) in every other case, including an aged lock whose liveness query failed, whose answer left out this session, or whose session is live, an aged lock checked by a lead with no session id, a live owner pid whose start time or name `ps` cannot read (the message says which), and an owner pid that is not a decimal above 1 (empty, `0`, negative, `1`, or not a number; `kill -0 0` and `kill -0 -1` succeed, so such a pid would read as alive, and nothing about it shows the owner gone, which is how the janitor reads it too): uncertainty keeps the lock. The message names the owner session and pid. The manual override is deleting the lock dir.
+- A pre-row-191 lock (only `pid`) is reclaimed exactly as before, when that pid is dead.
+- **`kind=parent` holds while that process lives, and only its own session re-enters it.** When neither hop is recognised (a renamed binary without `CLAUDE_PID`, or a parent that is not a plain shell), `pid=` is `$PPID`. From the Bash tool that is the lead process itself, since the tool shell is its direct child, and it lives as long as the session: every other session gets a conflict until it exits and a reclaim ("owner pid … is gone") after, and the janitor counts the lock as held by a live owner. A `kind=parent` owner is never re-entered by pid and start time, because an unidentified parent can host more than one lead's shells (a job runner, an SDK host), so the same pid does not prove the same lead: the owner re-enters by session id only. After `/clear` (a new session id in the same process) the lead therefore gets a conflict against its own lock; the override is deleting the lock dir. `plan-w-team-surface-status.sh` (heartbeat and release) and `plan-w-team-fleet-writer.sh` (subagent attribution) match such an owner by session id only, too. Only when this block runs in a nested shell under an unrecognised lead is `pid=` that call's tool shell, which exits with the call; the next acquire from another session then reclaims.
+- **In-process agents are the lead, as far as the lock can tell.** An Agent-tool subagent or a workflow agent runs inside the lead's `claude` process: its tool shells carry the lead's `CLAUDE_CODE_SESSION_ID` and `CLAUDE_PID` (with `CLAUDE_CODE_CHILD_SESSION=1`, and `CLAUDE_PID` is their `$PPID`). So when two of them run this block on one SLUG, both re-enter; the lock does not keep them apart. Give each in-process agent that runs a pipeline its own SLUG. Separate sessions are unaffected — a `claude --bg` worker, a `--worker-only` lane, or a second terminal is its own process with its own session id, and it gets a conflict as described above.
+
+**Resume contract**: `--resume` and `--ship-only` must reuse the same SLUG and re-acquire the lock by running this block from the same lead session, which re-enters rather than reclaims. A different live session is a real conflict: surface it, and don't silently overwrite it. Residual: a reclaim is an in-place takeover, so two sessions reclaiming the same dead lock in the same instant can both proceed. The old `rm`+`mkdir` reclaim had the same window.
 
 ### Pre-Flight: Recursive Follow-Ups Carry-Forward (surfacing)
 
@@ -768,9 +919,9 @@ Split model tiers by cognitive demand to conserve daily allowance. Builder agent
 > - **Fable is retired everywhere.** The design agents (`system-architect`, `ui-designer`, `style-theme-expert`) and the spec consult pin `claude-opus-5-5`. The consult keeps the name `fable-spec-consult`: renaming a synced agent is a retired-path deletion in every consumer, a governance-reviewed one-way door, for a cosmetic gain. `plan-w-team-fable-guard.sh` SKIPs both kinds with reason `fable-retired-v9`; its budget, cap and ledger stay dormant behind `PLAN_W_TEAM_FABLE_REENABLE=1` so the trial can be reversed for one run without a release. The governor's design tier defaults to and accepts `claude-opus-5-5` / `claude-sonnet-5` / `claude-haiku-4-5`, and refuses a Fable id.
 > - **Builders are pinned again.** `team/builder` and the Hands specialists (`react-typescript-specialist`, `rust-backend-specialist`) pin `claude-sonnet-5`. `team/builder-opus`, `silent-failure-hunter`, `test-gap-analyzer` and `security-gap-analyzer` pin `claude-opus-5-5`. No agent carries `model: inherit` any more, so the v6 follow-the-lane mechanism is retired for subagents: an inheriting builder in an Opus 5.5 lane would have run Opus 5.5 on medium-thinking work. The bg session model is still the consumer's call through `PWT_PRIMARY_MODEL`.
 > - **Effort: `high`.** Every pipeline effort pin (the builders, the judges, the supervisor, `silent-failure-hunter`, the spec consult) and the bg `--effort` default (`PWT_BG_EFFORT`, else `CLAUDE_CODE_EFFORT_LEVEL`, else `high`) drop from v8's `xhigh` to `high`. That is still one step above Opus 5.5's API default (`medium`). The operator's interactive sessions are theirs to set (ultracode); the synced settings snapshot ships `effortLevel: high` plus `modelSettings.claude-opus-5-5.effortLevel: high`.
-> - **Fallback chain: Opus 5.5 → Opus 4.8 → Sonnet 5.** `pwt_fallback_model` resolves every bg spawn/resume `--fallback-model` from the final primary: `claude-opus-5-5` → `claude-opus-4-8,claude-sonnet-5` (the fleet chain, cleanscale #6254); any other primary → itself. Every id — the primary (`pwt_primary_model`) and each fallback entry — is matched after stripping whitespace and non-ASCII bytes and lower-casing (the CLI trims and lower-cases alias names the same way), and is refused if it is Fable in any form, exactly `claude-opus-5`/`claude-opus-5[…]`, or the CLI-version-dependent bare `opus`. A refused `PWT_PRIMARY_MODEL` counts as unset (one warning): the governed `intelligent` tier applies when a governor manifest does, else `claude-opus-5-5`. An explicit fallback list with any refused entry falls back to the default chain (one warning); empty, primary-equal and duplicate entries are dropped. An id that passes keeps its own case — only surrounding whitespace is trimmed — so case-sensitive gateway or proxy model names work. Opus 4.8 comes back only as an availability rung: the v2/v8 "previous generation is strictly dominated" argument compares two models that are both up, and a fallback fires only when 5.5 is overloaded or unavailable (never on a rate limit). The governor's `intelligent` tier still refuses `claude-opus-4-8` as a primary. `fallbackModel` in settings and `--fallback-model` both take the list; the flag outranks the setting.
+> - **Fallback chain: Opus 5.5 → Opus 4.8 → Sonnet 5.** `pwt_fallback_model` resolves every bg spawn/resume `--fallback-model` from the final primary: `claude-opus-5-5` → `claude-opus-4-8,claude-sonnet-5` (the fleet chain, cleanscale #6254); any other primary → itself, including a lead already on `claude-opus-4-8`, which stays there and never steps to Sonnet (R255: a fallback doing the lead's work is intelligent work). Every id — the primary (`pwt_primary_model`) and each fallback entry — is matched after stripping whitespace and non-ASCII bytes and lower-casing (the CLI trims and lower-cases alias names the same way), and is refused if it is Fable in any form, exactly `claude-opus-5`, or a CLI-version-dependent alias (`opus`, `opusplan`, `best`, `default`). The refusal matches a key with the provider wrapping stripped (a `[…]` suffix, Bedrock `us.anthropic.…-v1:0`, Vertex `…@<date>`; R255), so a Bedrock or Vertex spelling of a banned model is refused too; `sonnet` and `haiku` stay accepted. A refused `PWT_PRIMARY_MODEL` counts as unset (one warning): the governed `intelligent` tier applies when a governor manifest does, else `claude-opus-5-5`. An explicit fallback list with any refused entry falls back to the default chain (one warning); empty, primary-equal and duplicate entries are dropped. An id that passes keeps its own case — only surrounding whitespace is trimmed — so case-sensitive gateway or proxy model names work. Opus 4.8 comes back only as an availability rung: the v2/v8 "previous generation is strictly dominated" argument compares two models that are both up, and a fallback fires only when 5.5 is overloaded or unavailable (never on a rate limit). The governor's `intelligent` tier still refuses `claude-opus-4-8` as a primary. `fallbackModel` in settings and `--fallback-model` both take the list; the flag outranks the setting.
 > - **The unattended profile runs the lead model.** `operator-shell-setup.sh --unattended` used to pin the snapshot's fallback tier, written when the lead was Fable. Under v9 that would put an unattended host on Opus 4.8, so it now pins the lead (Opus 5.5) and drops the chain. Fresh operators are seeded with the whole chain.
-> - **Rate-limit step-down follows the chain.** Attempt 2 of `plan-w-team-rate-limit-resume.sh` injects `/model <the first pwt_fallback_model rung for the lead's current model>` — `claude-opus-4-8` for an Opus 5.5 lead. A lead with no lower rung, a lead model the transcript does not show, or a resolver the hook cannot load (`pwt-governor-lib.sh` missing or too old beside it) gets no `/model`, and the continue message says which of the three.
+> - **Rate-limit step-down follows the chain.** Attempt 2 of `plan-w-team-rate-limit-resume.sh` injects `/model <the first pwt_fallback_model rung for the lead's current model>` — `claude-opus-4-8` for an Opus 5.5 lead. A lead with no lower rung (an Opus 4.8 lead stays on 4.8), a lead model the transcript does not show, or a resolver the hook cannot load (`pwt-governor-lib.sh` missing or too old beside it) gets no `/model`, and the continue message says which of the three. The hook reads the lead's transcript from the StopFailure stdin `transcript_path`, else the CLI's own project key (every non-alphanumeric character → `-`, for the project path as given and as its realpath), else a session-id scan (R255).
 > - **Unchanged:** the exact-string Opus 5 ban; the Haiku mechanical tier; the alias rules (`opus` is never a pin or seam value); the Opus 5.5 behavioral deltas in the v8 note.
 
 ### How tier pinning works (IMPORTANT — read before editing Agent calls)

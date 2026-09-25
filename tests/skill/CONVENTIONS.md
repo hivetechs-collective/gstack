@@ -102,6 +102,45 @@ surface): shell integration tests (`*.test.sh`) under `.claude/scripts/`,
 `tests/version-uplift/`; and TypeScript analyzer tests (`*.test.ts`) under
 `.claude/scripts/` and `.claude/hooks/` — see "TypeScript test phase" below.
 
+**Shell-test interpreter.** Every `*.test.sh` runs under
+`${HOOK_BASH:-/bin/bash}` — macOS `/bin/bash` 3.2.57 by default — never the
+PATH `bash` and never its own `#!/usr/bin/env bash` shebang (follow-up row 193:
+a Homebrew 5.x PATH bash hid a 3.2 parse error in
+`pwt-goal-lane-settings.test.sh` and a `local -n` exit 2 in
+`plan-w-team-orchestrator-route.test.sh`). One run, one interpreter; a
+`HOOK_BASH` that is not executable is an environment failure (`SUITE_EXIT=2`),
+not a hundred red rows — checked before the bats phase starts, and only when the
+`.test.sh` phase will actually run (not under `SKILL_SKIP_SHELL_TESTS=1`, a
+single-file target, or a `--retest` list with no shell entry). The phase's
+header line names the interpreter and the `BASH_VERSION` it reports
+(`→ running shell integration tests … with interpreter /bin/bash (bash
+3.2.57(1)-release)`), so a suite log shows which bash ran — an exported
+`HOOK_BASH` is otherwise invisible. `cases/run-sh-hook-bash.bats` pins the
+interpreter choice (both `run_one_shell_test` branches and `--retest`), this
+preflight and its gating, and that header line. A test's own
+`bash <script>` children still resolve
+through PATH — use `"${HOOK_BASH:-/bin/bash}"` there when the child is what must
+hold under 3.2. So write every `.test.sh` 3.2-clean: no bash-4 builtins, a
+`(pattern)` leading paren on every `case` arm inside `$( )`, no heredoc inside
+`$( )` (move it into a function), and `${a[@]+"${a[@]}"}` for any array that can
+be empty under `set -u`. And never put a comma brace inside a QUOTED `$( )` that
+is an argument word: bash 3.2 skips a `$( )` during brace expansion only when it
+is unquoted, so in `ck "x" "$(f "{\"a\":1,\"b\":2}")" "0"` the `{…,…}` is
+exposed and the OUTER word splits in two — `f` runs twice on half-JSON and the
+assertion compares two unrelated values, a silent tautology (row 193:
+`pwt-approver.test.sh` AC4; earlier `damage-control-secret-content.test.sh`).
+The same split hits `local`/`export` arguments (silently keeping the last half),
+for-lists, `=( )` elements and `[ ]` operands; a plain `v="$(…)"` assignment,
+`[[ ]]` and here-strings are safe. Build the payload in a variable first —
+`P="{\"a\":1,\"b\":2}"; ck "x" "$(f "$P")" "0"` — and give an assertion helper
+an arity check so a split word fails instead of passing. No bats case covers
+this brace class; its one in-repo guard is the `ck` arity check in
+`pwt-approver.test.sh`, so review new `.test.sh` payloads for it by hand.
+`tests/skill/` is rsynced to every synced
+consumer (`sync-to-project.sh`), so this interpreter choice ships with it; a
+consumer whose `.test.sh` corpus is not yet 3.2-clean opts out with
+`HOOK_BASH=<bash>` (e.g. `HOOK_BASH=/opt/homebrew/bin/bash`).
+
 ### `cases/` vs `scenarios/` — when to put a test where
 
 - **`cases/<script>.bats`** — unit tests for one shell script under

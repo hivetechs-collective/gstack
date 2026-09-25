@@ -410,14 +410,64 @@ trap '__tg_on_signal HUP 129' HUP
 # ignore), and no shell below can trap a signal ignored on entry. Without this, a
 # corpus case that interrupts its own child, or a runner's own Ctrl-C handler, would
 # behave differently under the wrapper than under a plain `make test-skill`. perl is
-# the exec shim (macOS and Debian's base system both ship it); without perl the
-# suite runs with both ignored, and this script's trap still reaps it on INT.
+# the exec shim (macOS and Debian's base system both ship it). On a host without
+# perl, python3 does the same two resets and then os.execvp (R255 195(4)). With
+# neither, the suite runs with both ignored, as it did before the shim; the wrapper
+# says so once on stderr, and this script's trap still reaps the suite on INT.
+#
+# python3 must also undo what CPython itself changes, or the suite inherits it
+# through the exec, where the perl shim and a plain `sh -c` change nothing:
+# - CPython ignores SIGPIPE and SIGXFSZ at startup, and exec keeps an ignored
+#   disposition. A suite with SIGPIPE ignored sees `yes | head -1` exit 1 with
+#   "Broken pipe" instead of 141, and a shell loop writing into `head` never ends.
+#   The shim sets both back to their defaults.
+# - Under the C/POSIX locale CPython coerces LC_CTYPE (PEP 538) and exports it,
+#   so everything it execs runs with LC_CTYPE=C.UTF-8. PYTHONCOERCECLOCALE=0 turns
+#   that off, and the shim then puts the caller's own PYTHONCOERCECLOCALE back
+#   (argv[1] says whether it was set, argv[2] holds its value).
+# macOS's /usr/bin/python3 adds variables of its own (SDKROOT, …), but macOS ships
+# perl, so it never gets here.
 # shellcheck disable=SC2016  # perl code, expanded by perl
 __TG_SIGDFL_PL='$SIG{INT} = $SIG{QUIT} = "DEFAULT"; exec { $ARGV[0] } @ARGV or exit 127;'
-__tg_exec_suite() {  # __tg_exec_suite <command> — (the job's subshell only) exec `sh -c`
+__TG_SIGDFL_PY='import os, signal, sys
+for n in ("SIGINT", "SIGQUIT", "SIGPIPE", "SIGXFSZ"):
+    if hasattr(signal, n):
+        signal.signal(getattr(signal, n), signal.SIG_DFL)
+if sys.argv[1]:
+    os.environ["PYTHONCOERCECLOCALE"] = sys.argv[2]
+else:
+    os.environ.pop("PYTHONCOERCECLOCALE", None)
+try:
+    os.execvp(sys.argv[3], sys.argv[3:])
+except OSError:
+    sys.exit(127)'
+__TG_SIGDFL_SHIM=""   # perl | python3 | none: chosen once, in this shell, by __tg_pick_shim
+# __tg_pick_shim — choose the exec shim BEFORE the job starts, so the job's
+# subshell (whose stderr is the suite log) never has to decide, and the "neither"
+# warning reaches the operator once. python3 is taken only when it actually runs:
+# macOS ships a /usr/bin/python3 stub that exits non-zero without the developer
+# tools, and exec'ing that would lose the whole suite.
+__tg_pick_shim() {
+  [ -z "$__TG_SIGDFL_SHIM" ] || return 0
   if command -v perl >/dev/null 2>&1; then
-    exec perl -e "$__TG_SIGDFL_PL" -- sh -c "$1"
+    __TG_SIGDFL_SHIM="perl"
+  elif command -v python3 >/dev/null 2>&1 && python3 -c 'import os, signal, sys' >/dev/null 2>&1; then
+    __TG_SIGDFL_SHIM="python3"
+  else
+    __TG_SIGDFL_SHIM="none"
+    echo "⚠ test-green: neither perl nor python3 is available — the suite runs with SIGINT and SIGQUIT ignored, so a case that traps them behaves differently than under a plain make test-skill" >&2
   fi
+  return 0
+}
+__tg_exec_suite() {  # __tg_exec_suite <command> — (the job's subshell only) exec `sh -c`
+  # python3's arguments expand BEFORE its prefix assignment applies, on purpose:
+  # they carry the caller's PYTHONCOERCECLOCALE for the shim to restore.
+  # shellcheck disable=SC2097,SC2098
+  case "$__TG_SIGDFL_SHIM" in
+    perl)    exec perl -e "$__TG_SIGDFL_PL" -- sh -c "$1" ;;
+    python3) PYTHONCOERCECLOCALE=0 exec python3 -c "$__TG_SIGDFL_PY" \
+               "${PYTHONCOERCECLOCALE+1}" "${PYTHONCOERCECLOCALE-}" sh -c "$1" ;;
+  esac
   exec sh -c "$1"
 }
 
@@ -436,6 +486,7 @@ __tg_run() {
     fi
     return $?
   fi
+  __tg_pick_shim
   if [ -n "$list" ]; then
     ( cd "$CUR_ROOT" && PWT_RETEST_LIST="$list" __tg_exec_suite "$cmd" ) < /dev/null > "$log" 2>&1 &
   else
@@ -801,6 +852,8 @@ SMANIFEST_PATH_OUT="$STATE_DIR/${STATE_FILE_PREFIX}-${SLUG}.subject-manifest"
 if [ -z "$LOG_IN" ] && [ -n "$TG_TMP" ]; then
   __tg_manifest "$CUR_ROOT" > "$TG_TMP/before.man" 2>/dev/null || : > "$TG_TMP/before.man"
   pwt_rt_subject_manifest "$CUR_ROOT" worktree > "$TG_TMP/before.sman" 2>/dev/null || : > "$TG_TMP/before.sman"
+  # The tracked paths alone: beside before.sman it names the untracked files (R255 194(5)).
+  pwt_rt_subject_manifest "$CUR_ROOT" tracked > "$TG_TMP/before.stman" 2>/dev/null || : > "$TG_TMP/before.stman"
 fi
 
 # ─── RUN (or adopt) THE LOG ─────────────────────────────────────────────────
@@ -886,6 +939,22 @@ if [ -z "$LOG_IN" ]; then
     else
       echo "  test-green: unwatched .claude/ or tests/ files changed while the suite ran — no subject_digest, so this verdict cannot be a retest base:" >&2
       pwt_rt_delta "$TG_TMP/before.sman" "$TG_TMP/after.sman" 2>/dev/null | head -5 | sed 's/^/    /' >&2
+    fi
+  fi
+  # Untracked subject files (R255 194(5)). subject_digest also hashes every
+  # untracked, non-ignored .claude/ or tests/ file of this tree, and no commit holds
+  # one, so a push of this tree without them gets its own post-push confirm run.
+  # That run is kept on purpose: the suite may have needed any of them, and only a
+  # run of the pushed tree shows it is green without them (pwt_rt_untracked in the
+  # retest lib says why no digest skips it). Naming them here, on a green run, lets
+  # the operator commit them, or git-ignore a local note, before pushing. It is a
+  # notice only: a list that cannot be taken changes nothing in the verdict.
+  if [ "$GREEN" = "true" ] && [ -n "$TREE_DIGEST" ] \
+     && [ -s "$TG_TMP/before.stman" ] && [ -s "$TG_TMP/before.sman" ]; then
+    TG_UNT="$(pwt_rt_untracked "$TG_TMP/before.sman" "$TG_TMP/before.stman" 2>/dev/null)" || TG_UNT=""
+    if [ -n "$TG_UNT" ]; then
+      echo "  test-green: $(printf '%s\n' "$TG_UNT" | wc -l | tr -d ' ') untracked .claude/ or tests/ file(s) were in the tested tree. A commit holds none, so a push without them gets its own post-push confirm; commit them, or git-ignore a local note:" >&2
+      printf '%s\n' "$TG_UNT" | head -5 | sed 's/^/    /' >&2
     fi
   fi
 fi

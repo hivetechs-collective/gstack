@@ -24,6 +24,12 @@ export PLAN_W_TEAM_HOOK_TEST_MODE=1
 
 HOOK="$(cd "$(dirname "$0")/.." && pwd)/plan-w-team-route-prompt.sh"
 [ -x "$HOOK" ] || { echo "FAIL: hook not executable: $HOOK"; exit 1; }
+# Every case starts the hook under ${HOOK_BASH:-/bin/bash}, not the PATH bash (same
+# as plan-w-team-route-prompt-classifier.test.sh): the hook must hold under macOS
+# /bin/bash 3.2, where its classifier block used to be a parse error (a heredoc
+# inside $( ), follow-up row 193) that exited 2 on every trigger match. On a host
+# whose PATH bash is Homebrew 5.x a bare `bash "$HOOK"` never ran the 3.2 parser.
+HOOK_INTERP="${HOOK_BASH:-/bin/bash}"
 
 PASS=0
 FAIL=0
@@ -73,7 +79,7 @@ run_case() {
     local name="$1" expect_exit="$2" expect_invoke="$3" prompt_json="$4"
     setup_sandbox
     local out exit_code
-    out=$(printf '%s' "$prompt_json" | bash "$HOOK" 2>/dev/null)
+    out=$(printf '%s' "$prompt_json" | "$HOOK_INTERP" "$HOOK" 2>/dev/null)
     exit_code=$?
     local actual_invoke="no"
     if shim_was_invoked; then
@@ -153,7 +159,7 @@ run_case "in-session opt-in suppresses launch" 0 no \
 # ─── Sentinel file kills the hook ────────────────────────────────────────────
 setup_sandbox
 touch "$SANDBOX/.claude/.pwt-route-disabled"
-out=$(printf '%s' '{"prompt":"use /plan-w-team to ship X","session_id":"x"}' | bash "$HOOK" 2>/dev/null)
+out=$(printf '%s' '{"prompt":"use /plan-w-team to ship X","session_id":"x"}' | "$HOOK_INTERP" "$HOOK" 2>/dev/null)
 exit_code=$?
 if [ "$exit_code" = "0" ] && ! shim_was_invoked; then
     PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "sentinel file disables hook"
@@ -166,7 +172,7 @@ teardown_sandbox
 # ─── Env var kills the hook ──────────────────────────────────────────────────
 setup_sandbox
 export PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1
-out=$(printf '%s' '{"prompt":"use /plan-w-team to ship X","session_id":"x"}' | bash "$HOOK" 2>/dev/null)
+out=$(printf '%s' '{"prompt":"use /plan-w-team to ship X","session_id":"x"}' | "$HOOK_INTERP" "$HOOK" 2>/dev/null)
 exit_code=$?
 if [ "$exit_code" = "0" ] && ! shim_was_invoked; then
     PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "env var disables hook"
@@ -180,7 +186,7 @@ teardown_sandbox
 # ─── Missing pwt-goal.sh fails open ──────────────────────────────────────────
 setup_sandbox
 rm -f "$SANDBOX/.claude/scripts/pwt-goal.sh"
-out=$(printf '%s' '{"prompt":"use /plan-w-team to ship X","session_id":"x"}' | bash "$HOOK" 2>/dev/null)
+out=$(printf '%s' '{"prompt":"use /plan-w-team to ship X","session_id":"x"}' | "$HOOK_INTERP" "$HOOK" 2>/dev/null)
 exit_code=$?
 if [ "$exit_code" = "0" ] && ! shim_was_invoked; then
     PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "missing pwt-goal.sh fails open"
@@ -203,7 +209,7 @@ echo "Some random output that isn't a worker_sid"
 exit 0
 BROKENSHIM
 chmod +x "$SANDBOX/.claude/scripts/pwt-goal.sh"
-out=$(printf '%s' '{"prompt":"use /plan-w-team to ship X","session_id":"x"}' | bash "$HOOK" 2>/dev/null)
+out=$(printf '%s' '{"prompt":"use /plan-w-team to ship X","session_id":"x"}' | "$HOOK_INTERP" "$HOOK" 2>/dev/null)
 exit_code=$?
 if [ "$exit_code" = "0" ] && [ -z "$out" ]; then
     PASS=$((PASS+1)); printf "  \033[32m✓\033[0m %s\n" "missing worker_sid fails open"
@@ -290,7 +296,7 @@ run_case "verbatim production task-notification cascade payload" 0 no \
 # AC3+AC4+AC5: the protocol must instruct the origin assistant on status block,
 # polling loop, and terminal block.
 setup_sandbox
-out=$(printf '%s' '{"prompt":"use /plan-w-team to verify protocol anchors","session_id":"abc12345"}' | bash "$HOOK" 2>/dev/null)
+out=$(printf '%s' '{"prompt":"use /plan-w-team to verify protocol anchors","session_id":"abc12345"}' | "$HOOK_INTERP" "$HOOK" 2>/dev/null)
 exit_code=$?
 proto_ok=$(echo "$out" | python3 -c "
 import json,sys
@@ -317,7 +323,7 @@ teardown_sandbox
 
 # ─── Worker SID is embedded in systemMessage too ─────────────────────────────
 setup_sandbox
-out=$(printf '%s' '{"prompt":"use /plan-w-team to verify session id parsing"}' | bash "$HOOK" 2>/dev/null)
+out=$(printf '%s' '{"prompt":"use /plan-w-team to verify session id parsing"}' | "$HOOK_INTERP" "$HOOK" 2>/dev/null)
 exit_code=$?
 sid_in_msg=$(echo "$out" | python3 -c "import json,sys; d=json.load(sys.stdin); m=d.get('systemMessage',''); print('deadbeef' if 'deadbeef' in m else '')" 2>/dev/null)
 if [ "$exit_code" = "0" ] && [ "$sid_in_msg" = "deadbeef" ]; then

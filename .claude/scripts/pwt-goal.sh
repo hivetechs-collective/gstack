@@ -2427,10 +2427,12 @@ if [ "$LAUNCH" = "1" ]; then
     #   pin above. It is RESOLVED from the final primary by pwt_fallback_model
     #   (pwt-governor-lib.sh): Opus 5.5 → the fleet chain
     #   claude-opus-4-8,claude-sonnet-5 (cleanscale #6254); any other primary →
-    #   itself. An explicit Fable or claude-opus-5 fallback is refused. Without
-    #   the lib the fallback is the primary itself. A Fable / claude-opus-5 /
-    #   bare-opus PWT_PRIMARY_MODEL is refused too (pwt_primary_model, one
-    #   warning) and counts as UNSET, so the governed tier or the default applies.
+    #   itself. An explicit fallback naming Fable or claude-opus-5 (in any
+    #   Bedrock/Vertex/[..] form) or a CLI-version-dependent alias (opus,
+    #   opusplan, best, default) is refused. Without the lib the fallback is the
+    #   primary itself. Such a PWT_PRIMARY_MODEL is refused too
+    #   (pwt_primary_model, one warning) and counts as UNSET, so the governed
+    #   tier or the default applies.
     #   Override via PWT_PRIMARY_MODEL / PWT_FALLBACK_MODEL. Threaded into both
     #   bg spawn sites below (worker + supervisor).
     if type pwt_primary_model >/dev/null 2>&1; then

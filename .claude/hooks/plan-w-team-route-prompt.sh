@@ -255,7 +255,14 @@ done
 # additionalContext block explaining the ambiguity and SKIPS the launch,
 # letting the origin assistant decide how to surface it.
 if command -v python3 >/dev/null 2>&1; then
-    CLASSIFIER_OUT=$(
+    # bash 3.2 (macOS /bin/bash): a heredoc INSIDE $( ) is scanned by 3.2's
+    # comsub paren/quote matcher. The unbalanced quote in is_inside_quote's
+    # docstring below made this whole if-block a 3.2 parse error ("unexpected
+    # EOF while looking for matching `)'"), so on a 3.2 host every prompt that
+    # matched a trigger died here with exit 2. The heredoc lives in a function
+    # body instead (read by the ordinary heredoc reader); $( ) only calls it.
+    # Same stdout, same exit status. Keep the heredoc OUT of the $( ).
+    _pwt_route_classify() {
         PWT_PROMPT="$PROMPT" PWT_MATCHED="$MATCHED_PATTERN" \
         python3 - <<'CLPY' 2>/dev/null
 import os, re, sys, json
@@ -375,7 +382,8 @@ def classify(prompt, matched):
 verdict, reason = classify(prompt, matched)
 print(verdict + "\t" + reason)
 CLPY
-    )
+    }
+    CLASSIFIER_OUT=$(_pwt_route_classify)
     CLASSIFIER_VERDICT=$(printf '%s' "$CLASSIFIER_OUT" | cut -f1)
     CLASSIFIER_REASON=$(printf '%s' "$CLASSIFIER_OUT" | cut -f2-)
 else

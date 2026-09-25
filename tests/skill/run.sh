@@ -49,11 +49,14 @@
 #   tests/skill/run.sh --list                 # print the corpus as `kind rel`, exit
 #   tests/skill/run.sh --retest <file>        # rerun ONLY the `kind rel` lines in
 #                                             # <file> (gate-owned; never archives)
+#   HOOK_BASH=/path/to/bash tests/skill/run.sh  # interpreter for every .test.sh
+#                                             # (default /bin/bash, macOS 3.2)
 #
 # Exit codes:
 #   0 — all tests passed
 #   1 — at least one test failed
-#   2 — bootstrap or environment failure (cannot run tests at all)
+#   2 — bootstrap or environment failure (cannot run tests at all; includes a
+#       HOOK_BASH that is not executable)
 
 set -euo pipefail
 
@@ -304,6 +307,37 @@ if [ "${#TEST_FILES[@]}" -eq 0 ] && [ "$RETEST_FLAG" != "1" ]; then
   __suite_exit 0
 fi
 
+# ── Shell-test interpreter (Phase 2) ─────────────────────────────────────────
+# Every .test.sh runs under ${HOOK_BASH:-/bin/bash}, NOT the PATH `bash`. Scripts
+# must run under macOS /bin/bash 3.2.57 (the mac-mini, and every hook whose shebang
+# is /bin/bash). A bare `bash` resolves to Homebrew 5.x on most dev hosts, which
+# hid real 3.2 failures (follow-up row 193): pwt-goal-lane-settings.test.sh died on a
+# 3.2 command-substitution parse error and plan-w-team-orchestrator-route.test.sh
+# exited 2 "bash 4.3+ required" -- both green here, red on /bin/bash. One run,
+# one interpreter (no doubled wall-clock); HOOK_BASH overrides it for a host
+# whose /bin/bash is not the target, the same knob the bats cases honour.
+# Scope: this fixes the interpreter of each .test.sh FILE. A test that shells
+# out with its own bare `bash <script>` still gets PATH bash for that child.
+SHELL_TEST_BASH="${HOOK_BASH:-/bin/bash}"
+# Checked HERE, before the bats phase, whenever Phase 2 will run (same predicate:
+# no single-file target, not skipped, at least one .test.sh to run). A missing
+# interpreter would fail EVERY shell test with 127 and bury the cause under a
+# hundred SUITE_FAILED rows; it is an environment failure, so say so -- in a
+# second, not after a 10-15 minute bats run whose verdict the exit would discard.
+__shell_phase_files=0
+if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ]; then
+  if [ "$RETEST_FLAG" = "1" ]; then
+    __shell_phase_files=${#RT_SHELL[@]}
+  else
+    __shell_phase_files="$(__discover_shell | grep -c . || true)"
+  fi
+fi
+if [ "${__shell_phase_files:-0}" -gt 0 ] && ! command -v "$SHELL_TEST_BASH" >/dev/null 2>&1; then
+  echo "✗ shell-test interpreter not executable: $SHELL_TEST_BASH" >&2
+  echo "  (HOOK_BASH=${HOOK_BASH:-<unset>}; point it at a bash to run the .test.sh phase)" >&2
+  __suite_exit 2
+fi
+
 # ── Run tests ────────────────────────────────────────────────────────────────
 mkdir -p "$RUNS_DIR"
 TIMESTAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
@@ -461,24 +495,32 @@ if [ -z "$TARGET" ] && [ "${SKILL_SKIP_SHELL_TESTS:-0}" != "1" ] && [ -n "$SHELL
     SHELL_OUT_LOG=$(mktemp)
     SHELL_OUT="$SHELL_OUT_LOG"
   fi
+  # Interpreter: $SHELL_TEST_BASH (${HOOK_BASH:-/bin/bash}, never the PATH `bash`),
+  # resolved and preflighted before the bats phase -- see "Shell-test interpreter".
   run_one_shell_test() {
     if [ -n "$TIMEOUT_BIN" ]; then
       env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE -u PLAN_W_TEAM_AUTO_APPROVE_PUSH \
           -u PLAN_W_TEAM_FORCE_SPAWN -u PLAN_W_TEAM_DISABLE_GOAL \
           PWT_DISABLE_SPAWN_LIVENESS_PROBE=1 \
           CLAUDE_PROJECT_DIR="$REPO_ROOT" \
-          "$TIMEOUT_BIN" "$SHELL_TEST_TIMEOUT" bash "$1" >"$SHELL_OUT" 2>&1
+          "$TIMEOUT_BIN" "$SHELL_TEST_TIMEOUT" "$SHELL_TEST_BASH" "$1" >"$SHELL_OUT" 2>&1
     else
       env -u PLAN_W_TEAM_DISABLE_PROMPT_ROUTE -u PLAN_W_TEAM_AUTO_APPROVE_PUSH \
           -u PLAN_W_TEAM_FORCE_SPAWN -u PLAN_W_TEAM_DISABLE_GOAL \
           PWT_DISABLE_SPAWN_LIVENESS_PROBE=1 \
           CLAUDE_PROJECT_DIR="$REPO_ROOT" \
-          bash "$1" >"$SHELL_OUT" 2>&1
+          "$SHELL_TEST_BASH" "$1" >"$SHELL_OUT" 2>&1
     fi
   }
 
+  # Name the interpreter and its BASH_VERSION on the header line. Which bash ran is
+  # the only observable effect of ${HOOK_BASH:-/bin/bash}: an exported HOOK_BASH
+  # silently trades the 3.2 guarantee for 5.x, and without this line a suite log
+  # (and a test-green verdict built on it) cannot tell the two runs apart. Asked of
+  # the interpreter itself, so a HOOK_BASH wrapper reports what it really execs.
+  SHELL_TEST_BASH_VERSION=$("$SHELL_TEST_BASH" -c 'echo $BASH_VERSION' 2>/dev/null) || SHELL_TEST_BASH_VERSION=""
   echo ""
-  echo "→ running shell integration tests under .claude/{scripts,hooks}/ + tests/version-uplift/"
+  echo "→ running shell integration tests under .claude/{scripts,hooks}/ + tests/version-uplift/ with interpreter $SHELL_TEST_BASH (bash ${SHELL_TEST_BASH_VERSION:-version unknown})"
 
   # ── State-leak guard: Phase-2 BEFORE snapshot (R6 extension, 1.48.0) ─────────
   # R6 originally bracketed only the bats phase, but the shell-test (.test.sh)

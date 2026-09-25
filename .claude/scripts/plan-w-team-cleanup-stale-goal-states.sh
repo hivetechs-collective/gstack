@@ -25,20 +25,37 @@
 #   Two safe reap classifications, BOTH keyed on the GOAL file (the manifest's
 #   `terminal_state` is null in production — `pwt-manifest.sh` only sets it via an
 #   env-passthrough no caller passes — so it is used ONLY for run_sid + age):
-#     (i)  ANCHORED NULL-ORPHAN — a goal/manifest/workflow-lock exists, the goal's
+#     (i)  ANCHORED NULL-ORPHAN — a goal/manifest/HELD workflow-lock exists, the goal's
 #          terminal_state is null, the family is aged ≥ PWT_GOAL_STALE_HOURS (24),
 #          and the owner SID is provably DEAD (fail-CLOSED on __QUERY_FAILED__ /
-#          no-SID / live SID). This is prong B's predicate, reused verbatim.
-#     (ii) HEADLESS — NO goal AND NO manifest AND NO `workflow-<slug>.lock` dir, and
+#          no-SID / live SID). This is prong B's predicate, reused verbatim. The owner
+#          SIDs are the goal's worker_sid and the manifest's run_sid; ANY live one keeps
+#          the family. Row 191: a HELD lock whose `owner` process is confirmed ALIVE
+#          (pid present, start= matching or unreadable) keeps the family before any
+#          oracle is asked — a legacy `pid`-only lock never does (that pid is the
+#          pre-flight call's own transient shell) — and
+#          a held lock's `owner` session= only ADDS keep evidence — it joins a SID set
+#          that already has a worker_sid/run_sid, and never makes an otherwise
+#          SID-less family (fail-closed keep) reapable on one oracle answer.
+#     (ii) HEADLESS — NO goal AND NO manifest AND NO HELD `workflow-<slug>.lock`, and
 #          the family is aged beyond the MUCH more conservative PWT_HEADLESS_STALE_HOURS
 #          (default 168h / 7 days). No SID exists to query liveness, so this arm has no
 #          per-run liveness check; the long age gate is its backstop. The absence of all
 #          three control artifacts is STRONG (not absolute) evidence of orphanhood: a
 #          live autonomous /goal or --launch run is always goal-anchored, and any run
 #          past Step 3 is manifest-anchored — but an INTERACTIVE run paused in Steps 0-2
-#          with PLAN_W_TEAM_DISABLE_GOAL=1 can transiently hold none (its workflow-lock
-#          is released by the pre-flight EXIT trap, its manifest is not written until
-#          Step 3). The 7-day gate closes that window: a family untouched for a week
+#          with PLAN_W_TEAM_DISABLE_GOAL=1 can hold none (its manifest is not written
+#          until Step 3, and its workflow lock counts only while HELD — see below. A
+#          `kind=parent` owner is normally the lead process itself (the Bash tool
+#          shell's parent) and holds while the lead lives; only one recorded from a
+#          nested shell under an unrecognised lead names that call's shell, which exits
+#          with the call). "Held" (row 191): the pre-flight keeps the lock dir for the
+#          whole run and retro-complete leaves it behind as `state=released`, so a lock
+#          DIR is no longer control state by itself. A released lock, or one whose owner
+#          process is confirmed gone (pid absent, or reused — its start time no longer
+#          matches `owner` start=), is treated as ABSENT, and the finished family ages
+#          out here exactly as it did when the old EXIT trap removed the dir.
+#          The 7-day gate closes that window: a family untouched for a week
 #          cannot be a session doing active work (a live run touches its artifacts), and
 #          the only members at risk are RECOVERABLE early-planning artifacts (scope-lock,
 #          ac-snapshot), never committed work.
@@ -59,7 +76,7 @@
 # REAPED:
 #   - SUCCESS  (pass 1)          — retro completed, goal file should already be gone
 #   - null     (pass 2, anchored)— ONLY when worker-dead AND aged (provable orphan)
-#   - headless (pass 2)          — no goal/manifest/workflow-lock AND aged
+#   - headless (pass 2)          — no goal/manifest/HELD workflow-lock AND aged
 #
 # Usage:
 #   plan-w-team-cleanup-stale-goal-states.sh                    # silent unless removals
@@ -236,6 +253,56 @@ __json_str_field() {  # $1=file $2=key → string value ("" if absent)
             | sed -E "s/.*\"${key}\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\1/" || echo "")
     fi
     printf '%s' "$v"
+}
+
+# ── workflow-lock hold state (recursive-followup row 191) ─────────────────────
+# Sets __LK_HELD (1 = the lock is control state), __LK_ALIVE (1 = HELD and its owner
+# process is confirmed ALIVE) and __LK_SID (the owner's session=, "" when absent or
+# not a plain id). Global-return form: no `$(…)` fork at the call.
+# HELD = the dir exists, `state` is not `released`, and the owner process is not
+# confirmed gone. The owner pid is `owner` pid=, else (a pre-row-191 lock with no
+# `owner`) the legacy `pid` file. A usable pid is a decimal above 1, as the pre-flight
+# reads it (`kill -0 0` / `kill -0 -1` succeed, pid 1 is launchd). No usable pid → cannot
+# prove gone → HELD (fail-closed) but NOT alive. Gone = kill -0 fails AND ps lists no such
+# pid, or `owner` start= is recorded and the live pid's start time differs (the pid was
+# reused). The start stamp is formatted exactly as the pre-flight writes it (UTC, C
+# locale, single-spaced).
+# ALIVE = HELD by an `owner` record (the lead's claude pid or the pre-flight's parent
+# pid) whose pid is usable and not gone: its start matches, or no start was recorded,
+# or the live start is unreadable — each of those is "cannot prove the owner gone", so
+# the caller keeps the family (fail-closed). A legacy `pid`-only lock is never ALIVE:
+# that file holds the pre-flight call's own `$$`, a shell that exits with the call, so
+# a live pid there (e.g. a recycled one) is not evidence that a run is live — it can
+# make the lock HELD (control state) but never keeps the family outright.
+__LK_HELD=0
+__LK_ALIVE=0
+__LK_SID=""
+__lock_hold_v() {  # $1=lock dir
+    local d="$1" st="" pid="" start="" cur="" own=0
+    __LK_HELD=0; __LK_ALIVE=0; __LK_SID=""
+    [ -d "$d" ] || return 0
+    st="$(head -n 1 "$d/state" 2>/dev/null | tr -d '[:space:]')"
+    [ "$st" = "released" ] && return 0
+    if [ -f "$d/owner" ]; then
+        own=1
+        pid="$(sed -n 's/^pid=//p' "$d/owner" 2>/dev/null | head -n 1)"
+        start="$(sed -n 's/^start=//p' "$d/owner" 2>/dev/null | head -n 1)"
+        __LK_SID="$(sed -n 's/^session=//p' "$d/owner" 2>/dev/null | head -n 1)"
+        case "$__LK_SID" in *[!A-Za-z0-9-]*) __LK_SID="" ;; esac
+    else
+        pid="$(head -n 1 "$d/pid" 2>/dev/null | tr -d '[:space:]')"
+    fi
+    __LK_HELD=1
+    case "$pid" in ""|0*|1|*[!0-9]*) return 0 ;; esac
+    if ! kill -0 "$pid" 2>/dev/null && [ -z "$(ps -o pid= -p "$pid" 2>/dev/null)" ]; then
+        __LK_HELD=0; __LK_SID=""; return 0
+    fi
+    if [ -n "$start" ]; then
+        cur="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//')"
+        if [ -n "$cur" ] && [ "$cur" != "$start" ]; then __LK_HELD=0; __LK_SID=""; return 0; fi
+    fi
+    [ "$own" = "1" ] && __LK_ALIVE=1
+    return 0
 }
 
 # ── collision-proof attribution + reaping helpers (row 18) ────────────────────
@@ -472,6 +539,17 @@ if [ "${PLAN_W_TEAM_DISABLE_ORPHAN_GC:-}" != "1" ]; then
         gf="$STATE_DIR/plan-w-team-goal-${slug}.json"
         mf="$STATE_DIR/plan-w-team-manifest-${slug}.json"
         wl="$STATE_DIR/plan-w-team-workflow-${slug}.lock"
+        # Row 191: only a HELD lock is control state. A held lock whose owner process
+        # is confirmed ALIVE keeps the family outright — the lead is running, whatever
+        # one oracle answer says about its session (the oracle omits `waiting`
+        # sessions). Otherwise the lock's session= only ADDS keep evidence: it joins
+        # an owner-SID set that already has a goal worker_sid or a manifest run_sid,
+        # and it never turns an empty set (fail-closed keep) into a reapable one.
+        __lock_hold_v "$wl"
+        if [ "$__LK_HELD" = "1" ] && [ "$__LK_ALIVE" = "1" ]; then
+            [ "$VERBOSE" = "1" ] && echo "kept family $slug (workflow lock held by a live owner process)"
+            continue
+        fi
 
         if [ -f "$gf" ]; then
             term="$(__terminal_state_of "$gf")"
@@ -483,12 +561,18 @@ if [ "${PLAN_W_TEAM_DISABLE_ORPHAN_GC:-}" != "1" ]; then
             sids=""
             w="$(__json_str_field "$gf" worker_sid)"; [ -n "$w" ] && sids="$sids $w"
             [ -f "$mf" ] && { r="$(__json_str_field "$mf" run_sid)"; [ -n "$r" ] && sids="$sids $r"; }
-        elif [ -f "$mf" ] || [ -d "$wl" ]; then
-            # No goal, but control state (manifest/workflow-lock) exists → null-orphan via run_sid.
+            # Keep evidence only: never the sole SID (see __lock_hold_v above).
+            [ -n "$sids" ] && [ -n "$__LK_SID" ] && sids="$sids $__LK_SID"
+        elif [ -f "$mf" ] || [ "$__LK_HELD" = "1" ]; then
+            # No goal, but control state (a manifest or a HELD workflow lock whose
+            # owner is not confirmed alive) exists → null-orphan via the manifest
+            # run_sid; the lock owner's session only adds keep evidence to it.
             sids=""
             [ -f "$mf" ] && { r="$(__json_str_field "$mf" run_sid)"; [ -n "$r" ] && sids="$sids $r"; }
+            [ -n "$sids" ] && [ -n "$__LK_SID" ] && sids="$sids $__LK_SID"
         else
-            # HEADLESS: no goal, no manifest, no workflow-lock dir. No SID to prove death,
+            # HEADLESS: no goal, no manifest, no HELD workflow lock (absent, released at
+            # retro-complete, or its owner process is gone). No SID to prove death,
             # so require the much longer HEADLESS_MAX_AGE — a family untouched for 7 days
             # cannot be a live session doing work (Q4 fix; see the header).
             if [ "$age" -lt "$HEADLESS_MAX_AGE" ] 2>/dev/null; then
@@ -516,7 +600,7 @@ EOF
     # 3) Reap HEADLESS families — aged is sufficient (no live run lacks all control state).
     while IFS= read -r slug; do
         [ -z "$slug" ] && continue
-        [ "$VERBOSE" = "1" ] && echo "reaping HEADLESS family $slug (no goal/manifest/workflow-lock, aged)"
+        [ "$VERBOSE" = "1" ] && echo "reaping HEADLESS family $slug (no goal/manifest/held workflow-lock, aged)"
         __reap_family "$slug"
     done <<EOF
 $(printf '%s\n' "$HEADLESS_CAND" | grep -v '^[[:space:]]*$')

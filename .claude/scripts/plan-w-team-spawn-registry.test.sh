@@ -264,6 +264,49 @@ for f in "$STATE_DIR"/plan-w-team-spawned-children-*.jsonl; do
 done
 
 # ───────────────────────────────────────────────────────────────────────────
+# Root resolution: PWT_PROJECT_ROOT_OVERRIDE beats $PWD/.claude (leak regression)
+# ───────────────────────────────────────────────────────────────────────────
+# run.sh Phase 2 runs every .test.sh with cwd = the LIVE checkout. A test that pins
+# pwt-goal.sh to its sandbox with PWT_PROJECT_ROOT_OVERRIDE but does not cd into it
+# used to have the spawned-children ROW follow $PWD into the live .claude/state (20
+# test-slug files found there, 2026-09-25). DECOY stands in for that checkout: it
+# has its own .claude/, so the pre-fix $PWD-first rule would pick it.
+DECOY="$PWT_TEST_SANDBOX/decoy-checkout"
+OVR_ROOT="$PWT_TEST_SANDBOX/override-root"
+CPD_ROOT="$PWT_TEST_SANDBOX/project-dir-root"
+mkdir -p "$DECOY/.claude/state" "$CPD_ROOT/.claude/state"
+decoy_rows() { cat "$DECOY"/.claude/state/plan-w-team-spawned-children-*.jsonl 2>/dev/null | wc -l | tr -d ' '; }
+
+echo "U9: PWT_PROJECT_ROOT_OVERRIDE wins over \$PWD/.claude and CLAUDE_PROJECT_DIR"
+( cd "$DECOY" && PWT_PROJECT_ROOT_OVERRIDE="$OVR_ROOT" CLAUDE_PROJECT_DIR="$CPD_ROOT" \
+    "$HELPER" "sidovr01" "pwt-goal-launch" "$TEST_SLUG" )
+OVR_REG="$OVR_ROOT/.claude/state/plan-w-team-spawned-children-${TEST_SLUG}.jsonl"
+assert_contains "row lands under the override root" '"session_id":"sidovr01"' "$(cat "$OVR_REG" 2>/dev/null)"
+assert_eq "no row in the cwd checkout's .claude/state" "0" "$(decoy_rows)"
+assert_eq "no row under CLAUDE_PROJECT_DIR" "0" \
+    "$(cat "$CPD_ROOT"/.claude/state/plan-w-team-spawned-children-*.jsonl 2>/dev/null | wc -l | tr -d ' ')"
+
+echo "U9b: override unset → production order unchanged (\$PWD/.claude, then CLAUDE_PROJECT_DIR)"
+( cd "$DECOY" && env -u PWT_PROJECT_ROOT_OVERRIDE CLAUDE_PROJECT_DIR="$CPD_ROOT" \
+    "$HELPER" "sidpwd01" "pwt-goal-launch" "$TEST_SLUG" )
+assert_contains "cwd with .claude/ still wins in production" '"session_id":"sidpwd01"' \
+    "$(cat "$DECOY/.claude/state/plan-w-team-spawned-children-${TEST_SLUG}.jsonl" 2>/dev/null)"
+rm -f "$DECOY"/.claude/state/plan-w-team-spawned-children-*.jsonl
+( cd "$SHIM_DIR" && env -u PWT_PROJECT_ROOT_OVERRIDE CLAUDE_PROJECT_DIR="$CPD_ROOT" \
+    "$HELPER" "sidcpd01" "pwt-goal-launch" "$TEST_SLUG" )
+assert_contains "cwd without .claude/ falls back to CLAUDE_PROJECT_DIR" '"session_id":"sidcpd01"' \
+    "$(cat "$CPD_ROOT/.claude/state/plan-w-team-spawned-children-${TEST_SLUG}.jsonl" 2>/dev/null)"
+
+echo "U10: pwt-goal.sh --launch from a checkout cwd keeps its row in the override sandbox"
+U10_ROOT="$PWT_TEST_SANDBOX/u10-root"
+mkdir -p "$U10_ROOT/.claude/state"
+( cd "$DECOY" && PATH="$SHIM_DIR:$PATH" PWT_PROJECT_ROOT_OVERRIDE="$U10_ROOT" CLAUDE_PROJECT_DIR="$U10_ROOT" \
+    "$SCRIPT_DIR/pwt-goal.sh" --launch "u10 override root request $$" ) >/dev/null 2>&1 || true
+U10_FOUND=$(grep -l '"session_id":"feedf00d"' "$U10_ROOT"/.claude/state/plan-w-team-spawned-children-*.jsonl 2>/dev/null | head -1)
+assert_eq "pwt-goal --launch row is in the override sandbox" "yes" "$([ -n "$U10_FOUND" ] && echo yes || echo no)"
+assert_eq "pwt-goal --launch wrote no row into the cwd checkout" "0" "$(decoy_rows)"
+
+# ───────────────────────────────────────────────────────────────────────────
 # Summary
 # ───────────────────────────────────────────────────────────────────────────
 echo ""

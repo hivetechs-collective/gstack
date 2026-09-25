@@ -29,6 +29,9 @@ ln -s "$PROJECT_ROOT/.claude/scripts" "$PWT_TEST_SANDBOX/.claude/scripts"
 cd "$PWT_TEST_SANDBOX" || exit 1
 export CLAUDE_PROJECT_DIR="$PWT_TEST_SANDBOX"
 export PWT_PROJECT_ROOT_OVERRIDE="$PWT_TEST_SANDBOX"
+# The lock-owner test also matches the caller's claude process by CLAUDE_PID (row 191);
+# a test run from inside Claude Code must not inherit the real one. Cases set it.
+unset CLAUDE_PID
 
 TEST_SLUG="surface-status-test-$$"
 LOCK_DIR="$STATE_DIR/plan-w-team-workflow-${TEST_SLUG}.lock"
@@ -128,8 +131,116 @@ PARSED=$(echo "$OUT" | extract_json | jq -e . >/dev/null 2>&1 && echo 1 || echo 
 assert_eq "inner JSON parses" "1" "$PARSED"
 
 echo 'U7: retro-complete stage -> workflow_lock=done (success anchor)'
+# Row 191: the lock has no EXIT trap any more, so retro-complete is its release point.
+assert_eq "no release marker before retro-complete" "none" "$(cat "$LOCK_DIR/state" 2>/dev/null || echo none)"
 JSON=$("$HELPER" "$TEST_SLUG" "retro-complete" 2>/dev/null | extract_json)
 assert_eq "workflow_lock=done" "done" "$(echo "$JSON" | jq -r '.workflow_lock')"
+assert_eq "retro-complete marks the lock released" "released" "$(cat "$LOCK_DIR/state" 2>/dev/null || echo none)"
+JSON=$("$HELPER" "$TEST_SLUG" "retro-complete" 2>/dev/null | extract_json)
+assert_eq "a re-emit after the release still reads done" "done" "$(echo "$JSON" | jq -r '.workflow_lock')"
+NOLOCK_SLUG="${TEST_SLUG}-nolock"
+JSON=$("$HELPER" "$NOLOCK_SLUG" "retro-complete" 2>/dev/null | extract_json)
+assert_eq "retro-complete without a lock reads missing" "missing" "$(echo "$JSON" | jq -r '.workflow_lock')"
+assert_eq "retro-complete without a lock creates none" "absent" \
+    "$([ -e "$STATE_DIR/plan-w-team-workflow-${NOLOCK_SLUG}.lock" ] && echo present || echo absent)"
+
+echo 'U7b: the owner session refreshes the lock heartbeat at each stage (row 191)'
+# The pre-flight consults the live-session oracle only once the heartbeat is older than
+# the stale bound; the owner's own stage emissions keep it current. Nobody else does.
+HB_SLUG="${TEST_SLUG}-hb"
+HB_DIR="$STATE_DIR/plan-w-team-workflow-${HB_SLUG}.lock"
+HB_SID="aaaabbbb-1111-2222-3333-444444444444"
+hb_reset() { # $1=state
+    mkdir -p "$HB_DIR"
+    printf 'session=%s\npid=%s\nkind=claude\nheartbeat=1000\n' "$HB_SID" "$$" > "$HB_DIR/owner"
+    printf '%s\n' "$1" > "$HB_DIR/state"
+}
+hb_of() { sed -n 's/^heartbeat=//p' "$HB_DIR/owner"; }
+hb_norm() { extract_json | jq -c 'del(.ts)'; }
+hb_reset active
+HB_OTHER=$(CLAUDE_CODE_SESSION_ID="ccccdddd-0000" "$HELPER" "$HB_SLUG" "execute" 2>/dev/null)
+assert_eq "another session leaves the heartbeat alone" "1000" "$(hb_of)"
+HB_NONE=$(env -u CLAUDE_CODE_SESSION_ID "$HELPER" "$HB_SLUG" "execute" 2>/dev/null)
+assert_eq "no session id leaves the heartbeat alone" "1000" "$(hb_of)"
+HB_T0=$(date +%s)
+HB_OWN=$(CLAUDE_CODE_SESSION_ID="$HB_SID" "$HELPER" "$HB_SLUG" "execute" 2>/dev/null)
+assert_eq "the owner session's stage emission refreshes it" "1" \
+    "$([ "$(hb_of)" -ge "$HB_T0" ] 2>/dev/null && echo 1 || echo 0)"
+assert_eq "the refresh keeps every other owner field" \
+    "session=$HB_SID pid=$$ kind=claude" \
+    "$(grep -v '^heartbeat=' "$HB_DIR/owner" | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "no temp file is left in the lock dir" "" "$(ls -A "$HB_DIR" | grep -v -e '^owner$' -e '^state$')"
+assert_eq "the status block is the same whoever emits it" \
+    "$(printf '%s\n' "$HB_OTHER" | hb_norm)" "$(printf '%s\n' "$HB_OWN" | hb_norm)"
+assert_eq "the status block's non-JSON lines are unchanged" \
+    "$(printf '%s\n' "$HB_NONE" | grep -c '')" "$(printf '%s\n' "$HB_OWN" | grep -c '')"
+hb_reset released
+CLAUDE_CODE_SESSION_ID="$HB_SID" "$HELPER" "$HB_SLUG" "execute" >/dev/null 2>&1
+assert_eq "a released lock's heartbeat is never refreshed" "1000" "$(hb_of)"
+hb_reset active
+CLAUDE_CODE_SESSION_ID="$HB_SID" "$HELPER" "$HB_SLUG" "retro-complete" >/dev/null 2>&1
+assert_eq "retro-complete releases without refreshing" "1000 released" "$(hb_of) $(cat "$HB_DIR/state")"
+rm -rf "$HB_DIR"
+
+echo 'U7c: only the lock owner releases it at retro-complete (row 191 review round 2)'
+# A late retro-complete re-emit from session A must not release a lock session B holds
+# now. Owner = the pre-flight's re-entry test: same session id, or the same claude
+# process (kind=claude, pid = CLAUDE_PID, start= still that pid's start time).
+RL_SLUG="${TEST_SLUG}-rel"
+RL_DIR="$STATE_DIR/plan-w-team-workflow-${RL_SLUG}.lock"
+RL_START="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$$" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//')"
+rl_reset() { # $1=owner record (printf %b)
+    rm -rf "$RL_DIR"; mkdir -p "$RL_DIR"
+    printf '%b' "$1" > "$RL_DIR/owner"
+    printf 'active\n' > "$RL_DIR/state"
+}
+rl_state() { cat "$RL_DIR/state" 2>/dev/null; }
+rl_hb() { sed -n 's/^heartbeat=//p' "$RL_DIR/owner"; }
+RL_B="session=SESSION-B\npid=$$\nstart=$RL_START\nkind=claude\nheartbeat=1000\n"
+rl_reset "$RL_B"
+RL_JSON=$(CLAUDE_CODE_SESSION_ID=SESSION-A "$HELPER" "$RL_SLUG" "retro-complete" 2>/dev/null | extract_json)
+assert_eq "a foreign session's retro-complete leaves the lock held" "active" "$(rl_state)"
+assert_eq "... and its status block still reads done" "done" "$(echo "$RL_JSON" | jq -r '.workflow_lock')"
+rl_reset "$RL_B"
+env -u CLAUDE_CODE_SESSION_ID "$HELPER" "$RL_SLUG" "retro-complete" >/dev/null 2>&1
+assert_eq "no session id and no claude pid: not the owner, not released" "active" "$(rl_state)"
+rl_reset "$RL_B"
+CLAUDE_CODE_SESSION_ID=SESSION-B "$HELPER" "$RL_SLUG" "retro-complete" >/dev/null 2>&1
+assert_eq "the owner session releases it" "released" "$(rl_state)"
+rl_reset "session=\npid=$$\nkind=parent\nheartbeat=1000\n"
+CLAUDE_CODE_SESSION_ID=SESSION-A "$HELPER" "$RL_SLUG" "retro-complete" >/dev/null 2>&1
+assert_eq "an owner record with no session is released by the run's end" "released" "$(rl_state)"
+# the same claude process under a new session id (/clear): released, and it heartbeats
+rl_reset "$RL_B"
+CLAUDE_CODE_SESSION_ID=SESSION-A CLAUDE_PID=$$ "$HELPER" "$RL_SLUG" "execute" >/dev/null 2>&1
+assert_eq "the same claude process refreshes the heartbeat" "1" \
+    "$([ "$(rl_hb)" -gt 1000 ] 2>/dev/null && echo 1 || echo 0)"
+CLAUDE_CODE_SESSION_ID=SESSION-A CLAUDE_PID=$$ "$HELPER" "$RL_SLUG" "retro-complete" >/dev/null 2>&1
+assert_eq "the same claude process releases it" "released" "$(rl_state)"
+# the pid reused by another process (start= differs): not the owner
+rl_reset "session=SESSION-B\npid=$$\nstart=Thu Jan  1 00:00:00 1970\nkind=claude\nheartbeat=1000\n"
+CLAUDE_CODE_SESSION_ID=SESSION-A CLAUDE_PID=$$ "$HELPER" "$RL_SLUG" "execute" >/dev/null 2>&1
+assert_eq "a reused pid does not refresh the heartbeat" "1000" "$(rl_hb)"
+CLAUDE_CODE_SESSION_ID=SESSION-A CLAUDE_PID=$$ "$HELPER" "$RL_SLUG" "retro-complete" >/dev/null 2>&1
+assert_eq "a reused pid does not release it" "active" "$(rl_state)"
+# a kind=parent owner is matched by session only, never by pid
+rl_reset "session=SESSION-B\npid=$$\nstart=$RL_START\nkind=parent\nheartbeat=1000\n"
+CLAUDE_CODE_SESSION_ID=SESSION-A CLAUDE_PID=$$ "$HELPER" "$RL_SLUG" "retro-complete" >/dev/null 2>&1
+assert_eq "a kind=parent owner is not matched by pid" "active" "$(rl_state)"
+# ... and its own session id releases it (review r3 L2: session id only, as the pre-flight)
+rl_reset "session=SESSION-B\npid=$$\nstart=$RL_START\nkind=parent\nheartbeat=1000\n"
+CLAUDE_CODE_SESSION_ID=SESSION-B "$HELPER" "$RL_SLUG" "retro-complete" >/dev/null 2>&1
+assert_eq "a kind=parent owner is released by its own session" "released" "$(rl_state)"
+# only a decimal pid above 1 names one process (review r3 L4): pid 1 is never the caller
+rl_reset "session=SESSION-B\npid=1\nkind=claude\nheartbeat=1000\n"
+CLAUDE_CODE_SESSION_ID=SESSION-A CLAUDE_PID=1 "$HELPER" "$RL_SLUG" "retro-complete" >/dev/null 2>&1
+assert_eq "an owner pid of 1 is not matched by CLAUDE_PID" "active" "$(rl_state)"
+# a symlinked owner record is nobody's
+rl_reset "$RL_B"
+mv "$RL_DIR/owner" "$RL_DIR/owner.real"; ln -s "$RL_DIR/owner.real" "$RL_DIR/owner"
+CLAUDE_CODE_SESSION_ID=SESSION-B "$HELPER" "$RL_SLUG" "retro-complete" >/dev/null 2>&1
+assert_eq "a symlinked owner record does not release" "active" "$(rl_state)"
+rm -rf "$RL_DIR"
 
 echo "U8: escalation rows surface in pending_escalations"
 cat >> "$SUP_LOG" <<EOF
@@ -252,7 +363,7 @@ echo "Results: $PASS passed, $FAIL failed"
 # Expected-PASS-count assertion (test lane E8) — a silently-vanished assertion
 # (e.g. a future edit that drops a case without updating callers) still shows
 # green on FAIL==0 alone; pin the exact count so a shrinkage is caught.
-EXPECTED_PASS=34
+EXPECTED_PASS=61
 if [ "$PASS" -ne "$EXPECTED_PASS" ]; then
     echo "✗ expected exactly $EXPECTED_PASS passing assertions, got $PASS"
     FAIL=$((FAIL + 1))

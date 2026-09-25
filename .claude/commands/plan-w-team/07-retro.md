@@ -1213,7 +1213,7 @@ Advisory; never blocks the retro. Score semantics: `docs/operations/killswitch-b
 ```bash
 SLUG="<feature-slug>"
 RETRO_STATE=".claude/state/plan-w-team-retro-${SLUG}.json"
-KS_MISSING='{"status":"missing","lock":"missing","distinct":0,"hits":0,"env":0,"switches":[],"sanctioned_active":[],"score":null,"source":"none"}'
+KS_MISSING='{"status":"missing","lock":"missing","distinct":0,"hits":0,"env":0,"switches":[],"sanctioned_active":[],"sidecar":"unverified","sidecar_ref":"","sidecar_sha":"","sidecar_anchor":"","sidecar_ref_moved":false,"sidecar_drift":[],"sidecar_stale":[],"score":null,"source":"none"}'
 if [ -x .claude/scripts/plan-w-team-killswitch-ledger.sh ]; then
   .claude/scripts/plan-w-team-killswitch-ledger.sh snapshot --slug "$SLUG" --site retro --no-init >/dev/null 2>&1 || true
   KS_JSON=$(.claude/scripts/plan-w-team-killswitch-ledger.sh score --slug "$SLUG" 2>/dev/null)
@@ -1224,7 +1224,7 @@ if [ -x .claude/scripts/plan-w-team-killswitch-ledger.sh ]; then
       "$RETRO_STATE" > "$TMP" 2>/dev/null && mv "$TMP" "$RETRO_STATE" || rm -f "$TMP"
   fi
   if command -v jq >/dev/null 2>&1; then
-    printf '%s' "$KS_JSON" | jq -r '"killswitch-bypass: status=\(.status) lock=\(.lock) distinct=\(.distinct) score=\(.score // "n/a")/5 switches=\(.switches | join(",")) sanctioned=\(.sanctioned_active | join(","))"'
+    printf '%s' "$KS_JSON" | jq -r '"killswitch-bypass: status=\(.status) lock=\(.lock) distinct=\(.distinct) score=\(.score // "n/a")/5 switches=\(.switches | join(",")) sanctioned=\(.sanctioned_active | join(",")) sidecar=\(.sidecar // "n/a") sidecar_drift=\((.sidecar_drift // []) | join(",")) sidecar_stale=\((.sidecar_stale // []) | join(",")) anchor=\(.sidecar_anchor // "n/a") ref=\(.sidecar_ref // "") ref_moved=\(.sidecar_ref_moved // false)"'
   else
     echo "killswitch-bypass: $KS_JSON"
   fi
@@ -1243,7 +1243,33 @@ How to read it:
   launcher did not set on purpose. Any value above 0 goes into this retro's findings (§8i) with
   the switch names, so the next operator can see which safety gates this run ran without.
 - `sanctioned` lists switches the launcher set on purpose; list them in the findings too, so
-  the sanctioning decision stays reviewable.
+  the sanctioning decision stays reviewable. Only the sidecar as COMMITTED on the default
+  branch sanctions anything, read at the anchor commit (below).
+- `sidecar=drift` means a working copy of the sidecar (this run's tree, or the main
+  checkout's) names switches the committed copy does not, or omits ones it does, and is not
+  just the copy its own checkout's base commit carries — `sidecar_drift` lists them. Those
+  names were scored with the committed copy, not the edit. Record it as a finding: either
+  commit the change on the default branch or revert it.
+  `sidecar=stale-base` means every copy that differs is exactly the one its checkout's base
+  commit carries: this run's worktree was cut before an operator's sidecar commit reached the
+  default branch, or the main checkout sits on another branch. `sidecar_stale` lists the
+  names. The run changed nothing; note it, but it is not a finding against the run. Neither
+  label changes the score.
+  `sidecar=unverified` means no committed copy could be read (no git, no default branch, a
+  damaged init marker — `anchor=invalid` — or a pinned commit that no longer exists), so only
+  the built-in list was sanctioned.
+- `anchor=pinned` means the committed copy was read at the commit the default branch named
+  when the run's first stage wrote its `init` row (the init marker records it), so a ref the
+  run rewrote later changed nothing. `ref_moved=true` means that ref no longer points at that
+  commit or a descendant (rewound, force-updated, deleted or re-pointed during the run), or
+  the default branch now resolves to a different ref (a retargeted `origin/HEAD`): record it
+  as a finding. `anchor=current` means the marker pins nothing (a run whose init predates the
+  pin, or no default branch at init), so the ref's current commit was read.
+- `ref=` names the ref the anchor was read from. The init marker only ever pins the target
+  of `origin/HEAD` (a `refs/remotes/origin/*` ref), `refs/heads/main` or `refs/heads/master`,
+  and a marker naming any other ref reads as `anchor=invalid`. A `ref=` that is not the
+  repository's default branch is a finding: the marker sits in the run's own state dir, and
+  a well-formed pin the run rewrote is trusted until the lane guard denies writes to it.
 
 The ledger is durable — do NOT delete it here (post-retro emitters and completeness-gate waves
 must not strand it). The signal is also deliberately kept out of the §8j-decies cross-run
@@ -1253,25 +1279,49 @@ run executed.
 ## 8j-nonies. Spec Fan-Out Catch-Rate (advisory — AUTO-mode keep/park signal)
 
 When the Step-1 multi-angle spec fan-out ran (§1b-pre — AUTO default fires it on
-non-trivial specs since 1.50.0; `=1` forces, `=0` opts out), read its advisory
-record to score whether the fan-out earned its keep. This is the keep/park
-evidence for the AUTO default. **n/a when the fan-out auto-skipped (trivial
-spec) or was opted out** — never blocks retro.
+non-trivial specs since 1.50.0; `=1` forces, `=0` opts out), print its advisory
+record's counts. **n/a when the fan-out auto-skipped (trivial spec) or was opted
+out** — never blocks retro.
+
+The count is read through `plan-w-team-spec-fanout-tally.sh` (record mode), not an
+inline `jq` read. Real writers stored `findings_folded` as a list as well as an
+integer, and the old untyped read printed a raw JSON array for those runs. The
+script counts every shape, reports a record it cannot score as `unscorable` (never
+as 0), and marks a run whose reviewers all failed as `degraded`.
+
+**Keep/park review CLOSED 2026-09-24 → KEEP** (recursive-followup row 29): the AUTO
+default stays. Across 8 surviving records from 3 repos, 7 scored runs folded 184
+findings pre-freeze (median 26, none at 0; the 8th was degraded). KEEP applies the
+operator's pre-registered rule; it does not show the fan-out beats a single-pass
+spec. Evidence and caveats:
+`docs/operations/pwt-parallelism-go-nogo-2026-07-02.md` (2026-09-24 addendum).
 
 ```bash
 SLUG="<feature-slug>"
 FANOUT_STATE=".claude/state/plan-w-team-spec-fanout-${SLUG}.json"
+TALLY="$(git rev-parse --show-toplevel 2>/dev/null)/.claude/scripts/plan-w-team-spec-fanout-tally.sh"
 if [ ! -f "$FANOUT_STATE" ]; then
   echo "Spec fan-out score: n/a (auto-skipped trivial spec, opted out, or no record)"
+elif [ ! -x "$TALLY" ]; then
+  echo "Spec fan-out score: n/a (tally script unavailable at $TALLY — consumer sync gap, or retro not run inside the repo)"
 else
-  FOLDED=$(jq -r '.findings_folded // 0' "$FANOUT_STATE" 2>/dev/null || echo 0)
-  DEFERRED=$(jq -r '.findings_deferred // 0' "$FANOUT_STATE" 2>/dev/null || echo 0)
-  echo "Spec fan-out: ${FOLDED} findings folded pre-freeze, ${DEFERRED} deferred."
-  echo "  → If folded≈0 across ~5 auto-fired runs, the AUTO default is not earning"
-  echo "    its cost — restore default-off (§1b-pre) and record the closing evidence."
-  echo "    Consistently >0 on real requirement/AC gaps = the AUTO default stays."
+  # stderr is kept: a failing tally must show why, not read as a sync gap.
+  FANOUT_LINE=$("$TALLY" --file "$FANOUT_STATE"); FANOUT_RC=$?
+  if [ "$FANOUT_RC" -eq 0 ] && [ -n "$FANOUT_LINE" ]; then
+    echo "$FANOUT_LINE"   # e.g. "Spec fan-out: 24 findings folded pre-freeze, 6 deferred."
+  else
+    echo "Spec fan-out score: n/a (tally failed: exit $FANOUT_RC — see its stderr above)"
+  fi
 fi
 ```
+
+To re-check the verdict later, gather the records you can still find (they are
+gitignored and die with their worktrees, so pass every state dir you have) and run
+`.claude/scripts/plan-w-team-spec-fanout-tally.sh --state-dir <dir> [--state-dir <dir>]…`.
+A `PARK` verdict (median folded below 1, or half the scored runs at 0) is the
+evidence to restore default-off in §1b-pre. Prefer records that carry
+`findings_folded_blocker`: a raw folded count alone is close to unfalsifiable,
+because an LLM critic always finds something.
 
 ## 8j-decies. Recursive-Improvement Capture (EVERY full run — Deliverable 3)
 

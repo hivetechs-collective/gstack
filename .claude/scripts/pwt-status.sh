@@ -47,8 +47,12 @@ Read-only: makes no state modifications.
 Columns: (list mode)
   SLUG          — feature slug
   STAGE         — live stage from the canonical run manifest (or '-')
-  LOCK          — active (PID alive) | stale (PID dead) | missing
-  LOCK_PID      — owning process ID, or '-'
+  LOCK          — active (owner PID alive) | released (retro-complete) |
+                  stale (owner PID dead, reused, or not a usable PID) |
+                  missing
+  LOCK_PID      — the owner's process ID: the lead's claude process from the
+                  lock's owner record (the pre-flight shell's PID for a
+                  pre-row-191 lock), or '-'
   GOAL_TERMINAL — SUCCESS | USER_ESCALATION_HALT | LOW_CONFIDENCE_STREAK | pending
 
 Exits 0 always (including the no-runs case) unless jq is missing (2) or a
@@ -121,10 +125,34 @@ stage_of() { # $1=manifest JSON (possibly empty) → stage or "-"
 }
 
 lock_state() { # $1=slug → "state pid"
-    local dir="$STATE_DIR/plan-w-team-workflow-${1}.lock" st="missing" pid="-"
+    local dir="$STATE_DIR/plan-w-team-workflow-${1}.lock" st="missing" pid="-" opid="" ostart="" cur=""
     if [ -d "$dir" ]; then
-        pid=$(cat "$dir/pid" 2>/dev/null || echo "?")
-        if [ "$pid" != "?" ] && kill -0 "$pid" 2>/dev/null; then st="active"; else st="stale"; fi
+        # Recursive-followup row 191: the lock is held for the whole run and its `owner`
+        # record names the lead (`pid=` is its claude process). The legacy `pid` file is the
+        # pre-flight call's own shell, dead as soon as that call returns, so it is only the
+        # fallback for a pre-row-191 lock. `state=released` is written at retro-complete.
+        # Review r3: `active` needs a pid that names one process — a decimal above 1, as the
+        # pre-flight and the janitor read it (`kill -0 0` / `kill -0 -1` succeed for any
+        # caller) — that is present, and whose start time still matches `owner` start=
+        # (a reused pid is someone else). Anything else reads `stale`.
+        opid=$(sed -n 's/^pid=//p' "$dir/owner" 2>/dev/null | head -n 1)
+        ostart=$(sed -n 's/^start=//p' "$dir/owner" 2>/dev/null | head -n 1)
+        if [ -n "$opid" ]; then pid="$opid"; else pid=$(cat "$dir/pid" 2>/dev/null || echo "?"); fi
+        if [ "$(cat "$dir/state" 2>/dev/null)" = "released" ]; then st="released"
+        else
+            st="stale"
+            case "$pid" in
+                ""|0*|1|*[!0-9]*) ;;
+                *)
+                    if kill -0 "$pid" 2>/dev/null || [ -n "$(ps -o pid= -p "$pid" 2>/dev/null)" ]; then
+                        st="active"
+                        if [ -n "$ostart" ]; then
+                            cur=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//')
+                            [ -n "$cur" ] && [ "$cur" != "$ostart" ] && st="stale"
+                        fi
+                    fi ;;
+            esac
+        fi
     fi
     printf '%s %s' "$st" "$pid"
 }

@@ -102,7 +102,18 @@ mac-mini `/bin/bash`, so two concurrent runs race on the same state files.
 
 **Do instead**: atomic `mkdir` lock dirs (`plan-w-team-workflow-<slug>.lock`,
 `plan-w-team-push.lock`, `plan-w-team-friction-log.lock`) with PID-based stale recovery. They
-survive compaction and are atomic on every POSIX filesystem.
+survive compaction and are atomic on every POSIX filesystem. A lock that must outlive one Bash
+call cannot key on `$$` or release on an EXIT trap: every call is a fresh shell. The workflow
+lock therefore records a durable owner (`owner`: the lead's session id, its `claude` pid and
+that pid's start time, which tells a reused pid apart) and has no trap (recursive-followup row
+191). The owner is the Bash tool shell's parent, or its grandparent through one nested shell,
+never a process further up: a bg pty host or the bg daemon sits above many leads, and would
+give two leads one owner. When that process is not recognised as `claude`, the owner is
+`kind=parent` with `pid=$PPID`, which is still the long-lived lead (the tool shell's `$PPID` is
+the lead), not a short-lived shell: the lock holds while it lives, and other sessions get a
+conflict. Only the same session id re-enters a `kind=parent` lock, so after `/clear` the lead
+conflicts with its own lock until the lock dir is deleted. Only a decimal pid above 1 decides
+anything: `kill -0 0` and `kill -0 -1` succeed.
 
 **Source**: `.claude/commands/plan-w-team.md` §Pre-Flight: Workflow Lock;
 `07-retro.md` §8i Self-Assessment (friction-log lock).

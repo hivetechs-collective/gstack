@@ -56,7 +56,7 @@
 #                  list, so the rule cannot rot as new switches are added.
 #
 # ENV
-#   PWT_PRIMARY_MODEL   (default claude-opus-5-5)  — pinned; never inherit the CLI default; claude-opus-5 (exactly) stays FORBIDDEN (founder order 2026-08-29); Opus 5.5 is the Brain tier (v8, 2026-09-22); a Fable / claude-opus-5 / bare-opus value is refused (pwt_primary_model, one warning) and treated as UNSET → the governed intelligent tier, else claude-opus-5-5
+#   PWT_PRIMARY_MODEL   (default claude-opus-5-5)  — pinned; never inherit the CLI default; claude-opus-5 (exactly) stays FORBIDDEN (founder order 2026-08-29); Opus 5.5 is the Brain tier (v8, 2026-09-22); a Fable or claude-opus-5 value (Bedrock/Vertex/[..] forms included) or a CLI-version-dependent alias (opus, opusplan, best, default) is refused (pwt_primary_model, one warning) and treated as UNSET → the governed intelligent tier, else claude-opus-5-5
 #   PWT_FALLBACK_MODEL  (default: resolved from the primary by pwt_fallback_model — Opus 5.5 → claude-opus-4-8,claude-sonnet-5; never Fable — Model Tiering v9)
 #   PWT_STEER_POLL_S    (default 1)                — verification poll interval
 #   CLAUDE_PROJECTS_DIR (default ~/.claude/projects)
@@ -125,7 +125,8 @@ __steer_scrub_lib="$(cd "$(dirname "$0")/../../scripts/ops/lib" 2>/dev/null && p
 [ -r "$__steer_scrub_lib" ] && { . "$__steer_scrub_lib" 2>/dev/null || true; }
 command -v pwt_lane_env_scrub >/dev/null 2>&1 || pwt_lane_env_scrub() { :; }
 # Model Tiering v9 hardening: the env pin is refusal-checked BEFORE the governed override
-# (pwt_primary_model). A Fable / claude-opus-5 / bare-opus pin warns once and counts as UNSET,
+# (pwt_primary_model). A Fable or claude-opus-5 pin (in any Bedrock/Vertex/[..] form) or a
+# CLI-version-dependent alias (opus, opusplan, best, default) warns once and counts as UNSET,
 # so the governed tier below, else the claude-opus-5-5 default, applies — same as pwt-goal.sh.
 if [ "$__steer_primary_env_set" = "1" ] && type pwt_primary_model >/dev/null 2>&1; then
     PRIMARY_MODEL=$(pwt_primary_model "$PRIMARY_MODEL" "")

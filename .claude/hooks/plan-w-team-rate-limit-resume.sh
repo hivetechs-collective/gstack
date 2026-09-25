@@ -22,6 +22,8 @@
 #      model, or a resolver that cannot be loaded (pwt-governor-lib.sh missing
 #      beside this hook, or too old to carry pwt_primary_model/pwt_fallback_model)
 #      gets NO /model inject, and the attempt-2 message says which of the three.
+#      An Opus 4.8 lead is such a lead: it stays on Opus 4.8, never Sonnet — a
+#      fallback doing the lead's work is intelligent work (R255).
 #   3. still parked → one more wait + continue
 #   4. give up loudly (desktop + ntfy via stop-failure-notify.sh)
 #
@@ -40,7 +42,9 @@
 #              overrides the state dir; `--fallback-rung <transcript>` is a
 #              pure mode that prints the attempt-2 decision
 #              ("lead=<model> rung=<model-or-empty>", plus " resolver=unavailable"
-#              when pwt-governor-lib.sh could not be loaded) and exits 0.
+#              when pwt-governor-lib.sh could not be loaded) and exits 0;
+#              CLAUDE_PROJECTS_DIR overrides the transcript root (see
+#              resolve_transcript).
 
 MODE="${1:-hook}"
 
@@ -87,6 +91,7 @@ fallback_rung() {   # $1 = transcript → echoes "<lead>|<rung>|<state>"; an emp
       p=$(pwt_primary_model "$lead" 2>/dev/null); [ -n "$p" ] || exit 3
       r=$(pwt_fallback_model "$p" "" 2>/dev/null); r="${r%%,*}"; [ -n "$r" ] || exit 3
       # The chain resolves a lead with nothing below it (Sonnet 5, Haiku, Opus 4.8) to itself.
+      # An Opus 4.8 lead stays on 4.8 by doctrine, never Sonnet (pwt_fallback_model, R255).
       [ "${r%%\[*}" != "${p%%\[*}" ] && printf '%s' "$r"
       exit 0
     ); rc=$?
@@ -96,6 +101,48 @@ fallback_rung() {   # $1 = transcript → echoes "<lead>|<rung>|<state>"; an emp
     fi
   fi
   printf '%s|%s|%s\n' "$lead" "$rung" "$state"
+}
+
+# ─── the session's transcript (R255) ──────────────────────────────────────────
+# Claude Code keeps a session at <projects>/<key>/<sid>.jsonl: <projects> is
+# ${CLAUDE_CONFIG_DIR:-~/.claude}/projects and <key> is the session's REAL cwd with
+# every non-[A-Za-z0-9] character mapped to '-' (CLI 2.1.282 binary:
+# replace(/[^a-zA-Z0-9]/g,"-") on the realpath). The old key mapped only '/' and '.',
+# so a project dir holding '_', a space or '+', or one reached through a symlink
+# (/var → /private/var), handed the sleeper a path that never exists: it saw no
+# liveness and attempt 2 could not read the lead's model. First hit wins:
+#   input    — transcript_path from the StopFailure stdin (the CLI's own answer)
+#   literal  — the key of CLAUDE_PROJECT_DIR as given
+#   realpath — the key of its `pwd -P` form, when that differs
+#   scan     — the newest <projects>/*/<sid>.jsonl; this also covers what a byte
+#              key cannot: a non-ASCII dir (the CLI maps per UTF-16 unit), a path
+#              over 200 chars (the CLI truncates and appends a hash), and
+#              CLAUDE_CODE_PROJECT_DIR_NAME
+# Nothing found → the literal path is still handed on, so the sleeper's existing
+# fail-safe runs (no liveness signal; attempt 2 says the lead's model "could not be
+# read"). CLAUDE_PROJECTS_DIR overrides <projects> (test seam, as elsewhere).
+project_key() {   # $1 = dir → echoes it with every non-[A-Za-z0-9] byte mapped to '-'
+  printf '%s' "${1:-}" | LC_ALL=C sed 's/[^A-Za-z0-9]/-/g'
+}
+
+resolve_transcript() {   # $1 = session id, $2 = stdin transcript_path → echoes "<path>|<via>"
+  local sid="${1:-}" given="${2:-}" dir root lit real cand hit
+  dir="${CLAUDE_PROJECT_DIR:-$PWD}"
+  root="${CLAUDE_PROJECTS_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects}"
+  lit="$root/$(project_key "$dir")/$sid.jsonl"
+  if [ -n "$given" ] && [ -f "$given" ]; then printf '%s|input\n' "$given"; return 0; fi
+  if [ -f "$lit" ]; then printf '%s|literal\n' "$lit"; return 0; fi
+  real=$(CDPATH= cd -- "$dir" 2>/dev/null && pwd -P)
+  if [ -n "$real" ] && [ "$real" != "$dir" ]; then
+    cand="$root/$(project_key "$real")/$sid.jsonl"
+    if [ -f "$cand" ]; then printf '%s|realpath\n' "$cand"; return 0; fi
+  fi
+  case "$sid" in
+    ""|*[!A-Za-z0-9-]*) ;;   # never glob with an id that is not a plain session UUID
+    *) hit=$(ls -t "$root"/*/"$sid.jsonl" 2>/dev/null | head -n 1)
+       if [ -n "$hit" ] && [ -f "$hit" ]; then printf '%s|scan\n' "$hit"; return 0; fi ;;
+  esac
+  printf '%s|none\n' "$lit"
 }
 
 if [ "$MODE" = "--fallback-rung" ]; then
@@ -405,11 +452,18 @@ if [ -z "$ERR_WAIT" ]; then
   [ "$WAIT" -gt 7200 ] 2>/dev/null && WAIT=7200
 fi
 
-# transcript path for liveness checks (project dir = cwd with / and . → -)
-PROJ_DIR=$(printf '%s' "${CLAUDE_PROJECT_DIR:-$PWD}" | sed 's/[\/.]/-/g')
-TRANSCRIPT="$HOME/.claude/projects/$PROJ_DIR/$SID.jsonl"
+# transcript for the liveness checks and the attempt-2 lead model (resolve_transcript)
+IN_TRANSCRIPT=$(printf '%s' "$INPUT" | /usr/bin/python3 -c '
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: sys.exit(0)
+v=d.get("transcript_path") if isinstance(d,dict) else None
+if isinstance(v,str) and v.startswith("/") and "\n" not in v: print(v)
+' 2>/dev/null)
+RT=$(resolve_transcript "$SID" "$IN_TRANSCRIPT")
+TRANSCRIPT="${RT%|*}"; T_VIA="${RT##*|}"
 
-log "rate-limit StopFailure [$SID8] err='$ERR' — sleeper in ${WAIT}s (pane $TMUX_PANE)"
+log "rate-limit StopFailure [$SID8] err='$ERR' — sleeper in ${WAIT}s (pane $TMUX_PANE) transcript=$TRANSCRIPT via=$T_VIA"
 (
   set -m 2>/dev/null
   nohup "$0" --sleeper "$SID8" "$TMUX_PANE" "$WAIT" "$TRANSCRIPT" </dev/null >/dev/null 2>&1 &

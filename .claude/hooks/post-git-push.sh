@@ -10,14 +10,21 @@
 # stripping (unlike permission rules), and a command the CLI cannot parse
 # simply always matches. So these reach this hook: `git push …`, `git -C dir
 # push`, `git -c k=v push`, and any of them as one part of `&&` / `;` / `|`
-# chains or a `( … )` subshell (`cd x && git push`). These do NOT: `timeout 60
-# git push`, `nohup`/`time`/`sudo … git push`, `git --no-pager push`, `git
-# --git-dir=… push`, `/usr/bin/git push`, `sh -c 'git push'`, and pushes made
-# inside a script or make target. To confirm one of those, run the confirm by
-# hand with no --command, pointed at the pushed checkout: `…/plan-w-team-post-
-# push-confirm.sh --launch --cwd <checkout>` (git state decides; the push must be
-# inside the reflog window), plus `--relaunch` to skip that window
-# (docs/operations/post-push-confirm.md).
+# chains, a `( … )` subshell (`cd x && git push`), an if/then/fi or a while/for
+# loop body. These do NOT: `timeout 60 git push`, `nohup`/`time`/`sudo … git
+# push`, `git --no-pager push`, `git --git-dir=… push`, `/usr/bin/git push`,
+# `sh -c 'git push'`, and pushes made inside a script or make target.
+# Live-verified on CLI 2.1.282 (R255; the table is in the doc). Two more facts
+# from that run: the `if` is case-insensitive, so `git -C dir push` fires the
+# -C AND the -c handler (two hook spawns; the confirm's single-flight lock makes
+# the second a no-op), and a `$VAR` in the command makes every rule match.
+# DECIDED (R255): no `if` handler for the wrapper forms. The confirm is advisory
+# (it never blocks or reverts a push), a false launch costs a full suite run, and
+# every extra `if` pattern is one more hook spawn on every matching Bash call. To
+# confirm one of those pushes, run the confirm by hand with no --command, pointed
+# at the pushed checkout: `…/plan-w-team-post-push-confirm.sh --launch --cwd
+# <checkout>` (git state decides; the push must be inside the reflog window),
+# plus `--relaunch` to skip that window (docs/operations/post-push-confirm.md).
 # The `if` is only a pre-filter (`git -C dir status` passes it): this hook
 # re-checks the command itself (PWT_PUSH_RE below) and exits at once unless it
 # has a git-push segment.
@@ -44,14 +51,16 @@ fi
 # `git -C … <anything>` / `git -c … <anything>`). `git`, its global options
 # (-C dir, -c k=v, --flag), then `push` as the subcommand, inside one ; & |
 # segment. An option or its argument is a word whose pieces are plain chars,
-# "…" or '…' strings, so a quote may open mid-word and hold spaces:
-# `git -C ./"sp ace" push`, `git -c core.sshCommand="ssh -o X=1" push` (the
+# a backslash escape, "…" (with \" inside) or '…' strings, so a quote may open
+# mid-word and hold spaces or ; & |: `git -C ./"sp ace" push`, `git -C "a;b"
+# push`, `git -C a\;b push`, `git -c core.sshCommand="ssh -o X=1" push` (the
 # 2.53.0 round-2 pattern took a quoted argument only when the WHOLE word was
-# quoted, and dropped both). A leading `if`/`!`/`VAR=…` is fine: any blank,
-# `(` or `{` may precede `git`. This is only a pre-filter — the confirm parses.
+# quoted, and R255 added the escapes). A leading `if`/`!`/`VAR=…` is fine: any
+# blank, `(` or `{` may precede `git`. This is only a pre-filter — the confirm
+# lexes the command and replays its cds.
 _pwt_q="'"
-_pwt_w='([^[:space:];&|"'$_pwt_q']|"[^"]*"|'$_pwt_q'[^'$_pwt_q']*'$_pwt_q')'   # a word piece
-_pwt_w1='([^-[:space:];&|"'$_pwt_q']|"[^"]*"|'$_pwt_q'[^'$_pwt_q']*'$_pwt_q')' # … not a leading -
+_pwt_w='([^[:space:];&|"'$_pwt_q'\]|\\.|"([^"\]|\\.)*"|'$_pwt_q'[^'$_pwt_q']*'$_pwt_q')'   # a word piece
+_pwt_w1='([^-[:space:];&|"'$_pwt_q'\]|\\.|"([^"\]|\\.)*"|'$_pwt_q'[^'$_pwt_q']*'$_pwt_q')' # … not a leading -
 PWT_PUSH_RE='(^|[;&|({[:space:]])([^[:space:];&|]*/)?git([[:space:]]+-'"$_pwt_w"'+([[:space:]]+'"$_pwt_w1$_pwt_w"'*)?)*[[:space:]]+push([[:space:];&|)}]|$)'
 if ! printf '%s\n' "$PWT_PUSH_CMD" | grep -Eq "$PWT_PUSH_RE"; then
     exit 0
@@ -70,10 +79,15 @@ PROJECT_NAME="${PROJECT_NAME:-$(get_project_name 2>/dev/null || echo 'Project')}
 # detached, niced, bounded full run of that commit. Launch-and-return; it never
 # blocks the push or this hook. It reads git state (origin/<default> and its
 # reflog) in the repo the push ran in, so a dry run or a feature push launches
-# nothing. The hook input cwd is the cwd AFTER the command ran, so the confirm
-# tries, in order, the command's `git -C` / `cd` target, the hook cwd,
+# nothing. The CLI reads the hook input cwd with `eval <cmd> && pwd -P`, so it
+# is where the command ENDED when it exited 0, and where it STARTED when it ended
+# non-zero or by exit/exec. The confirm replays the command's cds / pushd / popd
+# / `git -C` once per way the command can run and reads each against that cwd
+# (its end or its start) to find where the push ran; the readings must name one
+# dir, else it is unknowable. Then it tries, in order, that dir, the hook cwd,
 # CLAUDE_PROJECT_DIR and this checkout, takes the first that is a git work tree,
-# and logs a one-line note when it had to fall back or skip.
+# and logs a one-line note when the push dir was unknowable or read as the
+# START, or it had to fall back or skip.
 # Kill switch: PWT_DISABLE_POST_PUSH_CONFIRM=1.
 PWT_POST_PUSH_CONFIRM="$PROJECT_ROOT/.claude/scripts/plan-w-team-post-push-confirm.sh"
 if [ -x "$PWT_POST_PUSH_CONFIRM" ] && [ "${PWT_DISABLE_POST_PUSH_CONFIRM:-0}" != "1" ]; then

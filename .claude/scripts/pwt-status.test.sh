@@ -64,6 +64,9 @@ RC=$?
 assert_eq "exit 0 on --help" "0" "$RC"
 assert_contains "help mentions usage" "Usage:" "$OUT"
 assert_contains "help mentions columns" "Columns:" "$OUT"
+# Row 191 review r2: the LOCK column can read `released`, and LOCK_PID is the owner's pid.
+assert_contains "help lists the released LOCK state" "released (retro-complete)" "$OUT"
+assert_contains "help names LOCK_PID as the owner's claude process" "the lead's claude process" "$OUT"
 
 echo "T2: empty state dir → no runs message"
 setup_fake_root
@@ -141,6 +144,59 @@ mkdir "$LOCK_DIR"
 echo "$DEAD_PID" > "$LOCK_DIR/pid"
 OUT=$("$SCRIPT" 2>&1)
 assert_contains "stale lock detected" "stale" "$OUT"
+teardown_fake_root
+
+# Recursive-followup row 191: the held lock's `owner` record names the lead; the legacy
+# `pid` file is the pre-flight call's own shell and is dead for the rest of the run.
+echo "T8b: row 191 owner record — live owner pid wins over a dead legacy pid"
+setup_fake_root
+LOCK_DIR="$FAKE_ROOT/.claude/state/plan-w-team-workflow-held.lock"
+mkdir "$LOCK_DIR"
+echo "$DEAD_PID" > "$LOCK_DIR/pid"
+printf 'session=sid-held\npid=%s\nkind=claude\nheartbeat=1\n' "$$" > "$LOCK_DIR/owner"
+printf 'active\n' > "$LOCK_DIR/state"
+OUT=$("$SCRIPT" --json 2>&1)
+assert_eq "held lock reads active" "active" "$(printf '%s' "$OUT" | jq -r '.[] | select(.slug=="held") | .lock')"
+assert_eq "held lock shows the owner pid" "$$" "$(printf '%s' "$OUT" | jq -r '.[] | select(.slug=="held") | .lock_pid')"
+printf 'session=sid-held\npid=%s\nkind=claude\nheartbeat=1\n' "$DEAD_PID" > "$LOCK_DIR/owner"
+OUT=$("$SCRIPT" --json 2>&1)
+assert_eq "dead owner pid reads stale" "stale" "$(printf '%s' "$OUT" | jq -r '.[] | select(.slug=="held") | .lock')"
+teardown_fake_root
+
+# Review r3 (L4): `active` needs a pid that names one process (a decimal above 1, as the
+# pre-flight and the janitor read it) whose start time still matches the owner record.
+# `kill -0 0` succeeds for any caller, so a pid of 0 used to read `active`.
+echo "T8d: review r3 — unusable or reused owner pid reads stale"
+setup_fake_root
+LOCK_DIR="$FAKE_ROOT/.claude/state/plan-w-team-workflow-held.lock"
+mkdir "$LOCK_DIR"
+echo "$DEAD_PID" > "$LOCK_DIR/pid"
+printf 'active\n' > "$LOCK_DIR/state"
+for BADPID in 0 -1 1 00 abc; do
+    printf 'session=sid-held\npid=%s\nkind=claude\nheartbeat=1\n' "$BADPID" > "$LOCK_DIR/owner"
+    OUT=$("$SCRIPT" --json 2>&1)
+    assert_eq "owner pid '$BADPID' reads stale" "stale" "$(printf '%s' "$OUT" | jq -r '.[] | select(.slug=="held") | .lock')"
+done
+printf 'session=sid-held\npid=%s\nstart=Thu Jan 1 00:00:00 1970\nkind=claude\nheartbeat=1\n' "$$" > "$LOCK_DIR/owner"
+OUT=$("$SCRIPT" --json 2>&1)
+assert_eq "reused owner pid (start differs) reads stale" "stale" "$(printf '%s' "$OUT" | jq -r '.[] | select(.slug=="held") | .lock')"
+MYSTART=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$$" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//')
+printf 'session=sid-held\npid=%s\nstart=%s\nkind=claude\nheartbeat=1\n' "$$" "$MYSTART" > "$LOCK_DIR/owner"
+OUT=$("$SCRIPT" --json 2>&1)
+assert_eq "owner pid with its own start reads active" "active" "$(printf '%s' "$OUT" | jq -r '.[] | select(.slug=="held") | .lock')"
+teardown_fake_root
+
+echo "T8c: row 191 release marker — retro-complete lock reads released"
+setup_fake_root
+LOCK_DIR="$FAKE_ROOT/.claude/state/plan-w-team-workflow-doneish.lock"
+mkdir "$LOCK_DIR"
+echo "$DEAD_PID" > "$LOCK_DIR/pid"
+printf 'session=sid-d\npid=%s\nkind=claude\nheartbeat=1\n' "$$" > "$LOCK_DIR/owner"
+printf 'released\n' > "$LOCK_DIR/state"
+OUT=$("$SCRIPT" --json 2>&1)
+assert_eq "released lock reads released" "released" "$(printf '%s' "$OUT" | jq -r '.[] | select(.slug=="doneish") | .lock')"
+OUT=$("$SCRIPT" 2>&1)
+assert_contains "released shown in the table" "released" "$OUT"
 teardown_fake_root
 
 echo "T9: AC6 — output contains no reserved /plan-w-team status-block field names"

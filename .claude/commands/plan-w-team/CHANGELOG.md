@@ -14,6 +14,205 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.56.0] — 2026-09-25 (fix: R255 — the 2.53.0 review residuals, rows 191–195: workflow-lock owner, model-id matching, bash 3.2 test runs, retest manifest bytes, post-push confirm directory) (a831c7ed)
+
+CleanRev Current's review of 2.53.0 left five residual rows (191–195). Each area was built and
+reviewed on its own, then integrated, re-reviewed and repaired until a round came back with no
+findings. Nothing here changes the Model Tiering v9 ruling.
+
+### Tests run under bash 3.2 (row 193)
+
+- `tests/skill/run.sh` runs every `.test.sh` with `SHELL_TEST_BASH=${HOOK_BASH:-/bin/bash}`
+  instead of the PATH bash, in full, timeout and retest modes. The Phase 2 header names the
+  interpreter and the version it reports. `corpus-state-isolation.bats` mirrors it. The
+  `HOOK_BASH` preflight now runs before the bats phase.
+- **Production fix.** `.claude/hooks/plan-w-team-route-prompt.sh` did not parse under
+  `/bin/bash` 3.2 (quote characters in a python heredoc inside `$( )`), so the route hook
+  failed on a stock macOS bash. Its test now runs the hook under `HOOK_BASH` at all 8 call sites.
+- Fixed 3.2 parse and runtime failures that a Homebrew PATH bash hid:
+  `pwt-goal-lane-settings.test.sh` (case arms inside `$( )`), `plan-w-team-orchestrator-route.test.sh`
+  (`local -n` → `printf -v`; the bash-4.3 guard is gone), `pwt-approver.test.sh` AC4 (3.2 brace
+  expansion inside a quoted `$( )` made four checks tautologies), and
+  `plan-w-team-supervisor-state-detection.test.sh` (an empty array under `set -u` aborted cleanup
+  and stranded quarantined live goal-state in `/tmp`).
+- The orchestrator-route AC6 symmetry check could never fail (`… || true; sc_exit=$?`). It now
+  reads the real exit status.
+- **Spawn-registry leak.** `plan-w-team-register-spawn.sh` honours `PWT_PROJECT_ROOT_OVERRIDE`
+  first, so nine tests that point it at a sandbox no longer write gitignored registry rows into
+  the live checkout's `.claude/state`. With the override unset, resolution is unchanged.
+
+### Model resolvers (row 192)
+
+- **Lead fallback.** `pwt_fallback_model` has an explicit `claude-opus-4-8` arm: a fallback doing
+  the lead's work is never Sonnet. A lane's `--fallback-model` list stays
+  `claude-opus-4-8,claude-sonnet-5`; the rate-limit hook's one-rung lead step takes only the
+  first entry.
+- **One refusal point.** `__pwt_model_refused` refuses `claude-fable*`, `fable`, the exact
+  `claude-opus-5`, `opus`, `opusplan`, `best` and `default`, with or without a `[…]` suffix. The
+  primary check, the fallback seed and each explicit fallback entry all use it. `sonnet` and
+  `haiku` stay accepted.
+- **Provider spellings.** A new match key strips a `[…]` suffix, an ARN or gateway path prefix, a
+  Vertex `@version`, a Bedrock `-vN[:M]` suffix, an `anthropic.` prefix with an optional region and
+  a `-YYYYMMDD` date before the exact bans apply. There is still no `claude-opus-5*` glob, so
+  `claude-opus-5-5` always passes. An accepted id is emitted as given.
+- **Rate-limit hook transcript.** `plan-w-team-rate-limit-resume.sh` finds the transcript from the
+  StopFailure `transcript_path`, then the project key, then the `pwd -P` key, then the newest
+  `<projects>/*/<sid>.jsonl` for a plain SID. It honours `CLAUDE_PROJECTS_DIR` and
+  `CLAUDE_CONFIG_DIR`. Its test is hermetic, waits for every sleeper it arms, and pins the SID
+  path-traversal guard. The test's default session id comes from its sandbox path, and it stops
+  each sleeper and that sleeper's current `sleep` child by pid, never by process group
+  (cleanscale's port lints group kills out, so the file now ports as is).
+
+### Targeted retest (row 195)
+
+- **Every manifest mode reads NUL-delimited git output** (`-z`, `read -r -d ''`), and every text
+  tool in `plan-w-team-retest-lib.sh` runs as `LC_ALL=C`. Before, under a UTF-8 locale on macOS,
+  a path byte that is not valid UTF-8 made `tr` / `sed` stop, so the manifest failed or silently
+  dropped later paths. The untracked listing and the rerun set failed open, and the log readers
+  recorded a green run as marker-absent.
+- The untracked-readable allowlist and `subject_tracked_digest` are gone. A green run that
+  needed an uncommitted file can never cover a push without it.
+- **The python3 exec shim** (`__TG_SIGDFL_PY`, for hosts without perl) resets SIGINT, SIGQUIT,
+  SIGPIPE and SIGXFSZ to their defaults before `os.execvp`, and sets `PYTHONCOERCECLOCALE=0`
+  while restoring the caller's own value. Before, the suite inherited SIGPIPE and SIGXFSZ
+  ignored: `while :; do echo x; done | head -1` never ended. The python3-shim case now tags
+  every process it starts and fails if any of them outlives it. A mutant stub that leaks a
+  tagged `sleep` proves the check goes red.
+- `_head_subject_digest` in the confirm calls `pwt_rt_subject_manifest <root> head` and keeps no
+  copy of its own. A new case pins the confirm compare's 64-hex subject-digest guard.
+- Deferred by design: full-mode `subject_digest` enforcement in the pre-commit gate (195(1)).
+  195(3) did not reproduce: the `Terminated: 15` came from a cleanscale suite log.
+
+### Post-push confirm (row 194)
+
+- **Push directory.** `_push_dir` uses a quote-aware lexer and replays each `cd`, working back from
+  the hook's post-command cwd (checked live on CLI 2.1.282). A `cd` after the push no longer wins
+  over an earlier one. A `cd` that failed or may not have run makes the directory unknown. zsh's
+  `&` model is handled. `command cd`, `chdir`, `git --git-dir` / `--work-tree`,
+  `-c core.worktree=…`, a `-c` key with `$`, and a push after a `GIT_DIR=` / `GIT_WORK_TREE=`
+  assignment also make it unknown. An unknown directory never yields a confident wrong one.
+- Decided, not changed: no `if` handler for wrapper forms (`timeout`, `nohup`, `sudo`), and no
+  retry of a confirm that dies inside the 900 s reflog window. Both are documented.
+- The test fixture turns off git auto-maintenance on both sides (`receive.autogc false` for
+  git < 2.45, where only `receive.autogc` gates the receive-side `gc --auto`).
+
+### Workflow lock and kill-switch ledger (row 191)
+
+- **Durable lock owner.** The Pre-Flight workflow lock no longer uses a per-call EXIT trap, which
+  freed the lock on every `--resume` / `--ship-only`. It writes an `owner` record: `session=`,
+  `pid=` (the lead's claude process, found within two hops; `kind=parent` otherwise), `start=`,
+  `kind=` and `heartbeat=`. Re-entry is allowed for the same session, or for the same claude
+  process under a new session id (`/clear`, `/resume`). A pid that is not usable can never be
+  shown to be gone, so it conflicts.
+- The janitor, `pwt-status.sh`, `plan-w-team-surface-status.sh` and the fleet writer read the same
+  owner record. The fleet writer credits a subagent to a run only when its `session_id` matches
+  the owner's and the lock is held.
+- **Committed-copy sidecar.** The ledger sanctions the built-in list plus the sidecar as committed
+  at the run's anchor, pinned at the first stage. Only `refs/heads/main`, `refs/heads/master` and
+  `refs/remotes/origin/*` are accepted as anchors. A moved ref is reported, and a stale-base
+  working copy is labelled apart from drift.
+- `resolve_state_dir` scrubs `GIT_DIR` / `GIT_WORK_TREE`, so an exported one cannot send rows to
+  another repository.
+- The Untracked Baseline adds the ledger `*.jsonl` / `*.init` patterns and the workflow-lock
+  pattern, each only when the repo's own `.gitignore` files do not already cover it (row 180 (d)).
+- Decided: the two sync switches stay out of the ledger's family (row 182 item 2).
+
+### Docs
+
+- `killswitch-bypass-ledger.md`: `PLAN_W_TEAM_DISABLE_FABLE` enforces the founder no-Fable rule.
+- `lane-enforcement.md`: records that this lane guard's scanner fails closed and cleanscale's port
+  fails open on purpose, and that neither copy moves toward the other without both repos agreeing.
+
+## [2.55.0] — 2026-09-25 (§1b-pre AUTO keep/park review closed → KEEP; shape-tolerant `plan-w-team-spec-fanout-tally.sh`) (f0613828)
+
+Resolves recursive-followup **row 29** (`parallelism-go-nogo`, the oldest open row). It was
+the keep/park review of the §1b-pre spec fan-out, which has run AUTO since 1.50.0.
+
+- **Verdict: KEEP.** Across all 8 surviving fan-out records from claude-pattern, parts and
+  cleanscale, 7 scored runs folded **184** findings before the AC freeze (median 26, minimum
+  11, no run at 0). The 8th was degraded: every reviewer failed with 529 and the lead
+  self-reviewed. The AUTO default stays, and row 29 is closed as promoted.
+- **Stated limit.** KEEP applies the operator's pre-registered rule. It does not show the
+  fan-out beats a single-pass spec: the degraded self-review run still folded 3, so a raw
+  folded count is close to unfalsifiable. The decision record's 2026-09-24 addendum
+  (`docs/operations/pwt-parallelism-go-nogo-2026-07-02.md`) records this. It also records the
+  full evidence table and the re-check command.
+- **Tracked evidence.** Records are gitignored and die with their worktrees, so a redacted,
+  shape-preserving snapshot now lives at `docs/operations/evidence/spec-fanout-2026-09-24/`.
+  It holds counts only, no finding text, plus a `MANIFEST.tsv` of original sha256s.
+- **Defect fixed: §8j-nonies printed raw JSON.** The §1b-pre writer contract names an integer
+  `findings_folded`, but 2 of the 8 records stored a list. The retro's untyped
+  `jq -r '.findings_folded // 0'` printed the array itself where a number belonged. The retro
+  now reads the record through the new script.
+- **New: `.claude/scripts/plan-w-team-spec-fanout-tally.sh`** (synced to consumers).
+  - **Record mode** (`--file`) counts an integer, a list or a digit string. Anything else is
+    reported as `unscorable`, never 0.
+  - A run whose reviewers all failed is marked `degraded` and not counted.
+  - **Tally mode** (`--state-dir`, repeatable; `--min-runs`, `--park-below`, `--window`)
+    returns `KEEP` / `PARK` / `INSUFFICIENT` on the median and the zero-run share, not the
+    mean. The JSON output carries a versioned `schema` (`pwt-spec-fanout-tally/1`).
+  - **Hardening from the spec fan-out's security review:** a record filename outside
+    `plan-w-team-spec-fanout-[A-Za-z0-9._-]+.json` is never read and prints `<unprintable>`,
+    so it cannot forge an `AC<N>: PASS` anchor. Symlinks, FIFOs and files over 1 MiB are
+    never opened. jq filters are literals.
+  - Advisory: it exits 0 on every data condition and 2 on a usage error. bash 3.2.
+- **Writer contract (§1b-pre).** Counts must be integers. An optional
+  `findings_folded_blocker` gives the BLOCKER-class subset, the input a future re-check needs
+  to be able to fail. Itemized text goes in `findings_folded_detail` /
+  `findings_deferred_detail`. A run whose reviewers all failed writes `"degraded": true`.
+  Legacy list-shaped records still read.
+- **Step-5 review hardening (silent-failure and test-gap passes).** A missing or unreadable
+  `--state-dir` is counted and reported (`dirs_missing=N`, plus a stderr warning), never read
+  as an empty directory. A `--window` names what it dropped (`window=N of M`). A row whose
+  annotation fails stays in the tally as `unreadable`. A jq without regex support reports
+  `unavailable` instead of blaming every record as `invalid-json`. An unscorable deferred
+  count is reported as `deferred_unscorable`, not added as 0. `--park-below 01` exits 2 up
+  front; before, `--argjson` rejected it and the output went silently blank.
+- **Retro message split.** The retro now tells "tally script unavailable (sync gap)" apart from
+  "tally failed: exit N", and keeps the script's stderr.
+- **Flaky test repaired: `plan-w-team-post-push-confirm.test.sh`.** It failed at the ship
+  gate at host load ~50 and failed the same way on the unmodified file, so this release did
+  not cause it. Every failure was wall-clock coupling, not a product bug, and each was fixed by
+  removing the non-determinism rather than widening a timeout:
+  - The P2/P3/P20 seam body `sleep 3` is now gated on a release file the test touches (a
+    `--launch` taking 11s used to let it exit before P3 looked).
+  - The 900s push window aged out on a >15-minute run, so every later "launch expected"
+    case read as no-launch. Tests now pin it to one day; P7's 2020 push still exercises it.
+  - P17 now waits on the stub starting or the run exiting, not about 10s.
+  - P18/P27 prove the bound fired with a done-file the stub writes only when its 53s sleep
+    completes. Before, they checked elapsed time < 40s, which read 120s under load even
+    though the bound had fired.
+- **Flaky test repaired: `statusline-plan-usage.test.sh`.** It aged its fixture samples from
+  a `NOW` taken at the top of the file. The file ran more than 60s before the age-marker cases,
+  so a "480 s old" sample rendered as `⟳ 9m` instead of `⟳ 8m` (and `STALE 23m` instead of
+  `22m`). It now ages each sample from the clock at the moment the fixture is written.
+- **Registry and tests.** `shared/state-artifacts.md` names the new reader and the writer
+  fields. New `tests/skill/cases/spec-fanout-tally.bats` has 47 cases. Among them, it runs the
+  §8j-nonies bash block in a sandbox repo (list record, missing script, failing script), and it
+  runs the tally over the tracked evidence and checks the result.
+
+## [2.54.1] — 2026-09-24 (fix: `sync-to-project.sh --commit` never committed a sync that changed a tracked file) (b0d61ab0)
+
+Found during the 2.54.0 fleet sync. helm was skipped because of two hook-state files, and the
+single-repo `--commit` path was used to finish it. The sync wrote its files, and then
+`--commit` refused: *"pre-existing uncommitted work: M .claude/commands/plan-w-team.md …"*.
+Those files were the sync's own writes.
+
+- **Root cause.** `sync-to-project.sh` asked `sync_commit_dirty_check` after the sync. By
+  then the sync's writes looked like someone else's uncommitted work, and so did the staged
+  `git rm`s from the retired-path pass. The refusal therefore fired every time the sync changed
+  a tracked file, so `--commit` could only "succeed" on a no-op sync. `sync-all-projects.sh`,
+  which the fleet sweeps use, has always asked before the sync, so they were not affected.
+- **Fix.** The `--commit` verdict is now taken before the sync writes anything, right after the
+  target-dirty guard's verdict, and read back at commit time. Staged work and tracked dirt in
+  sync paths still refuse the commit; only the sync's own writes stop counting against it.
+- **Tests** (`sync-target-dirty-guard.bats`, 2 new): a clean consumer synced with `--commit`
+  gets a `chore: sync …` commit that contains the skill files. The old script leaves `HEAD` at
+  `init` and prints the refusal. Staged work outside `.claude/` still refuses the commit,
+  while the sync itself runs and the staged file stays staged. 36/36 under `/bin/bash` 3.2.
+- `sync-to-project.sh` is source-only, so there is nothing for consumers to adopt. helm was
+  finished by hand on both hosts with the library's scoped commit, which excludes `.claude/state`.
+
 ## [2.54.0] — 2026-09-24 (feat: 7-day reset on the plan line — `▸7d 71% (resets Wed 9/30 3:59am)`; a Fable reset equal to it is not repeated; statusline 1.9.0) (1d05f966)
 
 The operator asked for the 7-day window to show when it resets, in the same form as the

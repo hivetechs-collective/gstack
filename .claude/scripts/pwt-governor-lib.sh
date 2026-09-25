@@ -25,12 +25,13 @@
 #   pwt_governor_manifest_path   → echoes the resolved manifest path, or empty
 #
 # Model resolution (Model Tiering v9; pure, echo only, identical governed and ungoverned):
-#   pwt_primary_model <id> [<if-unset>] → the lane primary: a Fable / claude-opus-5 / bare-opus id
-#                                  is refused (one stderr warning) and echoes <if-unset> when given,
-#                                  else claude-opus-5-5; any other id echoes trimmed, case kept
+#   pwt_primary_model <id> [<if-unset>] → the lane primary: a Fable / claude-opus-5 id (in any
+#                                  Bedrock/Vertex/[..] form) or an opus / opusplan / best / default
+#                                  alias is refused (one stderr warning) and echoes <if-unset> when
+#                                  given, else claude-opus-5-5; any other id echoes trimmed, case kept
 #   pwt_fallback_model <primary> [<explicit>] → the --fallback-model list for that primary
-#                                  (Opus 5.5 → claude-opus-4-8,claude-sonnet-5; any other → itself);
-#                                  never a refused id
+#                                  (Opus 5.5 → claude-opus-4-8,claude-sonnet-5; Opus 4.8 → itself,
+#                                  never Sonnet; any other → itself); never a refused id
 #
 # CLI (executed, not sourced): `pwt-governor-lib.sh --json` for tests.
 #
@@ -211,17 +212,39 @@ pwt_governor_model() {   # $1 = tier (design|intelligent|mechanical)
 # entries dropped, and the model resolver trims and lower-cases a name before matching the
 # aliases (fable, opus, sonnet, haiku, ...). So 'claude-opus-4-8, claude-fable-5-1', 'FABLE' or a
 # BOM-prefixed id would otherwise slip past an exact-string match and still reach Fable.
-# Refused:
-#   - Fable in any form — claude-fable*, the bare alias fable, fable[...]   (retired, v9)
-#   - EXACTLY claude-opus-5, and its context-suffixed claude-opus-5[...]     (forbidden, v5)
-#   - the bare alias opus / opus[...] — it resolves by CLI version (claude-opus-5 before 2.1.280),
-#     so a lane must name an explicit id
+# The refusal is then applied to a MATCH KEY (__pwt_model_key, R255): the normalized id with its
+# provider wrapping removed, so a Bedrock/Vertex/gateway spelling of a banned model is caught by
+# the same exact bans. Refused (on the key):
+#   - Fable in any form — claude-fable*, the bare alias fable                (retired, v9)
+#   - EXACTLY claude-opus-5                                                   (forbidden, v5)
+#   - the CLI-version-dependent aliases, so a lane must name an explicit id:
+#       opus     — the latest Opus by CLI version (claude-opus-5 before 2.1.280)
+#       opusplan — opus in plan mode, so it inherits the opus problem
+#       best     — Fable where the account has it, else opus
+#       default  — the account default, which moves with the CLI/runtime version
+#     sonnet and haiku stay accepted: on every CLI version and provider they resolve to a
+#     Sonnet / Haiku model, never to Fable or claude-opus-5.
+# Every form above also refuses with a [...] context suffix (opus[1m], best[1m], ...): the key
+# drops it. An operator's ANTHROPIC_DEFAULT_*_MODEL alias remap is host config, out of scope.
 # Never widen the Opus 5 arm into a claude-opus-5* glob: claude-opus-5-5 is the Brain tier.
-# The normalized form is for MATCHING only. An id that passes is emitted as the caller wrote it
-# with only the surrounding whitespace trimmed (__pwt_model_trim): the CLI hands a non-alias id
-# on in its original case, so a case-sensitive gateway/proxy model name must survive intact.
+# The normalized form and the key are for MATCHING only. An id that passes is emitted as the
+# caller wrote it with only the surrounding whitespace trimmed (__pwt_model_trim): the CLI hands a
+# non-alias id on in its original case, so a case-sensitive gateway/proxy model name must survive
+# intact, and a Bedrock/Vertex id keeps its provider form.
 __pwt_model_norm() {   # $1 = model id → echoes it with whitespace + non-ASCII bytes removed, lower-cased
   printf '%s' "${1:-}" | LC_ALL=C tr -d '\200-\377[:space:]' | LC_ALL=C tr '[:upper:]' '[:lower:]'
+}
+# R255: provider-prefixed ids escaped the exact bans — us.anthropic.claude-opus-5-v1:0 (Bedrock)
+# and claude-opus-5@20260101 (Vertex) are claude-opus-5, and anthropic.claude-fable-5-1-v1:0 is
+# Fable. The key strips, in order: a [...] context suffix; a path prefix up to the last '/'
+# (a Bedrock foundation-model / system inference-profile ARN, a gateway's provider/ prefix); a
+# Vertex @<version> suffix; a Bedrock -v<N> / -v<N>:<M> suffix; an anthropic. prefix with an
+# optional one-label cross-region prefix (us. eu. apac. global. ...); a -YYYYMMDD snapshot date.
+# Then the SAME exact bans apply, so claude-opus-5-5 in any of these forms keys to claude-opus-5-5
+# and passes. A Foundry deployment name or a Bedrock application-inference-profile ARN is opaque
+# (the model is not in the string) and cannot be matched here.
+__pwt_model_key() {   # $1 = NORMALIZED model id → echoes the provider-agnostic match key
+  printf '%s' "${1:-}" | LC_ALL=C sed -E 's/\[.*$//; s#^.*/##; s/@.*$//; s/-v[0-9]+(:[0-9]+)?$//; s/^([a-z0-9-]+\.)?anthropic\.//; s/-[0-9]{8}$//'
 }
 __pwt_model_trim() {   # $1 = model id → echoes it with ONLY leading/trailing whitespace removed
   local v="${1:-}"
@@ -230,27 +253,28 @@ __pwt_model_trim() {   # $1 = model id → echoes it with ONLY leading/trailing 
   printf '%s\n' "$v"
 }
 __pwt_model_refused() {   # $1 = NORMALIZED model id → exit 0 when Model Tiering v9 refuses it
-  case "${1:-}" in
-    claude-fable*|fable|fable\[*|claude-opus-5|claude-opus-5\[*|opus|opus\[*) return 0 ;;
+  case "$(__pwt_model_key "${1:-}")" in
+    claude-fable*|fable|claude-opus-5|opus|opusplan|best|default) return 0 ;;
   esac
   return 1
 }
 
 # Model Tiering v9 hardening (2.50.0-1): the lane PRIMARY gets the same refusal as a fallback
 # rung. A requested primary (an env PWT_PRIMARY_MODEL, a consumer model table exporting it, or
-# a lead's transcript model) naming Fable, claude-opus-5 or the bare opus alias is refused with
-# ONE warning; anything else is echoed trimmed, in its original case. An empty or refused
-# primary echoes $2 when a second argument is given, else claude-opus-5-5. The spawn/resume
-# sites pass "" so a refused env pin counts as UNSET and their normal resolution runs (the
-# governed intelligent tier when a governor manifest applies, else claude-opus-5-5); they call
-# it BEFORE the governed override and pwt_fallback_model. Pure (echo only).
+# a lead's transcript model) naming Fable, claude-opus-5 (in any provider form) or a
+# CLI-version-dependent alias (opus, opusplan, best, default) is refused with ONE warning;
+# anything else is echoed trimmed, in its original case. An empty or refused primary echoes $2
+# when a second argument is given, else claude-opus-5-5. The spawn/resume sites pass "" so a
+# refused env pin counts as UNSET and their normal resolution runs (the governed intelligent
+# tier when a governor manifest applies, else claude-opus-5-5); they call it BEFORE the governed
+# override and pwt_fallback_model. Pure (echo only).
 pwt_primary_model() {   # $1 = requested primary (may be empty); $2 = echo when empty/refused (optional)
   local d="claude-opus-5-5" p n
   [ $# -ge 2 ] && d="${2}"
   p=$(__pwt_model_trim "${1:-}"); n=$(__pwt_model_norm "$p")
   [ -n "$n" ] || { printf '%s\n' "$d"; return 0; }
   if __pwt_model_refused "$n"; then
-    printf '⚠ pwt-governor: primary model %s refused (Fable is retired, claude-opus-5 is forbidden, bare opus is CLI-version-dependent — Model Tiering v9); %s\n' \
+    printf '⚠ pwt-governor: primary model %s refused (Fable is retired, claude-opus-5 is forbidden, opus/opusplan/best/default are CLI-version-dependent aliases — Model Tiering v9); %s\n' \
       "$p" "$([ -n "$d" ] && printf 'using %s' "$d" || printf 'treating it as unset')" >&2
     printf '%s\n' "$d"
     return 0
@@ -259,17 +283,30 @@ pwt_primary_model() {   # $1 = requested primary (may be empty); $2 = echo when 
 }
 
 # Model Tiering v9 (2.50.0, operator ruling 2026-09-22): the bg --fallback-model for a lane.
-# No Fable anywhere, fallbacks included. When Opus 5.5 is overloaded or unavailable the lane
-# steps down the fleet chain Opus 4.8 → Sonnet 5 (cleanscale #6254); any other primary (a
-# consumer's Sonnet/Haiku lane) falls back to itself. `--fallback-model` takes a
-# comma-separated list (CLI 2.1.280) and outranks settings.json `fallbackModel`.
+# No Fable anywhere, fallbacks included. The output is read two ways, and the default for each
+# primary is chosen with both in mind:
+#   - as a LANE LIST: pwt-goal.sh / pwt-steer.sh pass the whole list to `claude --bg
+#     --fallback-model` (comma-separated since CLI 2.1.280; it outranks settings.json
+#     `fallbackModel`). An Opus 5.5 lane gets the fleet chain Opus 4.8 → Sonnet 5 (cleanscale
+#     #6254), used only when 5.5 is overloaded or unavailable.
+#   - as a ONE-RUNG LEAD STEP: plan-w-team-rate-limit-resume.sh takes only the FIRST entry and
+#     injects `/model <it>` when it differs from the lead's model; a first entry equal to the
+#     lead means "no lower rung, model unchanged".
+# So an Opus 5.5 primary's first rung is claude-opus-4-8. Every other primary falls back to
+# ITSELF, which both readers take as "no lower rung". That includes a lead ALREADY on
+# claude-opus-4-8: it stays on Opus 4.8 and is never stepped to Sonnet, because a fallback doing
+# the lead's work is intelligent work, never Sonnet (cleanscale founder doctrine 2026-08-29,
+# reconfirmed under v9, R255). The claude-opus-4-8 arm below spells that out; do not add
+# claude-sonnet-5 to it. A consumer lane on Sonnet/Haiku (or a provider-form id) is itself too.
+# An explicit fallback always wins over these defaults, entry by entry (cleanscale sets its
+# own PWT_FALLBACK_MODEL to Opus 4.8).
 # An explicit fallback is checked entry by entry on the normalized form (see __pwt_model_norm):
 # empty entries ('a,,b', a trailing comma), an entry naming the primary's own model, and
 # duplicates are dropped; if ANY entry is refused (__pwt_model_refused) the whole explicit list
-# is refused (one warning) and the default chain is used, as it is when nothing valid remains.
-# Kept entries — and a non-Opus-5.5 primary falling back to itself — are emitted trimmed, in
-# their original case. A refused or empty PRIMARY seeds the Opus 5.5 chain, so this never
-# echoes — or warns "using" — a forbidden model. Pure (echo only); governed and ungoverned alike.
+# is refused (one warning) and the default is used, as it is when nothing valid remains.
+# Kept entries — and a primary falling back to itself — are emitted trimmed, in their original
+# case. A refused or empty PRIMARY seeds the Opus 5.5 chain, so this never echoes — or warns
+# "using" — a forbidden model. Pure (echo only); governed and ungoverned alike.
 pwt_fallback_model() {   # $1 = resolved primary, $2 = explicit fallback (may be empty)
   local p pn f="${2:-}" base def m e rest out="" seen="," bad=""
   p=$(__pwt_model_trim "${1:-}"); pn=$(__pwt_model_norm "$p")
@@ -277,6 +314,7 @@ pwt_fallback_model() {   # $1 = resolved primary, $2 = explicit fallback (may be
   base="${pn%%\[*}"
   case "$base" in
     claude-opus-5-5) def="claude-opus-4-8,claude-sonnet-5" ;;
+    claude-opus-4-8) def="$p" ;;   # the lead's work stays intelligent: 4.8 never steps to Sonnet
     *)               def="$p" ;;
   esac
   if [ -z "$f" ]; then echo "$def"; return 0; fi

@@ -30,13 +30,14 @@ set -uo pipefail
 #       without aborting the whole suite. Failures are collected and reported.
 
 # ---------------------------------------------------------------------------
-# Bash version guard — local -n (nameref) requires bash 4.3+
+# Bash compatibility — runs under macOS /bin/bash 3.2.57 AND bash 5.x.
 # ---------------------------------------------------------------------------
-if [[ "${BASH_VERSINFO[0]}" -lt 4 ]] || \
-   { [[ "${BASH_VERSINFO[0]}" -eq 4 ]] && [[ "${BASH_VERSINFO[1]}" -lt 3 ]]; }; then
-  echo "ERROR: bash 4.3+ required (found $BASH_VERSION)" >&2
-  exit 2
-fi
+# This suite used to require bash 4.3+ (`local -n` namerefs in run_router_cmd)
+# and exited 2 "bash 4.3+ required" under /bin/bash 3.2 — a failure the skill
+# suite never saw on hosts whose PATH bash is Homebrew 5.x. run_router_cmd now
+# sets caller variables with `printf -v` (bash 3.1+); keep it 3.2-safe (no
+# namerefs, mapfile, declare -A, ${x,,}). tests/skill/run.sh runs every
+# .test.sh under ${HOOK_BASH:-/bin/bash}, so a regression goes red there.
 
 # ---------------------------------------------------------------------------
 # Paths (absolute — worktree-cwd-safe)
@@ -283,38 +284,52 @@ chmod +x "$MOCK_SHIM_DIR/ask_user_question"
 #     [KEY=val ...]  -- <router_args...>
 #
 # env overrides are collected until "--", then remaining args go to the router.
-# Uses bash 4.3+ namerefs to set caller variables.
+# Sets the caller's variables with `printf -v` (bash 3.1+), not `local -n`
+# namerefs (bash 4.3+). printf -v writes through dynamic scope, so the caller's
+# `local exit_code stdout stderr` are the variables assigned. Every local in
+# here carries the `_rrc_` prefix so it can never shadow a caller-supplied name
+# (a shadowed name would silently write OUR local and leave the caller's unset);
+# a caller name with that prefix is refused outright.
 run_router_cmd() {
-  local -n _rc=$1
-  local -n _out=$2
-  local -n _err=$3
+  local _rrc_rc_var=$1 _rrc_out_var=$2 _rrc_err_var=$3
   shift 3
 
-  local env_pairs=()
+  local _rrc_name
+  for _rrc_name in "$_rrc_rc_var" "$_rrc_out_var" "$_rrc_err_var"; do
+    case "$_rrc_name" in
+      _rrc_*)
+        echo "run_router_cmd: caller variable '$_rrc_name' collides with the helper's _rrc_ locals" >&2
+        return 2
+        ;;
+    esac
+  done
+
+  local _rrc_env_pairs=()
   while [[ $# -gt 0 && "$1" != "--" ]]; do
-    env_pairs+=("$1")
+    _rrc_env_pairs+=("$1")
     shift
   done
   [[ "${1:-}" == "--" ]] && shift
 
-  local router_args=("$@")
-  local tmp_out tmp_err
-  tmp_out="$TEST_TMPDIR/rout-stdout-$$-$RANDOM"
-  tmp_err="$TEST_TMPDIR/rout-stderr-$$-$RANDOM"
+  local _rrc_router_args=("$@")
+  local _rrc_tmp_out _rrc_tmp_err _rrc_rc
+  _rrc_tmp_out="$TEST_TMPDIR/rout-stdout-$$-$RANDOM"
+  _rrc_tmp_err="$TEST_TMPDIR/rout-stderr-$$-$RANDOM"
 
   env \
     PATH="$MOCK_SHIM_DIR:$PATH" \
     MOCK_AGENT_CALL_LOG="$MOCK_AGENT_CALL_LOG" \
     MOCK_ASK_CALL_LOG="$MOCK_ASK_CALL_LOG" \
     MOCK_AGENT_MODE="${MOCK_AGENT_MODE:-ok}" \
-    "${env_pairs[@]+"${env_pairs[@]}"}" \
-    bash "$ROUTER_SCRIPT" "${router_args[@]+"${router_args[@]}"}" \
-    >"$tmp_out" 2>"$tmp_err" \
-  ; _rc=$?
+    "${_rrc_env_pairs[@]+"${_rrc_env_pairs[@]}"}" \
+    bash "$ROUTER_SCRIPT" "${_rrc_router_args[@]+"${_rrc_router_args[@]}"}" \
+    >"$_rrc_tmp_out" 2>"$_rrc_tmp_err" \
+  ; _rrc_rc=$?
 
-  _out="$(cat "$tmp_out")"
-  _err="$(cat "$tmp_err")"
-  rm -f "$tmp_out" "$tmp_err"
+  printf -v "$_rrc_rc_var" '%s' "$_rrc_rc"
+  printf -v "$_rrc_out_var" '%s' "$(cat "$_rrc_tmp_out")"
+  printf -v "$_rrc_err_var" '%s' "$(cat "$_rrc_tmp_err")"
+  rm -f "$_rrc_tmp_out" "$_rrc_tmp_err"
 }
 
 reset_mock_logs() {
@@ -591,9 +606,13 @@ test_ac6() {
     return 1
   fi
 
-  local sc_exit
-  bash "$SYMMETRY_CHECK" >"$TEST_TMPDIR/sc-out" 2>&1 || true
-  sc_exit=$?
+  # Capture the checker's real exit. The old `… || true; sc_exit=$?` read the
+  # status of `true`, so this check was 0 whatever the checker said. The checker
+  # resolves its registry and rg scope RELATIVE to cwd, so run it from REPO_ROOT
+  # (the test may be launched from anywhere) and name the registry explicitly.
+  local sc_exit=0
+  ( cd "$REPO_ROOT" && "${HOOK_BASH:-/bin/bash}" "$SYMMETRY_CHECK" --registry "$STATE_ARTIFACTS_REGISTRY" ) \
+    >"$TEST_TMPDIR/sc-out" 2>&1 || sc_exit=$?
 
   if [[ "$sc_exit" -ne 0 ]]; then
     echo "    ASSERT FAIL [AC6: symmetry-check exit 0] — exits $sc_exit" >&2

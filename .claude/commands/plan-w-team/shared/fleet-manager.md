@@ -14,18 +14,31 @@ Registry: `shared/state-artifacts.md` (one row, mode `handoff`)
 
 ## Overview
 
-| Concern                                          | How it's solved                                                                  |
-| ------------------------------------------------ | -------------------------------------------------------------------------------- |
-| Which subagent spawned and when                  | `SubagentStart` hook writes a `spawn` row                                        |
-| Which subagent finished and when                 | `SubagentStop` hook writes a `complete` row                                      |
-| Which SLUG owns the event                        | Hook derives from active `plan-w-team-workflow-*.lock` dir                       |
-| Mapping `agent_id` → `task_id`                   | Sidecar `plan-w-team-fleet-intent-<slug>.jsonl` written by 03-execute.md (T3-04) |
-| Spawning the next ready task without batch waits | Lead calls `fleet-query.sh next-spawnable <slug>` before each `Agent()`          |
-| Retro auditing of parallelism                    | Step 8 `§8j-ter` reads the log + intent sidecar                                  |
+| Concern                                          | How it's solved                                                                           |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| Which subagent spawned and when                  | `SubagentStart` hook writes a `spawn` row                                                 |
+| Which subagent finished and when                 | `SubagentStop` hook writes a `complete` row                                               |
+| Which SLUG owns the event                        | The held `plan-w-team-workflow-*.lock` whose owner `session=` is the input's `session_id` |
+| Mapping `agent_id` → `task_id`                   | Sidecar `plan-w-team-fleet-intent-<slug>.jsonl` written by 03-execute.md (T3-04)          |
+| Spawning the next ready task without batch waits | Lead calls `fleet-query.sh next-spawnable <slug>` before each `Agent()`                   |
+| Retro auditing of parallelism                    | Step 8 `§8j-ter` reads the log + intent sidecar                                           |
 
 The hook is **observability infrastructure**: it must never block agent
 workflow. Every error path exits 0 with a stderr message; payload gaps are
 recorded as `event=error` rows that retro surfaces.
+
+**Which run a subagent belongs to** (recursive-followup row 191, review r3). The
+hook credits a subagent to the run whose workflow lock is held (not `released`,
+and its owner pid is present with the recorded `start=`) AND whose owner
+`session=` equals the hook input's `session_id`: the lead's
+`CLAUDE_CODE_SESSION_ID`, which Claude Code puts in the lead's `SubagentStart`
+and `SubagentStop` input. Input that cannot be tied to a session is dropped,
+never guessed: an input with no usable `session_id`, a pre-row-191 lock with no
+`owner` record, and an owner with an empty `session=` credit nothing. So
+parallel runs of different sessions each get only their own subagents, and a
+subagent of a session that runs no pipeline is logged nowhere. The newest-lock
+fallback (with a stderr WARN) is left for one case only: ONE session holds
+several locks.
 
 ## JSONL Schema
 
@@ -125,14 +138,15 @@ denominator.
 
 ## Failure Modes & Recovery
 
-| Failure                                                                   | Behavior                                                | Recovery                                                            |
-| ------------------------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------- |
-| Missing `$CLAUDE_AGENT_TASK_ID`                                           | Hook writes `event=error` row, exits 0                  | Retro flags as data-quality warning; no impact on workflow          |
-| No active workflow lock when hook fires                                   | Hook exits 0 silently (not a /plan-w-team-driven spawn) | Expected; hook is no-op outside /plan-w-team                        |
-| Multiple active workflow locks (parallel /plan-w-team on different slugs) | Hook picks newest lock; warns to stderr                 | Acceptable; cross-run misattribution is rare and visible in retro   |
-| Fleet log corrupted (manual edit, crash mid-write)                        | Reader skips bad rows with stderr warn                  | Retro reports corrupt-row count; consider re-running affected stage |
-| Reader called before any spawn                                            | All subcommands return empty/zero                       | Expected; lead falls back to legacy batch dispatch                  |
-| `jq` not installed                                                        | Reader prints error to stderr, returns empty            | Install `jq` (already a /plan-w-team dependency)                    |
+| Failure                                                                                                        | Behavior                                                                                                                 | Recovery                                                                                |
+| -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
+| Missing `$CLAUDE_AGENT_TASK_ID`                                                                                | Hook writes `event=error` row, exits 0                                                                                   | Retro flags as data-quality warning; no impact on workflow                              |
+| No held workflow lock owned by the input's session                                                             | Hook exits 0 silently; the subagent is credited to no run (the cases are listed under _Which run a subagent belongs to_) | Expected; outside /plan-w-team, or for another session's subagent, the hook is a no-op  |
+| Parallel /plan-w-team runs of different sessions                                                               | Each subagent goes to the run of its own session; no WARN                                                                | None needed                                                                             |
+| ONE session holds several held locks (it runs more than one SLUG, e.g. in-process agents with their own SLUGs) | Hook picks the newest of that session's locks; warns to stderr                                                           | Visible in retro as the WARN; that session's subagents can be credited to its newer run |
+| Fleet log corrupted (manual edit, crash mid-write)                                                             | Reader skips bad rows with stderr warn                                                                                   | Retro reports corrupt-row count; consider re-running affected stage                     |
+| Reader called before any spawn                                                                                 | All subcommands return empty/zero                                                                                        | Expected; lead falls back to legacy batch dispatch                                      |
+| `jq` not installed                                                                                             | Reader prints error to stderr, returns empty                                                                             | Install `jq` (already a /plan-w-team dependency)                                        |
 
 The hook NEVER blocks an agent spawn. The reader NEVER crashes /plan-w-team.
 

@@ -51,7 +51,11 @@ run_case() {
     local name="$1" expect_invoke="$2" prompt_json="$3"
     setup_sandbox
     local out exit_code actual_invoke
-    out=$(printf '%s' "$prompt_json" | bash "$HOOK" 2>/dev/null)
+    # ${HOOK_BASH:-/bin/bash}, not the PATH bash: the hook must hold under macOS
+    # /bin/bash 3.2, where the classifier block used to be a parse error (a
+    # heredoc inside $( ), follow-up row 193) that exited 2 on every trigger
+    # match -- invisible under a Homebrew 5.x PATH bash.
+    out=$(printf '%s' "$prompt_json" | "${HOOK_BASH:-/bin/bash}" "$HOOK" 2>/dev/null)
     exit_code=$?
     actual_invoke="no"
     shim_was_invoked && actual_invoke="yes"

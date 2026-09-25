@@ -86,12 +86,65 @@ if [ -x "$__MANIFEST_SH" ]; then
         ${__WT_ROOT:+--worktree "$__WT_ROOT"} >/dev/null 2>&1 || true
 fi
 
+# 0 when the workflow lock's `owner` record ($1) is this caller — the pre-flight's
+# re-entry test (row 191): the same session id, or the same claude process, i.e.
+# `kind=claude` whose pid= is this tool shell's CLAUDE_PID and whose start= (when
+# recorded) is still that pid's start time (a reused pid is someone else). A symlinked
+# or missing record is nobody's.
+__lk_owner_is_caller() {
+    local f="$1" o_sid o_pid o_start o_kind cur
+    [ -f "$f" ] && [ ! -L "$f" ] || return 1
+    o_sid="$(sed -n 's/^session=//p' "$f" 2>/dev/null | head -n 1)"
+    if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && [ "$o_sid" = "$CLAUDE_CODE_SESSION_ID" ]; then
+        return 0
+    fi
+    o_kind="$(sed -n 's/^kind=//p' "$f" 2>/dev/null | head -n 1)"
+    o_pid="$(sed -n 's/^pid=//p' "$f" 2>/dev/null | head -n 1)"
+    o_start="$(sed -n 's/^start=//p' "$f" 2>/dev/null | head -n 1)"
+    # a kind=parent owner is matched by session id only (an unidentified parent may host
+    # more than one lead's shells), and only a decimal pid above 1 names one process
+    [ "$o_kind" = "claude" ] || return 1
+    case "$o_pid" in ""|0*|1|*[!0-9]*) return 1 ;; esac
+    [ "$o_pid" = "${CLAUDE_PID:-}" ] || return 1
+    [ -n "$o_start" ] || return 0
+    cur="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$o_pid" 2>/dev/null | tr -s ' ' | sed 's/^ //;s/ $//')"
+    [ "$cur" = "$o_start" ]
+}
+
 # Workflow lock state
 if [ -d "$LOCK_DIR" ]; then
+    __LK_OWN="$LOCK_DIR/owner"
     if [ "$STAGE" = "retro-complete" ]; then
         LOCK_STATE="done"
+        # Release point (recursive-followup row 191). The pre-flight lock has a durable
+        # owner and no EXIT trap, so the run's end is where it lets go: `released` lets
+        # another session take the SLUG while this lead lives on. The dir stays, so a
+        # re-emit still reads `done`; the same session's next pre-flight re-activates it.
+        # Only the owner releases: a late re-emit from a session that no longer holds
+        # the lock (another session took it over since) leaves it held. A lock whose
+        # owner record names no session (a legacy `pid`-only lock, or a lead with no
+        # session id) is released by its run's end, as before.
+        __LK_OSID=""
+        [ -f "$__LK_OWN" ] && __LK_OSID="$(sed -n 's/^session=//p' "$__LK_OWN" 2>/dev/null | head -n 1)"
+        if [ -z "$__LK_OSID" ] || __lk_owner_is_caller "$__LK_OWN"; then
+            printf 'released\n' >| "$LOCK_DIR/state" 2>/dev/null || true
+        fi
     else
         LOCK_STATE="active"
+        # Heartbeat (row 191): the owner's own stage emissions keep `owner`
+        # heartbeat= current, so the pre-flight asks the live-session oracle about the
+        # owner only once it has emitted no stage for the whole stale bound. Only the
+        # recorded owner (same session, or same claude process) refreshes it, never a
+        # released lock; silent, fail-open.
+        if [ "$(cat "$LOCK_DIR/state" 2>/dev/null)" != "released" ] \
+           && __lk_owner_is_caller "$__LK_OWN"; then
+            __LK_TMP="$LOCK_DIR/.owner.$$"
+            if sed "s/^heartbeat=.*/heartbeat=$(date +%s)/" "$__LK_OWN" > "$__LK_TMP" 2>/dev/null; then
+                mv -f "$__LK_TMP" "$__LK_OWN" 2>/dev/null || rm -f "$__LK_TMP" 2>/dev/null
+            else
+                rm -f "$__LK_TMP" 2>/dev/null
+            fi
+        fi
     fi
 else
     LOCK_STATE="missing"
