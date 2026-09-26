@@ -50,3 +50,8 @@ tests/skill/scenarios/
 # Subdirectory test corpora (gitignore `*` does not cross `/`)
 .claude/scripts/**/*.test.sh
 .claude/hooks/**/*.test.sh
+
+# Claude machine state (rewritten by live sessions and hooks — local only)
+.claude/scheduled_tasks.lock
+.claude/hooks/compound/instincts/projects/**/*.yaml
+.claude/hooks/compound/instincts/global/**/*.yaml

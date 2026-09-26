@@ -14,6 +14,85 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.56.4] — 2026-09-26 (fix: the sync never ships what the source gitignores; consumers stop tracking instinct YAMLs) (bab9396c)
+
+2.56.3 fixed the scheduler lock. The 2.56.3 sweep then found every consumer dirty on
+`.claude/hooks/compound/instincts/projects/claude-pattern/7ec9574a.yaml`. That file is the
+same class of leak: claude-pattern's own learned instincts, which the source gitignores.
+
+### The rsync ships only what the source would commit
+
+- `source_ignored_rsync_filters` lists every path the source checkout's git ignores under
+  `.claude/` (skipping `state/` and `worktrees/`, which the rsync already excludes). It gives
+  each one an anchored `--exclude`, and a fully ignored directory gets one entry. The list goes
+  last in the rsync filters: first match wins, so every earlier include and exclude keeps its
+  meaning. Paths that stop shipping today: the instinct YAMLs, the scheduler lock, the nested
+  `.claude/` state dirs, `accounts/__pycache__/` and `secrets/` (already excluded by the secret
+  guard).
+- A name rsync would read as a pattern (`*`, `?`, `[`, `\`) or one holding a newline gets no
+  entry and ships as before. A source that is not a git checkout gets no filters.
+
+### Consumers stop tracking machine state
+
+- `SYNC_MACHINE_STATE_PATHS` in `sync-commit-lib.sh` lists the scheduler lock and the source's
+  two instinct ignore lines (`projects/**/*.yaml`, `global/**/*.yaml`). The target-dirty guard,
+  `sync_commit_dirty_check` and the sync-commit stage exclude them. `sync-to-project.sh` now
+  sources the lib before the guard, so the guard and the `--commit` check share one list.
+- The sync adds the three lines to the consumer's `.gitignore` (exact-line top-up) and runs
+  `git rm --cached` on any tracked match. The staged deletions ride the sync commit, and the
+  on-disk files are kept. This covers a consumer's own instincts as well as the leaked
+  `projects/claude-pattern/` copies, the same policy the source applies. The `.gitkeep`
+  scaffolding stays tracked. This replaces 2.56.3's lock-only block.
+- Another clone that pulls the untracking commit loses its clean copies of those files (git
+  removes a tracked file that an incoming commit deletes). They are machine-generated. The
+  compound hooks regenerate them, and the fleet sweep keeps the mac-mini copies across its
+  fast-forward.
+
+### Verification
+
+`sync-target-dirty-guard.bats` 7/7 for the dirty-guard and `--commit` cases, with one new
+case: a consumer that tracks rewritten instinct YAMLs syncs with `--commit` without a SKIP.
+Every YAML leaves the index and is ignored, and each keeps its local content; `.gitkeep`
+stays. `sync-rsync-checksum.bats` gains one case: the real function, run against a throwaway
+source, excludes the ignored lock and directory but not tracked content or a pattern-like name,
+and returns nothing outside a git checkout. Against 2.56.3's scripts both new cases fail.
+The other sync suites are green: sync-commit-lib 14/0, sync-gitignore-test-corpus 2/0,
+sync-local-guard-preservation 4/0, sync-extra-manifest 3/0, sync-fail-loud-and-self-heals 8/0,
+sync-propagate 19/0, sync-script-references 5/0, sync-consumer-warn 25/0,
+sync-profile-pipeline-agents 5/0, secret-doc-sync 12/0, sync-retired-paths-cleanup 68/0,
+sync-local-namespace-lint 5/0; the whole `sync-target-dirty-guard.bats` 25/0.
+
+## [2.56.3] — 2026-09-26 (fix: a consumer's Claude Code scheduler lock no longer blocks every sync) (bee63551)
+
+Found during the 2.56.2 fleet sweep. `sync-all` reported "Synced: 16", but every consumer had
+hit the target-dirty SKIP and nothing was written.
+
+### The scheduler lock is local state, never sync content
+
+- Claude Code writes the live session's id and pid to `.claude/scheduled_tasks.lock`. The broad
+  `.claude/` rsync in `sync-to-project.sh` copied the SOURCE checkout's lock into every consumer,
+  so each consumer carried a lock held by a claude-pattern session. An old sync commit tracked it.
+  From then on, any session that rewrote the lock left `.claude/` dirty, and the target-dirty
+  guard refused every later sync.
+- The rsync now excludes `/scheduled_tasks.lock`.
+- The target-dirty guard, `sync_commit_dirty_check` and `sync_commit_stage_and_commit` exclude
+  the lock. It is neither local work nor something a sync commit carries.
+- The sync adds `.claude/scheduled_tasks.lock` to the consumer's `.gitignore` (an exact-line
+  top-up) and runs `git rm --cached` if the lock is tracked. The staged deletion rides the sync
+  commit, and the on-disk lock is kept. This matches the per-session cache block above it.
+- A machine whose checkout has a locally rewritten lock cannot `git pull --ff-only` the
+  untracking commit until the lock matches HEAD again. `session-start.sh` already skipped that
+  pull on a dirty `.claude/`, so nothing new is blocked, and the next sync on that machine
+  untracks the lock itself.
+
+### Verification
+
+`sync-target-dirty-guard.bats` (dirty-guard and `--commit` cases) 6/6, with one new case: a
+consumer that tracks a rewritten lock syncs with `--commit` without a SKIP, and the lock leaves
+the index, is ignored and keeps its local content. Against 2.56.2's scripts that case fails (no
+sync commit). `sync-commit-lib.bats` 14/0; `sync-gitignore-test-corpus.bats` 2/0; `bash -n` on
+both scripts.
+
 ## [2.56.2] — 2026-09-25 (fix: a conflicted-tree dispatch refusal writes nothing; the conflict-gate test ships upstream) (c941139c)
 
 Parity with CleanRev's r3 review of the cleanscale adoption. Its `pwt-conflict-gate.test.sh`
