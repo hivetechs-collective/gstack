@@ -21,7 +21,7 @@
 # Usage:
 #   plan-w-team-followups.sh list [--all] [--limit N]   open rows (default 20)
 #   plan-w-team-followups.sh stats                      counts + oldest age
-#   plan-w-team-followups.sh show <index>               full row
+#   plan-w-team-followups.sh show <index>               full row, effective status
 #   plan-w-team-followups.sh add --slug S --text T      queue one open row
 #   plan-w-team-followups.sh close <index> "<reason>"   append a resolution row
 #   plan-w-team-followups.sh --json stats               machine-readable
@@ -119,8 +119,20 @@ case "$CMD" in
     ;;
 
   show)
+    # Effective view, same rule as list/stats: the raw row keeps status "open"
+    # forever (append-only), so printing it verbatim reported a closed row as
+    # open. Overlay the closing resolution row when one exists.
     IDX="${1:?usage: show <index>}"
-    jq -rs --argjson i "$IDX" '.[$i] // "no such index"' "$LEDGER"
+    jq -rs --argjson i "$IDX" '
+      (.[$i]) as $row
+      | if $row == null then "no such index"
+        else
+          ([.[] | select((.closes_index // empty | tonumber? // empty) == $i)] | last) as $res
+          | if $res == null then $row
+            else $row + {status: "done", resolution: $res.resolution,
+                         resolved_at: $res.resolved_at, resolved_by: $res.resolved_by}
+            end
+        end' "$LEDGER"
     exit 0
     ;;
 

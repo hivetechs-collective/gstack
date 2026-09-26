@@ -1,14 +1,30 @@
 #!/bin/bash
 # JSON Logger Utility for Claude Code Hooks
 # Provides structured logging for all hook events with analytics support
+#
+# Logs: ${CLAUDE_LOG_DIR:-$HOME/.claude/logs}/{hooks,sessions,security}.jsonl
+#
+# This file is SOURCED by hooks, so it defines functions only and assigns no
+# globals. It used to set LOG_DIR / HOOKS_LOG / SESSION_LOG / SECURITY_LOG at
+# source time, which overwrote session-end.sh's and session-start.sh's own
+# SESSION_LOG (.claude/state/session-log.txt): their text blocks went into
+# sessions.jsonl and session-log.txt stopped updating after 2026-01-24. Paths are
+# now resolved inside each function, at call time. Pinned by json-logger.test.sh.
 
-LOG_DIR="${CLAUDE_LOG_DIR:-$HOME/.claude/logs}"
-mkdir -p "$LOG_DIR"
+# Print the path of one log file, creating the log dir if needed. Returns 1 when
+# the dir cannot be created; logging is best-effort and must never fail a hook.
+_json_log_path() {
+    local dir="${CLAUDE_LOG_DIR:-$HOME/.claude/logs}"
+    mkdir -p "$dir" 2>/dev/null || return 1
+    echo "$dir/$1"
+}
 
-# Log file paths
-HOOKS_LOG="$LOG_DIR/hooks.jsonl"
-SESSION_LOG="$LOG_DIR/sessions.jsonl"
-SECURITY_LOG="$LOG_DIR/security.jsonl"
+# Append one line to one log file (best-effort, silent on failure).
+_json_log_append() {
+    local path
+    path=$(_json_log_path "$1") || return 0
+    echo "$2" >> "$path" 2>/dev/null || true
+}
 
 # Get ISO timestamp
 get_timestamp() {
@@ -27,7 +43,9 @@ log_hook() {
     local tool_name="$2"
     local decision="$3"
     local reason="$4"
-    local extra="${5:-{}}"
+    # Not "${5:-{}}": that parses as "${5:-{}" plus a literal "}" (stray brace).
+    local extra="$5"
+    [ -n "$extra" ] || extra='{}'
 
     local timestamp=$(get_timestamp)
     local session_id=$(get_session_id)
@@ -39,7 +57,7 @@ log_hook() {
 EOF
 )
 
-    echo "$log_entry" >> "$HOOKS_LOG"
+    _json_log_append "hooks.jsonl" "$log_entry"
 }
 
 # Log a security event (blocked or asked)
@@ -60,14 +78,15 @@ log_security() {
 EOF
 )
 
-    echo "$log_entry" >> "$SECURITY_LOG"
+    _json_log_append "security.jsonl" "$log_entry"
 }
 
 # Log session lifecycle
 # Usage: log_session <event> [extra_json]
 log_session() {
     local event="$1"
-    local extra="${2:-{}}"
+    local extra="$2"
+    [ -n "$extra" ] || extra='{}'
 
     local timestamp=$(get_timestamp)
     local session_id=$(get_session_id)
@@ -78,13 +97,14 @@ log_session() {
 EOF
 )
 
-    echo "$log_entry" >> "$SESSION_LOG"
+    _json_log_append "sessions.jsonl" "$log_entry"
 }
 
 # Get hook statistics
 # Usage: get_hook_stats [hours_back]
 get_hook_stats() {
     local hours="${1:-24}"
+    local HOOKS_LOG="${CLAUDE_LOG_DIR:-$HOME/.claude/logs}/hooks.jsonl"
     local cutoff=$(date -u -v-${hours}H +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date -u -d "$hours hours ago" +"%Y-%m-%dT%H:%M:%SZ")
 
     if [ -f "$HOOKS_LOG" ]; then
@@ -108,6 +128,7 @@ get_hook_stats() {
 
 # Get security statistics
 get_security_stats() {
+    local SECURITY_LOG="${CLAUDE_LOG_DIR:-$HOME/.claude/logs}/security.jsonl"
     if [ -f "$SECURITY_LOG" ]; then
         echo "=== Security Events ==="
         echo ""
@@ -122,4 +143,4 @@ get_security_stats() {
 }
 
 # Export functions for sourcing
-export -f log_hook log_security log_session get_hook_stats get_security_stats get_timestamp get_session_id
+export -f _json_log_path _json_log_append log_hook log_security log_session get_hook_stats get_security_stats get_timestamp get_session_id

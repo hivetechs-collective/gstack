@@ -1296,6 +1296,17 @@ case "$TYPE" in
         ;;
 esac
 
+# ─── CONFLICTED-TREE DISPATCH GATE (PWT-CONFLICT1) ──────────────────────────
+# FIRST spawn gate: refuse to dispatch from a checkout that is mid-merge-conflict
+# (fix-pwt-conflict-detached, 2026-08-27). It runs before the --spec install and
+# the directive-overflow write, so a refused dispatch writes nothing. It used to
+# run after them, and a refusal left .claude/state/plan-w-team-directive-<hash>.txt
+# behind (caught by pwt-conflict-gate.test.sh in a consumer, 2026-09-25).
+# See __pwt_conflict_gate / __pwt_detect_tree_conflict.
+if { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
+    __pwt_conflict_gate "" || exit $?
+fi
+
 # Optional interactive DoD additions
 EXTRA_DONE=""
 if [ "$INTERACTIVE" = "1" ]; then
@@ -1603,14 +1614,6 @@ if [ "${PLAN_W_TEAM_DISABLE_PROMPT_ROUTE:-0}" = "1" ] \
   worker c00b9887's --launch call producing 8cf9b873 + 752e86c4.
 CASCADE_GUARD
     exit 4
-fi
-
-# ─── CONFLICTED-TREE DISPATCH GATE (PWT-CONFLICT1) ──────────────────────────
-# FIRST spawn gate: refuse to dispatch from a checkout that is mid-merge-conflict
-# (fix-pwt-conflict-detached, 2026-08-27). Runs before any other spawn work so a
-# broken tree costs nothing. See __pwt_conflict_gate / __pwt_detect_tree_conflict.
-if { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
-    __pwt_conflict_gate "" || exit $?
 fi
 
 # ─── DETERMINISTIC DOUBLE-SPAWN GUARD (PWT-DS1) ─────────────────────────────

@@ -14,6 +14,40 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.56.2] — 2026-09-25 (fix: a conflicted-tree dispatch refusal writes nothing; the conflict-gate test ships upstream) (c941139c)
+
+Parity with CleanRev's r3 review of the cleanscale adoption. Its `pwt-conflict-gate.test.sh`
+dispatch check left `.claude/state/plan-w-team-directive-bf30a93fc561.txt` in the real checkout.
+
+### The PWT-CONFLICT1 gate runs before every state write
+
+- `pwt-goal.sh` called `__pwt_conflict_gate` after the `--spec` install, the directive-overflow
+  write and the PWT-DS2 cascade guard. Its comment said "FIRST spawn gate … before any other spawn
+  work", but a refused dispatch (exit 8) had already written
+  `.claude/state/plan-w-team-directive-<hash>.txt` whenever the goal text overflowed. The call
+  now sits ahead of the interactive done-criteria prompt, the `--spec` install and the overflow
+  block. Nothing before it writes. The gate itself is unchanged, and so is its exit 8, its
+  message and its `PLAN_W_TEAM_DISABLE_CONFLICT_GATE=1` override. A conflicted worker that tries
+  to cascade now gets exit 8 before the cascade guard's exit 4. Both refuse the dispatch.
+
+### The conflict-gate test ships upstream
+
+- `pwt-conflict-gate.test.sh` (AC1–AC6) existed only in cleanscale, so upstream had no test of
+  the gate. It is adopted as cleanscale carries it after r3: bash 3.2, and the AC6 dispatch runs
+  inside its throwaway repo. The one change is AC6's last check. The dispatch now runs with
+  `PLAN_W_TEAM_OVERFLOW_THRESHOLD=1`, so the overflow write would fire if it were reached, and
+  the check asserts that the refused dispatch wrote no directive file and printed no overflow
+  line. Against the old ordering it fails and names `plan-w-team-directive-bf30a93fc561.txt`.
+- `sync-to-project.sh` ships the test. The allowlist symmetry check passes.
+
+### Verification
+
+`pwt-conflict-gate` 6/6; `pwt-goal-overflow` 4/0; `pwt-goal-cap-enforcement` 11/0;
+`pwt-goal-intent` 37/0; `pwt-goal-worker-seed-path` 8/0; `pwt-goal-supervisor-goal-fallback`
+4/0; `pwt-goal-slug-from-original-request` PASS; `plan-w-team-spawn-registry` 27/0;
+`pwt-given-spec` 22/0; `pwt-steer` 131/0; `pwt-goal-version-recording` 16/0; the sync allowlist
+check passes.
+
 ## [2.56.1] — 2026-09-25 (fix: lazy session-start lane check at the three write sites; legacy workflow locks whose pid names no process are reclaimed again; pwt-status test hermetic) (d91f0c17)
 
 Parity with the cleanscale adoption of 2.56.0 (CleanRev Current's verdicts). Reviewed
