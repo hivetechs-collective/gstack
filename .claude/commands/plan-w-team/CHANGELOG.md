@@ -14,6 +14,105 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.57.1] — 2026-09-27 (fix: `.sync-exclude` fails closed, reads CRLF and opts root-level files out, and the tests/skill sync deletes nothing; a `(pending)` SHA backfill takes the retest fast path; `CP_LEAD_MODEL` refuses Fable and claude-opus-5) (fbe64020)
+
+Found in cleanscale's review of 2.57.0 and of the r3.2 adoption bundle, and while landing 2.57.0.
+
+### `.sync-exclude` no longer fails open
+
+- **An unreadable list stops the sync.** A `.claude/.sync-exclude` that exists (or is a
+  dangling link) but is not a readable regular file used to count as absent, so every copy
+  path overwrote the files it named. `sync-to-project.sh` now exits 1 before anything is
+  written, `sync-statusline-bundle.sh` exits 1 with nothing written, and the matcher
+  (`retired_paths_sync_excluded`) treats every path as opted out.
+- **The bundle refresh's exit is checked.** `sync-to-project.sh` ran the status-line bundle
+  helper with a trailing `|| true`, so a helper that refused to run (bad target, unreadable
+  list, matcher not loaded) was ignored and the rest of the sync went ahead without the
+  check. Exits 0, 3, 4 and 5 still continue; anything else stops the sync with exit 1.
+- **CRLF lists work.** The matcher drops each line's trailing CR. The rsync paths read a
+  copy of the list with the CRs removed, because macOS openrsync ignores a line that ends in
+  CR (checked on a scratch tree), so a CRLF list used to opt nothing out there.
+- **The list can only exclude.** The rsync copy of the list writes each line as an explicit
+  `- <pattern>` rule and drops a bare `!` line and a `+ ` line. The list comes after the
+  fixed and secret-guard excludes, so `!` cleared all of them (`.claude/state/`,
+  `settings.local.json`, `.env*`, `secrets/`, `*.key`, `*.pem`) and `+ ` force-included.
+  The CR strip above would have turned an inert CRLF `!` line into an active one.
+- **Root-level files can be opted out.** A `../<path>` line names a path from the repository
+  root: `docs/operations/BOARD.md`, `BOARD_TEMPLATE_RUNBOOK.md`,
+  `build-cleanup-preserve-installables.md`, `scripts/init-project-context.ts`,
+  `scripts/ci-alert.yml.template`, `scripts/Makefile.template`, and anything under
+  `tests/skill/`. `../.gitignore` skips the whole `.gitignore` pass (nothing appended,
+  nothing untracked), and `../CLAUDE.md` skips the `CLAUDE.md` initialisation. Only
+  root-level copies read these lines, a `.claude/` line never matches a root-level file,
+  and rsync never sees them. A `tests/skill/` file opted out this way also stays tracked
+  when `--commit` untracks the source-owned corpus. An opted-out
+  `scripts/skill-test-precommit-installer.sh` is the consumer's own, and the pre-commit
+  refresh no longer runs it.
+- **The tests/skill sync deletes nothing.** Its rsync passed `--delete-excluded`, which
+  rsync 3.x reads as `--delete` too: it would have removed every case, helper, local
+  scenario and vendored `.bats/` a consumer wrote itself. macOS openrsync did not, which is
+  why no consumer has lost files so far. The flag is gone, and a source file or directory
+  a `../tests/skill/...` line matches gets an anchored `--exclude`. The directory's own
+  exclude keeps a consumer's symlink there, and `*`, `?`, `[` and `\` in a name become `?`
+  (as on the agents path), so the exclude still matches the literal name.
+- **`scripts/version-uplift/` copies like before when there is no list.** 2.57.0 copied it
+  file by file for every consumer, which dropped symlinks and empty directories. With no
+  `.sync-exclude` it is copied whole with `cp -R` again. With one, it goes entry by entry,
+  and symlinks and empty directories now come across. A source symlink is recreated as a
+  link, and a link already at the destination is removed first: `cp` onto a link to a
+  directory copies into the link's target.
+- `skill-test-precommit-installer.sh` no longer adds a blank line to a husky hook on every
+  reinstall. It now drops the leading blank lines of the hook body before it writes the
+  separator.
+
+### A SHA backfill is a backfill whatever the placeholder is called
+
+- A release entry starts as `(pending)` and a separate commit backfills the SHA. The
+  `--retest` fast path for that backfill (`pwt_rt_changelog_is_backfill`) knew only
+  `(PENDING_SHA)`, the 2.51.x spelling, not the house `(pending)`. So the 2.57.0 backfill
+  was not treated as a backfill. The pins pass put 101 files in the rerun set, over the
+  40-file cap, and the commit needed a second full suite.
+- The detector now accepts `(pending)`, `(PENDING)` and `(PENDING_SHA)`, but only as the
+  parenthetical that ends a release header (the SHA slot). A placeholder quoted earlier in
+  the header's title is not the slot. Lines are compared as strings, so a numeric-looking
+  pair is not "equal". A file that contains a NUL byte is rejected. Only the slot may
+  become `(<7–40 hex>)`. The line count and every other byte must match.
+
+### The lead launcher refuses a Fable or claude-opus-5 model
+
+- `CLAUDE_LEAD=1` launched `CP_LEAD_MODEL` verbatim, and so did a downgraded second lead
+  with `CP_NONLEAD_MODEL`. So `CP_LEAD_MODEL=claude-fable-5-1` still started a Fable lead.
+- Both now pass through `_cp_lead_model` in `.claude/shell/claude-pattern.zsh`. The id is
+  checked on a key: lower-cased, with any provider prefix, Bedrock `-vN` suffix, `@version`,
+  `[1m]` tag and `-YYYYMMDD` date stripped. The launch falls back to `claude-opus-5-5`, with
+  one warning, for Fable, `claude-opus-5` in any provider form, a CLI-version-dependent alias
+  (`opus`, `opusplan`, `best`, `default`), or a value with whitespace inside it. Anything
+  else launches as given, trimmed. The `claude-opus-5-5` defaults are unchanged.
+- `pwt-goal.sh` now notes that the PWT-CONFLICT1 exit 8 comes before the other refusals:
+  exit 5 (overflow tooling), exit 2 (directive over the /goal cap) and exit 4 (cascade guard).
+
+### Verification
+
+The 2.57.1 diff was reviewed adversarially through three lenses: correctness, fail-open and
+regression. Each finding was then verified independently. Four were confirmed and are fixed
+above: the `!`/`+ ` list lines, the directory-level `tests/skill` opt-out, the wildcard
+escape and the version-uplift link. One was refuted: a UTF-8 BOM or trailing whitespace
+voids a line on every path alike, which is consistent, not fail-open.
+
+Targeted runs pass:
+- `sync-local-guard-preservation.bats` 9/9. The CRLF case now also covers a `!` and a `+ `
+  line (`.claude/state/` stays out), an opted-out installer (not run), `../.gitignore` and
+  `../CLAUDE.md` (kept, SKIP logged), and a `../tests/skill/helpers` symlink (still a link,
+  nothing written through it).
+- `sync-retired-paths-cleanup.bats` 68/68.
+- `sync-statusline-bundle.test.sh` 33/33.
+- `pre-commit-quality-testgreen.test.sh` 63/63.
+- `test-green-retest.bats` 62/62.
+- `claude-launcher-wrapper.bats` 18/18.
+- `model-tiering-v9.bats` 25/25.
+
+The commit gate is a full-suite test-green.
+
 ## [2.57.0] — 2026-09-27 (fix: compliance audit round 1 — the sync honours `.sync-exclude` on every copy path, usage probes stop calling Fable, lane-guard row 190, test-green hardening, a refused pwt-goal leaves no file) (15b463d4)
 
 An audit of the fleet against cleanscale's adoption conditions found five open groups. Each

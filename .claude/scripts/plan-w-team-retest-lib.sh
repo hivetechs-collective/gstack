@@ -769,9 +769,13 @@ pwt_rt_manifest_blob() {
 # pwt_rt_changelog_is_backfill <root> <base_manifest> <current_manifest>
 #
 # Returns 0 ONLY when the plan-w-team CHANGELOG differs between the two manifests by
-# nothing but SHA backfills: every changed line is a `## [x.y.z] … (PENDING_SHA) …`
-# release header in the base whose `(PENDING_SHA)` became `(<7–40 hex>)`, with the
-# line count and every other line byte-identical. Content is read from the object
+# nothing but SHA backfills: every changed line is a `## [x.y.z] …` release header in
+# the base whose SHA slot — the parenthetical that ends the line — holds a placeholder,
+# `(pending)` (the house spelling), `(PENDING)` or `(PENDING_SHA)`, and became
+# `(<7–40 hex>)`; everything before the slot, the line count and every other line are
+# unchanged. Lines are compared as strings (awk would compare two number-looking lines
+# numerically, so `1` and `1.0` would pass as equal), and a NUL byte in either blob is a
+# reject (awk ends a line at the first NUL). Content is read from the object
 # store by blob (the base blob, and a staged blob, are there); a current blob that is
 # not (a worktree edit not yet added) is read from the file on disk and accepted only
 # when that file hashes to the manifest's blob. ANY doubt — unreadable blob, filter
@@ -796,6 +800,8 @@ pwt_rt_changelog_is_backfill() {
       cat -- "$rel" > "$tmpd/cur" 2>/dev/null || exit 1
     fi
     [ -s "$tmpd/cur" ] || exit 1
+    LC_ALL=C tr -d '\000' < "$tmpd/base" | cmp -s - "$tmpd/base" || exit 1
+    LC_ALL=C tr -d '\000' < "$tmpd/cur" | cmp -s - "$tmpd/cur" || exit 1
     LC_ALL=C awk '
       NR == FNR { a[FNR] = $0; na = FNR; next }
       { b[FNR] = $0; nb = FNR }
@@ -803,17 +809,17 @@ pwt_rt_changelog_is_backfill() {
         if (na != nb) exit 1
         changed = 0
         for (i = 1; i <= na; i++) {
-          if (a[i] == b[i]) continue
+          if ((a[i] "") == (b[i] "")) continue
           if (a[i] !~ /^## \[[0-9][0-9.]*\]/) exit 1
-          k = index(a[i], "(PENDING_SHA)")
-          if (k == 0) exit 1
-          pre = substr(a[i], 1, k - 1)
-          post = substr(a[i], k + length("(PENDING_SHA)"))
-          lb = length(b[i]); lp = length(pre); lq = length(post)
-          if (lb < lp + lq + 9) exit 1
-          if (substr(b[i], 1, lp) != pre) exit 1
-          if (substr(b[i], lb - lq + 1) != post) exit 1
-          mid = substr(b[i], lp + 1, lb - lp - lq)
+          tok = ""
+          if (a[i] ~ /\(pending\)$/) tok = "(pending)"
+          else if (a[i] ~ /\(PENDING\)$/) tok = "(PENDING)"
+          else if (a[i] ~ /\(PENDING_SHA\)$/) tok = "(PENDING_SHA)"
+          if (tok == "") exit 1
+          lp = length(a[i]) - length(tok)
+          pre = substr(a[i], 1, lp)
+          if ((substr(b[i], 1, lp) "") != (pre "")) exit 1
+          mid = substr(b[i], lp + 1)
           if (mid !~ /^\([0-9a-f]+\)$/) exit 1
           n = length(mid) - 2
           if (n < 7 || n > 40) exit 1
@@ -846,8 +852,8 @@ pwt_rt_changelog_is_backfill() {
 #      caller set and the hop is skipped;
 #   5. every entry in tests/skill/retest-always.list (missing/empty/stale → NEED-FULL).
 # Special case: a GREEN base whose WATCHED delta is exactly the plan-w-team CHANGELOG
-# AND whose CHANGELOG change is nothing but `(PENDING_SHA)` → `(<sha>)` header
-# backfills (pwt_rt_changelog_is_backfill, checked against the two manifests' blobs)
+# AND whose CHANGELOG change is nothing but header SHA-slot backfills (`(pending)`,
+# `(PENDING)` or `(PENDING_SHA)` → `(<sha>)`) (pwt_rt_changelog_is_backfill, checked against the two manifests' blobs)
 # drops the CHANGELOG from the changed set: a backfill cannot change any entry a case
 # pins. Unwatched changes are never dropped. Any other CHANGELOG edit — a reworded,
 # added or deleted entry — takes the normal path, whose name-mention pass reruns every

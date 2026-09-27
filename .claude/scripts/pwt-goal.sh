@@ -1302,7 +1302,10 @@ esac
 # the directive-overflow write, so a refused dispatch writes nothing. It used to
 # run after them, and a refusal left .claude/state/plan-w-team-directive-<hash>.txt
 # behind (caught by pwt-conflict-gate.test.sh in a consumer, 2026-09-25).
-# See __pwt_conflict_gate / __pwt_detect_tree_conflict.
+# See __pwt_conflict_gate / __pwt_detect_tree_conflict. Running first, a conflicted tree
+# exits 8 ahead of the later refusals: exit 5 (overflow tooling: no shasum/sha256sum, or
+# the overflow file cannot be written), exit 2 (directive over the /goal cap) and exit 4
+# (cascade guard).
 if { [ "$LAUNCH" = "1" ] || [ "$WORKER_ONLY" = "1" ]; }; then
     __pwt_conflict_gate "" || exit $?
 fi

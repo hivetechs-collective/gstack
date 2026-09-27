@@ -68,16 +68,38 @@ _cp_fable_lead_live() {   # $1 = lock file; true when its pid is alive AND hosts
   local p; p="$(cat "$1" 2>/dev/null)"
   [ -n "$p" ] && kill -0 "$p" 2>/dev/null && pgrep -P "$p" -f claude >/dev/null 2>&1
 }
+# CP_LEAD_MODEL / CP_NONLEAD_MODEL are checked on a key: the id lower-cased, with any provider
+# prefix, Bedrock -vN suffix, @version, [1m] tag and -YYYYMMDD date stripped. Fable, claude-opus-5
+# in any provider form, a CLI-version-dependent alias (opus, opusplan, best, default), or a value
+# with whitespace inside it is refused with one warning and the launch runs claude-opus-5-5.
+# Anything else launches as given, trimmed.
+_cp_lead_model() {   # $1 = variable name (for the warning), $2 = requested model
+  local v="$2" k r=""
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  k="$(printf '%s' "$v" | LC_ALL=C tr -d '\200-\377[:space:]' | LC_ALL=C tr '[:upper:]' '[:lower:]' \
+    | LC_ALL=C sed -E 's/\[.*$//; s#^.*/##; s/@.*$//; s/-v[0-9]+(:[0-9]+)?$//; s/^([a-z0-9-]+\.)?anthropic\.//; s/-[0-9]{8}$//')"
+  case "$k" in
+    '') v=claude-opus-5-5 ;;
+    *fable*|claude-opus-5|opus|opusplan|best|default) r=1 ;;
+  esac
+  case "$v" in *[[:space:]]*) r=1 ;; esac
+  if [ -n "$r" ]; then
+    echo "⚠️  $1=$v refused (Model Tiering v9: no Fable, no claude-opus-5, no CLI-version-dependent alias, no whitespace) — using claude-opus-5-5." >&2
+    v=claude-opus-5-5
+  fi
+  printf '%s\n' "$v"
+}
 _cp_fable_lead_gate() {   # prints the --model args to add (nothing when not a lead launch)
   [ "${CLAUDE_LEAD:-0}" = 1 ] || return 0
-  local lock="${CP_FABLE_LEAD_LOCK:-$HOME/.config/claude-pattern/fable-lead.pid}"
+  local lock="${CP_FABLE_LEAD_LOCK:-$HOME/.config/claude-pattern/fable-lead.pid}" m
   mkdir -p "${lock:h}" 2>/dev/null
   if _cp_fable_lead_live "$lock" && [ "$(cat "$lock" 2>/dev/null)" != "$$" ]; then
-    echo "⚠️  A lead session is already live (pid $(cat "$lock")) — one lead per host (Model Tiering v7/v9). Launching this one as a non-lead on ${CP_NONLEAD_MODEL:-claude-opus-5-5}." >&2
-    printf -- "--model\n%s\n" "${CP_NONLEAD_MODEL:-claude-opus-5-5}"
+    m="$(_cp_lead_model CP_NONLEAD_MODEL "${CP_NONLEAD_MODEL:-claude-opus-5-5}")"
+    echo "⚠️  A lead session is already live (pid $(cat "$lock")) — one lead per host (Model Tiering v7/v9). Launching this one as a non-lead on $m." >&2
+    printf -- "--model\n%s\n" "$m"
   else
     printf "%s\n" "$$" > "$lock"
-    printf -- "--model\n%s\n" "${CP_LEAD_MODEL:-claude-opus-5-5}"
+    printf -- "--model\n%s\n" "$(_cp_lead_model CP_LEAD_MODEL "${CP_LEAD_MODEL:-claude-opus-5-5}")"
   fi
 }
 _cp_fable_lead_release() {

@@ -194,7 +194,9 @@ install_into_shell_hook() {
         # has shebang: insert block AFTER the shebang
         local shebang rest
         shebang=$(printf '%s' "$stripped" | head -1)
-        rest=$(printf '%s' "$stripped" | tail -n +2)
+        # Leading blank lines dropped: the separator written below would otherwise
+        # pile up one more on every reinstall (2.57.1).
+        rest=$(printf '%s' "$stripped" | tail -n +2 | awk 'NF || s { s = 1; print }')
         new=$(printf '%s\n%s\n\n%s' "$shebang" "$block" "$rest")
     elif [ -z "$(printf '%s' "$stripped" | tr -d '[:space:]')" ]; then
         # empty hook: add shebang + block
