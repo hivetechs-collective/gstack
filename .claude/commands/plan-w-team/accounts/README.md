@@ -90,7 +90,7 @@ refuses to load on loose perms or a symlink. `accounts.sh` refuses to mint a tok
 | `accounts.sh`      | operator CLI (headless, bash 3.2) — the only entry point you run             |
 | `lib.sh`           | shared shell helpers (path/perms/dormancy/python resolution)                 |
 | `registry.py`      | durable identity store (`accounts.json`, `0600`, `flock`, `O_NOFOLLOW`)      |
-| `probe.py`         | usage measurement: one `max_tokens:1` Fable-model probe per account per TTL → 5h/7d + per-window statuses + the LIVE Fable weekly bucket (`7d_oi-*`, `scoped_source: ratelimit-header`); window-checked `plan-usage.sh` sample fallback; `limited_until` on a rejected window; prev-sample burn fields; fail-open cache v2 |
+| `probe.py`         | usage measurement: one `max_tokens:1` Opus 5.5 probe per account per TTL → 5h/7d + per-window statuses (Model Tiering v9: a Fable or `claude-opus-5` override is refused, so no Fable-scoped bucket is measured live; the `scoped*` fields stay, `scoped_source: unavailable` when absent); window-checked `plan-usage.sh` sample fallback; `limited_until` on a rejected window; prev-sample burn fields; fail-open cache v2 |
 | `selector.py`      | pure lowest-`max(5h%,7d%)` selection with pinning + rotation; `--model`/`--need fable` ranks on `max(5h,7d,Fable)` and excludes Fable-rejected accounts |
 | `import_stores.py` | discover/validate/bulk-register saved tokens; `secrets.env` source; scaffold |
 | `lane_cred.py`     | spawn-time per-lane token writer (`settings.local.json` env block)           |

@@ -273,6 +273,13 @@ PWT_WATCHED_GLOBS='.claude/commands/plan-w-team*
 .claude/scripts/plan-w-team-*
 .claude/scripts/pwt-*
 .claude/hooks/pre-commit-quality*
+.claude/hooks/plan-w-team-*
+.claude/hooks/session-start*
+.claude/hooks/post-git-push*
+.claude/hooks/tests/*
+.claude/lib/config*
+.claude/statusline.sh
+.claude/scripts/statusline-*
 .claude/agents/team/*
 .claude/agents/implementation/react-typescript-specialist.md
 .claude/agents/implementation/rust-backend-specialist.md

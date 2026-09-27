@@ -55,6 +55,11 @@ _CP_ACCOUNTS_CLI="${_CP_SHELL_SELF:A:h:h}/commands/plan-w-team/accounts/accounts
 # ~/.config/claude-pattern/fable-lead.pid); a second CLAUDE_LEAD=1 launch while that
 # lead is live gets the non-lead model and window with a notice. An explicit
 # --model in argv always wins.
+# CLAUDE_LEAD reaches a child's environment ONLY from the launch that holds the lock
+# (cand-launcher-lead-marker): a downgraded second lead, an explicit --model launch
+# and a utility subcommand all run their child with it removed (`env -u`, child env
+# only — the operator's shell keeps its export), so CLAUDE_LEAD=1 inside a session
+# means "this is the lead". The gate runs in a $(…) subshell and cannot do this itself.
 # The lead compacts at CP_LEAD_WINDOW (300000, 2026-09-08); every other terminal
 # at 250000; an explicit CLAUDE_CODE_AUTO_COMPACT_WINDOW wins over both.
 # Seams: CP_LEAD_MODEL, CP_NONLEAD_MODEL, CP_LEAD_WINDOW, CP_FABLE_LEAD_LOCK; tests override
@@ -135,21 +140,28 @@ claude() {
     # the old account (2026-08-31 finding). Interactive rotation is ADVISORY:
     # the status line shows the account to move to, and `claude-account` /
     # `/login` switch it. Fleet/bg-worker rotation is separate and unaffected.
-    local -a _cp_model_args; _cp_model_args=()
+    local -a _cp_model_args _cp_lead_env; _cp_model_args=(); _cp_lead_env=(-u CLAUDE_LEAD)
     if [[ " $* " != *" --model "* && " $* " != *" --model="* ]]; then
       _cp_model_args=("${(@f)$(_cp_fable_lead_gate)}")
       [ -n "${_cp_model_args[1]:-}" ] || _cp_model_args=()
-      # v7 lead window: only the launch that HOLDS the lead lock (this shell's pid) compacts at
-      # CP_LEAD_WINDOW; a downgraded second lead keeps the terminal default; explicit env wins.
-      if [ "$_cp_win_explicit" = 0 ] && [ "$(cat "${CP_FABLE_LEAD_LOCK:-$HOME/.config/claude-pattern/fable-lead.pid}" 2>/dev/null)" = "$$" ]; then
-        export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CP_LEAD_WINDOW:-300000}"; _CP_WINDOW_LAUNCHER_SET="$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+      # The lead is the CLAUDE_LEAD=1 launch that HOLDS the lead lock (this shell's pid). Only
+      # it passes CLAUDE_LEAD=1 to its child and compacts at CP_LEAD_WINDOW (v7 lead window);
+      # a downgraded second lead keeps the terminal default and loses the marker; explicit env
+      # wins for the window.
+      if [ "${CLAUDE_LEAD:-0}" = 1 ] && [ "$(cat "${CP_FABLE_LEAD_LOCK:-$HOME/.config/claude-pattern/fable-lead.pid}" 2>/dev/null)" = "$$" ]; then
+        _cp_lead_env=(CLAUDE_LEAD=1)
+        if [ "$_cp_win_explicit" = 0 ]; then
+          export CLAUDE_CODE_AUTO_COMPACT_WINDOW="${CP_LEAD_WINDOW:-300000}"; _CP_WINDOW_LAUNCHER_SET="$CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+        fi
       fi
     fi
-    command claude --allowedTools "Grep,Glob" "${_cp_model_args[@]}" "$@"
+    # `env` execs claude in place, so the session stays a direct child of this shell
+    # (_cp_fable_lead_live's `pgrep -P` depends on that).
+    command env "${_cp_lead_env[@]}" claude --allowedTools "Grep,Glob" "${_cp_model_args[@]}" "$@"
     local _cp_rc=$?; _cp_fable_lead_release; return $_cp_rc
   else
-    # Utility subcommands (`claude mcp list`, `claude agents`, …).
-    command claude "$@"
+    # Utility subcommands (`claude mcp list`, `claude agents`, …) are never the lead.
+    command env -u CLAUDE_LEAD claude "$@"
   fi
 }
 

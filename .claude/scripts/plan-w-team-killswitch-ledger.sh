@@ -184,16 +184,13 @@ ledger_usable() {
 # retro. It shares the ledger's `plan-w-team-killswitch-ledger-` prefix, so the
 # janitor's PER_SLUG_REAP_PREFIXES reaps it with the run's family. Since R255 it also
 # PINS the default branch: `ref=<full ref>` and `sha=<commit>` as they resolved when
-# the init row was written (see read_pin). An empty marker (a 2.52.0 carry-forward, or
-# no default branch at init) pins nothing. Residual: the marker lives in the run's own
+# the init row was written (see read_pin). An empty marker (no default branch at init)
+# pins nothing. Residual: the marker lives in the run's own
 # state dir, so a run that REWRITES it with a well-formed pin — a ref the writer could
 # have produced, still the default, at a commit that ref still descends from — is
 # trusted; a pin on any other ref reads as damaged and a re-pointed default reads
 # `ref_moved`. A lane-guard deny on writes to this path (deferred) closes the rest.
 init_marker() { printf '%s/plan-w-team-killswitch-ledger-%s.init' "$STATE_DIR" "$SLUG"; }
-# Where 2.52.0 put the marker. A run that started under 2.52.0 still carries it there
-# and it still suppresses a re-mint (carried forward to init_marker on first sight).
-legacy_init_marker() { printf '%s/plan-w-team-workflow-%s.lock/killswitch-ledger.init' "$STATE_DIR" "$SLUG"; }
 
 # Anything at the path counts as present — a dangling symlink included — so a
 # marker path is never created, truncated or written through when something is there.
@@ -203,8 +200,7 @@ path_present() { [ -e "$1" ] || [ -L "$1" ]; }
 # with a concurrent snapshot). Best-effort, like every write here. `mark_init pin`
 # (the init row's own snapshot) records the default ref and its commit as they
 # resolve NOW, so a ref the run rewrites later (`git update-ref`, a retargeted
-# origin/HEAD, its own landing) cannot change what the retro reads as sanctioned. The
-# carry-forward of a 2.52.0 marker pins nothing: that run's init time is unknown.
+# origin/HEAD, its own landing) cannot change what the retro reads as sanctioned.
 mark_init() {
   local m pin=""
   m="$(init_marker)"
@@ -262,15 +258,8 @@ pin_valid() {
   [ "${#2}" -eq 40 ] || [ "${#2}" -eq 64 ]
 }
 
-# 0 when this run's `init` row was already minted (marker at either location).
-init_minted() {
-  path_present "$(init_marker)" && return 0
-  if path_present "$(legacy_init_marker)"; then
-    mark_init   # carry forward, so a later lock-dir reclaim cannot lose it
-    return 0
-  fi
-  return 1
-}
+# 0 when this run's `init` row was already minted.
+init_minted() { path_present "$(init_marker)"; }
 
 sanitize_site() {
   printf '%s' "${1:-unknown}" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_' | cut -c1-64

@@ -368,7 +368,7 @@ def pct(v):
 
 # Model-scoped weekly buckets (e.g. Fable) get TWO columns each, right after 7d%:
 # the percentage and the bucket's own status (ok / warn / rejected). A header-
-# sourced reading (the Fable-model probe, 2.43.0) is live and carries no age tag;
+# sourced reading (a quota-header probe) is live and carries no age tag;
 # only a plan-usage sample fallback is tagged with its age past PWT_ACCT_SCOPED_TTL.
 scoped_names = sorted({n for g in gmap.values() for n in ((g or {}).get("scoped") or {})})
 if not scoped_names:

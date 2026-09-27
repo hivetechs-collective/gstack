@@ -30,7 +30,7 @@
 #            raw fields byte-preserved (five_hour, seven_day, limits[] …), plus an
 #            ADDITIVE "_meta" object — or `{}` when nothing has been fetched yet.
 #            Existing consumers keep working unchanged: the status line's plan
-#            segment, plan-w-team-fable-guard.sh (the weekly_scoped Fable bucket).
+#            segment, plan-w-team-fable-guard.sh (dormant since Model Tiering v9).
 #   exit   : always 0 (fail-open). Diagnostics go to stderr only.
 #
 #   _meta: { fetched_at (epoch s), source ("endpoint"|"ratelimit-header"),
@@ -48,7 +48,7 @@
 #                            COLD cache (first render on this account) wait up to
 #                            PLAN_USAGE_COLD_WAIT seconds for that refresh to land.
 #   plan-usage.sh --sync     refresh inline (bounded), then serve. For callers
-#                            that need a fresh number NOW (fable-guard, tests).
+#                            that need a fresh number NOW (tests, diagnostics).
 #   plan-usage.sh --meta     print only the _meta object (diagnostics). ALWAYS carries
 #                            accountUuid (the account key) + account_source
 #                            (env|keychain|override), even on a cold cache — the
@@ -64,8 +64,11 @@
 #   PLAN_USAGE_CURL_MAX_TIME  per-request curl bound, seconds          (6)
 #   PLAN_USAGE_CACHE_DIR      cache directory        ($HOME/.config/claude-pattern/plan-usage)
 #   PLAN_USAGE_ACCOUNT_KEY    override the account key (tests)
-#   PLAN_USAGE_PROBE_MODEL    header-probe model (the Fable model, see PRIMARY — its headers carry the
-#                            Fable weekly bucket as `7d_oi-*`; 2.43.0)
+#   PLAN_USAGE_PROBE_MODEL    header-probe model (claude-opus-5-5). A Fable id or the FORBIDDEN
+#                            claude-opus-5 is refused and the default is probed (Model Tiering
+#                            v9: no Fable anywhere). PROBE_PY writes the refusal to its stderr,
+#                            which __probe discards; the cache's `_probe_model` is the record
+#                            of the model actually probed
 #   PLAN_USAGE_PROBE_FALLBACK_MODEL  probed in the same tick when the primary is refused
 #                            without a measurement (HTTP 400 version-too-old) (claude-haiku-4-5-20251001)
 #   PLAN_USAGE_CLI_VERSION    user-agent version override (default: `claude --version`, cached 1 d)
@@ -243,16 +246,28 @@ print(json.dumps(m,separators=(",",":")))' 2>/dev/null || printf '{"accountUuid"
 # ── python bodies (script on argv, DATA on stdin — a heredoc on `python3 -`
 #    would steal stdin from the pipe that carries the token / the body) ──────
 PROBE_PY=$(cat <<'PY'
-import sys, json, os, time, datetime, urllib.request, urllib.error
+import sys, json, os, re, time, datetime, urllib.request, urllib.error
 tok = sys.stdin.read().strip()
-# Fable-model probe (2.43.0): the same max_tokens:1 call answered for the Fable
-# model carries a `7d_oi-*` triple = the model-scoped Fable weekly bucket, live,
-# for ANY token kind. The server refuses the Fable model to a client older than
-# 2.1.251 (HTTP 400 claude_code_version_too_old), so the UA carries the INSTALLED
-# CLI version (PU_CLI_VERSION) and a refusal falls back to the haiku model in the
-# same tick (5h/7d survive; the scoped bucket is simply absent).
-PRIMARY = os.environ.get("PLAN_USAGE_PROBE_MODEL") or "claude-fable-5-1"
-FALLBACK = os.environ.get("PLAN_USAGE_PROBE_FALLBACK_MODEL") or "claude-haiku-4-5-20251001"
+# Header probe: one max_tokens:1 call whose `anthropic-ratelimit-unified-*` headers
+# carry the 5h/7d windows. Model Tiering v9 (founder ruling 2026-09-22: no Fable
+# anywhere) moved the default off the Fable model (2.43.0 probed it for its `7d_oi-*`
+# bucket) to Opus 5.5, and an override naming Fable or the FORBIDDEN claude-opus-5
+# is refused, so no path sends a request to either. The server refuses a model the
+# client is too old for (HTTP 400 claude_code_version_too_old), so the UA carries
+# the INSTALLED CLI version (PU_CLI_VERSION) and a refusal falls back to the haiku
+# model in the same tick. Any `7d_<bucket>-*` headers are still parsed generically.
+def refused(m):
+    k = "".join(c for c in m if ord(c) < 128).strip().lower()
+    k = re.sub(r"-[0-9]{8}$", "", re.sub(r"\[[^\]]*\]$", "", k))
+    return "fable" in k or k == "claude-opus-5"
+def env_model(var, default):
+    v = (os.environ.get(var) or "").strip()
+    if v and refused(v):
+        sys.stderr.write("plan-usage: %s=%s refused (no Fable, no claude-opus-5); probing %s\n" % (var, v, default))
+        v = ""
+    return v or default
+PRIMARY = env_model("PLAN_USAGE_PROBE_MODEL", "claude-opus-5-5")
+FALLBACK = env_model("PLAN_USAGE_PROBE_FALLBACK_MODEL", "claude-haiku-4-5-20251001")
 UA = "claude-cli/%s (external, cli)" % (os.environ.get("PU_CLI_VERSION") or "2.1.276")
 SCOPED = {"oi": "Fable"}
 P = "anthropic-ratelimit-unified-"
@@ -299,8 +314,8 @@ rep = low.get(P + "representative-claim") or ""
 RANK = {"allowed": 0, "allowed_warning": 1, "rejected": 2}
 fh_st, sd_st = low.get(P + "5h-status"), low.get(P + "7d-status")
 # Account status = worst of the PER-WINDOW statuses; the top-level status is the
-# fallback only (a Fable-exhausted account answers `status: rejected` while 5h/7d
-# are fine -- that must not read as an account-wide lock).
+# fallback only (an account with one exhausted model-scoped bucket answers
+# `status: rejected` while 5h/7d are fine -- that must not read as an account-wide lock).
 win = [x for x in (fh_st, sd_st) if x]
 status_s = (max(win, key=lambda x: RANK.get(x, 2)) if win else (low.get(P + "status") or "allowed"))
 def locked(st): return None if st in (None, "allowed", "allowed_warning") else st
@@ -490,8 +505,8 @@ __rate_limited_fresh() {
   [ $(( now - at )) -lt "$code" ]
 }
 # The rate-limit HEADER probe (max_tokens:1 /v1/messages); PLAN_USAGE_PROBE_CMD = test seam.
-# The INSTALLED CLI version for the probe's user-agent (the server gates the Fable
-# model on it). `claude --version` costs ~1 s of node startup, so it is cached for
+# The INSTALLED CLI version for the probe's user-agent (the server gates newer
+# models on it). `claude --version` costs ~1 s of node startup, so it is cached for
 # a day beside the usage cache; PLAN_USAGE_CLI_VERSION overrides (tests).
 __cli_version() {
   local f="$CACHE_DIR/cli-version" v="" m now

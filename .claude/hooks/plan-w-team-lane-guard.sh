@@ -156,11 +156,11 @@ FILE_ABS=""
 # ── F4 hygiene subsystem toggle ─────────────────────────────────────────────
 # PWT_DISABLE_LANE_GUARD_HYGIENE=1 reverts to the pre-2026-08-19 pure-deny
 # guard: no shell masking, no git-tag exemption, no host-hygiene ALLOW class,
-# deny-only auditing — and no per-segment in-place scanner (retest-8). The
-# trusted-artifact in-place check falls back to the 2.51.0 whole-token form
-# (FAM_INPLACE_WT_RE: a command-word sed/perl carrying an in-place option TOKEN)
-# ANDed with an anchored family member anywhere in the command — strict, never
-# looser than the scanner, and a plain `sed -n 1p <family>.json` read still passes.
+# deny-only auditing — and no per-segment family-write scanner (retest-8). The
+# trusted-artifact check falls back to coarse forms (FAM_SWITCH_WRITER_RE: any
+# writer the scanner classifies, as a word anywhere) ANDed with a family member
+# named anywhere in the command — never looser than the scanner, and a plain
+# `sed -n 1p <family>.json` read still passes.
 # A kill switch that only half-reverts is not a revert.
 HYGIENE=1
 [ "${PWT_DISABLE_LANE_GUARD_HYGIENE:-0}" = "1" ] && HYGIENE=0
@@ -189,49 +189,56 @@ HYGIENE=1
 #                        denies — masking must never widen the permit set.
 #   inside $( ) or ` ` → unresolvable by definition; blank EVERYTHING, which
 #                        also stops fragments from becoming candidate targets.
+# Cost (row 190, LG-R4): each line is split ONCE into C[] and the output is flushed in 512-byte
+# pieces — BWK awk (macOS /usr/bin/awk) runs strlen() on every substr() and copies the whole
+# string on every `out = out c`, so the per-character form was quadratic in the line length.
+# The output is byte-identical; an awk whose empty-separator split() is not one element per
+# byte prints the line UNMASKED (stricter, never looser).
 __mask_shell_text() {
     printf '%s' "$1" | awk '
+    function emit(s) { ob = ob s; if (++ol >= 512) { printf "%s", ob; ob = ""; ol = 0 } }
     {
-      n = length($0); out = ""; i = 1
+      n = split($0, C, ""); if (n != length($0)) { print $0; next }
+      ob = ""; ol = 0; i = 1
       mode = "N"     # N=normal S=single D=double C=substitution
       ret  = "N"     # where C returns to
       depth = 0      # $( ) nesting; -1 marks a backtick span
       while (i <= n) {
-        c = substr($0, i, 1)
-        nx = (i < n) ? substr($0, i + 1, 1) : ""
+        c = C[i]
+        nx = (i < n) ? C[i + 1] : ""
         if (mode == "N") {
-          if (c == "\"")                 { mode = "D"; out = out c; i++; continue }
-          if (c == "'"'"'")              { mode = "S"; out = out c; i++; continue }
-          if (c == "$" && nx == "(")     { mode = "C"; ret = "N"; depth = 1; out = out "$("; i += 2; continue }
-          if (c == "`")                  { mode = "C"; ret = "N"; depth = -1; out = out c; i++; continue }
-          out = out c; i++; continue
+          if (c == "\"")                 { mode = "D"; emit(c); i++; continue }
+          if (c == "'"'"'")              { mode = "S"; emit(c); i++; continue }
+          if (c == "$" && nx == "(")     { mode = "C"; ret = "N"; depth = 1; emit("$("); i += 2; continue }
+          if (c == "`")                  { mode = "C"; ret = "N"; depth = -1; emit(c); i++; continue }
+          emit(c); i++; continue
         }
         if (mode == "S" || mode == "D") {
-          if (mode == "D" && c == "\\")  { out = out "__"; i += 2; continue }
-          if (mode == "D" && c == "\"")  { mode = "N"; out = out c; i++; continue }
-          if (mode == "S" && c == "'"'"'") { mode = "N"; out = out c; i++; continue }
-          if (mode == "D" && c == "$" && nx == "(") { mode = "C"; ret = "D"; depth = 1; out = out "$("; i += 2; continue }
-          if (mode == "D" && c == "`")   { mode = "C"; ret = "D"; depth = -1; out = out c; i++; continue }
+          if (mode == "D" && c == "\\")  { emit("__"); i += 2; continue }
+          if (mode == "D" && c == "\"")  { mode = "N"; emit(c); i++; continue }
+          if (mode == "S" && c == "'"'"'") { mode = "N"; emit(c); i++; continue }
+          if (mode == "D" && c == "$" && nx == "(") { mode = "C"; ret = "D"; depth = 1; emit("$("); i += 2; continue }
+          if (mode == "D" && c == "`")   { mode = "C"; ret = "D"; depth = -1; emit(c); i++; continue }
           # A backtick reaching here is inside SINGLE quotes (D-mode backticks were
           # consumed just above) — the shell does NO substitution there, so it is
           # literal prose. Blank it like the other operators so `${SEP}` cannot read
           # `` `git commit …` `` inside quoted text as a command boundary (D9).
-          if (c == ">" || c == "<" || c == ";" || c == "|" || c == "&" || c == "`") { out = out "_"; i++; continue }
-          out = out c; i++; continue
+          if (c == ">" || c == "<" || c == ";" || c == "|" || c == "&" || c == "`") { emit("_"); i++; continue }
+          emit(c); i++; continue
         }
         # mode == "C": inside a command substitution.
         if (depth == -1) {
-          if (c == "`") { mode = ret; depth = 0; out = out c } else { out = out "_" }
+          if (c == "`") { mode = ret; depth = 0; emit(c) } else { emit("_") }
           i++; continue
         }
         if (c == "(") depth++
         else if (c == ")") {
           depth--
-          if (depth == 0) { mode = ret; out = out ")"; i++; continue }
+          if (depth == 0) { mode = ret; emit(")"); i++; continue }
         }
-        out = out "_"; i++; continue
+        emit("_"); i++; continue
       }
-      print out
+      printf "%s\n", ob
     }' 2>/dev/null
 }
 
@@ -265,6 +272,10 @@ __strip_heredocs() {
       }
       if (match(line, /<<[-]?[ \t]*["'"'"']?[A-Za-z_][A-Za-z0-9_]*/)) {
         before = substr(line, 1, RSTART - 1)
+        # Row 190: an opener inside a still-open `$(` (`git commit -m "$(cat <<'"'"'EOF'"'"'`)
+        # is real — the substitution starts a fresh quote context, so count only past it.
+        b2 = before; while ((p = index(b2, "$(")) > 0) b2 = substr(b2, p + 2)
+        if (b2 != before && index(b2, ")") == 0) before = b2
         nq = gsub(/["'"'"']/, "&", before)       # quote count before the << (parity guard)
         if (nq % 2 == 0) {
           w = substr(line, RSTART, RLENGTH)
@@ -560,25 +571,25 @@ EXEC_MUTATOR_RE="-(exec|execdir)[[:space:]]+(rm|mv|cp)([[:space:]]|;)|xargs([[:s
 # edit at a command-word boundary classifies. Both alternatives sit INSIDE the
 # group so the anchor applies to each.
 INPLACE_RE="${SEP}(sed[[:space:]]+(-[a-zA-Z]*i|--in-place)|perl[[:space:]]+[^|;&]*-[a-zA-Z]*i([[:space:]]|$))"
-# Trusted-artifact family variant (2.51.0; reworked LANEGUARD retest-8 / confirm-8): a
-# COARSE gate only — "an editor word, then anything, then something shaped like an
-# in-place option". It runs on CMD_DEQ (raw text minus quotes/backslashes, newlines as
-# spaces) so it is a SUPERSET of every shape the precise per-segment scanner below
-# (__inplace_family_segment) can flag: `LC_ALL=C sed`, `xargs perl`, `"-i"`, `/usr/bin/sed`,
-# a `\`-continued option line. The 2.51.0 whole-command form it replaces false-denied a
-# harmless READ whenever ANY sed/perl in the command carried an i-ish option token
-# (`sed -i … other.txt && sed -n 1p <family>.log`, `perl -Mstrict -ne … <family>.log`,
-# the `-fi` inside a `fix-it` slug); this gate only decides whether the scanner runs.
-FAM_INPLACE_RE='(^|[^[:alnum:]_.-])(g?sed|perl[0-9.]*)[[:space:]].*(-[[:alnum:]]*[iI]|--i)'
-# PWT_DISABLE_LANE_GUARD_HYGIENE=1 form (LANEGUARD round 2, B3): the 2.51.0 whole-token
-# regex, verbatim — a COMMAND-WORD sed/perl followed by an option TOKEN that starts `-…i`
-# or `--in-place`. Round 1 routed the switch through the coarse gate above instead, whose
-# `.*-[[:alnum:]]*i` matches the `-fi` of `…-guard-fixture` / the `-verdi` of
-# `…-ship-verdict-…` inside the family name itself — so under the switch EVERY
-# `sed -n 1p <family>.json` read denied, a kill switch stricter than the code it disables.
-# The caller ANDs this with an anchored family member (__fam_member_named), not HEAD's
-# bare substring, so the confirm-8 sibling fix holds with the switch set too.
-FAM_INPLACE_WT_RE="${SEP}(g?sed|perl)[[:space:]]+([^|;&]*[[:space:]])?(-[a-zA-Z]*i[^[:space:]]*|--in-place[^[:space:]]*)([[:space:]]|$)"
+# Trusted-artifact family, PWT_DISABLE_LANE_GUARD_HYGIENE=1 form (row 190; replaces the
+# round-2 B3 FAM_INPLACE_WT_RE). With the switch set there is no scanner, so this ONE coarse
+# regex stands in for every writer class the scanner classifies: a write verb, `eval`, `git
+# rm|mv`, `find … -delete|-exec`, `awk … inplace`, `python -c`, a shell with `-c` or a heredoc,
+# sed/perl with an in-place option TOKEN (the 2.51.0 whole-token form, `-…i` / `--in-place`),
+# or sed with a `w` command. It matches at a WORD boundary anywhere in the command, not only
+# after a separator, so `do sed -i`, `xargs rm` and `eval "sed -i …"` count. The caller ANDs
+# it with a member named ANYWHERE (or the bare prefix at a word end), which covers carried
+# variables, loops and pipelines coarsely. That keeps the switch never looser than the
+# scanner it disables (no widening env var — host-load-protection.md F4). It over-reaches on
+# purpose: a copy OUT, `cat <family>.json | python3 -c …`, and — with no masking — prose that
+# names a member and mentions a writer (a brief saying `never sed -i <family>.log`) deny under
+# the switch. A separator-anchored form would spare that prose but miss `LC_ALL=C sed -i`,
+# `nohup rm`, `xargs -0 sed -i` and friends, which is looser than the scanner. A plain read
+# (`sed -n 1p`, `perl -ne`, `tail`, `jq`) still passes: sed and perl count only with an
+# in-place token or a `w` command. Round 1 routed the switch through a `.*-…i` gate
+# that matched the `-fi` / `-verdi` inside the family name itself, so under the switch EVERY
+# `sed -n 1p <family>.json` read denied — a kill switch stricter than the code it disables.
+FAM_SWITCH_WRITER_RE="(^|[^[:alnum:]_.-])((g?(mv|cp|rm|touch|tee|install|ln|truncate|dd)|rsync|eval)([[:space:]]|$)|git[[:space:]]+(rm|mv)([[:space:]]|$)|find[[:space:]][^;|&]*[[:space:]]-(delete|exec|execdir|ok|okdir)([[:space:]]|$)|(g?awk|mawk|nawk)[[:space:]][^;|&]*inplace|python[0-9.]*[[:space:]]([^;|&]*[[:space:]])?-[a-zA-Z]*c([[:space:]]|$)|(ba|z|da|k)?sh[[:space:]]([^;|&]*[[:space:]])?-[a-zA-Z]*c([[:space:]]|$)|(ba|z|da|k)?sh([[:space:]][^;|&]*)?<<|(g?sed|perl)[[:space:]]([^;|&]*[[:space:]])?(-[a-zA-Z]*i[^[:space:]]*|--in-place[^[:space:]]*)([[:space:]]|$)|g?sed[[:space:]][^;|&]*[[:space:]'\"/;}]w([[:space:]]|$))"
 # Family anchor (confirm-8): a family prefix names a MEMBER only when the next byte is `.`
 # (`.json` `.log` `.manifest`) or `--` (`--retest.*`) — or an expansion/glob metachar,
 # optionally after one `-`, that could expand to a member (`${FAM}*`, `${FAM}-*`, `$EXT`,
@@ -641,50 +652,102 @@ __fam_member_label() {
     [ -n "$lbl" ] || lbl="${2}.json"
     printf '%s' "$lbl"
 }
-# Precise in-place classifier (retest-8): ONE pass over the heredoc-stripped RAW text with
-# real shell quote state, so the "which segment" correlation holds by construction — the
-# masked text is not length-preserving (heredoc bodies, D-mode `\x` → `__`, awk-vs-bash
-# character offsets under UTF-8), so mapping offsets between CMD_SCAN and CMD is unsound.
-# Words are dequoted as the shell would (a quoted `;` is word text, never a boundary);
-# segments end at unquoted `;` `&` `|` newline `(` `)` and at `$(`/backtick open and close
-# (a substitution is its own segment; its text is also appended to the enclosing word so
-# `sed -i x $(ls <family>.log)` still correlates). A segment DENIES only when its COMMAND
-# word (past assignments, `!`/`{`/if/then/do/…, and prefix commands such as sudo/env/xargs/
-# timeout with their option arguments; also the command after find -exec/-ok) is sed/gsed/
-# perl, its options say in-place, AND one of its own words names a family member (anchor
-# above) — or, when its command runs through `xargs`, an EARLIER segment of the same pipeline
-# does (`find … -name '<family>*' | xargs sed -i …`, the bulk-edit idiom the 2.51.0 form also
-# missed; it over-reaches only for `cat <family>.list | xargs sed -i`, which edits the files the
-# list NAMES — a non-worker editing the lane's rerun set is worth a deny anyway).
+# Family-WRITE classifier (retest-8, extended by row 190 / LG-R1..R4): ONE pass over the RAW
+# command with real shell quote state, so the "which segment" correlation holds by
+# construction — the masked text is not length-preserving (heredoc bodies, D-mode `\x` → `__`,
+# awk-vs-bash character offsets under UTF-8), so mapping offsets between CMD_SCAN and CMD is
+# unsound. Words are dequoted as the shell would (a quoted `;` is word text, never a boundary);
+# segments end at unquoted `;` `&` `&&` `|` `||` newline `(` `)` and at `$(`/backtick open and
+# close (a substitution is its own segment; its text is also appended to the enclosing word so
+# `sed -i x $(ls <family>.log)` still correlates). A segment's COMMAND word is found past
+# assignments, `!`/`{`/if/then/do/…, and prefix commands such as sudo/env/xargs/timeout with
+# their option arguments (and the command after find -exec/-ok). The segment DENIES when:
+#   • IN-PLACE EDITOR — sed/gsed/perl whose options say in-place, and one of the segment's own
+#     words names a member (anchor above) — or, when it runs through `xargs`, an EARLIER
+#     segment of the same pipeline does (`find … -name '<family>*' | xargs sed -i …`; it
+#     over-reaches only for `cat <family>.list | xargs sed -i`, which edits the files the list
+#     NAMES — a non-worker editing the lane's rerun set is worth a deny anyway);
+#   • ALL-OPERAND WRITER — mv rm touch tee truncate ln (g-prefixed too), `git rm|mv`, find
+#     -delete, `awk -i inplace`, `install -d`, `rsync --remove-source-files`: any word of the
+#     segment names a member (or, through xargs, the pipeline does);
+#   • COPY — cp install rsync are judged by the path they CREATE (row 190 item 3): the
+#     destination (the last operand, or `-t DIR`) and, when that destination is a DIRECTORY
+#     (`-t`, a trailing `/`, `.` `..` `~`, a last component `state` — where every member
+#     lives — or several sources), each source's basename, which the copy keeps. So
+#     `cp <member> /tmp/x` is a READ of the member (allowed) while `cp /tmp/x <member>` and
+#     `cp <member> /tmp/` write one. ln is NOT a copy: `ln <member> /tmp/x` hands out a
+#     second name for the SAME inode, so a later unnamed `> /tmp/x` rewrites the member.
+#     Through xargs the piped names are the trailing operands (or fill -I/-J/--replace);
+#   • dd of=<member>; sed `w <member>` / `s/…/…/w <member>`; python -c CODE whose code names a
+#     member AND writes (an open() mode with w/a/x/+, `.write(`, os.remove/rename/…, shutil) —
+#     `json.load(open(<member>))` is a read, and a blanket interpreter deny would break the
+#     supervisor's watcher pattern;
+#   • an OUTPUT redirect (`>` `>>` `>|` `&>` `<>`) whose target names a member (an fd number
+#     before the operator, `2>`, is not a word);
+#   • bash/sh/zsh/dash/ksh -c STRING and eval WORDS: the string is scanned again, whole, by
+#     these same rules (carried variables stay carried; at most 32 strings, then DENY).
+# Heredocs (LG-R1): the delimiter word is not an argument. A QUOTED delimiter (`'EOF'`,
+# `"EOF"`, `\EOF`, `E"O"F`) makes the body inert data — skipped. An unquoted delimiter's body is
+# data too, but it still EXPANDS: its `$(…)`/backticks are scanned as commands. A body fed to a
+# shell (`bash <<'EOF'`) is a script and is scanned as commands. Several heredocs on one line
+# are consumed in order, at any `$(` depth (`git commit -m "$(cat <<'EOF'` … `EOF` `)"`).
 # Options: sed — `i`/`I` in a short cluster before an argument-taking e/f (l takes only
 # digits), or a long option that is a prefix of `--in-place`; perl — `i` in a cluster, `0`
 # eats octal/hex digits, `l` eats octal digits, and M m I x d D F V e E C take the rest of
 # the token (so `-Mstrict`, `-MList::Util=sum`, `-Ilib`, `-ne` are not in-place). Both keep
 # scanning past operands (GNU sed permutes; perl reads switches after `-e CODE`) — the
-# conservative direction. Prints `OK`, or `DENY <word>` naming the offending word (the deny
-# message's label); the caller treats anything but OK (awk missing, a crash) as DENY.
-# Round 2 (LANEGUARD): (a) VARIABLE CARRY — a simple assignment (`NAME=…`, or after
-# export/local/readonly/declare/typeset) whose value names a member, or a `for NAME in …`
-# whose list does, carries NAME forward; a LATER segment of the same command that references
-# `$NAME`/`${NAME}` counts as naming the member (`f=<family>.log; sed -i '' 1d "$f"`,
-# `for f in <family>*; do sed -i … "$f"; done`). A carried name is never un-carried by a
-# later reassignment (conservative). (B4) a closed substitution re-enters its word as
-# `$(…)`/`` `…` `` without trailing blanks, so `$(… <family>).log` meets the `)` anchor, and
-# ANSI-C `$'…'` decodes `\xHH` / `\NNN` (a non-printable or `\u`/`\c` code becomes `$`, a
-# metachar — conservative). Residual, same threat model as the rest of the guard (natural
-# drift, not an adversary): a `bash -c`/eval string, a script fed on a heredoc, a
-# `while read f` loop, a value assembled from pieces (`f=$D/$NAME$EXT`); the file-tool deny
-# is the hard wall.
-__inplace_family_segment() {  # $1=family prefix → prints `DENY <word>` or OK
-    printf '%s\n' "${HDSTRIP:-$CMD}" | PWT_LG_FAM="$1" awk -v SQ="'" '
+# conservative direction.
+# Verdict: prints `OK`, or `DENY <word>` naming the offending word (the deny message's label).
+# Anything else — empty output (awk missing or crashed), a bare `DENY` (no family given, or an
+# awk whose empty-separator split() is not one element per byte) — is NO VERDICT, and the caller
+# fails CLOSED on it (deliberately stricter than this file's header contract: the scanner is the
+# only thing that sees these writers).
+# Variable carry (round 2 (a), LG-R3): a simple assignment (`NAME=…`, or after export/local/
+# readonly/declare/typeset) whose value names a member, a `for NAME in …` whose list does, or a
+# `… | while read NAME` whose pipeline does, carries NAME forward; a LATER segment that
+# references `$NAME`/`${NAME}` counts as naming the member (`f=<family>.log; sed -i '' 1d "$f"`).
+# A carried NAME is DROPPED only by a rebind the scanner can prove runs, in this shell, before
+# what follows: `NAME=<literal>` (no `$`/backtick; not `+=`) or a `for NAME in <literals>`
+# (no glob), in an assignment-only or declaration segment at depth 0, outside `( … )` and
+# if/while/until/for/case bodies, not after `&&`/`||`/`|`, not piped or backgrounded. Every
+# other rebind — `f=/tmp/y true`, `x=$(f=/tmp/y)`, `f+=.bak`, `f=$OTHER`, `[ -e x ] &&
+# f=/tmp/y`, `( f=/tmp/y )` — keeps it carried (conservative). A rebind to the bare family
+# prefix records the prefix under the same proof, and keeps the member otherwise.
+# (B4) a closed substitution re-enters its word as `$(…)`/`` `…` `` without trailing blanks, so
+# `$(… <family>).log` meets the `)` anchor, and ANSI-C `$'…'` decodes `\xHH` / `\NNN` (a
+# non-printable or `\u`/`\c` code becomes `$`, a metachar — conservative).
+# Cost (LG-R4): the text is split ONCE into CH[] — BWK awk (macOS /usr/bin/awk) runs strlen()
+# on every substr(), so the old per-character substr scan was quadratic (3 s at 200 KB, per
+# lane, per family, with no hook timeout). A single-quoted string, and a double-quoted one
+# with no `\` `$` backtick, is copied as ONE piece of a second split on that quote; a run of
+# plain word bytes, or of plain double-quoted text, as one piece. The input is ONE record (RS
+# is a control byte), so no per-line concatenation either. Residual: a very long `$(…)` body or
+# `$'…'` string still grows one character at a time.
+# Residual, same threat model as the rest of the guard (natural drift, not an adversary): a
+# script run by path, a python/perl script fed on a heredoc, a value assembled from pieces
+# (`f=$D/$NAME$EXT`), a `while read f … done < <family>.list` loop, a `cat <family>… | bash`
+# pipe; the file-tool deny is the hard wall.
+__inplace_family_segment() {  # $1=family prefix → prints `DENY <word>` or OK (else: no verdict)
+    printf '%s' "$CMD" | PWT_LG_FAM="$1" awk -v SQ="'" '
     function bname(w) { sub(/.*\//, "", w); return w }
+    function srcb(w) { sub(/\/+$/, "", w); return bname(w) }
     function addc(c) { CW[d] = CW[d] c; INW[d] = 1; if (d) FTX[d] = FTX[d] c }
-    function endword() {
-      if (INW[d]) { NW[d]++; W[d, NW[d]] = CW[d] }
-      CW[d] = ""; INW[d] = 0; if (d) FTX[d] = FTX[d] " "
+    function hit(w) { if (!FOUND) { FOUND = 1; FW = w } return 1 }
+    function endword(   w) {
+      if (INW[d]) {
+        w = CW[d]
+        if (HDW[d]) { HN++; HT[HN] = w; HS[HN] = HDS[d]; HI[HN] = WQ[d]; HR[HN] = 0; HDW[d] = 0 }
+        else if (RDW[d]) { RDW[d] = 0; if (named(w)) hit(NMW) }
+        else { NW[d]++; W[d, NW[d]] = w; WQF[d, NW[d]] = WQ[d] }
+      }
+      CW[d] = ""; INW[d] = 0; WQ[d] = 0; if (d) FTX[d] = FTX[d] " "
     }
-    function endseg(p) { endword(); evalseg(d, p); NW[d] = 0 }
-    function push(t) { d++; FT[d] = t; QS[d] = ""; PD[d] = 0; CW[d] = ""; INW[d] = 0; NW[d] = 0; FTX[d] = ""; PF[d] = 0; PFW[d] = "" }
+    # p: 0 `;`/newline/end  1 `|`  2 `&&`/`||`  3 `&`  4 `(`/`)`
+    function endseg(p) { endword(); RDW[d] = 0; HDW[d] = 0; evalseg(d, p); NW[d] = 0; PREV[d] = p }
+    function push(t) {
+      d++; FT[d] = t; QS[d] = ""; PD[d] = 0; CW[d] = ""; INW[d] = 0; WQ[d] = 0; NW[d] = 0; FTX[d] = ""
+      PF[d] = 0; PFW[d] = ""; RDW[d] = 0; HDW[d] = 0; PREV[d] = 0
+    }
     function pop(   s, t) {
       endseg(0); t = FTX[d]; sub(/[ ]+$/, "", t)
       s = (FT[d] == "$(") ? "$(" t ")" : "`" t "`"
@@ -729,20 +792,86 @@ __inplace_family_segment() {  # $1=family prefix → prints `DENY <word>` or OK
       }
       return 0
     }
+    function opn(w) {   # an operand: named, the find/xargs placeholder, or the xargs trailing names
+      if (w == "\001") { NMW = PHW; return 1 }
+      if (named(w)) return 1
+      if (PHS != "" && index(w, PHS)) { NMW = PHW; return 1 }
+      return 0
+    }
     function endfam(v) { return length(v) >= length(FAM) && substr(v, length(v) - length(FAM) + 1) == FAM }
-    function carry(dd, m,   k, j, w, nm, st, v) {
-      k = 1; while (k <= m && (W[dd, k] in KW)) k++
+    function uncarry(nm) { if (nm in VARS) { delete VARS[nm]; delete VPRE[nm]; NV-- } }
+    function rdcarry(nm, val) { if (nm ~ /^[A-Za-z_][A-Za-z0-9_]*$/) { if (!(nm in VARS)) NV++; VARS[nm] = val; delete VPRE[nm] } }
+    function carry(dd, m, p,   k, j, w, nm, st, so, v, ao, gate, ug, lit, wl, a, c, L, ch) {
+      # gate: this segment provably runs, in this shell, before whatever follows it
+      gate = (dd == 0 && PD[0] == 0 && CD == 0 && (PREV[0] == 0 || PREV[0] == 3) && (p == 0 || p == 2))
+      # The `done` closing a for-loop that un-carried its NAME: piped or backgrounded, the loop ran
+      # in a subshell and NAME never changed here — carry the dropped value again.
+      if (FUN != "" && dd == 0 && CD == 1 && W[dd, 1] == "done") {
+        if (p == 1 || p == 3) { if (!(FUN in VARS)) NV++; VARS[FUN] = FUV; if (FUP) VPRE[FUN] = 1 }
+        FUN = ""
+      }
+      wl = 0; k = 1
+      while (k <= m && (W[dd, k] in KW)) { if (W[dd, k] == "while" || W[dd, k] == "until") wl = 1; k++ }
+      if (k > 1) gate = 0   # after `{`/`if`/`!`: the compound may be piped or backgrounded at its close
+      if (HQ <= HN && HR[HQ]) gate = 0   # a heredoc fed to a shell: a CHILD shell runs these lines
       if (W[dd, k] == "for" && k + 2 <= m && W[dd, k + 2] == "in") {
-        for (j = k + 3; j <= m; j++) if (named(W[dd, j])) { if (!(W[dd, k + 1] in VARS)) NV++; VARS[W[dd, k + 1]] = NMW; break }
+        nm = W[dd, k + 1]; lit = 1
+        for (j = k + 3; j <= m; j++) {
+          if (named(W[dd, j])) { if (!(nm in VARS)) NV++; VARS[nm] = NMW; delete VPRE[nm]; return }
+          if (W[dd, j] ~ /[$`*?[]/) lit = 0
+        }
+        # an EMPTY list runs no iteration and leaves NAME as it was
+        if (gate && lit && m >= k + 3 && (nm in VARS)) { FUN = nm; FUV = VARS[nm]; FUP = (nm in VPRE); uncarry(nm) }
         return
       }
-      st = (W[dd, k] ~ /^(export|local|readonly|declare|typeset)$/); if (st) k++
+      if (wl && PF[dd]) {   # `… <family>* | while read [-r] NAME…; do` — the pipeline naming feeds NAME
+        j = k; while (j <= m && W[dd, j] ~ /^[A-Za-z_][A-Za-z0-9_]*=/) j++
+        if (W[dd, j] != "read") return
+        for (j++; j <= m; j++) {
+          a = W[dd, j]
+          if (a ~ /^-./) {
+            L = length(a)
+            for (c = 2; c <= L; c++) {
+              ch = substr(a, c, 1)
+              if (!index("adinNptu", ch)) continue
+              v = (c < L) ? substr(a, c + 1) : W[dd, ++j]
+              if (ch == "a") rdcarry(v, PFW[dd])
+              break
+            }
+            continue
+          }
+          rdcarry(a, PFW[dd])
+        }
+        return
+      }
+      st = (W[dd, k] ~ /^(export|local|readonly|declare|typeset|eval)$/)
+      # a declaration with an option, or `local` (an error outside a function), may assign nothing
+      # (`declare -A` on bash 3.2, `export -z`): it carries a member but never un-carries.
+      # `eval f=<member>` binds in this shell too; its string is re-scanned, so carry only.
+      so = (W[dd, k] ~ /^(local|eval)$/); if (st) k++
+      ao = 1
+      if (!st) for (j = k; j <= m; j++) if (W[dd, j] !~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) { ao = 0; break }
       for (; k <= m; k++) {
         w = W[dd, k]
-        if (w !~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) { if (st) continue; break }
+        if (w !~ /^[A-Za-z_][A-Za-z0-9_]*\+?=/) { if (st) { if (w ~ /^[-+]/) so = 1; continue } break }
         nm = w; sub(/\+?=.*/, "", nm); v = substr(w, index(w, "=") + 1)
+        ug = gate && ao && !so && w !~ /^[A-Za-z_][A-Za-z0-9_]*\+=/
         if (named(v)) { if (!(nm in VARS)) NV++; VARS[nm] = NMW; delete VPRE[nm] }
-        else if (endfam(v) && !(nm in VARS)) { NV++; VARS[nm] = v; VPRE[nm] = 1 }   # the bare family PREFIX: `TG=$S/<family>; … "$TG.log"`
+        else if (endfam(v)) {   # the bare family PREFIX: `TG=$S/<family>; … "$TG.log"`
+          if (!(nm in VARS)) { NV++; VARS[nm] = v; VPRE[nm] = 1 }
+          else if (ug) { VARS[nm] = v; VPRE[nm] = 1 }
+        }
+        else if (ug && v !~ /[$`]/) uncarry(nm)
+      }
+    }
+    function cdtrack(m,   k, w) {   # depth-0 if/while/until/for/case/select nesting (the carry gate)
+      for (k = 1; k <= m; k++) {
+        w = W[0, k]
+        if (w ~ /^(if|while|until)$/ || w == "{") { CD++; continue }
+        if (w == "}") { if (CD > 0) CD--; continue }
+        if (w ~ /^(for|case|select)$/) { CD++; return }
+        if (w ~ /^(fi|done|esac)$/) { if (CD > 0) CD--; continue }
+        if (!(w in KW)) return
       }
     }
     function hexv(h,   k, v) { v = 0; h = tolower(h); for (k = 1; k <= length(h); k++) v = v * 16 + index("0123456789abcdef", substr(h, k, 1)) - 1; return v }
@@ -759,6 +888,11 @@ __inplace_family_segment() {  # $1=family prefix → prints `DENY <word>` or OK
         ao = PFX[b]; dur = (b ~ /timeout$/); k++
         while (k <= e) {
           w = W[dd, k]
+          if (b == "xargs") {   # the replace string the piped names fill (-I/-J/-i/--replace)
+            if (w ~ /^-[IJ]/) XREP = (length(w) > 2) ? substr(w, 3) : W[dd, k + 1]
+            else if (w ~ /^-i/) XREP = (length(w) > 2) ? substr(w, 3) : "{}"
+            else if (w ~ /^--replace/) XREP = index(w, "=") ? substr(w, index(w, "=") + 1) : "{}"
+          }
           if (w == "--") { k++; break }
           if (w ~ /^--/) {
             if (index(w, "=") == 0 && k < e && bname(W[dd, k + 1]) !~ EDRE && !(bname(W[dd, k + 1]) in PFX)) k++
@@ -822,57 +956,215 @@ __inplace_family_segment() {  # $1=family prefix → prints `DENY <word>` or OK
       }
       return 0
     }
-    function edscan(dd, ci, e,   b, k, x, ci2) {
-      b = bname(W[dd, ci])
-      if (b ~ EDRE) return (b ~ /sed$/) ? sedscan(dd, ci + 1, e) : perlscan(dd, ci + 1, e)
-      if (b != "find") return 0
-      for (k = ci + 1; k <= e; k++) {
-        if (W[dd, k] !~ /^-(exec|execdir|ok|okdir)$/) continue
-        for (x = k + 1; x <= e && W[dd, x] != ";" && W[dd, x] != "+"; x++) ;
-        ci2 = cmdpos(dd, k + 1, x - 1)
-        if (ci2 > 0 && edscan(dd, ci2, x - 1)) return 1
-        k = x
+    function sedw(a,   r) {   # a sed script with a `w FILE` command or `s///w FILE` flag naming a member
+      while (match(a, SEDW)) {
+        r = substr(a, RSTART + RLENGTH); sub(/\n.*/, "", r)
+        if (named(r)) return 1
+        a = substr(a, RSTART + 1)
       }
       return 0
     }
-    function evalseg(dd, p,   k, m, ci, fh, fw) {
-      m = NW[dd]; fh = 0; fw = ""
-      if (m == 0) return
-      for (k = 1; k <= m; k++) if (named(W[dd, k])) { fh = 1; fw = NMW; break }
-      if (fh || PF[dd]) {
-        VIAX = 0; ci = cmdpos(dd, 1, m)
-        if (ci > 0 && (fh || VIAX) && edscan(dd, ci, m) && !FOUND) { FOUND = 1; FW = fh ? fw : PFW[dd] }
+    function gitsub(dd, s, e,   k, a) {
+      for (k = s; k <= e; k++) {
+        a = W[dd, k]
+        if (a == "-C" || a == "-c" || a == "--git-dir" || a == "--work-tree" || a == "--namespace") { k++; continue }
+        if (a ~ /^-/) continue
+        return a
       }
-      carry(dd, m)
-      if (p) { if (fh && !PF[dd]) PFW[dd] = fw; PF[dd] = (PF[dd] || fh) } else { PF[dd] = 0; PFW[dd] = "" }
+      return ""
     }
-    { T = (NR == 1) ? $0 : T "\n" $0 }
-    END {
-      FAM = ENVIRON["PWT_LG_FAM"]; META = "*?[{$`}),"; EDRE = "^(g?sed|perl[0-9.]*)$"
-      if (FAM == "") { print "DENY"; exit }
-      for (k = 32; k < 127; k++) CHR[k] = sprintf("%c", k)
-      split("! { } if then else elif do while until", kw, " "); for (k in kw) KW[kw[k]] = 1
-      PFX["sudo"] = "CDghpRrtTUu"; PFX["doas"] = "uC"; PFX["env"] = "uCPS"; PFX["command"] = ""
-      PFX["exec"] = "a"; PFX["nohup"] = ""; PFX["nice"] = "n"; PFX["timeout"] = "sk"
-      PFX["gtimeout"] = "sk"; PFX["xargs"] = "IJLnPsEdaRS"; PFX["stdbuf"] = "ioe"; PFX["caffeinate"] = "tw"
-      d = 0; FT[0] = ""; QS[0] = ""; PD[0] = 0; CW[0] = ""; INW[0] = 0; NW[0] = 0; FTX[0] = ""; PF[0] = 0; PFW[0] = ""
-      NV = 0; FOUND = 0; FW = ""
-      n = length(T); i = 1
-      while (i <= n) {
-        c = substr(T, i, 1); nx = substr(T, i + 1, 1)
-        if (QS[d] == "S") {   # a single-quoted run is inert: copy it in one chunk (linear on long payloads)
-          j = index(substr(T, i), SQ)
-          if (j == 0) { addc(substr(T, i)); i = n + 1 } else { if (j > 1) addc(substr(T, i, j - 1)); QS[d] = ""; i += j }
+    function awkinp(dd, s, e,   k, a) {
+      for (k = s; k <= e; k++) {
+        a = W[dd, k]
+        if (a ~ /^(-iinplace|--include=inplace)(\.awk)?$/) return 1
+        if ((a == "-i" || a == "--include") && W[dd, k + 1] ~ /^inplace(\.awk)?$/) return 1
+      }
+      return 0
+    }
+    function pyc(dd, s, e,   k, a, code) {
+      for (k = s; k <= e; k++) {
+        a = W[dd, k]
+        if (a !~ /^-./ || a == "--") return 0   # a script path / stdin: residual
+        if (a ~ /^-[WX]/) { if (length(a) == 2) k++; continue }
+        if (a ~ /^-[A-Za-z]*c/) {
+          code = a; sub(/^-[A-Za-z]*c/, "", code); if (code == "") code = W[dd, k + 1]
+          return (named(code) && code ~ PYW) ? hit(NMW) : 0   # names a member AND writes
+        }
+        if (a ~ /^-[A-Za-z]*m/) return 0          # `-m module`
+      }
+      return 0
+    }
+    function shc(dd, s, e,   k, a, cf) {   # bash -c STRING → scanned again
+      cf = 0
+      for (k = s; k <= e; k++) {
+        a = W[dd, k]
+        if (a == "--") continue
+        if (a ~ /^[-+]./) {
+          if (a ~ /^-[A-Za-z]*c[A-Za-z]*$/) cf = 1
+          if (a ~ /^[-+][oO]$/ || a == "--rcfile" || a == "--init-file") k++
           continue
         }
+        if (cf && a != "") { RQN++; RQ[RQN] = a }
+        return
+      }
+    }
+    function destscan(dd, s, e, b, fh, fw, pw,   k, a, c, L, ch, nops, tdir, tset, all, eo, ta, dest, r, ophs, ophw) {
+      nops = 0; tdir = ""; tset = 0; all = 0; eo = 0; r = 0
+      ta = (b == "install") ? "BfgmoSN" : (b == "rsync") ? "efBT" : "S"   # short options taking an argument (besides -t)
+      for (k = s; k <= e; k++) {
+        a = W[dd, k]
+        if (!eo && a == "--") { eo = 1; continue }
+        if (!eo && a ~ /^--./) {
+          if (a ~ /^--target-directory=/) { tdir = substr(a, 20); tset = 1 }
+          else if (a == "--target-directory") { tdir = W[dd, ++k]; tset = 1 }
+          else if ((b == "rsync" && a == "--remove-source-files") || (b == "install" && a == "--directory")) all = 1
+          continue
+        }
+        if (!eo && a ~ /^-./) {
+          L = length(a)
+          for (c = 2; c <= L; c++) {
+            ch = substr(a, c, 1)
+            if (ch == "t" && b != "rsync") { tdir = (c < L) ? substr(a, c + 1) : W[dd, ++k]; tset = 1; break }
+            if (ch == "d" && b == "install") all = 1
+            if (index(ta, ch)) { if (c == L) k++; break }
+          }
+          continue
+        }
+        nops++; OP[nops] = a
+      }
+      ophs = PHS; ophw = PHW
+      if (pw != "") { if (XREP != "") { PHS = XREP; PHW = pw } else { nops++; OP[nops] = "\001"; PHW = pw } }
+      if (all) { if (fh || pw != "") r = hit(fh ? fw : pw) }
+      else if (tset) {
+        if (opn(tdir)) r = hit(NMW)
+        else for (k = 1; k <= nops && !r; k++) if (opn(srcb(OP[k]))) r = hit(NMW)
+      }
+      else if (nops >= 2) {
+        dest = OP[nops]
+        if (opn(dest)) r = hit(NMW)
+        else if (nops >= 3 || dest ~ /\/$/ || dest ~ /(^|\/)\.\.?$/ || dest == "~" || bname(dest) == "state")
+          for (k = 1; k < nops && !r; k++) if (opn(srcb(OP[k]))) r = hit(NMW)
+      }
+      PHS = ophs; PHW = ophw
+      return r
+    }
+    function wrscan(dd, ci, e, fh, fw, pw,   b, k, x, ci2, s, via) {
+      b = bname(W[dd, ci]); via = (pw != "")
+      if (b ~ /^g(mv|cp|rm|touch|tee|truncate|install|ln|dd)$/) b = substr(b, 2)
+      if (b ~ EDRE) {
+        if ((fh || via) && ((b ~ /sed$/) ? sedscan(dd, ci + 1, e) : perlscan(dd, ci + 1, e))) return hit(fh ? fw : pw)
+        if (b ~ /sed$/) for (k = ci + 1; k <= e; k++) if (sedw(W[dd, k])) return hit(NMW)
+        return 0
+      }
+      if (b == "find") {
+        for (k = ci + 1; k <= e; k++) {
+          if (W[dd, k] == "-delete" && fh) return hit(fw)
+          if (W[dd, k] !~ /^-(exec|execdir|ok|okdir)$/) continue
+          for (x = k + 1; x <= e && W[dd, x] != ";" && W[dd, x] != "+"; x++) ;
+          ci2 = cmdpos(dd, k + 1, x - 1)
+          if (ci2 > 0) {
+            PHS = fh ? "{}" : ""; PHW = fw
+            if (wrscan(dd, ci2, x - 1, fh, fw, "")) { PHS = ""; return 1 }
+            PHS = ""
+          }
+          k = x
+        }
+        return 0
+      }
+      # ln names a member ANYWHERE: a link OUT (`ln -s <member> /tmp/x`) is a write handle, not a copy
+      if (b ~ /^(mv|rm|touch|tee|truncate|ln)$/ || (b == "git" && gitsub(dd, ci + 1, e) ~ /^(rm|mv)$/))
+        return (fh || via) ? hit(fh ? fw : pw) : 0
+      if (b ~ /^(cp|install|rsync)$/) return destscan(dd, ci + 1, e, b, fh, fw, pw)
+      if (b == "dd") { for (k = ci + 1; k <= e; k++) if (W[dd, k] ~ /^of=/ && opn(substr(W[dd, k], 4))) return hit(NMW); return 0 }
+      if (b ~ /^(g?awk|mawk|nawk)$/) return (fh && awkinp(dd, ci + 1, e)) ? hit(fw) : 0
+      if (b ~ /^python[0-9.]*$/) return pyc(dd, ci + 1, e)
+      if (b in SHL) { shc(dd, ci + 1, e); return 0 }
+      if (b == "eval") { s = ""; for (k = ci + 1; k <= e; k++) s = s " " W[dd, k]; if (s != "") { RQN++; RQ[RQN] = s } return 0 }
+      return 0
+    }
+    function evalseg(dd, p,   k, j, m, ci, c2, fh, fw, f2, w2, sh) {
+      m = NW[dd]; fh = 0; fw = ""
+      if (m == 0) { HNS = HN; return }
+      for (k = 1; k <= m; k++) if (named(W[dd, k])) { fh = 1; fw = NMW; break }
+      VIAX = 0; XREP = ""; ci = cmdpos(dd, 1, m)
+      if (ci > 0 && !FOUND) wrscan(dd, ci, m, fh, fw, (VIAX && PF[dd]) ? PFW[dd] : "")
+      # A writer behind a launcher cmdpos does not model (`flock L rm`, `setsid rm`, `busybox rm`,
+      # `/usr/bin/time rm`, `ionice -c3 rm`): the verb grep this scanner replaced denied these, so an
+      # FIRST unquoted writer word later in the segment is scanned as a command too (`grep -c "rm"`
+      # is not). Only the first, so a long segment stays one linear pass.
+      for (k = ci + 1; ci > 0 && !FOUND && (fh || PF[dd]) && k <= m; k++) {
+        if (WQF[dd, k] == 1 || bname(W[dd, k]) !~ /^(g?(mv|cp|rm|touch|tee|ln)|xargs)$/) continue
+        VIAX = 0; c2 = cmdpos(dd, k, m); f2 = 0; w2 = ""
+        for (j = k + 1; j <= m; j++) if (named(W[dd, j])) { f2 = 1; w2 = NMW; break }
+        if (c2 > 0) wrscan(dd, c2, m, f2, w2, (VIAX && PF[dd]) ? PFW[dd] : "")
+        break
+      }
+      if (HN > HNS) {   # heredocs opened by this segment: a shell reading one runs it as a script
+        sh = (ci > 0 && (bname(W[dd, ci]) in SHL))
+        for (k = HNS + 1; k <= HN; k++) HR[k] = sh
+        HNS = HN
+      }
+      carry(dd, m, p)
+      if (dd == 0) cdtrack(m)
+      if (p == 1) { if (fh && !PF[dd]) PFW[dd] = fw; PF[dd] = (PF[dd] || fh) } else { PF[dd] = 0; PFW[dd] = "" }
+    }
+    function isterm(p, tm, strip,   k, L) {   # the line at p is the heredoc terminator
+      if (strip) while (CH[p] == "\t") p++
+      L = length(tm)
+      for (k = 1; k <= L; k++) if (CH[p + k - 1] != substr(tm, k, 1)) return 0
+      return (p + L > n || CH[p + L] == "\n")
+    }
+    function hdskip(tm, strip) {   # skip an inert body, terminator line included
+      while (i <= n) {
+        if (isterm(i, tm, strip)) { while (i <= n && CH[i] != "\n") i++; i++; return }
+        while (i <= n && CH[i] != "\n") i++
+        i++
+      }
+    }
+    function hdbodies() {   # at a line start after heredoc openers: consume their bodies in order
+      while (HQ <= HN) {
+        if (HR[HQ]) {   # fed to a shell: its lines ARE commands (scanned), up to the terminator
+          if (!isterm(i, HT[HQ], HS[HQ])) return
+          while (i <= n && CH[i] != "\n") i++
+          i++; HQ++; continue
+        }
+        if (HI[HQ]) { hdskip(HT[HQ], HS[HQ]); HQ++; continue }
+        QS[d] = "H"; HTM[d] = HT[HQ]; HST[d] = HS[HQ]; HLS[d] = 1; HQ++; return
+      }
+      HN = 0; HQ = 1; HNS = 0
+    }
+    function scan(TX,   c, nx, j, h, k, lvl, cc, r, pos) {
+      n = split(TX, CH, "")
+      if (n != length(TX)) { print "DENY"; exit }   # not one element per byte: no verdict
+      NQ = split(TX, QP, SQ); split("", QK); pos = 0   # QK[p]: the piece after the quote at p
+      for (k = 1; k < NQ; k++) { pos += length(QP[k]) + 1; QK[pos] = k + 1 }
+      ND = split(TX, DP, "\""); split("", DK); pos = 0
+      for (k = 1; k < ND; k++) { pos += length(DP[k]) + 1; DK[pos] = k + 1 }
+      d = 0; FT[0] = ""; QS[0] = ""; PD[0] = 0; CW[0] = ""; INW[0] = 0; WQ[0] = 0; NW[0] = 0; FTX[0] = ""
+      PF[0] = 0; PFW[0] = ""; RDW[0] = 0; HDW[0] = 0; PREV[0] = 0; CD = 0; HN = 0; HQ = 1; HNS = 0; FUN = ""
+      i = 1
+      while (i <= n) {
+        c = CH[i]; nx = CH[i + 1]
+        if (QS[d] == "H") {   # an unquoted-delimiter heredoc body: data, but $(…)/backticks expand
+          if (INW[d]) { CW[d] = ""; INW[d] = 0 }
+          if (HLS[d]) {
+            HLS[d] = 0
+            if (isterm(i, HTM[d], HST[d])) { while (i <= n && CH[i] != "\n") i++; i++; QS[d] = ""; hdbodies(); continue }
+          }
+          if (c == "\\") { i += 2; continue }
+          if (c == "$" && nx == "(") { push("$("); i += 2; continue }
+          if (c == "`") { push("`"); i++; continue }
+          if (c == "\n") HLS[d] = 1
+          i++; continue
+        }
         if (QS[d] == "A") {
-          if (c == "\\") {   # ANSI-C escapes: decode \xHH and \NNN so $'"'"'…\x2elog'"'"' still anchors
-            if (nx == "x" && substr(T, i + 2, 1) ~ /[0-9A-Fa-f]/) {
-              j = i + 2; h = ""; while (length(h) < 2 && substr(T, j, 1) ~ /[0-9A-Fa-f]/) { h = h substr(T, j, 1); j++ }
+          if (c == "\\") {   # ANSI-C escapes: decode \xHH and \NNN so a $-quoted \x2elog still anchors
+            if (nx == "x" && CH[i + 2] ~ /[0-9A-Fa-f]/) {
+              j = i + 2; h = ""; while (length(h) < 2 && CH[j] ~ /[0-9A-Fa-f]/) { h = h CH[j]; j++ }
               addc(chrv(hexv(h))); i = j; continue
             }
             if (nx ~ /^[0-7]$/) {
-              j = i + 1; h = ""; while (length(h) < 3 && substr(T, j, 1) ~ /[0-7]/) { h = h substr(T, j, 1); j++ }
+              j = i + 1; h = ""; while (length(h) < 3 && CH[j] ~ /[0-7]/) { h = h CH[j]; j++ }
               addc(chrv(octv(h))); i = j; continue
             }
             if (nx == "u" || nx == "U" || nx == "c") { addc("$"); i += 2; continue }
@@ -886,41 +1178,85 @@ __inplace_family_segment() {  # $1=family prefix → prints `DENY <word>` or OK
           if (c == "\\") { if (nx != "\n") addc(nx); i += 2; continue }
           if (c == "$" && nx == "(") { push("$("); i += 2; continue }
           if (c == "`") { if (FT[d] == "`") pop(); else push("`"); i++; continue }
-          addc(c); i++; continue
+          j = i + 1; while (j <= n && !(CH[j] in DSP)) j++   # a plain run: one piece
+          if (j - i > 256) r = substr(TX, i, j - i); else { r = ""; for (k = i; k < j; k++) r = r CH[k] }
+          addc(r); i = j; continue
         }
-        if (c == "\\") { if (nx != "\n") addc(nx); i += 2; continue }
-        if (c == SQ) { QS[d] = "S"; INW[d] = 1; i++; continue }
-        if (c == "\"") { QS[d] = "D"; INW[d] = 1; i++; continue }
-        if (c == "$" && nx == SQ) { QS[d] = "A"; INW[d] = 1; i += 2; continue }
+        if (c in PL) {   # a run of plain word bytes: one piece
+          j = i + 1; while (j <= n && (CH[j] in PL)) j++
+          if (j - i > 256) r = substr(TX, i, j - i); else { r = ""; for (k = i; k < j; k++) r = r CH[k] }
+          addc(r); i = j; continue
+        }
+        if (c == "\\") { if (nx != "\n") { if (!WQ[d]) WQ[d] = 2; addc(nx) } i += 2; continue }   # 2: escaped, not quoted
+        if (c == SQ) {   # a single-quoted run is inert: ONE piece of the split on the quote
+          k = QK[i]; r = QP[k]; INW[d] = 1; WQ[d] = 1
+          if (r != "") addc(r)
+          i = (k < NQ) ? i + length(r) + 2 : n + 1; continue
+        }
+        if (c == "\"") {   # a closed double-quoted string with no \ $ backtick: ONE piece
+          INW[d] = 1; WQ[d] = 1; k = DK[i]; r = DP[k]
+          if (k < ND && r !~ /[\\$`]/) { if (r != "") addc(r); i += length(r) + 2; continue }
+          QS[d] = "D"; i++; continue
+        }
+        if (c == "$" && nx == SQ) { QS[d] = "A"; INW[d] = 1; WQ[d] = 1; i += 2; continue }
         if (c == "$" && nx == "(") { push("$("); i += 2; continue }
         if (c == "$" && nx == "{") {
           j = i + 2; lvl = 1
-          while (j <= n && lvl > 0) { cc = substr(T, j, 1); if (cc == "{") lvl++; else if (cc == "}") lvl--; j++ }
-          for (k = i; k < j; k++) addc(substr(T, k, 1))
+          while (j <= n && lvl > 0) { cc = CH[j]; if (cc == "{") lvl++; else if (cc == "}") lvl--; j++ }
+          for (k = i; k < j; k++) addc(CH[k])
           i = j; continue
         }
         if (c == "`") { if (FT[d] == "`") pop(); else push("`"); i++; continue }
-        if (c == "#" && !INW[d]) { while (i <= n && substr(T, i, 1) != "\n") i++; continue }
+        if (c == "#" && !INW[d]) { while (i <= n && CH[i] != "\n") i++; continue }
         if (c == " " || c == "\t") { endword(); i++; continue }
         if (c == ">" || c == "<" || (c == "&" && nx == ">")) {
-          endword(); i++
-          while (i <= n && index("<>&|", substr(T, i, 1))) i++
+          if (INW[d] && !WQ[d] && CW[d] ~ /^[0-9]+$/) { CW[d] = ""; INW[d] = 0 }   # `2>`: an fd, not a word
+          else endword()
+          if (c == "<" && nx == "<" && CH[i + 2] != "<") {   # heredoc opener; the next word is its delimiter
+            i += 2; HDS[d] = 0; if (CH[i] == "-") { HDS[d] = 1; i++ }
+            HDW[d] = 1; continue
+          }
+          r = ""; while (i <= n && index("<>&|", CH[i])) { r = r CH[i]; i++ }
+          if (index(r, ">")) RDW[d] = 1
           continue
         }
         if (c == "|") {
-          if (nx == "|") { endseg(0); i += 2 } else { endseg(1); i += (nx == "&") ? 2 : 1 }
+          if (nx == "|") { endseg(2); i += 2 } else { endseg(1); i += (nx == "&") ? 2 : 1 }
           continue
         }
-        if (c == "\n" || c == ";" || c == "&") { endseg(0); i++; continue }
-        if (c == "(") { PD[d]++; endseg(0); i++; continue }
+        if (c == "&") { if (nx == "&") { endseg(2); i += 2 } else { endseg(3); i++ } continue }
+        if (c == ";") { endseg(0); i++; continue }
+        if (c == "\n") { endseg(0); i++; if (HQ <= HN) hdbodies(); continue }
+        if (c == "(") { PD[d]++; endseg(4); i++; continue }
         if (c == ")") {
-          if (PD[d] > 0) { PD[d]--; endseg(0) } else if (FT[d] == "$(") pop(); else endseg(0)
+          if (PD[d] > 0) { endseg(4); PD[d]-- } else if (FT[d] == "$(") pop(); else endseg(0)
           i++; continue
         }
         addc(c); i++
       }
       while (d > 0) pop()
       endseg(0)
+    }
+    BEGIN { RS = "\001" }
+    { T = (NR == 1) ? $0 : T "\001" $0 }
+    END {
+      FAM = ENVIRON["PWT_LG_FAM"]; META = "*?[{$`}),"; EDRE = "^(g?sed|perl[0-9.]*)$"
+      SEDW = "(^|[;\n}0-9$]|/[gpiIeEmM0-9]*)[ \t]*[wW][ \t]+"
+      # python -c: a write call, or an open() mode with w/a/x/+ (a json.load(open(…)) READ passes)
+      PYQ = "[\"" SQ "]"
+      PYW = "os\\.(remove|unlink|rename|replace|truncate|link|symlink)|\\.(write|write_text|write_bytes|unlink|rename|touch|symlink_to|hardlink_to|truncate)\\(|shutil\\.|rmtree|mode[ \t]*=[ \t]*" PYQ "[rbt]*[wax+]|,[ \t]*" PYQ "[rbt]*[wax+][rbt+]*" PYQ
+      if (FAM == "") { print "DENY"; exit }
+      for (k = 32; k < 127; k++) CHR[k] = sprintf("%c", k)
+      split("! { } if then else elif do while until", kw, " "); for (k in kw) KW[kw[k]] = 1
+      split("bash sh zsh dash ksh fish su", kw, " "); for (k in kw) SHL[kw[k]] = 1
+      DSP["\""] = 1; DSP["\\"] = 1; DSP["$"] = 1; DSP["`"] = 1
+      for (k = 33; k < 127; k++) if (!index("\\\"$`#<>&|;()" SQ, CHR[k])) PL[CHR[k]] = 1
+      PFX["sudo"] = "CDghpRrtTUu"; PFX["doas"] = "uC"; PFX["env"] = "uCPS"; PFX["command"] = ""
+      PFX["exec"] = "a"; PFX["nohup"] = ""; PFX["nice"] = "n"; PFX["timeout"] = "sk"
+      PFX["gtimeout"] = "sk"; PFX["xargs"] = "IJLnPsEdaRS"; PFX["stdbuf"] = "ioe"; PFX["caffeinate"] = "tw"
+      NV = 0; FOUND = 0; FW = ""; RQN = 0; PHS = ""; PHW = ""
+      scan(T)
+      for (q = 1; q <= RQN && !FOUND; q++) { if (q > 32) { hit(FAM); break } scan(RQ[q]) }
       if (FOUND) { gsub(/[\n\t]/, " ", FW); print "DENY " FW } else print "OK"
     }' 2>/dev/null
 }
@@ -999,8 +1335,9 @@ __bash_target_denied() {  # $1=raw target token  $2=slug → 0 if deny
 # Both read CMD_SCAN, not CMD: a `>` inside quotes has already been blanked, so
 # an awk/grep body can no longer masquerade as a redirect.
 __redirect_targets() {
-    printf '%s' "$CMD_SCAN" | grep -oE '[0-9]*>>?[[:space:]]*[^[:space:]<>;&|)]+' 2>/dev/null \
-        | sed -E 's/^[0-9]*>>?[[:space:]]*//'
+    # `>|` (clobber past noclobber) is a redirect too (row 190) — before, its `|` ended the match.
+    printf '%s' "$CMD_SCAN" | grep -oE '[0-9]*>(>|\|)?[[:space:]]*[^[:space:]<>;&|)]+' 2>/dev/null \
+        | sed -E 's/^[0-9]*>(>|\|)?[[:space:]]*//'
 }
 __tee_targets() {
     printf '%s' "$CMD_SCAN" | grep -oE 'tee[[:space:]]+(-[a-zA-Z]+[[:space:]]+)*[^;&|<>]+' 2>/dev/null \
@@ -1290,53 +1627,58 @@ for GF in "$STATE_DIR"/plan-w-team-goal-*.json; do
         __ensure_fam_text
         for FAM in "plan-w-team-ship-verdict-${SLUG}" "plan-w-team-test-green-${SLUG}"; do
             case "$CMD_DEQ" in *"$FAM"*) : ;; *) continue ;; esac
-            FORGE=0; FHIT=""
+            FORGE=0; FHIT=""; FWHY="only the pipeline's own gates may produce it"
             while IFS= read -r TGT; do
                 [ -n "$TGT" ] || continue
                 __fam_member_named "$TGT" "$FAM" && { FORGE=1; FHIT="$TGT"; break; }
             done <<EOF_FAMR
 $(__redirect_targets | LC_ALL=C tr -d "\"'")
 EOF_FAMR
-            # The verb needs a left word boundary: unanchored, `grep confirm <family>.log`
-            # and `transform …` read as `rm`. Round 2 (B2): matched on CMD_SCAN WITH its
-            # quotes — round 1 stripped them first, which turned the READ `grep -c 'rm'
-            # <family>.log` / `jq '.tee' <family>.json` into an `rm`/`tee`. Instead quote chars
-            # (and a `\`) may sit between the family and its anchor, so `cp x "$D/<family>".json`
-            # still meets it; `g?` keeps GNU coreutils' gcp/gmv/grm.
-            if [ "$FORGE" = "0" ]; then
-                FHIT=$(printf '%s' "$CMD_SCAN" | LC_ALL=C grep -oE "(^|[^[:alnum:]_-])g?(mv|cp|rm|touch|tee)[[:space:]][^;|&]*${FAM}[\"'\\\\]*${FAM_ANCHOR_ERE}[^[:space:];|&<>]*" 2>/dev/null | head -n 1)
-                [ -n "$FHIT" ] && FORGE=1
-            fi
-            # 2.51.0: an in-place editor (`sed -i`, `perl -pi`) rewrites a family file
-            # without any verb or redirect above — the retest-gate forgery was exactly
-            # `sed -i` deleting a SUITE_FAILED row from the base log. retest-8: the verdict
-            # is PER SEGMENT — the one segment that runs the in-place editor must itself
-            # name a family member (__inplace_family_segment, raw text, real quote state:
-            # a quoted "sed -i" is prose, a quoted path is still a path). The coarse
-            # FAM_INPLACE_RE only decides whether that scanner runs; scanner failure → DENY.
+            # Everything else is the per-segment scanner's call (__inplace_family_segment:
+            # raw text, real quote state, one verdict per segment): in-place editors, the
+            # all-operand writers (mv rm touch tee truncate, git rm/mv, find -delete, awk -i
+            # inplace), copies judged by the path they CREATE (row 190: `cp <member> /tmp/x`
+            # is a read), dd of=, sed `w`, python -c, bash -c / eval strings, heredoc bodies
+            # (a quoted delimiter's body is inert, LG-R1), and variables carried from an
+            # assignment / for / while-read (LG-R3). It runs whenever the family is named.
+            # Verdict protocol: `OK`, or `DENY <word>`. Anything else — empty output (awk
+            # missing, crashed), a bare `DENY` — is NO verdict, and it DENIES: the scanner is
+            # the only thing that sees these writers, so its absence cannot read as "clean".
+            # (cleanscale's LG-4 keeps only the `DENY <word>` arm; see lane-enforcement.md.)
             # Under PWT_DISABLE_LANE_GUARD_HYGIENE=1 (the guard's "no text analysis" switch)
-            # the scanner is skipped and the 2.51.0 WHOLE-TOKEN form decides (round 2, B3):
-            # a command-word sed/perl carrying an in-place option token, ANDed with an
-            # anchored family member anywhere in the command — the strict 2.51.0 posture,
-            # never a looser one, and never stricter than it either (round 1's coarse
-            # `.*-…i` matched the family NAME, so the switch denied every `sed -n 1p` read).
+            # the scanner is skipped and two coarse forms decide. The first is a write verb
+            # with an anchored member after it in the same segment, `cp <member> /tmp/x`
+            # included; it gives the precise label. The second is FAM_SWITCH_WRITER_RE: any
+            # writer the scanner classifies, anywhere, ANDed with a member named anywhere.
+            # Together they keep the switch never looser than the scanner.
             if [ "$FORGE" = "0" ]; then
                 if [ "$HYGIENE" = "1" ]; then
-                    if printf '%s' "$CMD_DEQ" | grep -qE "$FAM_INPLACE_RE"; then
-                        FSEG=$(__inplace_family_segment "$FAM")
-                        case "$FSEG" in OK) : ;; *) FORGE=1; FHIT="${FSEG#DENY}" ;; esac
+                    FSEG=$(__inplace_family_segment "$FAM")
+                    case "$FSEG" in
+                        OK) : ;;
+                        "DENY "*) FORGE=1; FHIT="${FSEG#DENY }" ;;
+                        *) FORGE=1; FWHY="the family-write scanner gave no verdict (awk missing or failed), so the guard fails closed" ;;
+                    esac
+                else
+                    # The verb needs a left word boundary: unanchored, `grep confirm <family>.log`
+                    # and `transform …` read as `rm`. Round 2 (B2): matched on CMD_SCAN WITH its
+                    # quotes, so the READ `grep -c 'rm' <family>.log` is not an `rm`; quote chars
+                    # (and a `\`) may sit between the family and its anchor; `g?` keeps GNU gcp/gmv/grm.
+                    FHIT=$(printf '%s' "$CMD_SCAN" | LC_ALL=C grep -oE "(^|[^[:alnum:]_-])(g?(mv|cp|rm|touch|tee|install|ln|truncate|dd)|rsync)[[:space:]][^;|&]*${FAM}[\"'\\\\]*${FAM_ANCHOR_ERE}[^[:space:];|&<>]*" 2>/dev/null | head -n 1)
+                    if [ -n "$FHIT" ]; then
+                        FORGE=1
+                    # "Named" here also admits the BARE prefix at a word end (`TG=$S/<family>;
+                    # sed -i … "$TG.log"` — there is no scanner under the switch to carry the
+                    # variable). A sibling's `<family>-2` is still not named: `-` then a digit
+                    # is neither an anchor nor a word end.
+                    elif printf '%s' "$CMD" | grep -qE "$FAM_SWITCH_WRITER_RE" \
+                         && { __fam_member_named "$CMD_DEQ" "$FAM" || __fam_member_named "$CMD_DEQB" "$FAM" \
+                              || case "$CMD_DEQ " in *"$FAM"[\ \;\&\|]*) true ;; *) false ;; esac; }; then
+                        FORGE=1; FHIT="$CMD_DEQ"
                     fi
-                # "Named" here also admits the BARE prefix at a word end (`TG=$S/<family>;
-                # sed -i … "$TG.log"` — HEAD's substring caught it; there is no scanner
-                # under the switch to carry the variable). A sibling's `<family>-2` is
-                # still not named: `-` then a digit is neither an anchor nor a word end.
-                elif printf '%s' "$CMD" | grep -qE "$FAM_INPLACE_WT_RE" \
-                     && { __fam_member_named "$CMD_DEQ" "$FAM" || __fam_member_named "$CMD_DEQB" "$FAM" \
-                          || case "$CMD_DEQ " in *"$FAM"[\ \;\&\|]*) true ;; *) false ;; esac; }; then
-                    FORGE=1; FHIT="$CMD_DEQ"
                 fi
             fi
-            [ "$FORGE" = "1" ] && __deny_artifact "$SLUG" "$(__fam_member_label "$FHIT" "$FAM")" "only the pipeline's own gates may produce it"
+            [ "$FORGE" = "1" ] && __deny_artifact "$SLUG" "$(__fam_member_label "$FHIT" "$FAM")" "$FWHY"
         done
         # (1') Any non-worker session: mutating Bash aimed into the lane's
         # worktree — a git-write/mutator naming its literal path, or a redirect

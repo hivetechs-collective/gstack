@@ -1491,10 +1491,22 @@ __pwt_build_goal_text "$REQUEST"
 # Lifecycle: persisted as an audit-trail artifact (state-artifacts.md entry)
 # Idempotency: same REQUEST content → same hash → existing file reused.
 #
+# COMPUTE here, WRITE later. The goal-max cap right below needs the
+# post-pointer length, so the hash, the path and the pointer are built now,
+# but the file itself is written by __pwt_write_overflow_file only once every
+# refusal has passed: in derive mode just before the /goal is printed, in the
+# spawn modes just before the worker spawn. A refused dispatch (goal-max,
+# DS2, DS1, deictic, RAM/disk/worktree-cap, fair-share, a dry run, a lane
+# settings failure) therefore leaves no directive file behind. (DS1 still
+# appends its own verdict line to plan-w-team-ds1-audit.jsonl on a refusal —
+# that audit trail is deliberate and separate from the directive.)
+#
 # Skipped when REQUEST is the empty string (cannot reach this point — earlier
 # guard exits) or when threshold env explicitly set to a very large number.
 GOAL_BYTES=${#GOAL_TEXT}
 OVERFLOW_THRESHOLD="${PLAN_W_TEAM_OVERFLOW_THRESHOLD:-3000}"
+__pwt_overflow_file=""
+__pwt_overflow_content=""
 if [ "$GOAL_BYTES" -gt "$OVERFLOW_THRESHOLD" ]; then
     # Resolve state-dir root via the worktree-robust main-repo resolver
     # (__pwt_main_repo_root: override → git-common-dir main checkout →
@@ -1505,7 +1517,6 @@ if [ "$GOAL_BYTES" -gt "$OVERFLOW_THRESHOLD" ]; then
     # goal-state seed root-cause — see __pwt_main_repo_root's rationale).
     __pwt_overflow_root=$(__pwt_main_repo_root)
     __pwt_overflow_dir="$__pwt_overflow_root/.claude/state"
-    mkdir -p "$__pwt_overflow_dir" 2>/dev/null || true
 
     # Hash the original REQUEST (pre-pointer) so idempotency depends only on
     # the user's content, not on a pointer that itself contains a path.
@@ -1519,21 +1530,34 @@ if [ "$GOAL_BYTES" -gt "$OVERFLOW_THRESHOLD" ]; then
     fi
 
     __pwt_overflow_file="$__pwt_overflow_dir/plan-w-team-directive-${__pwt_hash}.txt"
-
-    # Idempotent write: only write if the file doesn't already exist with the
-    # same content. We don't recompute and compare — the hash already uniquely
-    # identifies content, so "exists" implies "same content".
-    if [ ! -f "$__pwt_overflow_file" ]; then
-        printf '%s' "$REQUEST" > "$__pwt_overflow_file"
-    fi
+    # The pre-pointer text: what __pwt_write_overflow_file persists, and what
+    # the deictic guard scans (in memory — the file does not exist yet there).
+    __pwt_overflow_content="$REQUEST"
 
     # Replace REQUEST with the pointer text and rebuild GOAL_TEXT.
     REQUEST="Read full directive at ${__pwt_overflow_file} and execute it as a /plan-w-team run with standard halt conditions (${__PWT_HALT_INLINE}). Done conditions per the directive file."
     __pwt_build_goal_text "$REQUEST"
     GOAL_BYTES=${#GOAL_TEXT}
-
-    echo "INFO: directive overflow — wrote $(wc -c < "$__pwt_overflow_file" | tr -d ' ') bytes to $__pwt_overflow_file (hash=$__pwt_hash; goal now $GOAL_BYTES chars)" >&2
 fi
+
+# Deferred overflow write — called once, after the last refusal (see above).
+# Idempotent: only write if the file doesn't already exist. We don't recompute
+# and compare — the hash already uniquely identifies content, so "exists"
+# implies "same content". Fails LOUD (exit 5, the overflow path's tooling
+# class) when the file still is not there: the /goal about to be printed or
+# spawned points at it, and a dangling pointer is a run that cannot start.
+__pwt_write_overflow_file() {
+    [ -n "$__pwt_overflow_file" ] || return 0
+    mkdir -p "$__pwt_overflow_dir" 2>/dev/null || true
+    if [ ! -f "$__pwt_overflow_file" ]; then
+        printf '%s' "$__pwt_overflow_content" > "$__pwt_overflow_file"
+    fi
+    if [ ! -f "$__pwt_overflow_file" ]; then
+        echo "FATAL: could not write directive overflow file $__pwt_overflow_file — the /goal pointer would dangle" >&2
+        exit 5
+    fi
+    echo "INFO: directive overflow — wrote $(wc -c < "$__pwt_overflow_file" | tr -d ' ') bytes to $__pwt_overflow_file (hash=$__pwt_hash; goal now $GOAL_BYTES chars)" >&2
+}
 
 # Enforce Anthropic's /goal 4000-char cap BEFORE spawning. Without this guard
 # the worker bg session spawns, /goal silently rejects the directive, and the
@@ -2018,7 +2042,8 @@ fi
 #   3  PWT-DS1 double-spawn refusal  +  __pwt_seed_guard stand-down
 #   4  PWT-DS2 worker-cascade refusal
 #   5  capacity/tooling hard-refusals — TRIPLE-BOOKED: RAM gate, disk gate,
-#      worktree cap, and the missing-hash-tool fatal in the overflow path
+#      worktree cap, and the overflow path's fatals (missing hash tool, or a
+#      directive file that could not be written)
 #   6  fair-share gate refusal
 #   7  PWT_CTX_DANGLING — this guard (deictic request, no resolvable brief)
 #   8  PWT_SPEC_INVALID — Governor Contract phase 3 (C6) --spec refusal (theater/path/slug/
@@ -2040,9 +2065,10 @@ fi
 # must keep precedence) and BEFORE the capacity gates (a request that must not
 # spawn at all should not first be judged on RAM). Reads $ORIGINAL_REQUEST —
 # the PRE-overflow-replacement text — so a large deictic directive cannot
-# launder itself through the "Read full directive at ..." pointer; the persisted
-# overflow file is scanned too (belt-and-braces, and it is the artifact a human
-# would read back).
+# launder itself through the "Read full directive at ..." pointer; the overflow
+# content is scanned too (belt-and-braces, and it is what a human would read
+# back), in memory: the directive file is not written until every refusal,
+# this one included, has passed.
 #
 # Scoped to SPAWN modes only: pure derive mode prints a /goal for the user to
 # paste and review, so there is nothing context-blind to prevent.
@@ -2063,8 +2089,8 @@ __pwt_is_deictic() {
 if { [ "$WORKER_ONLY" = "1" ] || [ "$LAUNCH" = "1" ]; }; then
     __PWT_DEICTIC_HIT=0
     __pwt_is_deictic "$ORIGINAL_REQUEST" && __PWT_DEICTIC_HIT=1
-    if [ "$__PWT_DEICTIC_HIT" = "0" ] && [ -n "${__pwt_overflow_file:-}" ] && [ -f "${__pwt_overflow_file}" ]; then
-        __pwt_is_deictic "$(cat "$__pwt_overflow_file" 2>/dev/null)" && __PWT_DEICTIC_HIT=1
+    if [ "$__PWT_DEICTIC_HIT" = "0" ] && [ -n "$__pwt_overflow_content" ]; then
+        __pwt_is_deictic "$__pwt_overflow_content" && __PWT_DEICTIC_HIT=1
     fi
 
     if [ "$__PWT_DEICTIC_HIT" = "1" ]; then
@@ -2910,6 +2936,11 @@ if [ "$LAUNCH" = "1" ]; then
     # field incident). Kill switch: PWT_DISABLE_MCP_PREDECIDE=1.
     __pwt_predecide_project_mcp "$PROJECT_ROOT"
 
+    # Every refusal and pre-spawn failure is behind us: persist the directive
+    # the worker's "Read full directive at <path>" pointer names, right before
+    # the worker that reads it is spawned (cand-overflow-before-refusal).
+    __pwt_write_overflow_file
+
     # LAUNCH_ENV always contains PLAN_W_TEAM_DISABLE_PROMPT_ROUTE=1; the bare
     # `claude --bg` branch is unreachable but kept as a safety net.
     # Use $CLAUDE_BIN (resolved via locate-claude.sh) to avoid PATH-dependent
@@ -3600,4 +3631,7 @@ SUPEOF
     exit "$LAUNCH_RC"
 fi
 
+# Derive mode: the goal-max cap (the one refusal after the overflow point on
+# this path) has passed, so persist the directive the printed /goal points at.
+__pwt_write_overflow_file
 echo "$GOAL_TEXT"

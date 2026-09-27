@@ -470,7 +470,7 @@ rm -f ".claude/state/plan-w-team-untracked-baseline-$SLUG.txt"
 
 Failed runs (retro aborted) leave the baseline intact so `--resume` can read it.
 
-If the Step 5 gate ran in degraded mode (no baseline, e.g. `--ship-only` or `--resume`), report `Score: n/a (hygiene-skipped)` instead of scoring 1 — skipping is not the same as failing. The sentinel block above persists this distinction to `$RETRO_STATE.untracked_hygiene.hygiene_skipped` so the 3-in-30-days friction detector won't false-positive on legitimate skips.
+If the Step 5 gate ran in degraded mode (no baseline, e.g. `--ship-only` or `--resume`), report `Score: n/a (hygiene-skipped)` instead of scoring 1 — skipping is not the same as failing. The sentinel block above persists this distinction to `$RETRO_STATE.untracked_hygiene.hygiene_skipped` so a legitimate skip is never scored or logged as friction.
 
 ## 8i. Self-Assessment
 

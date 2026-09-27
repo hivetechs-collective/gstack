@@ -31,38 +31,10 @@ turn** (Anthropic, "knowing more vs. trying harder"):
 - **Already Brain-tier and still confidently wrong** on a genuinely hard problem —
   an Opus 5.5 agent (`builder-opus`, or a Brain-tier fix) that had full context, clearly
   tried, and was still wrong on the SAME task _after_ the hard-lane bump: that is the
-  top of the ladder. Take the existing hard-gate / human-escalation path. **Model
-  Tiering v9 (2.50.0) retired the Fable rung** that used to sit here — no Fable
-  anywhere — so Opus 5.5 is the highest model the pipeline escalates to.
-
-  Dormant rollback (operator-only, one run at a time): with
-  `PLAN_W_TEAM_FABLE_REENABLE=1` exported, the v3 rung comes back exactly as it was.
-  Ask the guard FIRST — it owns the budget, the per-run cap, and the ledger:
-
-  ```bash
-  if .claude/scripts/plan-w-team-fable-guard.sh \
-       --slug "$SLUG" --kind escalation --task "<task-id>" \
-       --note "<one line: the confidently-wrong diagnosis>" >/dev/null 2>&1; then
-    # exit 0 only (requires PLAN_W_TEAM_FABLE_REENABLE=1): spawn ONE Fable-pinned
-    # fix agent for THIS TASK ONLY.
-    :
-  else
-    # ANY other exit (fable-retired-v9 — the default —, budget, cap-exhausted,
-    # disabled, unresolvable bucket, unwritable ledger, or 127 when the guard is
-    # absent) => do NOT spawn Fable. Take the hard-gate / human-escalation path.
-    :
-  fi
-  ```
-
-  Hard limits when the rollback is on, none of them negotiable in-run:
-  - **ONE task.** Never a lane, never a pool, never a retry default.
-  - **Cap 2 per run** (`PLAN_W_TEAM_FABLE_ESCALATION_CAP`, default 2).
-  - **Budget-gated.** Above the weekly Fable-bucket ceiling the guard skips. An unknown
-    budget skips too — unknown never authorizes spend.
-  - **The skip lands on Brain (Opus 5.5), never lower.** A guard SKIP or a Fable
-    `stop_reason: "refusal"` returns the task to the Brain tier, never to the Hands
-    lane: the task reached this rung because Sonnet and the hard lane already failed.
-  - Every outcome, ALLOW or SKIP, lands in the evidence ledger with its reason.
+  top of the ladder. Take the existing hard-gate / human-escalation path. There is no
+  rung above Opus 5.5 (no Fable anywhere, so no `--kind escalation` guard call), and
+  the task never drops back to the routine lane: it reached this point because the
+  routine lane and the hard lane already failed on it.
 
 This is the fix-stage twin of the supervisor's STALL-ALERT effort rung
 (`shared/supervisor-protocol.md`). It trades tokens for depth in place; it does **not**

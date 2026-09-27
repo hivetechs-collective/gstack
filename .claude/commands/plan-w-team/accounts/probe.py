@@ -7,22 +7,25 @@ in ``anthropic-ratelimit-unified-*`` response headers — needing only
 ``user:inference`` scope. This module reads that gauge and owns every mutation of
 ``usage-cache.json`` (all serialized with ``fcntl.flock``).
 
-Model-scoped weekly buckets (2026-09-18, cache schema 2): probing with the FABLE
-model (``_DEFAULT_PRIMARY_MODEL``) makes the same response carry a ``7d_oi-*`` triple
-(utilization / status / reset) — the Fable weekly bucket, live, for ANY token kind.
-Haiku/Opus probes omit it, and the server refuses the Fable model to a client
-older than 2.1.251 (HTTP 400 ``claude_code_version_too_old``), so the probe sends
-the INSTALLED CLI version as its user-agent and falls back to the haiku model in
-the same tick when the primary is refused. The plan-usage.sh sample (login-only,
-email-keyed) remains a second-choice source and is DISCARDED when it predates the
-account's current 7-day window — that stale-sample path is what recommended an
-account at "Fable 95 %" two days after its week had reset.
+Probe model (Model Tiering v9, founder ruling 2026-09-22: no Fable anywhere): the
+default is Opus 5.5 (``_DEFAULT_PRIMARY_MODEL``). Cache schema 2 (2026-09-18) probed
+the Fable model because its answer carries a ``7d_oi-*`` triple, the Fable weekly
+bucket; that probe is gone, and an env override naming Fable or the FORBIDDEN
+``claude-opus-5`` is refused (one stderr line, the default is probed), so no path
+sends a request to either. Model-scoped ``7d_<bucket>-*`` headers are still parsed
+generically when a response carries them; otherwise the gauge reports
+``scoped_source: "unavailable"``. The server refuses a model the client is too old
+for (HTTP 400 ``claude_code_version_too_old``), so the probe sends the INSTALLED CLI
+version as its user-agent and falls back to the haiku model in the same tick when
+the primary is refused. The plan-usage.sh sample (login-only, email-keyed) remains a
+second-choice source and is DISCARDED when it predates the account's current 7-day
+window — that stale-sample path is what recommended an account at "Fable 95 %" two
+days after its week had reset.
 
 Account ``status`` derives from the PER-WINDOW statuses (worst of 5h / 7d) and
-NEVER from the Fable bucket: a Fable-exhausted account answers a Fable probe with a
-top-level ``status: rejected`` while its 5h/7d are fine, and an Opus/Sonnet lane
-must still be able to use it. Callers that need Fable pass ``need="fable"`` to the
-selector.
+NEVER from a model-scoped bucket: an account with one exhausted scoped bucket
+answers with a top-level ``status: rejected`` while its 5h/7d are fine, and every
+other lane must still be able to use it.
 
 SECURITY:
   * The token is treated as OPAQUE — never decoded, never logged. It leaves the
@@ -37,8 +40,9 @@ never idles a fleet because a measurement was missed. A real 429 (with headers)
 is a valid measurement (auth proven) and is always honored.
 
 Env knobs:
-  PWT_ACCT_PROBE_MODEL           primary probe model   (default: _DEFAULT_PRIMARY_MODEL, the Fable model)
-  PWT_ACCT_PROBE_FALLBACK_MODEL  fallback probe model  (default claude-haiku-4-5-20251001)
+  PWT_ACCT_PROBE_MODEL           primary probe model   (default: _DEFAULT_PRIMARY_MODEL, claude-opus-5-5;
+                                 a Fable id or claude-opus-5 is refused → the default)
+  PWT_ACCT_PROBE_FALLBACK_MODEL  fallback probe model  (default claude-haiku-4-5-20251001; same refusal)
   PWT_ACCT_CLI_VERSION           user-agent version override (default: `claude --version`,
                                  cached 24 h beside the registry; fallback 2.1.276)
   PWT_ACCT_USAGE_TTL             cache freshness seconds (default 600)
@@ -78,7 +82,7 @@ SCOPED_BUCKETS = {"oi": "Fable"}
 _SCOPED_RE = re.compile(r"^" + re.escape(_HEADER_PREFIX) + r"7d_([a-z0-9]+)-utilization$")
 _STATUS_RANK = {"allowed": 0, "allowed_warning": 1, "rejected": 2}
 
-_DEFAULT_PRIMARY_MODEL = "claude-fable-5-1"
+_DEFAULT_PRIMARY_MODEL = "claude-opus-5-5"
 _DEFAULT_FALLBACK_MODEL = "claude-haiku-4-5-20251001"
 _UA_FALLBACK_VERSION = "2.1.276"
 _UA_CACHE_TTL_S = 86400
@@ -90,12 +94,30 @@ class MeasurementError(Exception):
     the last reading (fail-open); it is NOT a rate limit."""
 
 
+def _probe_model_refused(model: str) -> bool:
+    """No Fable anywhere (v9) and never the FORBIDDEN exact ``claude-opus-5``.
+    Matched after dropping non-ASCII, padding and case, a ``[…]`` suffix and a
+    date suffix, so ``Claude-Fable-5-1``, ``fable[1m]`` or ``CLAUDE-OPUS-5`` are
+    refused while ``claude-opus-5-5`` is not."""
+    key = "".join(ch for ch in model if ord(ch) < 128).strip().lower()
+    key = re.sub(r"-[0-9]{8}$", "", re.sub(r"\[[^\]]*\]$", "", key))
+    return "fable" in key or key == "claude-opus-5"
+
+
+def _env_model(var: str, default: str) -> str:
+    value = (os.environ.get(var) or "").strip()
+    if value and _probe_model_refused(value):
+        _warn("%s=%s refused (no Fable, no claude-opus-5) — probing %s" % (var, value, default))
+        value = ""
+    return value or default
+
+
 def _probe_model() -> str:
-    return os.environ.get("PWT_ACCT_PROBE_MODEL") or _DEFAULT_PRIMARY_MODEL
+    return _env_model("PWT_ACCT_PROBE_MODEL", _DEFAULT_PRIMARY_MODEL)
 
 
 def _fallback_model() -> str:
-    return os.environ.get("PWT_ACCT_PROBE_FALLBACK_MODEL") or _DEFAULT_FALLBACK_MODEL
+    return _env_model("PWT_ACCT_PROBE_FALLBACK_MODEL", _DEFAULT_FALLBACK_MODEL)
 
 
 def _warn(msg: str) -> None:
@@ -483,8 +505,8 @@ def probe_usage(token, transport=None, now: float = None) -> dict:
     429-with-headers returns a normal (rejected) gauge. The token never touches a
     log or stdout.
 
-    The primary (Fable) model yields the scoped bucket. When the server refuses
-    it without a measurement — HTTP 400 ``claude_code_version_too_old``, an
+    The primary is Opus 5.5 (never Fable). When the server refuses it without a
+    measurement — HTTP 400 ``claude_code_version_too_old``, an
     unknown model, anything that is neither 200 nor 429 and carries no unified
     headers — the haiku fallback is probed in the SAME tick so the 5h/7d gauge
     never goes missing because of a client-version bump; the gauge then reports
@@ -499,7 +521,7 @@ def probe_usage(token, transport=None, now: float = None) -> dict:
     if fallback == primary:
         return g
     _warn("primary probe model %s refused (HTTP %s) — falling back to %s; "
-          "scoped (Fable) bucket unavailable this tick" % (primary, status, fallback))
+          "model-scoped buckets unavailable this tick" % (primary, status, fallback))
     _status2, g2 = _probe_once(token, fallback, transport, now)
     g2["probe_fallback_from"] = primary
     g2["probe_fallback_http"] = status

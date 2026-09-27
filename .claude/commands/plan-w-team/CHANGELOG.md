@@ -14,6 +14,166 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.57.0] — 2026-09-27 (fix: compliance audit round 1 — the sync honours `.sync-exclude` on every copy path, usage probes stop calling Fable, lane-guard row 190, test-green hardening, a refused pwt-goal leaves no file) (15b463d4)
+
+An audit of the fleet against cleanscale's adoption conditions found five open groups. Each
+group was fixed in its own worktree, adversarially reviewed, and integrated here under one
+full-suite verdict.
+
+**Migration cost:** retest-1 widens the watched set, so every `tree_digest` changes. After
+upgrading, the first commit that stages a watched path needs one full
+`plan-w-team-test-green.sh` run; `--retest` works again from then on.
+
+### The sync honours `.sync-exclude` on every copy path
+
+- Before this release only the main rsync skipped what a consumer opted out. The per-script
+  `cp` lines (real and `--dry-run`), the selective agent copy, the full agents rsync and
+  `scripts/version-uplift/` did not, so a frozen `scripts/pwt-goal.sh` or
+  `agents/team/builder.md` was overwritten on every sync. All of them now skip it.
+- They share the retired-path cleanup's matcher (`retired_paths_sync_excluded`, through the new
+  `sync_path_included`), so a pattern means the same thing to the copy that would overwrite a
+  file and to the pass that would delete it. Each skip logs
+  `SKIP .claude/<path> — matched by .sync-exclude`.
+- The post-copy verifier lists an opted-out script as `kept by .sync-exclude` instead of failing
+  the sync with exit 3.
+- The status-line bundle refresh (`sync-statusline-bundle.sh`, run by the sync, `session-start.sh`
+  and `sync-all-projects.sh`) honours `.sync-exclude` too. It had been overwriting an unmodified
+  older copy of a frozen `statusline.sh` or `scripts/claude-agents-extended.sh` while the sync
+  printed SKIP for it. It loads the same matcher from the `sync-to-project.sh` beside it, only
+  when the target has a `.sync-exclude`, and exits 1 before any write if it cannot. Its summary
+  adds `· N kept by .sync-exclude`.
+- A consumer with no `.sync-exclude` gets the same files, modes and output as before.
+- `sync-local-guard-preservation.bats` gains 3 end-to-end cases (minimal profile, full profile,
+  and the bundle keeping an opted-out `statusline.sh`). They skip where `sync-to-project.sh` is
+  absent. `sync-statusline-bundle.test.sh` covers the helper on its own.
+- Not covered yet: root-level copies such as `scripts/init-project-context.ts`.
+
+### Usage probes no longer call Fable
+
+- `plan-usage.sh` and `accounts/probe.py` default the `max_tokens:1` quota-header probe to
+  `claude-opus-5-5`; the haiku fallback on a 400 is unchanged. This follows the 2026-09-22
+  ruling (no Fable anywhere) and replaces the 2.50.0 note that kept the probes on Fable.
+- `PLAN_USAGE_PROBE_MODEL`, `PWT_ACCT_PROBE_MODEL` and their `_FALLBACK_MODEL` variants refuse
+  any Fable or `claude-opus-5` value (any case, `[1m]`, date or padding variants) and probe the
+  default instead. `probe.py` prints one stderr line; `plan-usage.sh` runs its probe with stderr
+  discarded, so the cache's `_probe_model` field is the record of what was probed.
+- The gauge keeps its `scoped*` fields. With no Fable request, `scoped_source` reads
+  `unavailable`, so the `▸Fable` bucket shows only when the usage endpoint supplies one.
+- `04-fix-first-review.md` and the manifest say the Step-5 ladder tops out at the Opus 5.5 hard
+  lane, then the operator. The fable guard itself is unchanged and stays dormant.
+- `shared/gotchas.md` and the claude-sdk metadata spec show `model: claude-opus-5-5`. A new
+  model-tiering-v5 sweep (v5-6b) fails if a command or skill doc pins `model: claude-opus-5`.
+
+### Lane guard: follow-up row 190, items 2–4
+
+- **Linear on macOS awk (LG-R4).** The shell masker and the family-write scanner split the
+  command once instead of calling `substr()` per character, which BWK awk makes quadratic. A
+  150 KB brief with two live lanes drops from about 4.3 s to under 1 s per Bash call. Masked
+  output is byte-identical.
+- **Quoted heredocs are inert (LG-R1).** A `<<'EOF'` body no longer denies, such as a commit
+  message that describes `sed -i` on a family file. An unquoted body still has its `$(…)`
+  scanned, and a heredoc fed to a shell is scanned as a script.
+- **Carried family variables can be dropped (LG-R3),** but only by a literal rebind that
+  provably runs: unconditional, at depth 0. Conditional, subshell, one-command-env and `+=`
+  rebinds still deny.
+- **More writers are classified, and copies out are allowed.** install, ln (a link that names a
+  member), rsync, truncate, `dd of=`, `>|`, `bash/sh -c`, `eval`, a writing `python -c`,
+  `awk -i inplace`, sed `w`, while-read loops and copies into a directory now deny. A copy is
+  judged by the path it creates, so `cp <member> /tmp/x` passes. A family writer behind an
+  unmodelled launcher denies.
+- **Still fail-closed.** Any scanner output other than `OK` or `DENY <word>` denies with "gave no
+  verdict". `PWT_DISABLE_LANE_GUARD_HYGIENE=1` gets a coarse catch-all (`FAM_SWITCH_WRITER_RE`),
+  so the switch is never looser than the scanner.
+- Row 190 stays open for items 1 (the bound-supervisor `INPLACE_RE` still uses the
+  whole-command regex), 5 (gawk/mawk runs) and 6 (a hook timeout in `settings.json`). The
+  scanner residuals are listed in `docs/operations/lane-enforcement.md`.
+
+### test-green
+
+- **KS-4, no compat path.** The kill-switch ledger no longer honours or copies forward the
+  2.52.0 lock-dir init marker (`legacy_init_marker` is gone). Only the marker beside the ledger
+  counts, so a planted file in the run's lock dir can no longer suppress the init row.
+- **retest-1, widened watched set.** `PWT_WATCHED_GLOBS` adds `.claude/hooks/plan-w-team-*`,
+  `session-start*`, `post-git-push*`, `hooks/tests/*`, `.claude/lib/config*`,
+  `.claude/statusline.sh` and `scripts/statusline-*`, byte-identical in the gate and in
+  `plan-w-team-test-green.sh`. A new case names each path, checks both copies, and pins that the
+  retest fixtures and `statusline.log` stay unwatched.
+- **test-green-retest.bats never kills a process group.** The group case checks with
+  `ps -o pgid=` that every suite descendant is in the wrapper's group, then ends the run pid by
+  pid. `teardown` reaps what each case started, pass or fail: TERM, then KILL, never by group.
+- **Follow-up row 203, rate-limit sleeper leak (closed).** Sleepers armed through `run_hook` get
+  a `sleep` leashed to the test's pid, so a SIGKILLed test no longer leaves a ~25-minute sleeper
+  ladder behind. `reap_sleepers` walks the whole descendant tree. New case 4b.
+
+### pwt-goal and the launcher
+
+- **A refused dispatch writes no directive-overflow file.** The overflow path is still computed
+  before the `/goal` cap, but the file is written only after every refusal has passed: in derive
+  mode just before the `/goal` prints, in spawn modes just before the worker spawn. A goal-max,
+  DS1/DS2, deictic, capacity, fair-share or dry-run stop leaves no directive file (DS1 still
+  appends its audit row). A failed write is a loud exit 5, not a dangling pointer. The deictic
+  guard reads the overflowed directive from memory.
+- **`CLAUDE_LEAD` reaches only the lead's child.** In `claude()`, only the `CLAUDE_LEAD=1` launch
+  whose pid holds the lead lock passes the marker on. A refused second lead, an explicit
+  `--model` launch and a utility subcommand run with `env -u CLAUDE_LEAD`. The lead window uses
+  the same test, so a stale same-shell lock no longer gives a plain launch the 300000 window. The
+  lock name, path and contents are unchanged.
+- Tests: `pwt-goal-overflow.test.sh` AC5/AC6 (a two-step check with a stub `claude`), and
+  2 cases in `claude-launcher-wrapper.bats`, which now runs `zsh -f`.
+
+### For consumers that freeze files
+
+A frozen file keeps the consumer's copy. Now that the cp path honours `.sync-exclude`, that is
+true for scripts as well, so the pwt-goal and lane-guard fixes reach a consumer that freezes those
+files only by a hand-port.
+
+## [2.56.5] — 2026-09-26 (docs: Idea B stays NO-GO; the Routines examples now say what a Routine can read) (43315f59)
+
+Recursive-followup row 31 re-evaluated Idea B from the 2026-07-02 drift-guardrails go/no-go
+(a scheduled audit that appends drift findings to the follow-up ledger). Neither reopener has
+fired, and row 31 is closed. The doc that reopener pointed at was wrong, and is fixed.
+
+### Idea B: NO-GO reaffirmed, on measured evidence
+
+The 2026-09-26 addendum in `docs/operations/pwt-drift-guardrails-go-nogo-2026-07-02.md`
+records it:
+
+- The operator has not asked for per-repo drift scanning.
+- The only new reader of the ledger since July is the follow-up drain, which is an actor,
+  not a reader. It spends a full `/plan-w-team` run per row and is enabled only in
+  claude-pattern. Since 2026-07-26 the ledger gained 140 rows while the drain spawned 17
+  workers, so a drift row would either cost a run or wait months.
+- No drift incident in a rarely-run consumer repo was found in the row-30 sweep's window.
+
+### If you schedule /plan-w-team work, the examples now tell you where it has to run
+
+`shared/routines-examples.md` said gitignored `.claude/state/` "works fine" for Routines. It
+does not on the cloud. A cloud Routine clones the default branch fresh on every run, so the
+friction log and retro records are never there. Only a Desktop scheduled task sees them.
+
+- A new section says which mode sees which /plan-w-team state.
+- Example 3 now runs as a Desktop scheduled task and calls
+  `plan-w-team-friction-triage-due.sh`. The old prompt restated the per-category 30-day rule
+  that T4 retired in July; on the cloud it would have read an empty log and reported nothing.
+- Example 1 stays on the cloud and says its digest has no friction signal. Example 2's
+  caveat now says the retro record is gitignored and a cloud run rebuilds from the committed
+  spec.
+- "Drift scanning: not an example, by decision" gives the three rules any such Routine must
+  follow: notify a person, never append to the follow-up ledger, read only what the execution
+  mode can see.
+- `shared/state-artifacts.md` and `07-retro.md` §8h no longer describe the friction log's
+  detector as the old rule.
+
+### Verification
+
+`tests/skill/cases/routines-examples-state-visibility.bats` (6 cases) parses every example.
+It checks that a prompt reading gitignored state runs on Desktop, that a friction-log prompt
+calls the canonical script, and that no prompt writes the ledger (command or prose form). It
+also sweeps the whole skill tree, minus this CHANGELOG, for the retired rule, and has a
+non-vacuity case. Against the pre-fix doc 4 of the 6 fail; against the fixed doc all pass. The
+full suite ran red on one file only, `r10-naming-ratchet.bats`, because the new test names were
+not in BDD form; they were renamed and a targeted retest confirmed the fix.
+
 ## [2.56.4] — 2026-09-26 (fix: the sync never ships what the source gitignores; consumers stop tracking instinct YAMLs) (bab9396c)
 
 2.56.3 fixed the scheduler lock. The 2.56.3 sweep then found every consumer dirty on
