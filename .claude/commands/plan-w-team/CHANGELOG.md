@@ -14,6 +14,100 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.58.0] — 2026-09-27 (feat: `claude-pattern-pull.sh --refresh-ignored-corpus` lists, and with `--apply` writes, the synced files a consumer's `.gitignore` keeps out of every sync PR) (1f94f7e4)
+
+cleanscale's review of 2.57.0 asked for this and specified how it behaves. The dry run is
+the default, `--apply` writes, and nothing runs it automatically.
+
+### The ignored corpus now has a way in
+
+- A pull-mode consumer receives the sync as a PR, and its primary only fast-forwards. A
+  synced file that the consumer's `.gitignore` keeps out of git is never in that PR, so it
+  never reaches the primary. That covers the test corpus under `tests/skill/` and the
+  `*.test.sh` files under `.claude/scripts` and `.claude/hooks`. They stay as the last
+  in-place sync left them. In cleanscale, 83 of the 93 files in `tests/skill/cases/` had
+  been unchanged since 2026-09-03.
+- `claude-pattern-pull.sh --refresh-ignored-corpus` runs the snapshot's sync the way a
+  pull does, but does not commit. The sync runs in a temporary `--shared` clone of the
+  consumer. That clone fetches `<default>` from the consumer's origin itself, so no ref
+  in the primary moves. If the fetch fails, it warns and uses the primary's last known
+  `origin/<default>`. The clone's `.sync-exclude` is origin's list plus the primary's,
+  so an opt-out in either one applies. The clone also takes the primary's `info/exclude`
+  and `core.excludesFile`, as a pull's linked worktree does. The candidates are the
+  files that sync wrote under those roots and that the clone ignores. A file the source
+  tracks but the sync does not ship is therefore never a candidate. It prints `new|changed <sha256> <path>` for each
+  candidate that meets all of these:
+  - the primary ignores it. A shipped file the primary does not ignore yet is counted as
+    `not ignored in the primary` and not written. Once the primary has the rule, a second
+    refresh writes it;
+  - the primary does not track it, a name that differs from it only in case, or a path
+    above it (a submodule);
+  - the newest `.sync-exclude` matcher in the source cache does not opt it out;
+  - its content or executable bit differs.
+  It ends with a count line. `--apply` writes each file to a temp file in the primary's
+  git directory, sets the matching mode, and moves it into place. `--ref` picks the
+  version to match, and a warning says when it differs from the primary's `.sync-version`.
+- Rules:
+  - It never commits, pushes or writes the delivered stamp, never touches a tracked
+    file, and leaves `git status` unchanged. The only file it removes is one it has just
+    written through a link that appeared during the write.
+  - The temporary clone is its own repository. No consumer git hook runs, and the sync's
+    hook installer writes only into the clone. The primary's refs and worktree list are
+    left alone, because the cleanup removes the clone's directory and prunes nothing.
+  - It never writes through a symlink or into a submodule or nested checkout. A link,
+    non-directory or repository on the path, or a link at the destination, is skipped
+    and logged. Missing directories are made one level at a time, each checked. The path
+    is checked again before the move, and the directory's physical path after it. A file
+    that landed through a link that appeared in between is removed, and the write fails.
+  - An unreadable `.sync-exclude`, one on origin that is not a regular file, or a matcher
+    that did not load gives exit 4 before the sync runs.
+  - It is manual only. `--apply` without the mode, `--apply --dry-run` and the mode with
+    `--auto` are usage errors (exit 2). No hook runs it, and it leaves the `--auto`
+    cooldown stamp alone.
+  - A failed sync, temp directory or write gives exit 5.
+
+### A signal now ends a pull
+
+- The pull trapped `EXIT INT TERM` with the cleanup alone. A Ctrl-C ran the cleanup,
+  which released the lock and removed the worktree, and then the script carried on.
+  INT, TERM and HUP now run the cleanup once, and a second signal cannot cut it short.
+  Then the pull re-raises the signal and dies by it (a shell reports 130, 143 or 129),
+  so a loop that called it stops. The cleanup also removes a refresh's temp file that
+  was written but not yet moved.
+
+### The one-pending check reads only the SHA slot
+
+- `changelog-sha.bats` P14 allows one `(pending)` entry, but it counted every header
+  that contained `(pending)` anywhere. The 2.57.1 header quotes `(pending)` in its
+  title, so the first release after it failed with two pending entries. P14 now counts
+  only a `(pending)` that ends a header, the same SHA slot the `--retest` backfill
+  detector reads. A new case checks a quoted title, body text and a trailing slot. With
+  the old pattern, it fails.
+
+### Verification
+
+- An adversarial review of the first build confirmed 13 findings, and a re-review of
+  the fixes found 2 more and 3 nits. All are fixed here. The sections above describe the
+  fixed behaviour.
+- `claude-pattern-pull.bats` 11/11, four of them for the refresh. Seven mutants fail a
+  refresh case:
+  - applying only the primary's opt-outs;
+  - fetching in the primary;
+  - pruning the primary's worktree list;
+  - dropping the not-ignored count;
+  - not giving the clone the primary's `info/exclude` and `core.excludesFile`;
+  - keeping a file that landed through a parent swapped for a link;
+  - keeping the temp file when a TERM arrives before the move.
+- Signals, checked by hand on a scratch clone. INT, TERM and HUP sent partway through a
+  refresh each killed the pull by that signal (2, 15, 1), and a bash loop around it
+  stopped on a process-group INT. No lock, clone or temp file was left behind.
+- Real world: a `--shared` scratch clone of cleanscale (origin `1f703294`), with
+  cleanscale's ignored corpus and `info/exclude` copied in.
+  - The dry run listed 24 new and 36 changed files, with 147 identical and 0 not ignored.
+  - `--apply` wrote them, and `git status` and the worktree list did not change.
+  - A second dry run found 207 identical and nothing to write.
+- The commit gate is a full-suite test-green.
+
 ## [2.57.1] — 2026-09-27 (fix: `.sync-exclude` fails closed, reads CRLF and opts root-level files out, and the tests/skill sync deletes nothing; a `(pending)` SHA backfill takes the retest fast path; `CP_LEAD_MODEL` refuses Fable and claude-opus-5) (fbe64020)
 
 Found in cleanscale's review of 2.57.0 and of the r3.2 adoption bundle, and while landing 2.57.0.

@@ -34,6 +34,37 @@
 #      Anything else about the primary is left alone — a dirty primary is
 #      reported, never repaired.
 #
+# --refresh-ignored-corpus (2.58.0) covers the one thing a PR delivery cannot
+# carry. The primary only fast-forwards, so a synced file that the consumer's
+# .gitignore keeps out of git never reaches it. That is the test corpus under
+# tests/skill/, plus the *.test.sh files under .claude/scripts and .claude/hooks.
+# Those files stay as the last in-place sync left them (cleanscale: 83 files
+# unchanged since 2026-09-03). This mode runs steps 1 and 3 without a commit: the
+# snapshot's sync writes into a temporary --shared clone of the consumer, which
+# fetches origin/<default> itself and checks it out. So the candidates are
+# exactly the files that sync ships, under those three roots, that the clone
+# ignores. The clone takes the primary's info/exclude and core.excludesFile, as a
+# pull's linked worktree shares them. For each one that the primary also ignores and does not track, and whose
+# content or executable bit differs, it prints `new|changed <sha256> <path>`. Only
+# --apply writes them. Other rules:
+#   - It never commits, pushes or writes a stamp. The only file it removes is one it
+#     has just written through a link that appeared during the write.
+#   - It never touches a path the primary tracks, compared without regard to case
+#     (a case-insensitive filesystem opens the tracked file). Those come through
+#     the sync PR. A shipped file the primary does not ignore yet is only counted:
+#     once the primary has the .gitignore rule, a second refresh writes it.
+#   - It never writes through a symlink, or into a submodule or nested checkout.
+#   - An opt-out in the primary's .sync-exclude or in origin's binds. The joined
+#     list is applied twice: by the snapshot's sync, and again by the newest
+#     matcher in the source cache (an older --ref's sync can predate `../` lines).
+#   - The primary's refs, worktree list and hooks are left alone: the clone does
+#     the fetch, is its own repository, and takes the sync's hook installer. A
+#     file is written through a temp file in the primary's git directory, which
+#     git status never shows.
+# It is manual only: content that skips the PR also skips the consumer's review,
+# so nothing runs it automatically. --ref picks the claude-pattern version to
+# match, and a warning says when it differs from the primary's .sync-version.
+#
 # Idempotent: a (consumer, source-sha) pair is delivered once (stamp under the
 # cache dir); an origin whose .sync-version already equals the source's is a
 # no-op; a source whose stamp is OLDER than origin's is refused (never syncs
@@ -49,6 +80,9 @@
 #     --auto                 hook mode: honour the cooldown, quiet no-ops
 #     --force                ignore the delivered stamp / equal-version no-op
 #     --no-ff-primary        never touch the primary checkout at all
+#     --refresh-ignored-corpus  list each ignored corpus file the sync ships that
+#                            differs in the primary (see above); writes nothing
+#     --apply                with --refresh-ignored-corpus: write the listed files
 #     --cache <dir>          cache dir (default: $CLAUDE_PATTERN_PULL_CACHE or ~/.cache/claude-pattern)
 #
 # Policy file (consumer-authored, never synced over): <root>/.claude/.sync-policy
@@ -66,6 +100,8 @@
 # Exit codes:
 #   0 delivered / nothing to do     2 usage        3 source unreachable
 #   4 consumer prerequisites        5 sync failed  6 delivery failed (branch kept locally)
+#   (--refresh-ignored-corpus: 4 also = unreadable .sync-exclude, matcher not loaded,
+#    or git could not list the primary; 5 = the sync or an --apply write failed)
 #   7 another run holds the lock
 #
 # bash 3.2 compatible (mac-mini). Never prints tokens; never uses --force on git.
@@ -74,6 +110,7 @@ set -u
 
 CANONICAL_REMOTE="git@github.com:veronelazio/claude-pattern.git"
 ROOT_ARG=""; REF=""; REMOTE=""; DELIVER=""; PROFILE=""; DRY_RUN=0; AUTO=0; FORCE=0
+REFRESH=0; APPLY=0
 FF_PRIMARY=1; CACHE="${CLAUDE_PATTERN_PULL_CACHE:-$HOME/.cache/claude-pattern}"
 
 usage() { sed -n '/^# Usage:/,/^# Exit codes:/p' "$0" | sed 's/^# \{0,1\}//'; }
@@ -89,11 +126,22 @@ while [ $# -gt 0 ]; do
     --auto) AUTO=1; shift ;;
     --force) FORCE=1; shift ;;
     --no-ff-primary) FF_PRIMARY=0; shift ;;
+    --refresh-ignored-corpus) REFRESH=1; shift ;;
+    --apply) APPLY=1; shift ;;
     -h|--help) usage; exit 0 ;;
     -*) echo "claude-pattern-pull: unknown option $1" >&2; usage >&2; exit 2 ;;
     *) if [ -z "$ROOT_ARG" ]; then ROOT_ARG="$1"; shift; else echo "claude-pattern-pull: too many arguments" >&2; exit 2; fi ;;
   esac
 done
+if [ "$APPLY" = 1 ] && [ "$REFRESH" = 0 ]; then
+  echo "claude-pattern-pull: --apply needs --refresh-ignored-corpus" >&2; exit 2
+fi
+if [ "$REFRESH" = 1 ] && [ "$AUTO" = 1 ]; then
+  echo "claude-pattern-pull: --refresh-ignored-corpus is manual only; it does not take --auto" >&2; exit 2
+fi
+if [ "$APPLY" = 1 ] && [ "$DRY_RUN" = 1 ]; then
+  echo "claude-pattern-pull: --apply and --dry-run contradict each other" >&2; exit 2
+fi
 
 log()  { printf '%s\n' "$*"; }
 warn() { printf '⚠ %s\n' "$*" >&2; }
@@ -137,7 +185,10 @@ fi
 
 # ── consumer prerequisites ──────────────────────────────────────────────────
 git -C "$ROOT" remote get-url origin >/dev/null 2>&1 || die "$ROOT has no 'origin' remote — nothing to deliver to" 4
-git -C "$ROOT" fetch --quiet --prune origin 2>/dev/null || warn "fetch of consumer origin failed — using last known refs"
+# A refresh fetches into its temporary clone instead (below), so it moves no ref here.
+if [ "$REFRESH" = 0 ]; then
+  git -C "$ROOT" fetch --quiet --prune origin 2>/dev/null || warn "fetch of consumer origin failed — using last known refs"
+fi
 DEFAULT="$(git -C "$ROOT" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
 if [ -z "$DEFAULT" ]; then
   for b in main master; do
@@ -171,17 +222,38 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || die "cannot take lock $LOCK" 7
 fi
 echo $$ > "$LOCK/pid"
-SNAP_PARENT=""; WT=""; BR=""
+SNAP_PARENT=""; WT=""; BR=""; RTMP=""; REFRESH_TMP=""; REFRESH_MATCHER=0; REFRESH_GITDIR=""; REFRESH_ROOT_P=""
 cleanup() {
+  # A second signal must not cut the cleanup short and leave the lock behind.
+  trap '' INT TERM HUP
+  [ -n "$REFRESH_TMP" ] && rm -f "$REFRESH_TMP"
   if [ -n "$WT" ] && [ -d "$WT" ]; then
-    git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1 || rm -rf "$WT"
-    git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
+    if [ "$REFRESH" = 1 ]; then
+      rm -rf "$WT"   # the refresh's own clone; the primary's worktree list is not touched
+    else
+      git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1 || rm -rf "$WT"
+      git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
+    fi
   fi
   [ -n "$SNAP_PARENT" ] && [ -d "$SNAP_PARENT" ] && rm -rf "$SNAP_PARENT"
+  [ -n "$RTMP" ] && [ -d "$RTMP" ] && rm -rf "$RTMP"
   rm -rf "$LOCK"
 }
-trap cleanup EXIT INT TERM
-date +%s > "$COOLDOWN_FILE"
+# A signal ends the run: cleanup once, then the same signal again, so a caller's loop
+# sees a signalled child and stops too. Listing INT and TERM in the EXIT trap only ran
+# cleanup and then carried on, without the lock and still writing. The exit after the
+# kill is a fallback in case the re-raised signal does not end the shell.
+_on_signal() {
+  cleanup
+  trap - EXIT "$1"
+  kill -s "$1" $$
+  exit "$2"
+}
+trap cleanup EXIT
+trap '_on_signal INT 130' INT
+trap '_on_signal TERM 143' TERM
+trap '_on_signal HUP 129' HUP
+[ "$REFRESH" = 1 ] || date +%s > "$COOLDOWN_FILE"
 
 # ── source cache: bare clone once, fetch afterwards ─────────────────────────
 SRC="$CACHE/source.git"
@@ -204,6 +276,206 @@ BR="$BRANCH_PREFIX-$SRC_SHORT"
 
 log "claude-pattern-pull: $(basename "$ROOT") ← $REMOTE @ $SRC_SHORT (/plan-w-team ${SRC_VERSION:-?}, stamp $SRC_STAMP)"
 log "   origin/$DEFAULT stamp: ${ORIGIN_STAMP:-<none>}   deliver: $DELIVER"
+
+# ── --refresh-ignored-corpus ────────────────────────────────────────────────
+# See the header. The preflight runs here. The comparison runs after the snapshot's
+# sync has written into the temporary clone (below), so it sees what that sync ships.
+_sha256() { if command -v shasum >/dev/null 2>&1; then shasum -a 256; else sha256sum; fi | cut -c1-64; }
+# Every directory on the path below $ROOT must be a real directory: not a symlink,
+# not a file, and not another repository (a submodule or a nested checkout).
+_refresh_path_safe() {
+  local d="$ROOT" rest="$1"
+  while :; do
+    case "$rest" in */*) ;; *) return 0 ;; esac
+    d="$d/${rest%%/*}"; rest="${rest#*/}"
+    [ ! -L "$d" ] || return 1
+    [ -e "$d" ] || return 0
+    { [ -d "$d" ] && [ ! -e "$d/.git" ]; } || return 1
+  done
+}
+refresh_preflight() {
+  local ex="$CLAUDE_DIR/.sync-exclude" inst
+  if [ -e "$ex" ] || [ -L "$ex" ]; then
+    { [ -f "$ex" ] && [ -r "$ex" ]; } || die "$ex exists but is not a readable file — nothing listed" 4
+  fi
+  REFRESH_GITDIR="$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null)" && [ -d "$REFRESH_GITDIR" ] \
+    || die "cannot find the git directory of $ROOT" 4
+  REFRESH_ROOT_P="$(cd "$ROOT" 2>/dev/null && pwd -P)" && [ -n "$REFRESH_ROOT_P" ] \
+    || die "cannot resolve the physical path of $ROOT" 4
+  inst="$(tr -d '[:space:]' < "$CLAUDE_DIR/.sync-version" 2>/dev/null || true)"
+  if [ "$inst" != "$SRC_STAMP" ]; then
+    warn "the primary's sync stamp is ${inst:-<none>} and $SRC_SHORT's is $SRC_STAMP, so the corpus may not match the scripts the primary runs; --ref <sha> picks the claude-pattern commit to match"
+  fi
+  if [ "$APPLY" = 1 ]; then
+    log "   ignored corpus @ $SRC_SHORT → $ROOT (apply)"
+  else
+    log "   ignored corpus @ $SRC_SHORT → $ROOT (dry run)"
+  fi
+}
+# An opt-out in either list binds: the primary's list (what it runs) and origin's (what
+# the primary will run once it catches up). The sync and the filter after it both read
+# the union, CRs stripped, so a --ref whose sync predates CRLF lists reads it too.
+# Neither list has negation, so joining them only adds opt-outs.
+refresh_align_exclude() {
+  local ex="$CLAUDE_DIR/.sync-exclude" wx="$WT/.claude/.sync-exclude" have="" mref
+  RTMP="$(mktemp -d "${TMPDIR:-/tmp}/cp-refresh.XXXXXX")" || die "cannot create a temp dir" 5
+  mkdir -p "$RTMP/x" || die "cannot create a temp dir" 5
+  : > "$RTMP/x/.sync-exclude"
+  if [ -e "$wx" ] || [ -L "$wx" ]; then
+    { [ -f "$wx" ] && [ ! -L "$wx" ] && [ -r "$wx" ]; } \
+      || die "origin/$DEFAULT's .claude/.sync-exclude is not a regular file — nothing listed" 4
+    { tr -d '\r' < "$wx"; printf '\n'; } >> "$RTMP/x/.sync-exclude"; have=1
+  fi
+  if [ -f "$ex" ]; then
+    { tr -d '\r' < "$ex"; printf '\n'; } >> "$RTMP/x/.sync-exclude"; have=1
+  fi
+  [ -n "$have" ] || return 0
+  # The newest matcher in the cache filters again after the sync; each newer matcher
+  # only opts more paths out. HEAD is resolved to a commit, so a dangling HEAD falls
+  # back to the ref being refreshed.
+  mref="$(git -C "$SRC" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)" || mref="$SRC_SHA"
+  eval "$(git -C "$SRC" show "$mref:.claude/scripts/sync-to-project.sh" 2>/dev/null \
+    | sed -n -e '/^retired_paths_sync_excluded()/,/^}/p' -e '/^retired_paths_glob_match()/,/^}/p')"
+  command -v retired_paths_sync_excluded >/dev/null 2>&1 && command -v retired_paths_glob_match >/dev/null 2>&1 \
+    || die "a .sync-exclude is present but the source's matcher could not be loaded — nothing listed" 4
+  REFRESH_MATCHER=1
+  if [ ! -f "$ex" ]; then
+    log "   .sync-exclude: the primary has none; origin/$DEFAULT's applies"
+  elif [ ! -f "$wx" ]; then
+    log "   .sync-exclude: origin/$DEFAULT has none; the primary's applies"
+  elif ! cmp -s "$ex" "$wx"; then
+    log "   .sync-exclude: the primary's differs from origin/$DEFAULT's; opt-outs from both apply"
+  fi
+  # Origin's committed list, with no CR and nothing to add, is already what the sync reads.
+  if [ -f "$wx" ] && ! grep -q "$(printf '\r')" "$wx" && { [ ! -f "$ex" ] || cmp -s "$ex" "$wx"; }; then
+    return 0
+  fi
+  { rm -f "$wx" && mkdir -p "$WT/.claude" && cp "$RTMP/x/.sync-exclude" "$wx"; } \
+    || die "cannot write the joined .sync-exclude into $WT" 5
+  # The clone's .claude/ now differs from its commit, and the sync refuses a dirty
+  # .claude/ unless told otherwise. The clone is removed after the comparison.
+  export PWT_SYNC_ALLOW_DIRTY=1
+}
+# Write one file through a temp file in the primary's git directory, where git status
+# never shows it. A missing directory is made one level at a time, each checked, so none
+# is made through a link. The path is checked again just before the move, and after it
+# the directory's physical path must still be the one below the primary. A link swapped
+# in on the way, or at the destination, is reported, and what landed through it is
+# removed: the temp name inside a destination that became a directory, or the written
+# file where a parent resolved outside the primary.
+refresh_write() {
+  local p="$1" mode="$2" dest="$ROOT/$1" dir d rest want now
+  dir="$(dirname "$dest")"
+  _refresh_path_safe "$p" || return 1
+  d="$ROOT"; rest="$p"
+  while :; do
+    case "$rest" in */*) ;; *) break ;; esac
+    d="$d/${rest%%/*}"; rest="${rest#*/}"
+    [ -d "$d" ] || mkdir "$d" 2>/dev/null || return 1
+    { [ ! -L "$d" ] && [ -d "$d" ]; } || return 1
+  done
+  want="$REFRESH_ROOT_P/${p%/*}"
+  now="$(cd "$dir" 2>/dev/null && pwd -P)" && [ "$now" = "$want" ] || return 1
+  REFRESH_TMP="$(mktemp "$REFRESH_GITDIR/cp-refresh.XXXXXX" 2>/dev/null)" || { REFRESH_TMP=""; return 1; }
+  if cp "$WT/$p" "$REFRESH_TMP" 2>/dev/null && chmod "$mode" "$REFRESH_TMP" \
+     && _refresh_path_safe "$p" && [ ! -L "$dest" ] && { [ ! -e "$dest" ] || [ -f "$dest" ]; } \
+     && mv -f "$REFRESH_TMP" "$dest" 2>/dev/null; then
+    now="$(cd "$dir" 2>/dev/null && pwd -P)" || now=""
+    if [ "$now" = "$want" ] && [ -f "$dest" ] && [ ! -L "$dest" ] && [ ! -e "$REFRESH_TMP" ]; then
+      REFRESH_TMP=""; return 0
+    fi
+    [ -d "$dest" ] && rm -f "$dest/$(basename "$REFRESH_TMP")"
+    if [ -n "$now" ] && [ "$now" != "$want" ] && [ -f "$dest" ] && [ ! -L "$dest" ] && cmp -s "$WT/$p" "$dest"; then
+      rm -f "$dest"
+    fi
+  fi
+  rm -f "$REFRESH_TMP"; REFRESH_TMP=""
+  return 1
+}
+refresh_ignored_corpus() {
+  local p arg dest state sha rc sx dx nl=$'\n' cr=$'\r' tab=$'\t'
+  local n_new=0 n_chg=0 n_same=0 n_opt=0 n_skip=0 n_fail=0 n_unign=0
+  { [ -n "$RTMP" ] && [ -d "$RTMP" ]; } || die "no temp dir for the refresh" 5
+  # The clone started with no untracked files, so each file listed here came from the sync.
+  git -C "$WT" ls-files -z --others --ignored --exclude-standard -- tests/skill .claude/scripts .claude/hooks \
+    > "$RTMP/wt" 2>/dev/null || die "cannot list the ignored files the sync wrote into $WT" 5
+  git -C "$ROOT" ls-files -z > "$RTMP/tracked0" 2>/dev/null || die "cannot list the files $ROOT tracks — nothing listed" 4
+  tr '\0' '\n' < "$RTMP/tracked0" > "$RTMP/tracked"
+  : > "$RTMP/safe"
+  while IFS= read -r -d '' p; do
+    case "$p" in *[\"\\]*|*"$nl"*|*"$cr"*|*"$tab"*)
+      n_skip=$((n_skip + 1)); log "  skip    $(printf '%q' "$p") (unusual path)"; continue ;;
+    esac
+    case "/$p/" in */../*|*/./*) n_skip=$((n_skip + 1)); log "  skip    $p (unusual path)"; continue ;; esac
+    if [ -L "$WT/$p" ] || [ ! -f "$WT/$p" ]; then
+      n_skip=$((n_skip + 1)); log "  skip    $p (not a regular file in the synced tree)"; continue
+    fi
+    case "$p" in .claude/*) arg="$p" ;; *) arg="../$p" ;; esac
+    if [ "$REFRESH_MATCHER" = 1 ] && retired_paths_sync_excluded "$arg" "$RTMP/x"; then
+      n_opt=$((n_opt + 1)); log "  SKIP    $arg — matched by .sync-exclude"; continue
+    fi
+    if ! _refresh_path_safe "$p"; then
+      n_skip=$((n_skip + 1)); log "  skip    $p (a symlink, a non-directory or another repository is on its path)"; continue
+    fi
+    printf '%s\n' "$p" >> "$RTMP/safe"
+  done < "$RTMP/wt"
+  # A path the primary tracks, in any case, or one below a tracked path (a submodule)
+  # is never a candidate. git check-ignore compares case-sensitively, so it would
+  # report a case variant of a tracked file as ignored.
+  : > "$RTMP/trk"; : > "$RTMP/keep"
+  awk -v trk="$RTMP/trk" -v keep="$RTMP/keep" '
+    FILENAME == ARGV[1] { t[tolower($0)] = 1; next }
+    { l = tolower($0); hit = (l in t)
+      while (!hit && (i = match(l, /\/[^\/]*$/)) > 0) { l = substr(l, 1, i - 1); if (l in t) hit = 1 }
+      if (hit) print > trk; else print > keep }' "$RTMP/tracked" "$RTMP/safe"
+  while IFS= read -r p; do
+    n_skip=$((n_skip + 1)); log "  skip    $p (tracked in the primary, ignoring case, or below a tracked path)"
+  done < "$RTMP/trk"
+  : > "$RTMP/cand"
+  if [ -s "$RTMP/keep" ]; then
+    git -C "$ROOT" -c core.quotePath=false check-ignore --stdin < "$RTMP/keep" > "$RTMP/cand" 2> "$RTMP/err"
+    rc=$?
+    [ "$rc" -le 1 ] || die "git check-ignore failed in $ROOT (exit $rc: $(head -1 "$RTMP/err")) — nothing listed" 4
+  fi
+  # The clone ignores these but the primary does not: its .gitignore lacks a rule that
+  # origin has or that the sync adds, and the sync PR carries that rule and the file.
+  awk 'FILENAME == ARGV[1] { c[$0] = 1; next } !($0 in c)' "$RTMP/cand" "$RTMP/keep" > "$RTMP/unign"
+  while IFS= read -r p; do
+    n_unign=$((n_unign + 1))
+    [ "$n_unign" -le 20 ] && log "  skip    $p (not ignored in the primary)"
+  done < "$RTMP/unign"
+  [ "$n_unign" -le 20 ] || log "  skip    … $((n_unign - 20)) more not ignored in the primary"
+  while IFS= read -r p; do
+    dest="$ROOT/$p"
+    if [ -L "$dest" ] || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
+      n_skip=$((n_skip + 1)); log "  skip    $p (a symlink or a non-file is at the destination)"; continue
+    fi
+    sx=644; [ -x "$WT/$p" ] && sx=755
+    if [ -f "$dest" ]; then
+      dx=644; [ -x "$dest" ] && dx=755
+      if [ "$sx" = "$dx" ] && cmp -s "$WT/$p" "$dest"; then n_same=$((n_same + 1)); continue; fi
+      state=changed; n_chg=$((n_chg + 1))
+    else
+      state=new; n_new=$((n_new + 1))
+    fi
+    sha="$(_sha256 < "$WT/$p")"
+    log "  $(printf '%-7s' "$state") $sha  $p"
+    [ "$APPLY" = 1 ] || continue
+    refresh_write "$p" "$sx" || { n_fail=$((n_fail + 1)); warn "could not write $p"; }
+  done < "$RTMP/cand"
+  log "   $n_new new, $n_chg changed, $n_same identical, $n_opt opted out, $n_skip skipped, $n_unign not ignored in the primary"
+  if [ "$n_unign" -gt 0 ]; then
+    log "   the primary's .gitignore does not ignore $n_unign shipped file(s) yet; once it has the .gitignore rule (merge the sync PR, fast-forward), refresh again"
+  fi
+  if [ "$APPLY" = 0 ]; then
+    log "   dry run — nothing written; rerun with --apply to write the new and changed files"
+  elif [ "$n_fail" -gt 0 ]; then
+    die "$n_fail of $((n_new + n_chg)) file(s) could not be written" 5
+  else
+    log "   ✓ wrote $((n_new + n_chg)) file(s); tracked files and git status are unchanged"
+  fi
+}
+if [ "$REFRESH" = 1 ]; then refresh_preflight; fi
 
 # ── ff the primary checkout when origin already carries the version ─────────
 # The only operation this script ever performs on the primary checkout.
@@ -230,7 +502,7 @@ ff_primary() {
   fi
 }
 
-if [ "$FORCE" = 0 ]; then
+if [ "$FORCE" = 0 ] && [ "$REFRESH" = 0 ]; then
   if [ -n "$ORIGIN_STAMP" ] && [ "$ORIGIN_STAMP" = "$SRC_STAMP" ]; then
     log "   ✓ origin/$DEFAULT already carries stamp $SRC_STAMP — nothing to deliver"
     ff_primary; exit 0
@@ -249,7 +521,7 @@ if [ "$FORCE" = 0 ]; then
   fi
 fi
 
-if [ "$DRY_RUN" = 1 ]; then
+if [ "$DRY_RUN" = 1 ] && [ "$REFRESH" = 0 ]; then
   log "   plan: snapshot $SRC_SHORT → worktree on $BR from origin/$DEFAULT ($(printf '%s' "$ORIGIN_SHA" | cut -c1-8)) → sync${PROFILE:+ --profile $PROFILE} → commit → deliver=$DELIVER"
   ff_primary; exit 0
 fi
@@ -266,6 +538,40 @@ COMMIT_LIB="$SNAP/.claude/scripts/sync-commit-lib.sh"
 chmod +x "$SYNC" 2>/dev/null || true
 
 # ── temporary linked worktree of the consumer on a fresh branch ─────────────
+if [ "$REFRESH" = 1 ]; then
+  # A refresh needs no branch. A --shared clone borrows the consumer's objects, has
+  # its own .git (hooks, config), and leaves no worktree entry behind.
+  WT="$CACHE/wt/$KEY-$SRC_SHORT-refresh"
+  [ -e "$WT" ] && rm -rf "$WT"
+  git clone --quiet --shared --no-checkout "$ROOT" "$WT" >/dev/null 2>&1 || die "cannot clone $ROOT into $WT" 5
+  # Origin is fetched here, into the clone's own objects and FETCH_HEAD, so the primary's
+  # refs do not move and none of its hooks run. A relative local URL is the primary's.
+  _ourl="$(git -C "$ROOT" remote get-url origin 2>/dev/null)"
+  case "$_ourl" in /*|*:*) ;; *) _ourl="$ROOT/$_ourl" ;; esac
+  if GIT_TERMINAL_PROMPT=0 git -C "$WT" fetch --quiet --no-tags "$_ourl" "refs/heads/$DEFAULT" >/dev/null 2>&1 \
+     && _fsha="$(git -C "$WT" rev-parse --verify --quiet 'FETCH_HEAD^{commit}')"; then
+    ORIGIN_SHA="$_fsha"
+  else
+    warn "fetch of the consumer's origin failed — using the primary's last known origin/$DEFAULT"
+  fi
+  GIT_LFS_SKIP_SMUDGE=1 git -C "$WT" checkout --quiet --detach "$ORIGIN_SHA" >/dev/null 2>&1 \
+    || die "cannot check out origin/$DEFAULT into $WT" 5
+  # A pull's linked worktree shares the primary's info/exclude and config, so a file
+  # ignored only there never reaches a sync PR. The clone takes both, or it would not
+  # see that file as ignored and the refresh would never list it.
+  _pex="$(git -C "$ROOT" rev-parse --git-path info/exclude 2>/dev/null)" || _pex=""
+  case "$_pex" in /*|"") ;; *) _pex="$ROOT/$_pex" ;; esac
+  if [ -n "$_pex" ] && [ -f "$_pex" ]; then
+    { mkdir -p "$WT/.git/info" && cp "$_pex" "$WT/.git/info/exclude"; } \
+      || die "cannot copy the primary's info/exclude into $WT" 5
+  fi
+  _pxf="$(git -C "$ROOT" config --path --get core.excludesFile 2>/dev/null)" || _pxf=""
+  if [ -n "$_pxf" ]; then
+    case "$_pxf" in /*) ;; *) _pxf="$ROOT/$_pxf" ;; esac
+    git -C "$WT" config core.excludesFile "$_pxf" || die "cannot set core.excludesFile in $WT" 5
+  fi
+  log "   temp clone: $WT (origin/$DEFAULT $(printf '%s' "$ORIGIN_SHA" | cut -c1-8))"
+else
 WT="$CACHE/wt/$KEY-$SRC_SHORT"
 if [ -d "$WT" ]; then git -C "$ROOT" worktree remove --force "$WT" >/dev/null 2>&1 || rm -rf "$WT"; fi
 git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
@@ -273,6 +579,7 @@ if ! git -C "$ROOT" worktree add --quiet -B "$BR" "$WT" "$ORIGIN_SHA" >/dev/null
   WT=""; die "cannot create worktree on $BR (branch checked out elsewhere?)" 5
 fi
 log "   worktree: $WT ($BR from origin/$DEFAULT $(printf '%s' "$ORIGIN_SHA" | cut -c1-8))"
+fi
 
 # The shared commit lib's dirty check is the contract every sync commit passes
 # (never bundle foreign work); in a fresh worktree it is trivially true, but it
@@ -285,6 +592,7 @@ fi
 
 # ── run the SNAPSHOT's sync against the worktree ────────────────────────────
 LOGF="$CACHE/logs/$KEY-$SRC_SHORT.log"
+if [ "$REFRESH" = 1 ]; then LOGF="$CACHE/logs/$KEY-$SRC_SHORT.refresh.log"; refresh_align_exclude; fi
 : > "$LOGF"
 if ! CLAUDE_PATTERN_ROOT="$SNAP" PWT_SYNC_BUNDLE_COMMIT=0 "$SYNC" "$WT" ${PROFILE:+--profile "$PROFILE"} >> "$LOGF" 2>&1; then
   warn "sync-to-project.sh failed — see $LOGF"; tail -20 "$LOGF" >&2; exit 5
@@ -295,6 +603,7 @@ fi
 # The snapshot stamps .sync-version itself; belt-and-braces so the origin
 # equality check above is exact on the next run.
 printf '%s\n' "$SRC_STAMP" > "$WT/.claude/.sync-version"
+if [ "$REFRESH" = 1 ]; then refresh_ignored_corpus; exit 0; fi
 
 # ── scoped commit via the snapshot's shared lib ─────────────────────────────
 COMMIT_MSG="chore: sync Claude Code updates from claude-pattern@$SRC_SHORT
