@@ -14,6 +14,120 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.60.0] — 2026-09-28 (feat: `claude-pattern-pull.sh` takes over cleanscale's #5257 guards — `.sync-exclude` binds the sync commit, `auto_merge` is refused, and the pull no longer skips the consumer's pre-push hook; a corpus refresh holds tests of a frozen script; a `.claude/`-prefixed `.sync-exclude` line opts out; the deictic guard catches "your planned"/"your planning") (70ca5dd5)
+
+CleanRev reviewed 2.58.0 and 2.59.1 on 2026-09-28 and passed both with notes. It then
+approved this plan: (a) upstream the guards of cleanscale's fork of the pull (#5257), so
+that syncing upstream over the fork drops nothing; (b) hold corpus tests of a script the
+consumer froze; (c) widen the deictic guard for "your planned" and "your planning". Every
+change is general and holds in any consumer, not only in cleanscale. A silent-failure
+review of the first cut found one critical gap (an opted-out `.gitignore` put back could
+un-ignore a file the commit then staged, §1) and four smaller ones; all are fixed here.
+
+### 1. `.sync-exclude` binds the pull's commit, whatever the pulled sync did
+
+- **What went wrong.** The pull runs the sync of the `--ref` it pulls, and that sync is
+  what honours `.sync-exclude`. Older syncs missed paths: the required scripts before
+  2.57.0, `../` lines and CRLF lists before 2.57.1, and a `.claude/` prefix before this
+  release. They also read only origin's list, not the primary's. So an opted-out file
+  could ride a sync commit. cleanscale forked the pull to put such paths back
+  (`sync_exclude_restore`, #5257). The fork missed untracked new files, because
+  `git diff` does not list them, and on a failed restore it went on to commit.
+- **The fix.** After the sync, `sync_exclude_enforce` lists every path the sync
+  changed, added or removed, untracked files included, ignored ones too. Putting back
+  an opted-out `.gitignore` can un-ignore a file the sync wrote, and the commit's
+  `git add` would then stage it. It checks each against origin's
+  list joined with the primary's, CRs stripped, using the newest matcher in the source
+  cache. An opted-out path goes back to origin's version, or is removed when origin has
+  none, and the log prints `↺ <path> — matched by .sync-exclude`. A path that cannot be
+  put back stops the pull with exit 5, and nothing is committed. So does a second
+  listing, after the put-backs, that still finds an opted-out path, and a sync that
+  moved HEAD off origin's tip. A list that exists but
+  cannot be read, or a matcher that cannot be loaded, stops it with exit 4. The join and
+  the matcher load are one helper, `exclude_join`, which the corpus refresh uses too.
+  It works only in the temporary worktree, never in the primary.
+
+### 2. `auto_merge` is refused; the push runs the consumer's own pre-push hook
+
+- **`auto_merge`.** A `pr` or `branch` delivery is merged through the consumer's own
+  review and merge gate. With either mode, a `.sync-policy` whose `auto_merge` is
+  anything but empty, `0`, `false`, `no` or `off` is refused with the new exit 8, before
+  anything is built. A quoted or misspelt value is refused too, so nobody believes a
+  merge happened. `direct` has no PR and ignores the key.
+- **Pre-push.** Up to 2.59.1 the pull exported `PWT_SKIP_PRE_PUSH_TEST=1` for its push.
+  That also let a `direct` push to the default branch skip the consumer's tests
+  (cleanscale #5257). The pull no longer sets it: a sync is machinery and grants itself
+  no exemption from the consumer's gates. A consumer that wants sync branches to push
+  quickly makes its hook cheap for branch pushes and runs its suites when the PR merges,
+  as cleanscale does (#4133). No fleet repo other than cleanscale reads the variable.
+
+### 3. A corpus refresh holds tests of a frozen script
+
+- **What went wrong.** cleanscale opts out `pwt-goal.sh` and the goal evaluator and
+  keeps its own copies. `--refresh-ignored-corpus` would still write the 2.59.1 tests of
+  both, and they would fail against the frozen copies.
+- **The fix.** The refresh lists the source's scripts (`.sh`, `.bash`, `.py`, `.js`,
+  `.mjs`, `.cjs`, `.ts`, not test files) that the joined list opts out. A new or changed
+  corpus file that contains one of their file names, standing as a whole name, is
+  printed as `HOLD <path> — names <script>, which .sync-exclude keeps` and is not
+  written. A second summary line counts the held files and says to port the script and
+  its tests together. `unfrozen.sh`, `frozen.sh.bak` and `frozen.shx` do not hold on
+  `frozen.sh`. A name two scripts share holds both, which errs toward keeping the
+  consumer's copy. A file the check cannot read is skipped and not written. A script
+  without an extension is not a frozen name; that is a known limit.
+
+### 4. A `.claude/`-prefixed `.sync-exclude` line opts out
+
+- **What went wrong.** `.sync-exclude` lines are relative to `.claude/`. A line written
+  as `.claude/scripts/x.sh`, a common slip, matched nothing, so the file was synced over.
+- **The fix.** The shared matcher (`retired_paths_sync_excluded` in
+  `sync-to-project.sh`), the rsync filter built from the list, and `sync-propagate.sh`
+  drop a leading `.claude/`, also after a leading `/`. Reading a line without the prefix
+  can only add opt-outs, so no path the old reading kept is now synced over, and the
+  retired-path cleanup deletes nothing it did not delete before. A bare `.claude/` keeps
+  its old reading, a directory named `.claude` at any depth. A line that is empty once
+  stripped (`- ` alone) adds no rsync rule, because openrsync rejects an empty one and
+  the sync would stop.
+- **`sync-propagate.sh` matches whole path segments.** A bare substring let `control`
+  cover `damage-control.sh`, so `--verify` could call a stale hook EXCLUDED; and a line
+  that stripped to nothing covered every path. A line now covers the path, a directory
+  above it, or a trailing part of it, and an empty line covers nothing.
+
+### 5. The deictic guard catches "your planned" and "your planning"
+
+`__PWT_DEICTIC_PATTERN` now has `your (bottom.?line )?plan(ned|ning)?`. "Make your planned
+changes" and "follow your planning notes" point at a plan the worker cannot see and are
+refused with exit 7 like "your plan". "Your planner" and "your plane" still reach spawn.
+The pattern stays on one single-quoted line, which cleanscale's `dispatch-lane.test.sh`
+reads.
+
+### Verification
+
+- `claude-pattern-pull.bats` 13/13, two new cases. The first refuses `auto_merge=true`
+  on a branch delivery and a quoted `"false"` on a PR delivery, both with exit 8. A stub
+  sync that ignores `.sync-exclude` then writes five opted-out paths: one listed with a
+  `.claude/` prefix, one `../` path, one only the primary's list carries, `../.gitignore`,
+  and a hook test the sync's `.gitignore` hid. Origin's three files keep origin's
+  content, the other two are removed, and the rest of the sync lands. The second holds a changed corpus test that
+  names a frozen script, keeps the consumer's copy, and writes a file that names only
+  `unfrozen.sh`, `frozen.sh.bak` and `frozen.shx`.
+- `sync-local-guard-preservation.bats` 10/10, one new case: `.claude/`-prefixed lines
+  keep the consumer's copy on the per-script cp, the agents rsync and the main rsync,
+  while their neighbours are updated. The list also carries a bare `.claude/` and a
+  `- ` line, and the sync still runs on openrsync.
+- `sync-propagate.bats` 19/19: the stale-content case gains `control`, `.claude/a` and
+  `/` lines, and the hook is still reported stale, not EXCLUDED.
+- `pwt-goal-deictic.test.sh` 25/25; D1 gains "make your planned changes" and "follow
+  your planning notes".
+- Mutants: without the enforce call, the first pull case fails; without the hold, the
+  second fails; without the matcher's prefix strip, the new sync case fails on
+  `pwt-goal.sh`; without only the rsync filter's strip, it fails on `commands/board.md`.
+  The old deictic pattern misses both new D1 phrasings. Review fixes: a listing without
+  ignored files, a quoted `"false"` that passes, a whitespace-only rsync rule, and a
+  substring match in `sync-propagate.sh` each fail their case. One mutant survives:
+  dropping a bare `.claude/` line, instead of keeping it, changes nothing in a fixture
+  without a nested `.claude` directory.
+
 ## [2.59.1] — 2026-09-27 (fix: the deictic guard matches whole words only; `land.sh status`/`resume` read the run's worktree; the Stop evaluator still evaluates a `stop_hook_active` stop and mirrors a terminal to the MAIN copy) (f1a0267c)
 
 Four defects, each found on 2026-09-27. The first was reported by cleanscale. The other

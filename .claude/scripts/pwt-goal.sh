@@ -2093,7 +2093,7 @@ fi
 # conversations", "previous discussions"). Keep this ONE single-quoted line:
 # cleanscale's dispatch-lane.test.sh reads it and asserts its own goal text
 # never matches.
-__PWT_DEICTIC_PATTERN='(^|[^[:alnum:]_])(your (bottom.?line )?plan|(as|that) (we|you) (discussed|analyzed|agreed)|the plan (we|you) (made|created|discussed)|your (analysis|recommendation|findings|assessment)|(this|our) (session|conversation|chat)|(above|earlier|previous) (analysis|findings|discussion)|bottom.?line)s?([^[:alnum:]_]|$)'
+__PWT_DEICTIC_PATTERN='(^|[^[:alnum:]_])(your (bottom.?line )?plan(ned|ning)?|(as|that) (we|you) (discussed|analyzed|agreed)|the plan (we|you) (made|created|discussed)|your (analysis|recommendation|findings|assessment)|(this|our) (session|conversation|chat)|(above|earlier|previous) (analysis|findings|discussion)|bottom.?line)s?([^[:alnum:]_]|$)'
 
 # printf '%s\n' — NEVER echo: a request beginning "-e" or "-n", or containing
 # backslash escapes, is mangled by echo and would silently evade the detector.

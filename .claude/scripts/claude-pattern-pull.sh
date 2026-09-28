@@ -22,7 +22,13 @@
 #      snapshot's sync-commit-lib.sh makes the scoped sync commit (never
 #      .claude/state; refuses to bundle foreign work — trivially true in a fresh
 #      worktree). The commit message names the source SHA and skill VERSION.
-#   4. Delivery (--deliver / .claude/.sync-policy):
+#      Before that commit, every path the sync changed, added or removed is
+#      checked again against .sync-exclude (the primary's list and origin's,
+#      joined, read by the newest matcher in the cache). An opted-out path goes
+#      back to origin's version, and a pull that cannot put one back stops
+#      before the commit (2.60.0, from cleanscale #5257).
+#   4. Delivery (--deliver / .claude/.sync-policy). The push runs the consumer's
+#      own pre-push hook; the pull grants itself no exemption from it.
 #        direct — push the commit straight to origin/<default>; on rejection
 #                 fall back to `pr` (if gh is available) else `branch`.
 #        pr     — push the branch and open a PR with gh.
@@ -57,6 +63,10 @@
 #   - An opt-out in the primary's .sync-exclude or in origin's binds. The joined
 #     list is applied twice: by the snapshot's sync, and again by the newest
 #     matcher in the source cache (an older --ref's sync can predate `../` lines).
+#   - A test of a script the consumer froze is held (2.60.0). A new or changed
+#     file that names the file name of a script .sync-exclude keeps is printed
+#     as `HOLD` and never written: the frozen copy predates the test. Port the
+#     script and its tests together, by hand.
 #   - The primary's refs, worktree list and hooks are left alone: the clone does
 #     the fetch, is its own repository, and takes the sync's hook installer. A
 #     file is written through a temp file in the primary's git directory, which
@@ -88,6 +98,10 @@
 # Policy file (consumer-authored, never synced over): <root>/.claude/.sync-policy
 #   mode=pull|regen        (read by session-start.sh; this script ignores it)
 #   deliver=direct|pr|branch
+#   auto_merge=false       (2.60.0) the pull never merges. With deliver=pr or branch,
+#                          any auto_merge value but empty, 0, false, no or off is
+#                          refused (exit 8): a sync PR is merged through the
+#                          consumer's own review and gate.
 #   profile=<name>
 #   remote=<url>
 #   ref=<ref>
@@ -100,9 +114,11 @@
 # Exit codes:
 #   0 delivered / nothing to do     2 usage        3 source unreachable
 #   4 consumer prerequisites        5 sync failed  6 delivery failed (branch kept locally)
-#   (--refresh-ignored-corpus: 4 also = unreadable .sync-exclude, matcher not loaded,
-#    or git could not list the primary; 5 = the sync or an --apply write failed)
-#   7 another run holds the lock
+#   (4 also = an unreadable .sync-exclude or a matcher that could not be loaded;
+#    5 also = an opted-out path the sync changed could not be put back)
+#   (--refresh-ignored-corpus: 4 also = git could not list the primary;
+#    5 = the sync or an --apply write failed)
+#   7 another run holds the lock    8 policy refused (deliver=pr|branch + auto_merge)
 #
 # bash 3.2 compatible (mac-mini). Never prints tokens; never uses --force on git.
 
@@ -170,6 +186,19 @@ policy_get() {  # policy_get <key>
 [ -n "$DELIVER" ] || DELIVER="${CLAUDE_PATTERN_PULL_DELIVER:-$(policy_get deliver)}"
 [ -n "$DELIVER" ] || DELIVER="pr"
 case "$DELIVER" in direct|pr|branch) ;; *) die "--deliver must be direct|pr|branch (got '$DELIVER')" 2 ;; esac
+# A sync PR or branch is reviewed and merged through the consumer's own gate, like any
+# other change, and this script never merges. A policy that asks it to merge is refused
+# rather than ignored, so nobody believes a merge happened (cleanscale #5257). Only a
+# plain "off" value passes, so a quoted or misspelt "true" is refused too. A direct
+# push is unreviewed by definition, so deliver=direct never reads auto_merge.
+if [ "$REFRESH" = 0 ]; then
+  case "$DELIVER" in pr|branch)
+    _am="$(policy_get auto_merge | tr '[:upper:]' '[:lower:]')"
+    case "$_am" in ''|0|false|no|off) ;; *)
+      die ".sync-policy: deliver=$DELIVER with auto_merge=$_am is refused — a sync PR or branch is merged through the consumer's own review and merge gate, never by the puller" 8 ;;
+    esac ;;
+  esac
+fi
 [ -n "$PROFILE" ] || PROFILE="$(policy_get profile)"
 [ -n "$REF" ] || REF="$(policy_get ref)"
 [ -n "$REF" ] || REF="main"
@@ -222,7 +251,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   rm -rf "$LOCK"; mkdir "$LOCK" 2>/dev/null || die "cannot take lock $LOCK" 7
 fi
 echo $$ > "$LOCK/pid"
-SNAP_PARENT=""; WT=""; BR=""; RTMP=""; REFRESH_TMP=""; REFRESH_MATCHER=0; REFRESH_GITDIR=""; REFRESH_ROOT_P=""
+SNAP_PARENT=""; WT=""; BR=""; RTMP=""; REFRESH_TMP=""; EXCLUDE_MATCHER=0; REFRESH_GITDIR=""; REFRESH_ROOT_P=""
 cleanup() {
   # A second signal must not cut the cleanup short and leave the lock behind.
   trap '' INT TERM HUP
@@ -312,33 +341,45 @@ refresh_preflight() {
     log "   ignored corpus @ $SRC_SHORT → $ROOT (dry run)"
   fi
 }
+# ── .sync-exclude: the joined list and the newest matcher ───────────────────
 # An opt-out in either list binds: the primary's list (what it runs) and origin's (what
-# the primary will run once it catches up). The sync and the filter after it both read
-# the union, CRs stripped, so a --ref whose sync predates CRLF lists reads it too.
-# Neither list has negation, so joining them only adds opt-outs.
-refresh_align_exclude() {
+# the primary will run once it catches up). A refresh and a pull's commit both read the
+# union, CRs stripped, so a --ref whose sync predates CRLF lists reads it too. Neither
+# list has negation, so joining them only adds opt-outs. The newest matcher in the cache
+# reads it, because each newer matcher only opts more paths out. Returns 1 when neither
+# list exists. $1 says what a bad list stops ("nothing listed", "nothing committed").
+exclude_join() {
   local ex="$CLAUDE_DIR/.sync-exclude" wx="$WT/.claude/.sync-exclude" have="" mref
-  RTMP="$(mktemp -d "${TMPDIR:-/tmp}/cp-refresh.XXXXXX")" || die "cannot create a temp dir" 5
+  if [ -z "$RTMP" ]; then
+    RTMP="$(mktemp -d "${TMPDIR:-/tmp}/cp-pull.XXXXXX")" || die "cannot create a temp dir" 5
+  fi
   mkdir -p "$RTMP/x" || die "cannot create a temp dir" 5
   : > "$RTMP/x/.sync-exclude"
+  if [ -e "$ex" ] || [ -L "$ex" ]; then
+    { [ -f "$ex" ] && [ -r "$ex" ]; } || die "$ex exists but is not a readable file — $1" 4
+  fi
   if [ -e "$wx" ] || [ -L "$wx" ]; then
     { [ -f "$wx" ] && [ ! -L "$wx" ] && [ -r "$wx" ]; } \
-      || die "origin/$DEFAULT's .claude/.sync-exclude is not a regular file — nothing listed" 4
+      || die "origin/$DEFAULT's .claude/.sync-exclude is not a regular file — $1" 4
     { tr -d '\r' < "$wx"; printf '\n'; } >> "$RTMP/x/.sync-exclude"; have=1
   fi
   if [ -f "$ex" ]; then
     { tr -d '\r' < "$ex"; printf '\n'; } >> "$RTMP/x/.sync-exclude"; have=1
   fi
-  [ -n "$have" ] || return 0
-  # The newest matcher in the cache filters again after the sync; each newer matcher
-  # only opts more paths out. HEAD is resolved to a commit, so a dangling HEAD falls
-  # back to the ref being refreshed.
+  [ -n "$have" ] || return 1
+  # HEAD is resolved to a commit, so a dangling HEAD falls back to the ref being pulled.
   mref="$(git -C "$SRC" rev-parse --verify --quiet 'HEAD^{commit}' 2>/dev/null)" || mref="$SRC_SHA"
   eval "$(git -C "$SRC" show "$mref:.claude/scripts/sync-to-project.sh" 2>/dev/null \
     | sed -n -e '/^retired_paths_sync_excluded()/,/^}/p' -e '/^retired_paths_glob_match()/,/^}/p')"
   command -v retired_paths_sync_excluded >/dev/null 2>&1 && command -v retired_paths_glob_match >/dev/null 2>&1 \
-    || die "a .sync-exclude is present but the source's matcher could not be loaded — nothing listed" 4
-  REFRESH_MATCHER=1
+    || die "a .sync-exclude is present but the source's matcher could not be loaded — $1" 4
+  EXCLUDE_MATCHER=1
+}
+# A refresh also hands the joined list to the snapshot's sync, so the sync itself skips
+# what either list opts out; the filter after it catches what an older sync misses.
+refresh_align_exclude() {
+  local ex="$CLAUDE_DIR/.sync-exclude" wx="$WT/.claude/.sync-exclude"
+  exclude_join "nothing listed" || return 0
   if [ ! -f "$ex" ]; then
     log "   .sync-exclude: the primary has none; origin/$DEFAULT's applies"
   elif [ ! -f "$wx" ]; then
@@ -393,8 +434,8 @@ refresh_write() {
   return 1
 }
 refresh_ignored_corpus() {
-  local p arg dest state sha rc sx dx nl=$'\n' cr=$'\r' tab=$'\t'
-  local n_new=0 n_chg=0 n_same=0 n_opt=0 n_skip=0 n_fail=0 n_unign=0
+  local p arg dest state sha rc grc sx dx held frozen_re nl=$'\n' cr=$'\r' tab=$'\t'
+  local n_new=0 n_chg=0 n_same=0 n_opt=0 n_skip=0 n_fail=0 n_unign=0 n_hold=0
   { [ -n "$RTMP" ] && [ -d "$RTMP" ]; } || die "no temp dir for the refresh" 5
   # The clone started with no untracked files, so each file listed here came from the sync.
   git -C "$WT" ls-files -z --others --ignored --exclude-standard -- tests/skill .claude/scripts .claude/hooks \
@@ -411,7 +452,7 @@ refresh_ignored_corpus() {
       n_skip=$((n_skip + 1)); log "  skip    $p (not a regular file in the synced tree)"; continue
     fi
     case "$p" in .claude/*) arg="$p" ;; *) arg="../$p" ;; esac
-    if [ "$REFRESH_MATCHER" = 1 ] && retired_paths_sync_excluded "$arg" "$RTMP/x"; then
+    if [ "$EXCLUDE_MATCHER" = 1 ] && retired_paths_sync_excluded "$arg" "$RTMP/x"; then
       n_opt=$((n_opt + 1)); log "  SKIP    $arg — matched by .sync-exclude"; continue
     fi
     if ! _refresh_path_safe "$p"; then
@@ -445,19 +486,49 @@ refresh_ignored_corpus() {
     [ "$n_unign" -le 20 ] && log "  skip    $p (not ignored in the primary)"
   done < "$RTMP/unign"
   [ "$n_unign" -le 20 ] || log "  skip    … $((n_unign - 20)) more not ignored in the primary"
+  # A test of a script the consumer froze is held back: the frozen copy predates it, so
+  # it would fail there (cleanscale froze pwt-goal.sh and the goal evaluator, and the
+  # 2.59.1 tests of both would have gone red on it). The frozen names are the file names
+  # of the source's scripts that the joined list opts out; a corpus file that names one,
+  # standing as a whole name, is held. A test file is not a frozen name, and a name
+  # shared by two scripts holds both, which errs toward keeping the consumer's copy.
+  : > "$RTMP/frozen"
+  if [ "$EXCLUDE_MATCHER" = 1 ]; then
+    git -C "$SNAP" ls-files -z > "$RTMP/src0" 2>/dev/null || die "cannot list the snapshot's files — nothing listed" 5
+    while IFS= read -r -d '' p; do
+      case "$p" in *.test.*|*.bats) continue ;; *.sh|*.bash|*.py|*.js|*.mjs|*.cjs|*.ts) ;; *) continue ;; esac
+      case "${p##*/}" in *[!A-Za-z0-9_.-]*) continue ;; esac
+      case "$p" in .claude/*) arg="$p" ;; *) arg="../$p" ;; esac
+      if retired_paths_sync_excluded "$arg" "$RTMP/x"; then printf '%s\n' "${p##*/}" >> "$RTMP/frozen"; fi
+    done < "$RTMP/src0"
+  fi
+  frozen_re=""
+  if [ -s "$RTMP/frozen" ]; then
+    frozen_re="(^|[^[:alnum:]_.-])($(sort -u "$RTMP/frozen" | sed 's/\./\\./g' | paste -sd'|' -))([^[:alnum:]_.-]|\$)"
+  fi
   while IFS= read -r p; do
     dest="$ROOT/$p"
     if [ -L "$dest" ] || { [ -e "$dest" ] && [ ! -f "$dest" ]; }; then
       n_skip=$((n_skip + 1)); log "  skip    $p (a symlink or a non-file is at the destination)"; continue
     fi
     sx=644; [ -x "$WT/$p" ] && sx=755
+    state=new
     if [ -f "$dest" ]; then
       dx=644; [ -x "$dest" ] && dx=755
       if [ "$sx" = "$dx" ] && cmp -s "$WT/$p" "$dest"; then n_same=$((n_same + 1)); continue; fi
-      state=changed; n_chg=$((n_chg + 1))
-    else
-      state=new; n_new=$((n_new + 1))
+      state=changed
     fi
+    if [ -n "$frozen_re" ]; then
+      grc=0; grep -a -E -o -m1 "$frozen_re" "$WT/$p" > "$RTMP/held" 2>/dev/null || grc=$?
+      if [ "$grc" -gt 1 ]; then   # unread is not clean: the file is not written
+        n_skip=$((n_skip + 1)); log "  skip    $p (could not be checked for the scripts .sync-exclude keeps)"; continue
+      fi
+      if [ "$grc" = 0 ]; then
+        held="$(head -1 "$RTMP/held" | sed -e 's/^[^[:alnum:]_.-]//' -e 's/[^[:alnum:]_.-]$//')"
+        n_hold=$((n_hold + 1)); log "  HOLD    $p — names $held, which .sync-exclude keeps"; continue
+      fi
+    fi
+    if [ "$state" = new ]; then n_new=$((n_new + 1)); else n_chg=$((n_chg + 1)); fi
     sha="$(_sha256 < "$WT/$p")"
     log "  $(printf '%-7s' "$state") $sha  $p"
     [ "$APPLY" = 1 ] || continue
@@ -466,6 +537,9 @@ refresh_ignored_corpus() {
   log "   $n_new new, $n_chg changed, $n_same identical, $n_opt opted out, $n_skip skipped, $n_unign not ignored in the primary"
   if [ "$n_unign" -gt 0 ]; then
     log "   the primary's .gitignore does not ignore $n_unign shipped file(s) yet; once it has the .gitignore rule (merge the sync PR, fast-forward), refresh again"
+  fi
+  if [ "$n_hold" -gt 0 ]; then
+    log "   $n_hold held: each names a script .sync-exclude keeps, and the consumer keeps its copy; port the script and its tests together"
   fi
   if [ "$APPLY" = 0 ]; then
     log "   dry run — nothing written; rerun with --apply to write the new and changed files"
@@ -476,6 +550,64 @@ refresh_ignored_corpus() {
   fi
 }
 if [ "$REFRESH" = 1 ]; then refresh_preflight; fi
+
+# ── .sync-exclude binds the commit, whatever the snapshot's sync did ────────
+# The snapshot's sync honours .sync-exclude, but it is the sync of the pulled --ref, and
+# older ones missed paths (the required scripts before 2.57.0, `../` lines and CRLF lists
+# before 2.57.1, a `.claude/` prefix before 2.60.0). It also reads origin's list only.
+# So each path the sync changed, added or removed is checked again, by the newest
+# matcher, against the joined list. An opted-out path goes back to origin's version, or
+# is removed when origin has none, before the commit. A path that cannot be put back
+# stops the pull, so an opted-out path never reaches a sync commit. Upstreamed from
+# cleanscale #5257.
+# The listing takes the working tree and the index, each against origin, and every
+# untracked file, ignored ones included: putting back an opted-out .gitignore can
+# un-ignore a file the sync wrote, and the commit would then stage it. A second listing
+# after the loop must find nothing opted out, or the pull stops. The sync must not
+# commit either; a HEAD that moved off origin stops the pull.
+_sync_changed_list() {  # $1 = output file: NUL-separated, sorted, unique
+  { git -C "$WT" diff --name-only -z --no-renames "$ORIGIN_SHA" -- \
+      && git -C "$WT" diff --cached --name-only -z --no-renames "$ORIGIN_SHA" -- \
+      && git -C "$WT" ls-files -z --others; } > "$1.raw" \
+    && sort -z -u "$1.raw" > "$1"
+}
+_sync_excluded_arg() {  # $1 = repo-relative path; true when the joined list opts it out
+  local arg
+  case "$1" in .claude/*) arg="$1" ;; *) arg="../$1" ;; esac
+  retired_paths_sync_excluded "$arg" "$RTMP/x"
+}
+sync_exclude_enforce() {
+  local p arg n=0 head
+  [ "$EXCLUDE_MATCHER" = 1 ] || return 0
+  head="$(git -C "$WT" rev-parse --verify --quiet 'HEAD^{commit}')" || head=""
+  [ "$head" = "$ORIGIN_SHA" ] \
+    || die "the sync moved HEAD in $WT off origin/$DEFAULT — nothing committed" 5
+  _sync_changed_list "$RTMP/changed" || die "cannot list what the sync changed in $WT — nothing committed" 5
+  while IFS= read -r -d '' p; do
+    [ "$p" = .claude/.sync-version ] && continue   # the pull's own stamp, written next
+    _sync_excluded_arg "$p" || continue
+    case "$p" in .claude/*) arg="$p" ;; *) arg="../$p" ;; esac
+    if git -C "$WT" cat-file -e "$ORIGIN_SHA:$p" 2>/dev/null; then
+      git -C "$WT" --literal-pathspecs checkout --quiet "$ORIGIN_SHA" -- "$p" >/dev/null 2>&1 \
+        || die "could not put back $p, which .sync-exclude opts out — nothing committed" 5
+      log "   ↺ $arg — matched by .sync-exclude; origin's version kept"
+    else
+      { git -C "$WT" --literal-pathspecs rm --quiet --cached --ignore-unmatch -- "$p" >/dev/null 2>&1 \
+          && rm -f "$WT/$p"; } \
+        || die "could not remove $p, which .sync-exclude opts out — nothing committed" 5
+      log "   ↺ $arg — matched by .sync-exclude; origin has none, removed"
+    fi
+    n=$((n + 1))
+  done < "$RTMP/changed"
+  _sync_changed_list "$RTMP/left" || die "cannot list what the sync changed in $WT — nothing committed" 5
+  while IFS= read -r -d '' p; do
+    [ "$p" = .claude/.sync-version ] && continue
+    if _sync_excluded_arg "$p"; then
+      die "$p is still changed after it was put back, and .sync-exclude opts it out — nothing committed" 5
+    fi
+  done < "$RTMP/left"
+  [ "$n" = 0 ] || log "   .sync-exclude: $n path(s) the sync wrote were put back before the commit"
+}
 
 # ── ff the primary checkout when origin already carries the version ─────────
 # The only operation this script ever performs on the primary checkout.
@@ -592,7 +724,11 @@ fi
 
 # ── run the SNAPSHOT's sync against the worktree ────────────────────────────
 LOGF="$CACHE/logs/$KEY-$SRC_SHORT.log"
-if [ "$REFRESH" = 1 ]; then LOGF="$CACHE/logs/$KEY-$SRC_SHORT.refresh.log"; refresh_align_exclude; fi
+if [ "$REFRESH" = 1 ]; then
+  LOGF="$CACHE/logs/$KEY-$SRC_SHORT.refresh.log"; refresh_align_exclude
+else
+  exclude_join "nothing committed" || true   # read before the sync, from origin's checkout
+fi
 : > "$LOGF"
 if ! CLAUDE_PATTERN_ROOT="$SNAP" PWT_SYNC_BUNDLE_COMMIT=0 "$SYNC" "$WT" ${PROFILE:+--profile "$PROFILE"} >> "$LOGF" 2>&1; then
   warn "sync-to-project.sh failed — see $LOGF"; tail -20 "$LOGF" >&2; exit 5
@@ -600,6 +736,7 @@ fi
 if grep -q '^🛑 SKIP' "$LOGF" 2>/dev/null; then
   warn "sync-to-project.sh refused the fresh worktree as dirty — see $LOGF"; exit 5
 fi
+[ "$REFRESH" = 1 ] || sync_exclude_enforce
 # The snapshot stamps .sync-version itself; belt-and-braces so the origin
 # equality check above is exact on the next run.
 printf '%s\n' "$SRC_STAMP" > "$WT/.claude/.sync-version"
@@ -623,11 +760,12 @@ case "$commit_rc" in
 esac
 
 # ── delivery ────────────────────────────────────────────────────────────────
-# The sync commit touches only sync-owned paths; the consumer's application
-# pre-push gate (cleanscale: a 45-minute make test-all) is not the arbiter of a
-# skill sync, and a queue of pushes behind that gate lock is exactly the failure
-# this script replaces. PWT_SKIP_PRE_PUSH_TEST is the documented standing grant.
-export PWT_SKIP_PRE_PUSH_TEST=1
+# The push runs the consumer's own pre-push hook, like any other push: a sync is
+# machinery, and the pull grants itself no exemption from the consumer's gates. A
+# consumer that wants sync branches to push quickly makes its hook cheap for branch
+# pushes and runs its suites when the PR merges (cleanscale #4133). Up to 2.59.1 the
+# pull exported PWT_SKIP_PRE_PUSH_TEST=1 here, which also let a direct push to the
+# default branch skip testing (cleanscale #5257).
 push_branch() { git -C "$WT" push --quiet -u origin "$BR" >> "$LOGF" 2>&1; }
 open_pr() {
   command -v gh >/dev/null 2>&1 || return 1
