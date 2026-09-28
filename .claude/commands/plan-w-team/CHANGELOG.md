@@ -14,6 +14,78 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.60.2] — 2026-09-28 (fix: the worktree GC reaps a clean detached HEAD that is already on origin's default branch) (2c26fc2e)
+
+Reported by CleanRev (cleanscale #7789). `classify_one` in `plan-w-team-worktree-gc.sh`
+returned `ORPHAN-ASK` ("detached HEAD or non-git worktree") the moment `rev-parse
+--abbrev-ref HEAD` read `HEAD`, before the dirty, lock, liveness, newborn, idle and
+origin checks. A clean, unlocked, unused detached worktree whose commit was already an
+ancestor of `origin/main` could therefore never be reclaimed without `--orphans-ok`. The
+mini had one: HEAD `2c6e2ddc1`, 0 dirty files, no lock, no cwd user, PR #7080 closed.
+`--json` also reported `origin_reachable: false` for it without computing it.
+
+- A detached HEAD is `ORPHAN-ASK` when its commit is **not** an ancestor of
+  `origin/<default>` (proved with `merge-base --is-ancestor`). A non-git worktree, or a
+  HEAD with no commit (unborn), stays `ORPHAN-ASK` with its own reason.
+- **It is also `ORPHAN-ASK` when its HEAD reflog holds a commit that is on no origin
+  ref.** The ancestor check proves only where HEAD is now. A lane that commits while
+  detached and then runs `checkout --detach origin/main` leaves that commit held only by
+  its own HEAD reflog, and `git worktree remove` deletes that reflog. A reflog that
+  cannot be read also keeps the worktree. A worktree with no reflog at all passes,
+  because such commits are already unreferenced. The silent-failure review of the
+  first cut found this and reproduced the loss with `fsck` in a fixture.
+- A reflog commit held by a local `refs/pull/<n>/head` ref counts as pushed, because
+  GitHub keeps a closed PR's head there. CleanRev suggested this so that a closed PR's
+  worktree does not stay `ORPHAN-ASK`. It counts only when origin's fetch refspec maps
+  `refs/pull/*/head` there (`+refs/pull/*/head:refs/pull/*/head`), so the ref mirrors
+  origin the way `refs/remotes/origin/*` does. A `refs/pull` ref written any other way
+  (`update-ref`, a fork's fetch) proves nothing about origin and does not count; the
+  round-3 silent-failure review asked for that. The GC fetches nothing, and
+  `refs/pull/*/merge` does not count.
+- A detached HEAD that is an ancestor goes through every normal veto (in-use,
+  uncommitted, lock, newborn, probe-failed, active run) and reaps as `SAFE-PRUNE-PUSHED`
+  exactly like a pushed branch. Its reason line says "detached HEAD on origin/<default>".
+- `origin_reachable` is computed for every detached HEAD, including the ones that stay
+  `ORPHAN-ASK`.
+- The branch-name lookups (gh merged/open PRs, `branch --merged`, origin-gone) are
+  skipped for a detached HEAD, because "HEAD" names no branch.
+  `refs/remotes/origin/HEAD` used to satisfy the origin-gone check by accident.
+- **A removal no longer unregisters other detached lanes.** Fleet rows were unregistered
+  by path OR branch, and a detached worktree's branch is the literal `HEAD`. Removing
+  one detached worktree (until now only under `--orphans-ok`) would have dropped every
+  other detached lane's row, and with it that lane's active-run keep. A detached
+  worktree is now unregistered by path only.
+- `--scope branch --branch HEAD` selects nothing. `HEAD` is never a branch, and before
+  this fix it would have selected every detached worktree.
+
+### Verification
+
+- `plan-w-team-worktree-gc.test.sh` 163/163 (`/bin/bash` 3.2). One new case, Test 39,
+  was added to the existing suite:
+  - a detached HEAD on `origin/main` classifies `SAFE-PRUNE-PUSHED` with
+    `origin_reachable: true`, and is removed under `--execute`;
+  - the same with a live session stays `UNSAFE-KEEP` through the in-use veto;
+  - the same with a real untracked file stays `UNSAFE-KEEP`;
+  - a detached HEAD pushed only to another origin branch is `ORPHAN-ASK`, with
+    `origin_reachable: true` computed;
+  - a detached HEAD on no origin ref is `ORPHAN-ASK`, with `origin_reachable: false`;
+  - a detached HEAD back on `origin/main` whose commit is reflog-only is `ORPHAN-ASK`;
+  - the same with that commit at a local `refs/pull/7080/head` is `ORPHAN-ASK` while
+    origin's fetch refspec does not map `refs/pull/*/head`, and `SAFE-PRUNE-PUSHED`
+    (removed under `--execute`) once it does;
+  - every keep survives `--execute`;
+  - `--scope branch --branch HEAD` selects nothing;
+  - another detached lane's fleet row survives the removal.
+- Mutants, each turning Test 39 red with the rest of the suite green:
+  - M1, the old early return: 9 red;
+  - M2, the ancestor check dropped: 1 red;
+  - M3, unregistering by `HEAD`: 1 red;
+  - M4, reachability not computed: 6 red;
+  - M5, the reflog check dropped: 3 red;
+  - M6, `HEAD` matching a branch scope: 1 red;
+  - M7, `refs/pull/*/head` not honored: 2 red;
+  - M8, `refs/pull/*/head` honored without the fetch refspec: 1 red.
+
 ## [2.60.1] — 2026-09-28 (test: the pull's sync-commit subject and `Claude-Pattern-Source` trailer are pinned as a consumer contract) (99febfbf)
 
 CleanRev passed 2.60.0 for cleanscale with conditions. The one for claude-pattern is to

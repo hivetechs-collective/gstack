@@ -14,6 +14,9 @@
 #                      AND no open PR, AND no uncommitted, AND no live claude session
 #   UNSAFE-KEEP        any blocker: open PR + unmerged, uncommitted, in-use, registered active PWT run
 #   ORPHAN-ASK         branch deleted on origin but local has unmerged commits — only removable with --orphans-ok
+#                      (also a non-git worktree, or a detached HEAD NOT on origin/<default> or whose
+#                      reflog holds commits on no origin ref; a detached HEAD that is an ancestor of
+#                      origin/<default> with a clean reflog goes through the normal checks)
 #
 # Two refinements (2026-05) prevent the stale-state accumulation that let
 # .claude/worktrees/ grow to tens of GB despite this GC existing:
@@ -561,6 +564,8 @@ filter_in_scope() {
             ;;
         branch)
             [ -z "$SCOPE_BRANCH" ] && return 1
+            # "HEAD" is a detached worktree, never a branch: it selects nothing.
+            [ "$wt_branch" = "HEAD" ] && return 1
             [ "$wt_branch" = "$SCOPE_BRANCH" ] && return 0
             return 1
             ;;
@@ -672,8 +677,9 @@ shipped_marker_valid() {
 }
 
 classify_one() {
-    # Sets globals: CLASS, BRANCH, REASON, LAST_COMMIT_AGE_DAYS, UNCOMMITTED, MERGED, OPEN_PR, IN_USE, ACTIVE_RUN, OUTSIDE, ORIGIN_GONE, MERGED_BY, ORIGIN_REACHABLE, ORPHAN_DIR
+    # Sets globals: CLASS, BRANCH, REASON, LAST_COMMIT_AGE_DAYS, UNCOMMITTED, MERGED, OPEN_PR, IN_USE, ACTIVE_RUN, OUTSIDE, ORIGIN_GONE, MERGED_BY, ORIGIN_REACHABLE, ORPHAN_DIR, DETACHED
     local wt_path="$1"
+    DETACHED=0
     CLASS=""; BRANCH=""; REASON=""; LAST_COMMIT_AGE_DAYS=""; UNCOMMITTED=0
     MERGED=0; OPEN_PR=0; IN_USE=0; ACTIVE_RUN=0; OUTSIDE=0; MERGED_BY=""; ORIGIN_GONE=0
     LOCKED=0; STALE_LOCK=0; IN_USE_SOURCE=""; ORIGIN_REACHABLE=0; ORPHAN_DIR=0
@@ -721,11 +727,65 @@ classify_one() {
     fi
 
     BRANCH="$(git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
-    if [ -z "$BRANCH" ] || [ "$BRANCH" = "HEAD" ]; then
-        # Detached or no git — treat as ORPHAN-ASK
+    if [ -z "$BRANCH" ]; then
         CLASS="ORPHAN-ASK"
-        REASON="detached HEAD or non-git worktree"
+        REASON="non-git worktree (HEAD does not resolve) — needs --orphans-ok"
         return 0
+    fi
+
+    # A detached HEAD has no branch for gh, `branch --merged` or origin to vouch
+    # for, so it stays ORPHAN-ASK unless its commit is PROVABLY on origin's
+    # default branch. An ancestor of origin/<default> is durable there, so it
+    # falls through every veto below and reaps like a pushed branch (cleanscale
+    # #7789: a clean, unlocked, unused detached worktree at a merged commit was
+    # never reclaimable). ORIGIN_REACHABLE is computed either way so --json never
+    # reports a false that was not evaluated.
+    DETACHED=0
+    if [ "$BRANCH" = "HEAD" ]; then
+        DETACHED=1
+        if origin_reachable "$wt_path"; then ORIGIN_REACHABLE=1; fi
+        local head_sha reflog stranded
+        head_sha="$(git -C "$wt_path" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)"
+        if [ -z "$head_sha" ]; then
+            CLASS="ORPHAN-ASK"
+            REASON="HEAD has no commit (unborn or unresolvable) — needs --orphans-ok"
+            return 0
+        fi
+        if ! git -C "$MAIN_CHECKOUT" merge-base --is-ancestor \
+                "$head_sha" "refs/remotes/origin/$DEFAULT_BRANCH" 2>/dev/null; then
+            CLASS="ORPHAN-ASK"
+            REASON="detached HEAD not on origin/$DEFAULT_BRANCH — needs --orphans-ok"
+            return 0
+        fi
+        # The ancestor check proves only where HEAD is NOW. Commits this worktree
+        # made and then moved off (commit, then `checkout --detach origin/main`)
+        # are held only by its own HEAD reflog, which `git worktree remove`
+        # deletes: the classic detached-HEAD loss. Any reflog commit not on an
+        # origin ref keeps it ORPHAN-ASK, and so does a reflog we cannot read.
+        # (No reflog at all is fine: those commits are already unreferenced.)
+        # A closed PR's head counts as pushed when its refs/pull/<n>/head ref is
+        # present locally AND origin's fetch refspec maps refs/pull/*/head there,
+        # so the ref mirrors origin as refs/remotes/origin/* does (GitHub keeps
+        # it). A ref written any other way proves nothing; nothing is fetched.
+        # pull_refs repeats --remotes=origin when unmapped (no empty array: set -u).
+        local fetch_specs pull_refs="--remotes=origin"
+        fetch_specs="$(git -C "$wt_path" config --get-all remote.origin.fetch 2>/dev/null)"
+        if grep -Eqx '\+?refs/pull/\*/head:refs/pull/\*/head|\+?refs/pull/\*:refs/pull/\*' \
+                <<< "$fetch_specs"; then
+            pull_refs="--glob=refs/pull/*/head"
+        fi
+        if ! reflog="$(git -C "$wt_path" log -g --format=%H HEAD 2>/dev/null)" \
+            || ! stranded="$(printf '%s\n' "$reflog" \
+                | git -C "$wt_path" rev-list --not --remotes=origin "$pull_refs" --stdin 2>/dev/null)"; then
+            CLASS="ORPHAN-ASK"
+            REASON="detached HEAD reflog could not be checked for commits off origin — needs --orphans-ok"
+            return 0
+        fi
+        if [ -n "$stranded" ]; then
+            CLASS="ORPHAN-ASK"
+            REASON="detached HEAD on origin/$DEFAULT_BRANCH, but its reflog holds $(printf '%s\n' "$stranded" | grep -c .) commit(s) on no origin ref — needs --orphans-ok"
+            return 0
+        fi
     fi
 
     # Uncommitted check — ignore churn confined to transient runtime paths.
@@ -787,11 +847,12 @@ classify_one() {
     # per gh pr list..."). gh catches squash-merges invisible to local history;
     # local catches direct-to-main merges that never became a PR. We OR them and
     # record which source(s) confirmed it.
+    # A detached HEAD skips every branch-name lookup: "HEAD" names no branch.
     local merged_gh=0 merged_local=0
-    if [ "$GH_AVAILABLE" = "1" ] && echo "$GH_MERGED_BRANCHES" | grep -qxF "$BRANCH"; then
+    if [ "$DETACHED" = "0" ] && [ "$GH_AVAILABLE" = "1" ] && echo "$GH_MERGED_BRANCHES" | grep -qxF "$BRANCH"; then
         merged_gh=1
     fi
-    if git -C "$MAIN_CHECKOUT" branch --merged "$DEFAULT_BRANCH" 2>/dev/null \
+    if [ "$DETACHED" = "0" ] && git -C "$MAIN_CHECKOUT" branch --merged "$DEFAULT_BRANCH" 2>/dev/null \
         | sed 's/^[* +] //' | grep -qxF "$BRANCH"; then
         merged_local=1
     fi
@@ -801,23 +862,25 @@ classify_one() {
     [ "$merged_local" = "1" ] && MERGED_BY="${MERGED_BY:+$MERGED_BY+}local"
 
     # Open PR check
-    if [ "$GH_AVAILABLE" = "1" ]; then
+    if [ "$DETACHED" = "0" ] && [ "$GH_AVAILABLE" = "1" ]; then
         if echo "$GH_OPEN_PR_BRANCHES" | grep -qxF "$BRANCH"; then OPEN_PR=1; fi
     fi
 
     # Origin-existence check — does the branch still exist on origin? Used to
     # distinguish a true ORPHAN-ASK (branch deleted on origin, local commits
     # stranded) from a never-pushed local branch. A remote-tracking ref present
-    # OR a live `git ls-remote` hit means origin still has it.
+    # OR a live `git ls-remote` hit means origin still has it. A detached HEAD
+    # has no branch to lose (and refs/remotes/origin/HEAD would falsely match).
     ORIGIN_GONE=1
-    if git -C "$MAIN_CHECKOUT" show-ref --quiet --verify "refs/remotes/origin/$BRANCH" 2>/dev/null; then
+    if [ "$DETACHED" = "1" ] || git -C "$MAIN_CHECKOUT" show-ref --quiet --verify "refs/remotes/origin/$BRANCH" 2>/dev/null; then
         ORIGIN_GONE=0
     fi
 
     # AC1: origin-reachability — is the worktree's exact HEAD commit on origin/*?
     # This is the push-not-merge signal: committed work is preserved on the remote /
     # in the open PR, so the worktree is reclaimable even though it never merged.
-    if origin_reachable "$wt_path"; then ORIGIN_REACHABLE=1; fi
+    # (Already computed above for a detached HEAD.)
+    if [ "$DETACHED" = "0" ] && origin_reachable "$wt_path"; then ORIGIN_REACHABLE=1; fi
 
     # In-use check (live claude session whose cwd / worktreePath is this dir)
     if is_in_use "$wt_path"; then
@@ -1033,6 +1096,7 @@ classify_one() {
     if [ "$ORIGIN_REACHABLE" = "1" ]; then
         CLASS="SAFE-PRUNE-PUSHED"
         REASON="HEAD reachable from origin/* (pushed; work preserved on remote)"
+        [ "$DETACHED" = "1" ] && REASON="$REASON; detached HEAD on origin/$DEFAULT_BRANCH"
         [ "$OPEN_PR" = "1" ] && REASON="$REASON; open PR"
         [ "$STALE_LOCK" = "1" ] && REASON="$REASON; stale lock ignored"
         return 0
@@ -1056,7 +1120,9 @@ classify_one() {
     #      orphan per the directive) — local work stranded with no upstream.
     #   2. Unmerged local-only branch, not idle enough to auto-prune, no open PR.
     CLASS="ORPHAN-ASK"
-    if [ "$ORIGIN_GONE" = "1" ]; then
+    if [ "$DETACHED" = "1" ]; then
+        REASON="detached HEAD on origin/$DEFAULT_BRANCH but origin reachability unconfirmed — needs --orphans-ok"
+    elif [ "$ORIGIN_GONE" = "1" ]; then
         REASON="branch gone from origin, local unmerged commits (${LAST_COMMIT_AGE_DAYS:-?}d idle) — needs --orphans-ok"
     else
         REASON="unmerged branch, no open PR, only ${LAST_COMMIT_AGE_DAYS:-?}d idle — needs --orphans-ok"
@@ -1234,7 +1300,10 @@ for wt_path in "${WT_PATHS[@]:-}"; do
         read -r REMOVED_WT REMOVED_BRANCH <<< "$(remove_one "$wt_path" "$BRANCH")"
         if [ "$REMOVED_WT" = "1" ]; then
             REMOVED=$((REMOVED+1))
-            WT_PATH="$wt_path" WT_BRANCH="$BRANCH" unregister_from_fleet "$wt_path" "$BRANCH"
+            # A detached worktree's BRANCH is the literal "HEAD": matching fleet rows
+            # by it would unregister every OTHER detached lane. Match by path only.
+            unreg_branch="$BRANCH"; [ "$DETACHED" = "1" ] && unreg_branch=""
+            WT_PATH="$wt_path" WT_BRANCH="$unreg_branch" unregister_from_fleet "$wt_path" "$unreg_branch"
         else
             ACTION="remove-failed"
             KEPT=$((KEPT+1))

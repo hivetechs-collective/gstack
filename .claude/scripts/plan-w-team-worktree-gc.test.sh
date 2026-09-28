@@ -978,6 +978,59 @@ assert_eq "missing process helper: unowned pushed still SAFE-PRUNE-PUSHED" "SAFE
     "$(class_of "$JSON" unowned-pushed)"
 assert_eq "missing process helper: live_query_failed false" "false" "$(field_of "$JSON" unowned-pushed live_query_failed)"
 
+# ── Test 39: detached HEAD (cleanscale #7789) ──────────────────────────────
+# A detached HEAD used to return ORPHAN-ASK before any other check, so a clean,
+# unused detached worktree at a merged commit was never reapable and --json
+# reported origin_reachable=false without computing it. Now only a detached
+# HEAD NOT on origin/<default> is ORPHAN-ASK, and so is one whose reflog holds
+# commits on no origin ref (worktree removal deletes that reflog); a detached
+# HEAD on origin/<default> with a clean reflog takes the normal checks. A reflog
+# commit held by a local refs/pull/<n>/head (a closed PR's head) counts as pushed,
+# but only when origin's fetch refspec maps refs/pull/*/head there.
+echo "[39] detached HEAD: on origin/main → normal checks; off it or stranded reflog → ORPHAN-ASK"
+R=$(new_repo); make_nogh "$R"; add_origin "$R"; push_branch "$R" main
+D=$R/.claude/worktrees
+for n in det-merged det-dirty det-side det-local det-reset det-pr; do
+    git -C "$R" worktree add -q --detach "$D/$n" main >/dev/null 2>&1
+done
+echo "real work" > "$D/det-dirty/src.txt"
+for n in det-side det-local det-reset det-pr; do
+    echo "$n" > "$D/$n/$n.txt"; git -C "$D/$n" add "$n.txt"; git -C "$D/$n" commit -qm "$n"
+done
+git -C "$D/det-side" push -q origin HEAD:refs/heads/side 2>/dev/null; git -C "$R" fetch -q origin 2>/dev/null
+git -C "$D/det-reset" checkout -q --detach main   # back on origin/main; its commit is reflog-only
+git -C "$R" update-ref refs/pull/7080/head "$(git -C "$D/det-pr" rev-parse HEAD)"
+git -C "$D/det-pr" checkout -q --detach main      # its commit is a closed PR's head
+# another detached lane's fleet row: removing det-merged must not unregister it
+printf '{"session_id":"d","worktree_path":"%s","branch":"HEAD"}\n' "$D/det-side" \
+    > "$R/.claude/state/plan-w-team-spawned-children-det.jsonl"
+JSON=$(run_gc "$R" --json)
+assert_eq "detached on origin/main → SAFE-PRUNE-PUSHED" "SAFE-PRUNE-PUSHED" "$(class_of "$JSON" det-merged)"
+assert_eq "detached on origin/main origin_reachable true" "true" "$(field_of "$JSON" det-merged origin_reachable)"
+assert_eq "detached on origin/main + real delta → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" det-dirty)"
+assert_eq "detached off origin/main → ORPHAN-ASK" "ORPHAN-ASK" "$(class_of "$JSON" det-side)"
+assert_eq "detached off origin/main origin_reachable computed (true)" "true" "$(field_of "$JSON" det-side origin_reachable)"
+assert_eq "detached on no origin ref → ORPHAN-ASK" "ORPHAN-ASK" "$(class_of "$JSON" det-local)"
+assert_eq "detached on no origin ref origin_reachable false" "false" "$(field_of "$JSON" det-local origin_reachable)"
+assert_eq "detached on origin/main, reflog-only commit → ORPHAN-ASK" "ORPHAN-ASK" "$(class_of "$JSON" det-reset)"
+assert_eq "refs/pull/*/head not mapped by origin's fetch refspec → ORPHAN-ASK" "ORPHAN-ASK" "$(class_of "$JSON" det-pr)"
+JSON=$( cd "$R" && PWT_WORKTREE_GC_DEFAULT_BRANCH=main PWT_WORKTREE_GC_IGNORE_LOCKS=1 \
+        PWT_WORKTREE_GC_TEST_LIVE_CWDS="$D/det-merged" PATH="$R/_nogh:$PATH" bash "$GC" --json 2>/dev/null )
+assert_eq "detached on origin/main + live session → UNSAFE-KEEP" "UNSAFE-KEEP" "$(class_of "$JSON" det-merged)"
+assert_eq "detached live-session keep is the in-use veto" "true" "$(field_of "$JSON" det-merged in_use)"
+JSON=$(run_gc "$R" --scope branch --branch HEAD --json)
+assert_eq "--scope branch --branch HEAD selects no detached worktree" "0" \
+    "$(python3 -c 'import json,sys; print(len(json.load(sys.stdin)["worktrees"]))' <<< "$JSON")"
+git -C "$R" config --add remote.origin.fetch '+refs/pull/*/head:refs/pull/*/head'
+JSON=$(run_gc "$R" --json)
+assert_eq "reflog commit at a mapped refs/pull/*/head → SAFE-PRUNE-PUSHED" "SAFE-PRUNE-PUSHED" "$(class_of "$JSON" det-pr)"
+run_gc "$R" --execute --json >/dev/null
+assert_eq "detached on origin/main removed under --execute" "no" "$([ -d "$D/det-merged" ] && echo yes || echo no)"
+assert_eq "detached closed-PR head removed under --execute" "no" "$([ -d "$D/det-pr" ] && echo yes || echo no)"
+SURV=""; for n in det-dirty det-side det-local det-reset; do [ -d "$D/$n" ] && SURV="$SURV $n"; done
+assert_eq "keeps survive --execute" " det-dirty det-side det-local det-reset" "$SURV"
+assert_eq "other detached lane's fleet row kept" "1" "$(grep -c . "$R/.claude/state/plan-w-team-spawned-children-det.jsonl")"
+
 echo ""
 echo "── results: $PASS passed, $FAIL failed ──"
 [ "$FAIL" -eq 0 ]
