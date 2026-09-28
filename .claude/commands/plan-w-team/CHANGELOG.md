@@ -14,6 +14,38 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.60.1] — 2026-09-28 (test: the pull's sync-commit subject and `Claude-Pattern-Source` trailer are pinned as a consumer contract) (99febfbf)
+
+CleanRev passed 2.60.0 for cleanscale with conditions. The one for claude-pattern is to
+keep the `Claude-Pattern-Source: <sha>` trailer stable, because cleanscale will find
+sync commits by it. Its fork-regression lint (#7605) matches the subject
+`chore: sync Claude Code updates from claude-pattern@<short sha>`. Nothing pinned
+either one, so a wording change would have passed every test.
+
+- `claude-pattern-pull.bats`'s direct-delivery case now asserts the exact subject and
+  that the trailer's value is the full source SHA. Before, it only grepped the subject
+  for the short SHA.
+- A comment at the commit site and a paragraph in `consumer-pull-sync.md` (Delivery
+  modes) name both as a contract: change them only together with every consumer that
+  reads them.
+
+- **A load flake fixed.** `host-load-protection.bats` AC1 ("a helper that outlives the
+  bound") went red in this release's gate at host load ~97. The fake `ccusage` proved it
+  had started by writing its first line, and under that load its own startup outlived
+  the 1 s bound, so it was killed before it wrote. The real `gtimeout` now sits behind a
+  recorder that logs the call before the timer starts. The test asserts one `ccusage
+  blocks` call under `1s`, at most one spawn and no completion. The bound is not widened.
+
+No behaviour changes.
+
+### Verification
+
+- `claude-pattern-pull.bats` 13/13. Mutants: renaming the trailer key, or dropping the
+  `@<short sha>` from the subject, each fail the direct-delivery case.
+- The AC1 fix passes as written and with a simulated 2 s stub startup. The old test fails
+  that simulation with the gate's exact assertion. An unbounded `ccusage` call in
+  `ccusage-blocks.sh` fails the new test.
+
 ## [2.60.0] — 2026-09-28 (feat: `claude-pattern-pull.sh` takes over cleanscale's #5257 guards — `.sync-exclude` binds the sync commit, `auto_merge` is refused, and the pull no longer skips the consumer's pre-push hook; a corpus refresh holds tests of a frozen script; a `.claude/`-prefixed `.sync-exclude` line opts out; the deictic guard catches "your planned"/"your planning") (70ca5dd5)
 
 CleanRev reviewed 2.58.0 and 2.59.1 on 2026-09-28 and passed both with notes. It then

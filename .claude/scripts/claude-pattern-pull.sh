@@ -743,6 +743,9 @@ printf '%s\n' "$SRC_STAMP" > "$WT/.claude/.sync-version"
 if [ "$REFRESH" = 1 ]; then refresh_ignored_corpus; exit 0; fi
 
 # ── scoped commit via the snapshot's shared lib ─────────────────────────────
+# The subject and the Claude-Pattern-Source trailer are a contract with consumers:
+# cleanscale finds sync commits by them (its fork-regression lint, #7605). Change
+# either only together with every consumer that reads it; the pull tests pin both.
 COMMIT_MSG="chore: sync Claude Code updates from claude-pattern@$SRC_SHORT
 
 Source: $REMOTE @ $SRC_SHA
