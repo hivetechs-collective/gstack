@@ -41,9 +41,16 @@ if [ "${PLAN_W_TEAM_DISABLE_GOAL:-}" = "1" ]; then
     exit 0
 fi
 
-# stop_hook_active protection — if Claude Code already overrode us, don't fight
+# stop_hook_active protection — this stop follows one of our own blocks, so we never block it
+# again (no fight with Claude Code). We still EVALUATE it: it is the stop where a worker has
+# just done what the block asked for. 2026-09-27: row-32 was blocked for missing AC evidence,
+# printed the evidence, then stopped with stop_hook_active=true; the old early exit skipped
+# evaluation, so the landed run never flipped terminal. The test-green streak counts only
+# stops we block (see its update below), and every block reason is dropped at the end.
+STOP_HOOK_ACTIVE=0
 if [ "$(echo "$INPUT" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ]; then
-    exit 0
+    STOP_HOOK_ACTIVE=1
+    dbg "stop_hook_active=true → evaluate and persist a terminal, never block"
 fi
 
 PROJECT_ROOT="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
@@ -667,17 +674,21 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
                 TG_SEEN=$(jq -r '.test_green_block_ts // ""' "$GOAL_FILE" 2>/dev/null || echo "")
                 TG_STREAK=$(jq -r '.test_green_block_streak // 0' "$GOAL_FILE" 2>/dev/null || echo 0)
                 printf '%s' "${TG_STREAK:-}" | grep -qE '^[0-9]+$' || TG_STREAK=0
-                if [ "$TG_SEEN" = "$TG_TS" ]; then
-                    TG_STREAK=$((TG_STREAK + 1))
-                else
-                    TG_STREAK=1   # new red ts = new suite run = fresh streak
+                # A stop_hook_active stop is never blocked, so it is not a block attempt:
+                # it neither advances the streak nor escalates on it.
+                if [ "$STOP_HOOK_ACTIVE" != "1" ]; then
+                    if [ "$TG_SEEN" = "$TG_TS" ]; then
+                        TG_STREAK=$((TG_STREAK + 1))
+                    else
+                        TG_STREAK=1   # new red ts = new suite run = fresh streak
+                    fi
+                    jq --arg ts "$TG_TS" --argjson n "$TG_STREAK" \
+                       '.test_green_block_ts = $ts | .test_green_block_streak = $n' \
+                       "$GOAL_FILE" > "$GOAL_FILE.tmp" 2>/dev/null && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
                 fi
-                jq --arg ts "$TG_TS" --argjson n "$TG_STREAK" \
-                   '.test_green_block_ts = $ts | .test_green_block_streak = $n' \
-                   "$GOAL_FILE" > "$GOAL_FILE.tmp" 2>/dev/null && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
                 TG_EXIT=$(jq -r '.suite_exit // "null"' "$TG_FILE" 2>/dev/null || echo "null")
                 TG_REASON=$(jq -r '.reason // ""' "$TG_FILE" 2>/dev/null || echo "")
-                if [ "$TG_STREAK" -ge 3 ] 2>/dev/null; then
+                if [ "$STOP_HOOK_ACTIVE" != "1" ] && [ "$TG_STREAK" -ge 3 ] 2>/dev/null; then
                     TERMINAL="USER_ESCALATION_HALT"
                     REASON="TEST_GREEN_RED persisted across ${TG_STREAK} consecutive stop attempts on the same verdict (ts=$TG_TS, suite_exit=$TG_EXIT, reason=$TG_REASON). The suite is not going green on its own — escalating to the user rather than looping. Fix the suite, or set PLAN_W_TEAM_DISABLE_TEST_GREEN=1 to bypass."
                     dbg "(1/TEST_GREEN) streak=$TG_STREAK on ts=$TG_TS → USER_ESCALATION_HALT"
@@ -1425,6 +1436,23 @@ for GOAL_FILE in "${GOAL_FILES[@]}"; do
            "$GOAL_FILE" > "$GOAL_FILE.tmp" && mv "$GOAL_FILE.tmp" "$GOAL_FILE"
         ANY_TERMINAL=true
         echo "[goal-evaluator] SLUG=$SLUG terminal=$TERMINAL reason=$REASON" >&2
+        # Mirror to the MAIN copy. 2026-09-27, row-31: the worktree-local goal flipped SUCCESS
+        # while MAIN — the copy await-terminal, the router and pwt-status read — stayed null.
+        # Retro already dual-writes (PWT-TERM1); the evaluator must too. Same run only
+        # (started_at equal), and a MAIN terminal is never overwritten.
+        MAIN_GF="${MAIN_STATE_DIR:+$MAIN_STATE_DIR/plan-w-team-goal-${SLUG}.json}"
+        if [ -n "$MAIN_GF" ] && [ -f "$MAIN_GF" ] \
+           && [ "$(__abs_dir "$MAIN_STATE_DIR")" != "$(__abs_dir "$(dirname "$GOAL_FILE")")" ] \
+           && [ -z "$(jq -r '.terminal_state // ""' "$MAIN_GF" 2>/dev/null)" ] \
+           && [ "$(jq -r '.started_at // ""' "$MAIN_GF" 2>/dev/null)" = "$STARTED_AT" ]; then
+            if jq --arg t "$TERMINAL" --arg r "$REASON" --arg ts "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
+                  '.terminal_state = $t | .terminal_reason = $r | .terminated_at = $ts | .terminal_state_source = "evaluator"' \
+                  "$MAIN_GF" > "$MAIN_GF.tmp" && mv "$MAIN_GF.tmp" "$MAIN_GF"; then
+                echo "[goal-evaluator] SLUG=$SLUG terminal mirrored to $MAIN_GF" >&2
+            else
+                rm -f "$MAIN_GF.tmp"
+            fi
+        fi
     else
         # Build a block reason combining condition status
         # PWT-T5c: prefer the specific criteria-unmet reason when it exists
@@ -1535,6 +1563,12 @@ fi
 # must NOT suppress block emission for other still-pending goals. PWT-T5c
 # dogfood fix: multi-goal isolation.)
 if [ -z "$BLOCK_REASON" ]; then
+    exit 0
+fi
+
+# This stop follows one of our blocks: every terminal above is persisted, but it is never re-blocked.
+if [ "$STOP_HOOK_ACTIVE" = "1" ]; then
+    echo "[goal-evaluator] stop_hook_active=true → evaluated, not re-blocking. (suppressed: $BLOCK_REASON)" >&2
     exit 0
 fi
 

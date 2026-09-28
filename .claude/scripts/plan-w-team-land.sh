@@ -107,7 +107,8 @@ options
   --remote <name>          remote name (default: origin)
   --tag <name>             tag that must be reachable (default: tags pointing at --sha)
   --state-dir <dir>        pin state resolution (tests / explicit operator override)
-  --repo <dir>             the git worktree to read (default: $PWD)
+  --repo <dir>             the git worktree to read (default: $PWD; status and resume
+                           read the run's worktree from its manifest when it exists)
   --no-fetch               skip `git fetch` before the remote checks
   --json                   emit the verdict as JSON on stdout
   --dry-run                (resume) validate and print the plan; mutate nothing
@@ -187,6 +188,26 @@ AUDIT_FILE="$STATE_DIR/plan-w-team-land-audit.jsonl"
 # no unique commits) — which git alone reads as vacuously "landed".
 BASE_SHA=""
 [ -f "$MANIFEST_FILE" ] && BASE_SHA=$(jq -r '.base_sha // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
+
+# status and resume are the OPERATOR entry points: the watcher and the supervisor protocol print
+# them to run from wherever the operator stands, usually the primary, whose HEAD is not the run's.
+# 2026-09-27: after a reboot, a resume run from the primary read its stale HEAD (the run's base)
+# and reported UNDIVERGED for a run whose unpushed post-ship commit sat in its worktree. With no
+# --repo, these two read the manifest's worktree_path when it is a checkout of THIS repository
+# (same git-common-dir); verify and merge already run inside the worktree.
+__abs_common_dir() {
+    local c
+    c="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || return 1
+    case "$c" in /*) ;; *) c="$1/$c" ;; esac
+    (cd "$c" 2>/dev/null && pwd -P)
+}
+if [ -z "$REPO_OVERRIDE" ] && { [ "$SUB" = "status" ] || [ "$SUB" = "resume" ]; } && [ -f "$MANIFEST_FILE" ]; then
+    _run_wt=$(jq -r '.worktree_path // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
+    if [ -n "$_run_wt" ] && [ -d "$_run_wt" ] \
+       && [ "$(__abs_common_dir "$_run_wt")" = "$(__abs_common_dir "$REPO")" ]; then
+        REPO="$_run_wt"
+    fi
+fi
 
 ts_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 

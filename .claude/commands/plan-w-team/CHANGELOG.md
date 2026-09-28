@@ -14,6 +14,193 @@ traced back to the exact /plan-w-team release that produced it.
 
 ````
 
+## [2.59.1] — 2026-09-27 (fix: the deictic guard matches whole words only; `land.sh status`/`resume` read the run's worktree; the Stop evaluator still evaluates a `stop_hook_active` stop and mirrors a terminal to the MAIN copy) (f1a0267c)
+
+Four defects, each found on 2026-09-27. The first was reported by cleanscale. The other
+three came up while row-32 and row-31 were recovered after a host reboot.
+
+### 1. The deictic guard matched inside longer words
+
+cleanscale reported this. It needed no change on their side after they reworded their goal
+text (their PR 7520, issue #7519).
+
+- **What went wrong.** `pwt-goal.sh` refuses a `--worker-only` or `--launch` spawn with
+  exit 7 (`PWT_CTX_DANGLING`) when the request points at context the worker cannot see,
+  such as "this session" or "your plan". `__PWT_DEICTIC_PATTERN` matched its phrases
+  anywhere, even inside longer words. From about 5:09 PM ET, for about 45 minutes,
+  cleanscale's dispatch goal text said "end your session". The phrase "our session"
+  matched inside "your session", so every `--worker-only` spawn exited 7 on both hosts.
+  The same flaw matched "our" inside "hour" and "four", "as" inside "has" and "whereas",
+  and "this chat" inside "this chatbot".
+- **The fix.** The whole alternation now sits between word boundaries: a start of line
+  or a non-word character before it, and an end of line or a non-word character after
+  it. `grep -w` cannot do this, because the phrases contain spaces. An optional `s`
+  before the closing boundary keeps the plurals the old pattern caught, such as "our
+  conversations" and "previous discussions". Nothing else changes. The phrases are the
+  same, a match still exits 7, and `--brief` and `PLAN_W_TEAM_ALLOW_CONTEXT_BLIND` work
+  as before. The pattern stays on one single-quoted line, because cleanscale's
+  `dispatch-lane.test.sh` reads it and checks that their goal text never matches it.
+- **Verification.** `pwt-goal-deictic.test.sh` 25/25. New case D2b: "end your session",
+  "your sessions" and "this chatbot" reach spawn. D1 keeps all 16 phrasings, including
+  "this session" and "our conversation", and adds "our conversations". Three mutants fail
+  it: the old unanchored pattern (D2b, "end your session"), no closing boundary (D2b,
+  "this chatbot") and no plural `s` (D1, "our conversations"). A side-by-side run of the
+  old and new patterns over 34 phrases found that every phrase the old pattern matched as
+  a whole word still matches, and 7 substring false positives no longer do.
+
+### 2. `land.sh status` and `resume` read the operator's checkout, not the run's
+
+- **What went wrong.** After the reboot, `pwt-resume.sh --reason host-restart` was run
+  from the primary checkout for row-32. `land.sh resume` evaluated the primary's HEAD,
+  which was still the run's base, and reported `UNDIVERGED`. The run's unpushed post-ship
+  commit sat in its worktree, where the check never looked. The watcher and the
+  supervisor protocol tell the operator to run `status` and `resume`, and the operator
+  usually stands in the primary.
+- **The fix.** When no `--repo` is given, `status` and `resume` read the run's worktree
+  from the manifest's `worktree_path`. They do so only when that path exists and is a
+  checkout of the same repository (same git common dir). Otherwise they read `$PWD` as
+  before. `verify` and `merge` already run inside the worktree and are unchanged.
+- **Verification.** `landing-gate.bats` 40/40, with two new cases. First, an operator in
+  the primary with a manifest naming the run's worktree: `status` reports
+  `NOT_MERGED: <run sha>` and `resume --dry-run` never reports `UNDIVERGED`. This case
+  failed before the fix. Second, a manifest whose `worktree_path` belongs to another
+  repository is ignored, and `$PWD` is read. `pwt-resume.test.sh` 19/19. The mutant
+  without the common-dir check fails the second case.
+
+### 3. The Stop evaluator skipped the stop that follows its own block
+
+- **What went wrong.** Row-32's evaluator blocked its stop at 8:00 PM ET, because the
+  acceptance-criteria (AC) evidence was not in the transcript yet (1 of 14 matched). The
+  worker printed the evidence and stopped again at 8:02 PM. Claude Code marks the stop
+  that follows a Stop-hook block with `stop_hook_active=true`, and the evaluator exited
+  on that flag before evaluating anything (the hook took 14 ms). The run had landed
+  (`d70dd2b1` on `origin/main`, landed artifact written), but its goal never flipped
+  terminal. No later stop came to catch it, and the watcher reported `COMPLETE_UNLANDED`.
+  A hermetic replay of the same transcript and state flips SUCCESS once the stop is
+  evaluated.
+- **The fix.** A `stop_hook_active` stop is now evaluated like any other. Any terminal it
+  finds is persisted with `terminal_state_source=evaluator`. It is still never blocked:
+  any block reason is dropped with a stderr line, so the evaluator never fights Claude
+  Code's override. The test-green streak counts only stops the evaluator blocks, so a
+  `stop_hook_active` stop neither advances it nor escalates on it.
+- **Verification.** `plan-w-team-goal-evaluator.test.sh` 31/31. U3 now also asserts that
+  a `stop_hook_active` stop without anchors leaves the goal non-terminal. New case U3b: a
+  `stop_hook_active` stop after the worker satisfied the block persists
+  `SUCCESS/evaluator` and emits no block. `plan-w-team-goal-evaluator-test-green.test.sh`
+  10/10. New case AC3-i: two `stop_hook_active` stops after one block leave the streak at
+  1 and the goal open. Two mutants fail these cases: restoring the early exit (U3b) and
+  removing the streak guard (AC3-i, streak 3).
+
+### 4. The Stop evaluator flipped only the worktree copy of a goal
+
+- **What went wrong.** `pwt-goal.sh` seeds a run's goal in two places: the worker's
+  worktree and the MAIN checkout. The evaluator reads the worktree copy first and wrote
+  its terminal only to the file it read. `await-terminal.sh`, the Run-State Router and
+  `pwt-status` read the MAIN copy. Row-31 landed (`0e5186da`, landed artifact written),
+  and its worktree copy flipped SUCCESS, but the MAIN copy stayed `null`, so the run
+  still showed as live. Retro already writes SUCCESS to both copies (PWT-TERM1, 1.54.0).
+  A terminal found by the evaluator itself reached only one.
+- **The fix.** After it persists a terminal, the evaluator writes the same terminal to
+  the MAIN copy, with `terminal_state_source=evaluator`. It does so only when the MAIN
+  copy is a different file, has no terminal yet, and has the same `started_at` as the copy
+  it read. A MAIN copy left by an earlier run of the same slug is never touched, and a
+  MAIN terminal is never overwritten.
+- **Verification.** `plan-w-team-goal-evaluator-main-lookup.test.sh` 10/10. New case AC7:
+  a worktree copy and a MAIN copy of the same run both end terminal with source
+  `evaluator`; a MAIN copy with a different `started_at` stays `null`. Two mutants fail
+  it: no mirror (the MAIN copy stays `null`) and no `started_at` check (the other run's
+  MAIN copy is flipped).
+
+### Commit gate
+
+- A full-suite test-green.
+
+## [2.59.0] — 2026-09-27 (feat: the gotchas catalog is reached at three stages, not just advertised — GOT gate) (2b31e5a3)
+
+Recursive-followup row 32 (Cherny audit 2026-07-15, GAP-2). `shared/gotchas.md` was
+listed in the manifest and read by no stage, so 27 of the 33 briefs on disk restate its
+bash 3.2 rule (G7), and most restate the sync allowlist (G11). The audit asked for a stage
+gate, not another pointer. This is that gate.
+
+### Every gotcha says where it applies
+
+- Each entry now has `**Applies to**:` and `**Scope**:` lines. `Applies to` lists shell
+  `case` patterns over repo paths (`*` crosses `/`), or the word `runtime` for a
+  behavioral entry no path selects. `Scope` is `fleet` (every repo) or `skill-source`
+  (claude-pattern's own machinery, live only in claude-pattern, which is recognized by its
+  origin URL or main checkout name, or `PWT_GOTCHAS_SCOPE`).
+- `plan-w-team-gotchas-gate.sh --lint` fails the suite for an entry without both lines,
+  a heading that does not parse, a missing catalog, or one that parses to no entries. A
+  new gotcha cannot be added unreachable.
+
+### One script, three stages
+
+- **Step 1 freeze (ENFORCING).** The spec template gains `## Gotchas Ledger`.
+  `--check --spec` refuses the freeze until every entry that applies to the paths in
+  `## Files to Create/Modify` has a `HONORED` or `N/A` row with a reason. It runs before
+  the AC snapshot, so the digest covers the ledger. When the script is missing (a
+  consumer whose sync skipped it), the freeze prints a loud skip line instead of failing
+  with exit 127.
+- **Step 3-4 dispatch.** Each builder brief carries `GOTCHAS FOR YOUR FILES`. The lead
+  pastes the `--select --paths "<files_touched>"` output, and the builder re-runs it in
+  its worktree. The lead-direct path runs it once over every task's files.
+- **Step 5 §5a-quater (advisory).** `--check --phase review --diff-base "$BASE_SHA"`
+  prints every entry that applies to the real diff. It marks each one `[consulted]`,
+  `[UNCONSULTED]`, or `[N/A at spec — re-verify]` (an N/A claim the diff contradicts) and
+  exits 0 / 11 / 12. The reviewer records HONORED or VIOLATED for each. A VIOLATED entry
+  is Pass-1 CRITICAL. Exit 12 (unresolvable or option-like base, no git, empty diff,
+  missing catalog) never reads as clean.
+
+### Guardrails
+
+- The script runs `set -f` throughout, so a spec token like `.claude/hooks/*` never
+  expands against the disk. It refuses a diff base that starts with `-` and checks the
+  base resolves before running `git diff`. Diff paths are read `-z`, with non-printable
+  bytes dropped and each path capped at 300 characters. The path list is capped by
+  `PWT_GOTCHAS_MAX_PATHS` (default 400), loudly.
+- Measured over the 20 most recently added specs: a median of 6 entries apply in
+  claude-pattern (typically G7 G8 G11 G12, the ones briefs restate) and 2 in a consumer
+  (G7 G8).
+- Kill switch: `PLAN_W_TEAM_DISABLE_GOTCHAS_GATE=1` (every mode exits 0, plus a
+  kill-switch ledger `hit` row). Failure messages do not mention it.
+- Section reading is heading-level- and fence-aware: a `## Files to Create/Modify`
+  split into `### Create` / `### Modify` subsections is read whole, a `# comment`
+  inside a code block does not end it, and a Files or Gotchas Ledger heading that exists
+  only inside a fenced example counts as absent. Sibling `### Files to Create` / `### Files
+  to Modify` sections are all read, and a heading that only mentions "files to modify" is
+  not the Files section. The existence check (`has_heading`) and the reader share one
+  fence-aware anchored pattern, so they cannot disagree. The review phase converts
+  `git diff -z` NULs to newlines inside the pipe, because bash drops NUL bytes from
+  `$(…)`. The Step-4b evaluator caught each of these across three iterations by probing
+  real specs and real multi-file diffs. Before the fixes, each one made the gate report
+  "none applies" and pass silently.
+- Step-5 review hardening (the test-gap, security-gap and silent-failure reviewers).
+  Every fix below closes a path where the gate could report clean without having
+  checked everything:
+  - A path list the gate did not fully check is never clean. Over
+    `PWT_GOTCHAS_MAX_PATHS`, or with a path longer than 1024 characters (dropped, not
+    truncated), `--select` says so, the spec phase refuses, and the review phase
+    reports `PARTIAL` and turns a would-be 0 into 12. A cap of `0` is rejected.
+  - `--select` with no paths prints `no paths given — nothing evaluated` and exits 2.
+  - A Files section that names no path falls back to the whole spec, with a notice.
+  - `--paths` accepts Step 2's `files_touched` JSON form, `(create)`/`(modify)` tags
+    included.
+  - The review phase exits 12 for a named spec that does not exist, and an empty diff
+    stays 12 even when `--paths` is given.
+  - Template placeholder reasons (`<…>`) never count as a disposition.
+  - A `### G<N>` entry heading no longer steals the entry above it, a wrapped
+    `Applies to` line keeps its patterns, and malformed headings warn in every mode.
+  - Every header line names the scope used (`scope: source via origin`), and an
+    unrecognized `PWT_GOTCHAS_SCOPE` value is warned about.
+  - Caller-supplied values are echoed with control bytes removed, and awk reads files
+    from stdin, so a file named `x=y.md` is not taken as an assignment.
+  - A failed kill-switch ledger write warns.
+  - The stage snippets resolve the gate from the repo top, check it with `-f`, run it
+    with `bash`, and §5a-quater sets its own `SLUG`/`BASE_SHA`.
+- Tests: `plan-w-team-gotchas-gate.test.sh` (160 cases, green under `/bin/bash` 3.2 and
+  bash 5) and `tests/skill/cases/gotchas-gate.bats` (13 prose invariants). Both files are
+  in the sync allowlist.
+
 ## [2.58.0] — 2026-09-27 (feat: `claude-pattern-pull.sh --refresh-ignored-corpus` lists, and with `--apply` writes, the synced files a consumer's `.gitignore` keeps out of every sync PR) (1f94f7e4)
 
 cleanscale's review of 2.57.0 asked for this and specified how it behaves. The dry run is

@@ -2081,7 +2081,19 @@ fi
 # (the supersede protocol remains the backstop). A FALSE POSITIVE is the worse
 # failure — it would break every autonomous spawn — hence the positive-control
 # test and the two documented escape routes below.
-__PWT_DEICTIC_PATTERN='your (bottom.?line )?plan|(as|that) (we|you) (discussed|analyzed|agreed)|the plan (we|you) (made|created|discussed)|your (analysis|recommendation|findings|assessment)|(this|our) (session|conversation|chat)|(above|earlier|previous) (analysis|findings|discussion)|bottom.?line'
+#
+# Word boundaries: the whole alternation sits between a start-of-line or
+# non-word character and an end-of-line or non-word character, so no
+# alternative matches inside a longer word. Without them "our session"
+# matched inside "end your session" and "this chat" inside "this chatbot";
+# on 2026-09-27 cleanscale's dispatch goal text said "end your session" and
+# every --worker-only spawn exited 7 for about 45 minutes. `grep -w` cannot do
+# this, because the phrases contain spaces. The optional "s" before the
+# closing boundary keeps the plurals the unanchored pattern caught ("our
+# conversations", "previous discussions"). Keep this ONE single-quoted line:
+# cleanscale's dispatch-lane.test.sh reads it and asserts its own goal text
+# never matches.
+__PWT_DEICTIC_PATTERN='(^|[^[:alnum:]_])(your (bottom.?line )?plan|(as|that) (we|you) (discussed|analyzed|agreed)|the plan (we|you) (made|created|discussed)|your (analysis|recommendation|findings|assessment)|(this|our) (session|conversation|chat)|(above|earlier|previous) (analysis|findings|discussion)|bottom.?line)s?([^[:alnum:]_]|$)'
 
 # printf '%s\n' — NEVER echo: a request beginning "-e" or "-n", or containing
 # backslash escapes, is mangled by echo and would silently evade the detector.

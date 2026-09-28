@@ -121,6 +121,20 @@ assert_eq "kill switch does not modify state" "null" "$TERMINAL_AFTER"
 echo "U3: stop_hook_active=true → exit 0 (block-cap protection)"
 OUT=$(echo '{"transcript_path":"/dev/null","stop_hook_active":true}' | "$HOOK" 2>/dev/null)
 assert_eq "stop_hook_active honored" "" "$OUT"
+assert_eq "stop_hook_active without anchors leaves the goal non-terminal" "null" "$(jq -r '.terminal_state' "$GOAL_FILE")"
+
+echo "U3b: stop_hook_active=true after the worker satisfied the block → SUCCESS persisted, still no block"
+# 2026-09-27 (row-32): the stop that follows a block is where the worker has done what the block
+# asked. Skipping its evaluation left a landed run unflipped with no later stop to catch it.
+write_state 5 200
+write_ship_verdict
+cat > "$TRANSCRIPT" <<EOF
+{"slug":"$TEST_SLUG","stage":"retro-complete","workflow_lock":"done","ts":"2026-09-27T22:00:00Z"}
+EOF
+OUT=$(echo "{\"transcript_path\":\"$TRANSCRIPT\",\"stop_hook_active\":true}" | "$HOOK" 2>/dev/null)
+assert_eq "stop_hook_active SUCCESS emits no block" "" "$OUT"
+assert_eq "stop_hook_active SUCCESS persisted by the evaluator" "SUCCESS/evaluator" \
+    "$(jq -r '"\(.terminal_state)/\(.terminal_state_source)"' "$GOAL_FILE")"
 
 echo "U4: goal active, no transcript signals → block with reason"
 write_state 1 200

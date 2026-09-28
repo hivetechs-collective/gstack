@@ -336,6 +336,19 @@ Disable with `CLAUDE_AGENT_PANES=0` or `CLAUDE_DISABLED_HOOKS=subagent:tmux-pane
      endpoint with assertQaScoped(user). These prevent the broken-access-control findings
      that gate ship at Step 5/6.
 
+     GOTCHAS FOR YOUR FILES (recurring traps from shared/gotchas.md — hard rules):
+     <the lead pastes the output of
+        .claude/scripts/plan-w-team-gotchas-gate.sh --select --paths \"<this task's files_touched>\"
+      here verbatim — including the line 'No catalogued gotcha applies to these paths.'
+      when that is what it printed, 'gotchas-gate: no paths given — nothing evaluated'
+      when files_touched is empty (fill files_touched, then re-run), or
+      'gotchas-gate unavailable' if the script is missing. files_touched may be pasted
+      in its JSON form — the (create)/(modify) annotations are understood>
+     Before your first edit, run the same --select command in your worktree (your
+     files_touched may have grown) and follow every entry it prints for the files it
+     names. The Step-5 review re-checks the merged diff against the same catalog, and a
+     violated entry is a Pass-1 CRITICAL.
+
      TYPE PRESERVATION (critical — prevents merge conflicts):
      - NEVER create simplified versions of existing interfaces/types. Import and use
        the canonical types from the codebase.
@@ -762,7 +775,10 @@ If Step 2 produced >5 tasks or the total estimated AI effort exceeds 45 minutes,
 
 **For multi-session features with COUPLED tasks, use the "lead implements directly" strategy:**
 
-1. Lead works on main (no worktrees, no builder agents)
+1. Lead works on main (no worktrees, no builder agents). Before the first edit, run
+   `.claude/scripts/plan-w-team-gotchas-gate.sh --select --paths "<union of every task's files_touched>"`
+   once and follow each printed entry exactly as a spawned builder would (its brief carries
+   the same block — see Execution item 2's GOTCHAS FOR YOUR FILES)
 2. Commit after each task completes (preserves progress across sessions)
 3. **Scope check after each task**: Before starting the next task, verify it is in the spec's Must Have section — not in Deferred or Phase 2. If you've completed all Must Have tasks but feel compelled to keep building, STOP. That impulse is scope creep. Proceed to step 5.
 4. Use `--resume` to pick up where the previous session left off

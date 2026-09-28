@@ -4,7 +4,8 @@
 > points the `/plan-w-team` skill has hit in real runs. Per Anthropic's skill-authoring
 > guidance, a Gotchas section is the highest-value content in a skill — it documents the traps
 > Claude actually falls into, not the happy path. **Read this before editing skill internals,
-> authoring a stage file, or debugging a stuck run.**
+> authoring a stage file, or debugging a stuck run.** The pipeline also reaches it on its own:
+> see "How the pipeline reaches this file" below.
 >
 > **Maintenance**: append a new entry whenever a run surfaces a _recurring_ trap (not a one-off).
 > Each entry cites its authoritative source so the detail stays in one canonical place — this
@@ -18,9 +19,40 @@
 - The source link is canonical. If you change the behavior, update the source file and adjust
   the one-liner here — do not let them drift.
 
+## How the pipeline reaches this file (GOT)
+
+This file used to be advertised once and read by no stage, so people restated its entries
+(bash 3.2, the sync allowlist) in brief after brief (Cherny audit 2026-07-15, GAP-2;
+recursive-followup row 32). Now every entry carries two machine-read lines, and one script,
+`.claude/scripts/plan-w-team-gotchas-gate.sh`, puts the entries that apply in front of the run:
+
+| Stage | Call | Effect |
+| --- | --- | --- |
+| Step 1 freeze (`01-specification.md`) | `--check --spec <spec>` | ENFORCING: the spec's `## Gotchas Ledger` must dispose every entry that applies to the paths in its `## Files to Create/Modify` section (`HONORED` or `N/A`, with a reason) |
+| Step 3-4 dispatch (`03-execute.md`) | `--select --paths "<files_touched>"` | the applicable entries go into each builder brief, and the builder re-runs the call in its worktree |
+| Step 5 review (`04-fix-first-review.md` §5a-quater) | `--check --phase review --diff-base "$BASE_SHA"` | advisory re-check against the real diff: unconsulted entries, and `N/A` claims the diff contradicts, get a reviewer verdict; a violated one is Pass-1 CRITICAL |
+| the skill suite | `--lint` | an entry without both lines fails the suite, so no entry can be added unreachable |
+
+- **`**Applies to**:`** — backticked shell `case` patterns matched against repo-relative
+  paths; `*` matches across `/`. The bare word `runtime` (no backticked item) marks a
+  behavioral entry no path selects; no stage surfaces it.
+- **`**Scope**:`** — `fleet` entries are live in every repo that syncs the skill;
+  `skill-source` entries describe claude-pattern's own machinery and are live only in
+  claude-pattern (identity: `PWT_GOTCHAS_SCOPE=source|fleet`, else the origin URL ends in
+  `claude-pattern(.git)`, else the main checkout directory is named `claude-pattern`).
+- Run `plan-w-team-gotchas-gate.sh --select --spec docs/specs/<slug>.md` to see what applies
+  to a spec before its freeze.
+- Operator kill switch: `PLAN_W_TEAM_DISABLE_GOTCHAS_GATE=1` makes every mode exit 0 and
+  records a `hit` row in the run's kill-switch ledger
+  (`docs/operations/killswitch-bypass-ledger.md`). Gate failure messages deliberately do not
+  mention it.
+
 ---
 
 ## G1 — The harness silently drops `additionalContext` from UserPromptSubmit hooks
+
+**Applies to**: `.claude/hooks/*prompt*`
+**Scope**: `fleet`
 
 **Bites you**: a UserPromptSubmit hook that passes data forward via `additionalContext` will
 have that data vanish — the marker you check for in the next turn never arrives, so a guard
@@ -37,6 +69,9 @@ attachment).
 **Source**: `.claude/commands/plan-w-team.md` §Step 3a — Double-spawn guard (Routing Pre-Check).
 
 ## G2 — LLM-attention is not a load-bearing guard (PWT-DS1 / PWT-DS2)
+
+**Applies to**: `*pwt-goal.sh`, `*plan-w-team-route-prompt.sh`
+**Scope**: `skill-source`
 
 **Bites you**: a guard implemented as "the assistant will read the marker and not re-spawn" is
 not reliable — an origin assistant can read the marker and call `pwt-goal.sh --worker-only`
@@ -66,6 +101,9 @@ worker's _liveness_, not on elapsed time. Kill switch: `PWT_DOUBLE_SPAWN_LIVENES
 
 ## G3 — `claude --bg` does NOT auto-create a worktree
 
+**Applies to**: `*pwt-goal.sh`, `*pwt-steer.sh`, `*pwt-resume.sh`, `*pwt-launch-env.sh`
+**Scope**: `skill-source`
+
 **Bites you**: assuming a background session is isolated. Without isolation a `--bg` worker
 edits the **main checkout** and can clobber a concurrent in-session editor — the 2026-06-02
 incident.
@@ -82,6 +120,9 @@ Opt-out only via `PWT_DISABLE_WORKER_WORKTREE=1`.
 
 ## G4 — The Agent tool's `model` param accepts ONLY aliases, never a full model ID
 
+**Applies to**: `.claude/agents/*`, `*03-execute.md`
+**Scope**: `fleet`
+
 **Bites you**: passing `model: claude-opus-5-5` to an Agent call fails input validation; passing
 an alias defeats a generation pin (the alias overrides the agent-definition frontmatter).
 
@@ -94,6 +135,9 @@ an alias defeats a generation pin (the alias overrides the agent-definition fron
 **Source**: `.claude/commands/plan-w-team.md` §How tier pinning works.
 
 ## G5 — Use `mkdir` for locks, not `flock` (macOS has no `flock(1)`)
+
+**Applies to**: `*.lock`, `*.lock/*`, `*-lock.sh`, `*_lock.sh`, `.claude/commands/plan-w-team.md`, `*plan-w-team-surface-status.sh`
+**Scope**: `fleet`
 
 **Bites you**: a lock implemented with `flock` silently no-ops or errors on the user's macOS /
 mac-mini `/bin/bash`, so two concurrent runs race on the same state files.
@@ -124,6 +168,9 @@ whitespace-padded decimal pid still conflicts.
 
 ## G6 — CHANGELOG SHA off-by-one → the `(pending)` backfill convention
 
+**Applies to**: `.claude/commands/plan-w-team/CHANGELOG.md`, `.claude/commands/plan-w-team/VERSION`
+**Scope**: `skill-source`
+
 **Bites you**: writing the new CHANGELOG entry's `(<sha>)` from the current HEAD cites the
 **prior** version's commit (a commit can never contain its own SHA). This recurred 3× (1.22.1,
 …).
@@ -139,6 +186,9 @@ P14 SHA-lint enforces this.
 
 ## G7 — bash 3.2 portability (the test bash lies to you)
 
+**Applies to**: `*.sh`, `*.bash`, `*.bats`, `.githooks/*`
+**Scope**: `fleet`
+
 **Bites you**: a script that uses bash-4 features (`declare -A` associative arrays, `${var^^}`,
 etc.) works in local testing (bash 5.x) but fails silently or errors on the mac-mini's
 `/bin/bash` (3.2).
@@ -152,6 +202,9 @@ idioms.
 **Source**: `shared/shell-safety.md`; manifest Model Strategy note (bash 3.2 mac-mini).
 
 ## G8 — `set -e` + `((VAR++))` is a silent-exit footgun
+
+**Applies to**: `*.sh`, `*.bash`
+**Scope**: `fleet`
 
 **Bites you**: under `set -e`, `((counter++))` returns a non-zero exit status when the
 pre-increment value is 0 (the arithmetic result is "falsy"), aborting the script mid-loop with
@@ -168,6 +221,9 @@ commit.
 
 ## G9 — `claude agents --json` is intermittently empty-but-exit-0 under load
 
+**Applies to**: `*claude-agents-extended.sh`, `*await-terminal*`, `*pwt-lane-alive*`, `*ram-budget*`, `*statusline*`
+**Scope**: `skill-source`
+
 **Bites you**: trusting a single `claude agents --json` call — it can return empty JSON with a
 0 exit under load, which froze the statusline on a stale snapshot and can make a supervisor
 think a live worker is dead.
@@ -183,6 +239,9 @@ it is missing for >2 consecutive polls.
 
 ## G10 — `rsync -a` quick-check can silently skip a same-size file with changed content
 
+**Applies to**: `.claude/scripts/sync-*`, `.claude/scripts/claude-pattern-pull*`
+**Scope**: `skill-source`
+
 **Bites you**: a tiny file whose size is unchanged but whose content changed (the 7-byte
 `VERSION` marker is the classic victim) is **not** copied by an `rsync -a` size+mtime
 quick-check, so a synced consumer repo silently keeps the old content.
@@ -196,6 +255,9 @@ quick-check, so a synced consumer repo silently keeps the old content.
 
 ## G11 — A new `.claude/scripts/*` file won't propagate unless it's allowlisted
 
+**Applies to**: `.claude/scripts/*`
+**Scope**: `skill-source`
+
 **Bites you**: adding a helper script in claude-pattern and expecting it in consumer repos — it
 silently does not sync because `sync-to-project.sh` syncs an **allowlist**, not the whole dir.
 
@@ -207,6 +269,9 @@ silently does not sync because `sync-to-project.sh` syncs an **allowlist**, not 
 **Source**: `.claude/scripts/sync-to-project.sh` (allowlist); `plan-w-team-sync-allowlist-check.test.sh`.
 
 ## G12 — A new `.claude/state/plan-w-team-*` reader/writer must register in `state-artifacts.md`
+
+**Applies to**: `.claude/commands/plan-w-team*`, `.claude/scripts/plan-w-team-*`, `.claude/hooks/plan-w-team-*`
+**Scope**: `skill-source`
 
 **Bites you**: referencing a new state file from a stage without registering it fails the
 symmetry check (`plan-w-team-symmetry-check.sh`), which reads `shared/state-artifacts.md` as the
@@ -221,6 +286,9 @@ authoritative registry.
 (registry path + exit-code contract in the header).
 
 ## G13 — The lane guard decides by RESOLVED TARGET; use absolute paths for out-of-repo work while supervising
+
+**Applies to**: `*lane-guard*`, `*lane-context*`
+**Scope**: `skill-source`
 
 **Bites you**: while you are the BOUND supervisor of a live `/plan-w-team` lane, a `git`
 write or an in-place edit that is _not_ resolvably outside the lane repo is DENIED — even
@@ -258,7 +326,13 @@ NEVER permits a write inside the lane repo/worktrees.
 
 1. Confirm it is **recurring**, not a one-off — the blog's bar is "common failure points",
    not every bug.
-2. Add a `G<N>` entry: what bites you / why / do instead / source. Keep it to a few lines.
-3. Cite the **canonical** source file:line — this index points at the contract, it is not the
+2. Add a `## G<N> — <title>` entry: what bites you / why / do instead / source. Keep it to a
+   few lines.
+3. Directly under the heading, add `**Applies to**:` (the paths the trap lives in, as
+   backticked `case` patterns — as narrow as the trap; or the word `runtime`) and `**Scope**:`
+   (`fleet` or `skill-source`). `plan-w-team-gotchas-gate.sh --lint` fails the suite without
+   them. Put the actionable rule in the first **Do instead** paragraph: that paragraph is what
+   the gate pastes into builder briefs (capped at 600 characters).
+4. Cite the **canonical** source file:line — this index points at the contract, it is not the
    contract.
-4. If the gotcha came out of a retro, the friction-log entry and this file should agree.
+5. If the gotcha came out of a retro, the friction-log entry and this file should agree.

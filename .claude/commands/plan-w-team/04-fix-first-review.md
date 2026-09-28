@@ -338,6 +338,64 @@ every row the diff's design depends on. Record a verdict per checked row: `VERIF
 Kill switch: `PLAN_W_TEAM_DISABLE_GROUNDING=1` skips both layers (same switch as Step 0/1;
 a run that bypassed grounding at spec time cannot be grounding-gated at review).
 
+### 5a-quater. Gotchas Re-Check (advisory — GOT)
+
+Step 1 froze a `## Gotchas Ledger` built from the paths the spec SAID it would change.
+This re-check reaches the catalogued traps (`shared/gotchas.md`) for the paths the run
+ACTUALLY changed: it catches files the spec never named, and `N/A` claims the diff now
+contradicts. Run it before §5d re-records `BASE_SHA` (it must diff against the Step-3
+base, not the post-merge HEAD):
+
+```bash
+# Every Bash call is a fresh shell: set SLUG and BASE_SHA HERE (the Step-3 base,
+# recorded in 03-execute.md pre-flight). An unset SLUG makes the gate report
+# "spec not found" (12); an unset BASE_SHA is refused below — neither may ever
+# read as a legacy-grace or clean result.
+SLUG="<feature-slug>"
+BASE_SHA="<step-3 base sha>"
+REPO_TOP=$(git rev-parse --show-toplevel)
+SPEC_ABS="$REPO_TOP/docs/specs/${SLUG}.md"
+GOT_GATE="$REPO_TOP/.claude/scripts/plan-w-team-gotchas-gate.sh"
+if [ ! -f "$GOT_GATE" ]; then
+  echo "⚠ gotchas-gate: script missing ($GOT_GATE) — §5a-quater SKIPPED (re-sync the skill)"
+elif [ -z "$BASE_SHA" ]; then
+  echo "gotchas-recheck: could-not-verify (BASE_SHA is unset — pin the Step-3 base)"
+else
+  # `|| GOT_RC=$?` keeps 11/12 from tripping errexit without toggling `set -e`.
+  GOT_RC=0
+  bash "$GOT_GATE" --check --phase review --diff-base "$BASE_SHA" --spec "$SPEC_ABS" --root "$REPO_TOP" || GOT_RC=$?
+  case "$GOT_RC" in
+    0)  echo "gotchas-recheck: exit 0 — read the gate's own summary line above; verify the diff honors every gotcha it listed" ;;
+    11) echo "gotchas-recheck: unconsulted or N/A-contradicted gotchas — record a verdict for each (below)" ;;
+    12) echo "gotchas-recheck: could-not-verify — surface it; list the changed files by hand and run --select on them" ;;
+    *)  echo "gotchas-recheck: unexpected exit $GOT_RC — treat as could-not-verify" ;;
+  esac
+fi
+```
+
+For **every** gotcha the gate prints (whatever its mark), the reviewer checks the diff and
+records a verdict in the review findings: `HONORED` or `VIOLATED` with a one-line
+file:line citation.
+
+- A **VIOLATED** gotcha is **Pass-1 CRITICAL**: record it in §5h (`→ resolved in <sha>`
+  required; it blocks ship via `all_critical_resolved`).
+- An `[UNCONSULTED]` or `[N/A at spec — re-verify …]` gotcha that the diff honors is
+  Pass-2 INFORMATIONAL (the spec missed it; the code did not).
+- Do NOT add rows to the frozen spec to silence the gate: a post-freeze spec edit is §5a
+  drift. The verdicts live in the review findings.
+- Exit 12 is never a pass. The reviewer does the check by hand from the changed-file list
+  and records `gotchas-recheck: could-not-verify` in the status.
+- Legacy grace: a spec frozen before 2.59.0 has no Gotchas Ledger, so every applicable
+  gotcha reads `[UNCONSULTED]` (exit 11). That is expected; review them the same way.
+  A spec path that does not exist is NOT legacy grace: it is a broken call (exit 12).
+- A path list the gate could not check in full (over `PWT_GOTCHAS_MAX_PATHS`, or a path
+  over 1024 characters) is never clean: the summary says `PARTIAL` and a would-be 0 is 12.
+
+Record `gotchas-recheck: <T> applicable / <U> unconsulted / <V> violated` in the Step 5
+status notes. The gate never exits 1 in this phase: a violation blocks through the
+reviewer's CRITICAL, not through the exit code. Operator kill switch: see
+`shared/gotchas.md` §How the pipeline reaches this file.
+
 ## Two-Pass Review Decision Tree
 
 > See diagram below — describes the route every diff line takes from raw evaluator handoff through Pass 1 / Pass 2 classification to the AUTO-FIX / ASK / DEFER terminal states.

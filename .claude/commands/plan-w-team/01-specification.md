@@ -42,6 +42,26 @@ Sources consulted:
 Greenfield repos: replace the list + table with the explicit statement
 "Greenfield — no existing documentation to consult." — never a silent blank.
 
+## Gotchas Ledger (MANDATORY — GOT)
+
+The catalogued traps (`shared/gotchas.md`) that apply to the files this spec changes,
+each consulted and disposed. See what applies with
+`.claude/scripts/plan-w-team-gotchas-gate.sh --select --spec <this spec>` — it reads the
+`## Files to Create/Modify` section below. Every applicable entry needs a row;
+`HONORED` = the design follows the entry's rule, `N/A` = the entry matched a path but does
+not bite this change (say why). Step 5 re-checks both against the real diff.
+
+| Gotcha | Disposition | How honored / why N/A                                   |
+| ------ | ----------- | ------------------------------------------------------- |
+| G7     | HONORED     | <how the design follows the entry's rule>               |
+| G11    | N/A         | <why the entry matched a path but does not bite here>   |
+
+(The `<…>` cells are placeholders: the gate never counts a placeholder as a reason, so a
+spec that keeps these rows unedited does not pass the freeze.)
+
+When nothing applies, replace the table with "No catalogued gotcha applies to the paths
+this spec names." — never a silent blank.
+
 ## Overview
 
 Brief description. Include dream state mapping (CURRENT must trace to Grounding Ledger rows):
@@ -467,6 +487,46 @@ cell is `CONFIRMED`/`ASSUMED`); prose mentions of those words are ignored, so ke
 this template's guidance sentences in the spec is safe. Step 5 §5a-ter re-runs this gate
 with `--phase review` (zero `ASSUMED` rows may survive) and adversarially re-verifies the
 rows — see `04-fix-first-review.md`.
+
+## Gotchas Freeze Pre-Condition (ENFORCING — GOT)
+
+Third beside the reuse and grounding gates: the freeze refuses to proceed until the spec's
+`## Gotchas Ledger` disposes every catalogued gotcha (`shared/gotchas.md`) that applies to
+the paths in its `## Files to Create/Modify` section. This is how the durable constraints
+(bash 3.2, the sync allowlist, the CHANGELOG `(pending)` convention, …) reach a run without
+anyone restating them in a brief. It runs BEFORE the AC snapshot below, so the whole-file
+digest covers the ledger.
+
+```bash
+SLUG="<feature-slug>"
+SPEC="docs/specs/${SLUG}.md"
+# Resolved from the repo top (not the cwd), checked with -f and run with bash, so a
+# lead in a subdirectory, or a checkout that lost the exec bit, cannot mistake a
+# present gate for a missing one and skip the freeze.
+GOT_GATE="$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/scripts/plan-w-team-gotchas-gate.sh"
+# See what applies first (read-only):  bash "$GOT_GATE" --select --spec "$SPEC"
+if [ ! -f "$GOT_GATE" ]; then
+  # A consumer whose sync skipped the script must not be refused with exit 127,
+  # and must not pass silently either: say so, loudly, and continue.
+  echo "⚠ gotchas-gate: script missing ($GOT_GATE) — freeze pre-condition SKIPPED (re-sync the skill)"
+elif ! bash "$GOT_GATE" --check --spec "$SPEC"; then
+  echo "✗ Step-1 freeze refused: Gotchas Ledger missing/blank/incomplete in $SPEC"
+  echo "  Add a row per applicable gotcha: | G<N> | HONORED or N/A | <how honored / why N/A> |"
+  echo "  (the gate printed each missing entry and its rule above)."
+  # NOTE: no bypass coaching (C6 precedent); the operator kill switch is
+  # documented in shared/gotchas.md only.
+  exit 1
+fi
+```
+
+Exit codes: `0` pass (or a missing catalog, reported as `gotchas-gate: catalog-missing`),
+`1` refuse the freeze (section missing or blank, an applicable gotcha without a
+`HONORED`/`N/A` row that gives a reason, or the "No catalogued gotcha applies" statement
+used while something applies), `2` spec not found. Never pass `--catalog` or `--root` here.
+Applicability comes from the `## Files to Create/Modify` section; only when a spec has no
+such section does the gate read the whole spec minus its two ledgers. `skill-source`
+entries (claude-pattern's own machinery) apply only in claude-pattern. Step 5 §5a-quater
+re-checks the ledger against the real diff — see `04-fix-first-review.md`.
 
 ## Acceptance Criteria Snapshot (MANDATORY — integrity gate)
 
